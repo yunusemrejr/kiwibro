@@ -305,7 +305,7 @@ permissions as per table above, user_name `""`. Settings API returns merged valu
 
 Single page, no build step, ES modules, no external resources. Files:
 `templates/index.html`, `static/css/app.css`, `static/js/app.js` (+ modules),
-`static/img/kiwi.svg` + generated PNG icons + favicon.
+`static/img/kiwibro.svg` + generated PNG icons + favicon.
 
 Design language:
 

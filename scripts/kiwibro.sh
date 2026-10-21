@@ -14,7 +14,7 @@ healthy() { curl -sf -m 1 "$URL/health" >/dev/null 2>&1; }
 
 if ! healthy; then
   cd "$ROOT"
-  nohup python3 app.py >> "$DATA_DIR/server.log" 2>&1 &
+  nohup "$ROOT/scripts/python.sh" app.py >> "$DATA_DIR/server.log" 2>&1 &
   for _ in $(seq 1 120); do
     healthy && break
     sleep 0.25

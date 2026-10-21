@@ -11,7 +11,7 @@ mkdir -p "$APPS_DIR"
 sed "s|@ROOT@|$ROOT|g" "$ROOT/scripts/kiwibro.desktop.in" > "$APPS_DIR/kiwibro.desktop"
 chmod +x "$APPS_DIR/kiwibro.desktop"
 
-install -Dm644 "$ROOT/static/img/kiwi.svg" "$ICON_ROOT/scalable/apps/kiwibro.svg" 2>/dev/null || true
+install -Dm644 "$ROOT/static/img/kiwibro.svg" "$ICON_ROOT/scalable/apps/kiwibro.svg" 2>/dev/null || true
 for size in 64 128 256 512; do
   src="$ROOT/static/img/kiwibro-${size}.png"
   if [[ -f "$src" ]]; then
