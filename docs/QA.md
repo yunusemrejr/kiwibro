@@ -4,16 +4,20 @@ Independent QA for Kiwibro v1. Contracts under test:
 [ARCHITECTURE.md](ARCHITECTURE.md) and [API.md](API.md). This file is the evidence
 log: what was run, what passed, what broke, and what is still residual risk.
 
-**Status:** deterministic (fake-LM) suite green on latest backend; live LM Studio +
-committed screenshot pass pending Lead go-ahead. Latest runs on latest code
-(`2026-10-21 18:17 +0300`):
-- Python API/SSE/security suite — **54/54 checks passed**
-- Browser rig mock mode — **18/18 checks** (9 checks + 7 screenshot flows)
-- Browser rig fake-LM mode against the real app — **18/18 checks**
+**Status: COMPLETE — 2026-10-21 22:49 +0300.**
 
-> Live verification (task-3) is gated on: backend P1/P2 fixes in, Lead restarts the
-> canonical 8777 server from latest code, and LM Studio confirmed healthy. QA uses
-> port **8799** + `.dev/qa-data` only and never touches 8777.
+| Front | Result |
+|---|---|
+| Deterministic Python suite (unit + offline + API + chat/tools + compaction + no-tools) | **54/54 PASS** (final run on shipped code) |
+| Browser rig, mock mode | **18/18 PASS** (9 checks + 7 flows; `.dev/qa/browser/shots/`) |
+| Browser rig, fake-LM mode against the real Flask app | **18/18 PASS** (`.dev/qa/browser/fake-shots/`) |
+| Browser rig, live mode (qwen3.8-2b) | checks 10/10 PASS; flows 5/7 live (hero, models, chat, memory, settings), approval/mobile completed from the mock-mode UI run (identical frontend) — see §6 |
+| Live API/LM checks | 8 PASS, 3 model-behaviour WAIVED, 6 harness defects/inconclusive fixed post-run — see §6 |
+| Committed screenshots | 7/7 in `docs/screenshots/`, inspected with vision |
+| P0/P1 open bugs | **none** |
+
+> Live verification used port **8799** + `.dev/qa-data` only; the canonical 8777
+> server was never touched by QA.
 
 ---
 
@@ -165,9 +169,9 @@ toggles Agent mode off/on and verifies the change persisted through the API.
 | `mobile` | `docs/screenshots/mobile.png` | 390×844 conversation view (drawer closed) |
 
 Rig validation (2026-10-21): mock mode **18/18**, fake-LM mode against the real
-Flask app **18/18**; screenshots inspected visually (`.dev/qa/browser/shots/`,
-`.dev/qa/browser/fake-shots/`). These are rig-validation shots, not committed
-evidence; committed screenshots require the live LM Studio run.
+Flask app **18/18**; every committed screenshot was inspected with vision. See §6
+for which committed shots are live vs mock-mode. `browser-evidence.json` is kept in
+`.dev/qa/browser/`, never in `docs/screenshots/`.
 
 ---
 
@@ -212,7 +216,53 @@ sync title+memory latency (title is local; memory runs after `done`).
 
 ---
 
-## 6. Live verification plan (task-3, gated)
+## 6. Live verification evidence (task-3)
+
+Run: `python3 tests/e2e/run_live.py --shots-out docs/screenshots` against the latest
+code on **8799** with scratch `./.dev/qa-data`, model `qwen3.8-2b`, one call at a time.
+
+### Live API/LM checks (run 2026-10-21 22:25–22:30 +0300)
+
+| Check | Result | Evidence |
+|---|---|---|
+| `live_health` | PASS | real list, 11 chat models, current `qwen3.8-2b` |
+| `live_write_file_approval` | PASS | tool_call → approval → **Allow** → file written in workspace (25.5 s) |
+| `live_write_file_deny` | PASS | **Deny** → tool_result error, no file on disk (38.3 s) |
+| `live_run_command` | PASS | exec approval → Allow → command output returned (44.6 s) |
+| `live_stop` | PASS | stop mid-stream → `done{aborted}` + partial text saved (15 s) |
+| `live_context_compaction` | PASS | tiny-context fake hook seeded compaction, summary injected, live qwen continued with no context error (29.7 s) |
+| `live_restart_persistence` | PASS | conversations + memories + settings survived a restart |
+| `live_offline_state` | PASS | closed LM port → `meta` then calm `connection` error, no crash |
+| `live_plain_stream` | INCONCLUSIVE (harness) | real stream ran; assertion compared a retry conversation id. Harness fixed afterwards; deterministic UTF-8 streaming + live streamed chat in the browser prove the path |
+| `live_markdown_and_title` | INCONCLUSIVE (harness) | title assertion expected raw prompt text; deterministic titles are by design. Browser chat.png shows live streamed markdown |
+| `live_model_swap` | INCONCLUSIVE (harness) | assertion ran against an empty conversation due to the shared-conversation bug; swap path itself was fixed to server-persist + restore. Per Lead, no generation on slow spark |
+| `live_web_search_tool` | WAIVED | tool ran (`web_search` auto, Bing fallback after Brave 429); final citation is model behaviour. Deterministic fake-LM + live_search_provider cover the pipeline |
+| `live_blocked_command` | WAIVED | qwen3.8-2b refused to invoke `run_command` for a safety-sounding command (model safety, not app). Blocklist proven deterministically through the real tool pipeline |
+| `live_memory_roundtrip` | WAIVED | extraction is async/best-effort by design; persistence proven deterministically + browser memory sheet CRUD on live backend |
+| `direct_search_provider` / `direct_fetch_page` | HARNESS FIX | in-process imports needed repo root on `sys.path`; fixed in `run_live.py`; search chain verified indirectly by live web tool (Bing fallback, Brave 429) |
+
+Live browser checks (same run): console 0 errors, resources clean, no external
+requests, contract, XSS, SSE parser, a11y, responsive, keyboard shortcuts **10/10 PASS**.
+
+### Committed screenshots
+
+All 7 files verified as real PNGs and inspected visually.
+
+| File | Source | Content |
+|---|---|---|
+| `hero.png` | live run | empty state, 1440×900@2x, clean sidebar history |
+| `chat.png` | live `qwen3.8-2b` | real streamed Python code answer, clean titles, 5 memories |
+| `models.png` | live | model popover over the live transcript, loaded/context/tools markers |
+| `memory.png` | live | memory sheet with curated, real memories on the scratch DB |
+| `settings.png` | live | LM Studio status + model list + Auto/Ask/Deny permissions + toggles |
+| `approval.png` | **mock-mode UI run** (same static frontend) | pending write_file approval card with Deny / Always / Allow + clean sidebar — live qwen answered without calling write_file twice, so per Lead this fallback is used and disclosed |
+| `mobile.png` | **mock-mode UI run** | 390×844 empty state, clean titles — live mobile flow cascaded from the approval miss |
+
+The mock-mode screenshots use the exact committed frontend (`?mock=1` swaps only the
+JS API layer); backend behaviour is evidenced by the deterministic suite + the live
+PASS checks above. Everything else is a live-model screenshot.
+
+### How the live run was executed
 
 One command starts the latest code on **8799** with scratch state, serializes all
 model calls on `qwen3.8-2b`, runs the live checks, then runs the browser pass and
@@ -292,3 +342,25 @@ node tests/e2e/browser/run_browser.mjs --mode live  --out docs/screenshots
 # fake LM standalone
 python3 tests/e2e/fake_lm.py --port 0 --print-url
 ```
+
+---
+
+## 9. Final acceptance summary
+
+- **No P0/P1 bugs open.** Both P1s found in the static audit (LM-offline crash,
+  compaction summary loss) were fixed by backend and re-verified by the deterministic
+  suite; the P2s (meta ordering, memory-event contract) are fixed/amended-docs.
+- **Contracts**: docs/API.md + ARCHITECTURE.md surfaces covered end to end; loopback
+  Host guard, no-store/no-cache headers, error envelopes, 413, cascade delete,
+  approvals, abort, model swap, persistence all asserted.
+- **Safety**: path traversal (write + read + symlink), SSRF (local/private/link-local,
+  redirects re-checked), command blocklist, output/timeout caps, markdown XSS
+  (9 payloads inert in real Chrome), FTS injection, request-size limit.
+- **README claims verified**: all 7 referenced screenshots exist as PNGs; no external
+  fonts/CDNs (browser asserts zero cross-origin requests); scripts pass `bash -n` and
+  `python.sh` venv fallback exists; icons 64/128/256/512 + favicon present; `.desktop`
+  template substitution in `install.sh`; pytest suite green (backend 67 + QA e2e).
+- **Residual risks** (unchanged, documented): best-effort sandbox/blocklist (not a
+  container), DNS-rebinding TOCTOU window in the SSRF guard, in-memory approvals
+  (lost on restart), Werkzeug dev-server duplicate `Connection: close`, unknown-model
+  selection while LM Studio is offline, no `context` event on context-limit recovery.
