@@ -34,6 +34,7 @@ DETAIL_DIGITS = 40
 
 _THOUSANDS = re.compile(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
 _PERCENT_OF = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*of\s*", re.IGNORECASE)
+_PERCENT_CHANGE = re.compile(r"(\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)\s*%(?!\s*(?:of\b|[\d(]))", re.IGNORECASE)
 _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%(?!\s*[\d(])")
 _BETWEEN_DIGITS_X = re.compile(r"(?<=\d)\s*[x×]\s*(?=\d)", re.IGNORECASE)
 _LEADING = re.compile(r"^\s*(?:what\s+is|what's|calculate|compute)\s+", re.IGNORECASE)
@@ -45,6 +46,7 @@ def _preprocess_math(text: str) -> str:
     expr = _LEADING.sub("", expr)
     expr = _TRAILING.sub("", expr).strip()
     expr = _PERCENT_OF.sub(lambda m: f"({m.group(1)}/100)*", expr)
+    expr = _PERCENT_CHANGE.sub(lambda m: f"({m.group(1)}*(1{m.group(2)}{m.group(3)}/100))", expr)
     expr = _PERCENT.sub(lambda m: f"({m.group(1)}/100)", expr)
     expr = _BETWEEN_DIGITS_X.sub("*", expr)
     if "(" not in expr:
@@ -454,7 +456,7 @@ _WORDS: dict[str, str] = {
     "byte": "B", "kilobyte": "KB", "megabyte": "MB", "gigabyte": "GB", "terabyte": "TB", "petabyte": "PB",
     "kibibyte": "KiB", "mebibyte": "MiB", "gibibyte": "GiB", "tebibyte": "TiB", "pebibyte": "PiB",
     "bit": "bit", "b": "bit", "kilobit": "kbit", "megabit": "Mbit", "gigabit": "Gbit",
-    "kb": "kbit", "mb": "Mbit", "gb": "Gbit",
+    "kb": "KB", "mb": "MB", "gb": "GB",
     "kph": "km/h", "kmh": "km/h", "kmph": "km/h", "kilometer per hour": "km/h", "kilometers per hour": "km/h",
     "kilometres per hour": "km/h", "km per hour": "km/h", "mile per hour": "mph", "miles per hour": "mph",
     "mi/h": "mph", "meter per second": "m/s", "meters per second": "m/s", "metres per second": "m/s", "mps": "m/s",
@@ -1243,8 +1245,11 @@ def _aggregate_mode(
     order = sorted(range(len(raw)), key=lambda i: _sort_key(raw[i][index]), reverse=descending)
     shown = [texts[i] for i in order[:limit]]
     direction = "desc" if descending else "asc"
-    parts = [f"{matched} rows matched; groups: {len(groups)}", f"sorted by {sort_label} {direction}", ""]
-    parts.append(_markdown(labels, shown))
+    parts = [f"{matched} rows matched; groups: {len(groups)}", f"sorted by {sort_label} {direction}"]
+    skipped = sum(metric.skipped for metrics in groups.values() for metric in metrics)
+    if skipped:
+        parts.append(f"note: {skipped} non-numeric value(s) were left out of sum/mean/min/max/median")
+    parts += ["", _markdown(labels, shown)]
     return "\n".join(parts), {"rows": scanned, "matched": matched}
 
 
@@ -1393,6 +1398,7 @@ CALCULATE = ExtensionTool(
     validate=_validate_calculate,
     execute=_execute_calculate,
     permission="auto",
+    category="core",  # exact math is offered on every turn: small models cannot do arithmetic
 )
 
 ANALYZE_TABLE = ExtensionTool(

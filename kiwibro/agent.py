@@ -10,11 +10,12 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import config, prompts, tools
+from . import checkpoints, config, guard, library, prompts, safety, toolcall, tools
 
 try:
     from . import inference
@@ -208,6 +209,24 @@ def _directives_note(conversation_id: str) -> str:
         return ""
 
 
+# Always offered in text-protocol mode: deterministic helpers small models need most.
+_TEXT_MODE_EXTRA = ("calculate", "doc_search", "doc_read")
+
+
+def _text_mode_specs(settings: dict[str, Any]) -> list[tools.ToolSpec]:
+    """Tools for the text protocol. Depends only on settings (never on the message),
+    so the protocol block in message 0 stays byte-stable across turns."""
+    profile = settings.get("tool_profile")
+    if profile in (None, "auto"):
+        profile = "minimal"
+    names = [item["function"]["name"] for item in tools.tool_defs_for(profile=profile, settings=settings)]
+    names += [
+        name for name in _TEXT_MODE_EXTRA
+        if name in tools.TOOL_SPECS and name not in names and tools.permission_mode(settings, name) != "deny"
+    ]
+    return [tools.TOOL_SPECS[name] for name in names]
+
+
 @dataclass
 class Turn:
     conversation_id: str
@@ -231,13 +250,16 @@ class Turn:
     tool_signatures: dict[str, int] = field(default_factory=dict)
     tool_calls_made: int = 0
     tool_rounds: int = 0
-    writes_made: int = 0
     steering_notes: list[str] = field(default_factory=list)
     steering_lock: threading.Lock = field(default_factory=threading.Lock)
     system_prompt: str = ""
     turn_context: str = ""
     timer: inference.RoundTimer | None = None
     inference: dict[str, Any] = field(default_factory=dict)
+    safety: dict[str, Any] = field(default_factory=dict)  # guard/safety turn state
+    stream_filter: toolcall.StreamFilter | None = None
+    page_limit: int = 8000  # tool outputs longer than this are paged into the library
+    nudged: bool = False
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -259,6 +281,7 @@ class AgentManager:
         self.memory = memory
         self.search = search
         self._settings = settings_provider
+        self.data_dir = Path(db.path).resolve().parent  # checkpoints + document library live here
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._turns: dict[str, Turn] = {}
@@ -439,6 +462,9 @@ class AgentManager:
             raise ConversationNotFound(turn.conversation_id)
         user_message = self.db.add_message(turn.conversation_id, "user", turn.message)
         turn.user_message_id = user_message["id"]
+        # Content-safety state: taint from injected content and secret placeholders
+        # carry over between turns of the same conversation.
+        turn.safety = guard.begin_turn(turn.conversation_id, self._workspace().root)
         self._raise_if_aborted(turn)
 
         try:
@@ -469,7 +495,11 @@ class AgentManager:
         self._raise_if_aborted(turn)
 
         model_info = prepared.model_info or model_info or {}
+        turn.page_limit = library.page_limit(prepared.budget)
         tool_list: list[dict[str, Any]] | None = None
+        # Models without native tool calling use the text protocol: tools are
+        # described in message 0 and calls are parsed from the reply text.
+        text_mode = bool(settings.get("agent_enabled", True)) and not model_info.get("tools", False)
         if settings.get("agent_enabled", True) and model_info.get("tools", False):
             # Task-shaped subset (tool_profile) keeps small models effective;
             # fixed for the whole turn so the prompt prefix stays stable.
@@ -496,7 +526,16 @@ class AgentManager:
             )
             turn.partial_text = ""
             turn.partial_reasoning = ""
-            result = self._stream_with_recovery(turn, model, prepared, tool_list, round_index)
+            result = self._stream_with_recovery(turn, model, prepared, tool_list, round_index, text_mode=text_mode)
+            if round_index > 0 and not turn.nudged and toolcall.is_empty_reply(result.content, result.tool_calls):
+                # Small models sometimes stop with an empty reply after tool
+                # results; one transient nudge (never stored) gets them going.
+                turn.nudged = True
+                self._record_usage(turn, result, prepared)
+                log.info("turn %s round %s: empty reply, nudging once", turn.conversation_id, round_index)
+                result = self._stream_with_recovery(
+                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=True
+                )
             log.info(
                 "turn %s round %s: finish_reason=%s content_chars=%s tool_calls=%s",
                 turn.conversation_id,
@@ -568,6 +607,9 @@ class AgentManager:
         prepared: PreparedContext,
         tool_list: list[dict[str, Any]] | None,
         round_index: int = 0,
+        *,
+        text_mode: bool = False,
+        nudge: bool = False,
     ) -> ChatResult:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
@@ -577,12 +619,16 @@ class AgentManager:
         attempts = 0
         while True:
             self._raise_if_aborted(turn)
-            reuse = inference.PREFIX_TRACKER.observe(model, prepared.messages, tool_list)
+            messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
+            if nudge:
+                messages = [*messages, {"role": "user", "content": toolcall.EMPTY_REPLY_NUDGE}]
+            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list)
             turn.timer = inference.RoundTimer()
+            turn.stream_filter = toolcall.StreamFilter()
             try:
                 result = self.llm.stream_chat(
                     model=model,
-                    messages=prepared.messages,
+                    messages=messages,
                     tools=tool_list,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -593,6 +639,7 @@ class AgentManager:
                 )
                 turn.timer.finish()
                 self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
+                self._rescue_tool_calls(turn, result, settings)
                 return result
             except ContextLimitError:
                 attempts += 1
@@ -629,6 +676,21 @@ class AgentManager:
             timing.get("ttft_ms"), timing.get("tokens_per_s"),
         )
 
+    @staticmethod
+    def _rescue_tool_calls(turn: Turn, result: ChatResult, settings: dict[str, Any]) -> None:
+        """Recover tool calls the model wrote as text; release stream text held back for nothing."""
+        held_back, turn.stream_filter = turn.stream_filter, None
+        if not result.tool_calls and settings.get("agent_enabled", True):
+            calls, cleaned = toolcall.extract_calls(result.content, tools.TOOL_SPECS)
+            if calls:
+                log.info("turn %s: recovered %s tool call(s) written as text", turn.conversation_id, len(calls))
+                result.tool_calls, result.content = calls, cleaned
+        if held_back is not None:
+            release = held_back.flush() + ("" if result.tool_calls else held_back.held)
+            if release:
+                turn.partial_text += release
+                turn.emit("delta", {"text": release})
+
     # --- event helpers -----------------------------------------------------
 
     def _delta_callback(self, turn: Turn) -> Callable[[str], None]:
@@ -637,8 +699,11 @@ class AgentManager:
                 raise TurnAborted()
             if turn.timer is not None:
                 turn.timer.mark_first()
-            turn.partial_text += text
-            turn.emit("delta", {"text": text})
+            # Tool-call markup is held back so users never see raw call syntax.
+            visible = turn.stream_filter.feed(text) if turn.stream_filter is not None else text
+            if visible:
+                turn.partial_text += visible
+                turn.emit("delta", {"text": visible})
 
         return on_delta
 
@@ -724,7 +789,7 @@ class AgentManager:
         if not settings.get("agent_enabled", True):
             tools_block = prompts.TOOLS_DISABLED_BLOCK
         elif model_info is not None and not model_info.get("tools"):
-            tools_block = prompts.TOOLS_UNSUPPORTED_BLOCK
+            tools_block = toolcall.protocol_block(_text_mode_specs(settings))
         else:
             tools_block = prompts.TOOLS_BLOCK
         return prompts.SYSTEM_PROMPT.format(
@@ -791,16 +856,21 @@ class AgentManager:
 
         def run_one(item: dict[str, Any]) -> tuple[str, ToolResult, int]:
             started = time.monotonic()
-            workspace = Workspace(self._settings().get("workspace") or config.default_workspace())
+            name, args = item["name"], item["args"]
             context = ToolContext(
-                workspace=workspace,
+                workspace=self._workspace(),
                 memory=self.memory,
                 search=self.search,
                 conversation_id=turn.conversation_id,
                 llm=self.llm,
                 current_model=turn.model,
             )
-            result = tools.execute_tool(item["name"], item["args"], context)
+            if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
+                checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
+            with safety.applied(item["decision"], approved_by_user=item["approved"]):
+                result = tools.execute_tool(name, guard.reveal(name, args, turn.safety), context)
+            result = guard.postprocess(name, args, result, turn.safety)
+            result = library.page_output(self._library(), name, result, turn.page_limit)
             return item["id"], result, int((time.monotonic() - started) * 1000)
 
         parallel_items = [item for item in runnable if tools.is_parallel_safe(item["name"])]
@@ -826,88 +896,78 @@ class AgentManager:
                 result, duration = item["result"], 0
             else:
                 result, duration = outcomes[item["id"]]
-                spec = tools.TOOL_SPECS.get(item["name"])
-                if spec is not None and spec.risk in ("write", "exec"):
-                    turn.writes_made += 1
             turn.tool_calls_made += 1
+            if item["notes"]:  # show small models how their call was corrected
+                result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             self._record_tool_result(turn, item["id"], item["name"], result, duration)
 
     def _prepare_tool_call(
         self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]
     ) -> dict[str, Any]:
-        """Parse, validate, permission-check and approve one call (no execution)."""
-        function = call.get("function") or {}
-        name = str(function.get("name") or "")
-        call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:8]}")
-        raw_arguments = function.get("arguments")
+        """Rescue, validate, safety-check and approve one call (no execution)."""
+        rescued = toolcall.prepare_call(call, tools.TOOL_SPECS)
+        name = rescued.name
+        item: dict[str, Any] = {
+            "id": rescued.id, "name": name, "args": rescued.args, "notes": rescued.notes,
+            "result": None, "decision": None, "approved": False,
+        }
+
+        def refuse(content: str, preview: str) -> dict[str, Any]:
+            item["result"] = ToolResult(ok=False, content=content, preview=preview)
+            return item
+
+        spec = tools.TOOL_SPECS.get(name)
         try:
-            parsed = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-            if not isinstance(parsed, dict):
-                raise ValueError
-            args: dict[str, Any] = parsed
-        except ValueError:
-            args = {}
-        try:
-            spec = tools.get_spec(name)
-            validated = tools.validate_args(name, args)
+            if rescued.error or spec is None:
+                raise ValueError(rescued.error or f"unknown tool: {name}")
+            item["args"] = tools.validate_args(name, rescued.args)
         except ValueError as exc:
             turn.emit(
                 "tool_call",
-                {"id": call_id, "name": name, "args": args, "risk": "read", "requires_approval": False},
+                {"id": item["id"], "name": name, "args": item["args"], "risk": "read", "requires_approval": False},
             )
-            result = ToolResult(ok=False, content=f"Error: {exc}", preview=f"Error: {exc}")
-            return {"id": call_id, "name": name, "args": args, "result": result}
-        mode = tools.permission_mode(self._settings(), name)
-        requires = mode == "ask"
+            # Small models fix calls far better when shown the exact valid usage.
+            message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
+            return refuse(message, message.splitlines()[0])
+        decision = safety.decide(
+            self._settings(), name, item["args"], workspace=self._workspace(), turn_state=turn.safety, risk=spec.risk
+        )
+        requires = decision.mode == "ask"
         turn.emit(
             "tool_call",
             {
-                "id": call_id,
+                "id": item["id"],
                 "name": name,
-                "args": validated,
+                "args": item["args"],
                 "risk": spec.risk,
                 "requires_approval": requires,
+                **decision.payload(),
             },
         )
-        if mode == "deny":
-            result = ToolResult(
-                ok=False,
-                content="The user has disabled this tool. Do not retry it.",
-                preview="Tool disabled",
-            )
-            return {"id": call_id, "name": name, "args": validated, "result": result}
-        if spec.risk in ("write", "exec") and turn.writes_made >= config.MAX_WRITES_PER_TURN:
-            result = ToolResult(
-                ok=False,
-                content=(
-                    f"Error: safety limit reached — {config.MAX_WRITES_PER_TURN} write/command "
-                    "actions already ran this turn. Summarise progress and let the user "
-                    "continue in a new message instead of making more changes."
-                ),
-                preview="Write limit reached for this turn",
-            )
-            return {"id": call_id, "name": name, "args": validated, "result": result}
-        signature = tools.tool_call_signature(name, validated)
+        item["decision"] = decision
+        if decision.mode == "deny":
+            preview = "Tool disabled" if decision.source == "permission" else "Blocked by a safety check"
+            return refuse(decision.denial_text(), preview)
+        signature = tools.tool_call_signature(name, item["args"])
         seen = turn.tool_signatures.get(signature, 0)
         turn.tool_signatures[signature] = seen + 1
         if seen >= 2:
-            result = ToolResult(
-                ok=False,
-                content=(
-                    "Error: this exact tool call was already made twice this turn with the "
-                    "same arguments. Use the earlier result, change the arguments, or move on."
-                ),
-                preview="Duplicate tool call stopped",
+            return refuse(
+                "Error: this exact tool call was already made twice this turn with the "
+                "same arguments. Use the earlier result, change the arguments, or move on.",
+                "Duplicate tool call stopped",
             )
-            return {"id": call_id, "name": name, "args": validated, "result": result}
-        if requires and not self._request_approval(turn, name, spec.risk, validated):
-            result = ToolResult(
-                ok=False,
-                content="The user denied permission for this tool call. Do not retry it.",
-                preview="Denied by user",
-            )
-            return {"id": call_id, "name": name, "args": validated, "result": result}
-        return {"id": call_id, "name": name, "args": validated, "result": None}
+        if requires:
+            if not self._request_approval(turn, name, spec.risk, item["args"], decision.payload()):
+                return refuse("The user denied permission for this tool call. Do not retry it.", "Denied by user")
+            item["approved"] = True
+        return item
+
+    def _workspace(self) -> Workspace:
+        return Workspace(self._settings().get("workspace") or config.default_workspace())
+
+    def _library(self) -> library.Library:
+        return library.get_library(self.data_dir / "library.db")
 
     def _record_tool_result(
         self, turn: Turn, call_id: str, name: str, result: ToolResult, duration_ms: int
@@ -937,6 +997,7 @@ class AgentManager:
         name: str,
         risk: str,
         args: dict[str, Any],
+        safety_info: dict[str, Any] | None = None,
     ) -> bool:
         approval_id = f"ap_{uuid.uuid4().hex}"
         approval = Approval(
@@ -957,6 +1018,7 @@ class AgentManager:
                 "summary": tools.summary_for(name, args),
                 "risk": risk,
                 "timeout_s": int(config.APPROVAL_TIMEOUT_S),
+                **(safety_info or {}),
             },
         )
         deadline = time.monotonic() + config.APPROVAL_TIMEOUT_S

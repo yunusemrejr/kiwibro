@@ -1025,8 +1025,10 @@ def test_system_prompt_identity_and_capabilities(env: Env):
     assert "Agent mode is off" in disabled
     assert "web_search, fetch_page" not in disabled
 
+    # Models without native tool calling get the text tool protocol, byte-stable per settings.
     unsupported = env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": False})
-    assert "cannot make tool calls" in unsupported
+    assert "<tool_call>" in unsupported and "web_search(query: string" in unsupported
+    assert unsupported == env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": False})
 
 
 def test_health_offline_is_calm(env: Env, monkeypatch: pytest.MonkeyPatch):

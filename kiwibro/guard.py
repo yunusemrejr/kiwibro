@@ -28,6 +28,8 @@ from functools import reduce
 from pathlib import Path
 from typing import Any, Iterator
 
+from .checkpoints import MAX_FILES_PER_CALL
+
 log = logging.getLogger(__name__)
 
 MODES = ("auto", "ask", "deny")
@@ -334,30 +336,42 @@ def neutralize(text: str) -> str:
 
 # --- destructive writes -----------------------------------------------------------------
 
-_COMMENT_LINE_RE = re.compile(r"^[ \t]*(?:#|//|/\*+|<!--|--|;+|\*|%)(?P<body>[^\n]*)$", re.MULTILINE)
+# A placeholder is a whole comment (or bracketed) line that stands in for elided
+# text: "// ...", "# ... rest of the code ...", "/* existing code here */",
+# "# (same as before)", "[rest of document unchanged]". Ordinary comments that
+# merely mention a word like "unchanged" must not match.
+_COMMENT_LINE_RE = re.compile(r"^[ \t]*(?:#|//|/\*+|<!--|--|;+)(?P<body>[^\n]*)$", re.MULTILINE)
 _BRACKET_LINE_RE = re.compile(r"^[ \t]*[\[(](?P<body>[^\n]{0,120})[\])][ \t]*$", re.MULTILINE)
-_ELLIPSIS_RE = re.compile(r"\.{3,}|…")
-_LAZY_WORDS_RE = re.compile(r"\b(?:rest|remaining|remainder|existing|previous|unchanged|same|other|more|original|old)\b", re.IGNORECASE)
-_LAZY_PHRASES_RE = re.compile(
-    r"\b(?:unchanged|as before|same as (?:before|above|original|previous)|omitted|elided|for brevity|"
-    r"rest of (?:the )?(?:code|file|implementation|function|class|content|module|component|script|method|logic|document))\b",
-    re.IGNORECASE,
+_ELLIPSIS_RE = re.compile(r"\.{2,}|…")
+_DECORATION_RE = re.compile(r"\*+/|-->|[()\[\]{}:;,.!…*-]")
+_REFERENCE_RE = re.compile(
+    r"^(?:the\s+)?(?:rest|remainder|remaining|existing|previous|original|unchanged)\b.*\b(?:code|file|content|contents|"
+    r"function|functions|class|classes|method|methods|implementation|component|components|module|section|sections|"
+    r"lines|logic|html|css|imports|body|text|document|tests|helpers|definitions|markup|styles|script)\b",
 )
-_BARE_ELLIPSIS_RE = re.compile(r"\s*(?:\.{3,}|…)\s*(?:\*/|-->)?\s*")
+_ELISION_CUE_RE = re.compile(r"\b(?:unchanged|same|as before|omitted|elided|here|remains?|stays?|not shown|brevity|etc)\b")
+_ELISION_ONLY_RE = re.compile(
+    r"^(?:unchanged|same|as before|same as (?:before|above|original|previous)|omitted(?: for brevity)?|elided|not shown|etc)$"
+)
 
 
 def lazy_placeholder(text: str | None) -> str | None:
-    """The first "... rest unchanged ..." style placeholder line in text, if any."""
+    """The first line of text that is an elision placeholder, if any."""
     if not text:
         return None
     for pattern in (_COMMENT_LINE_RE, _BRACKET_LINE_RE):
         for match in pattern.finditer(text):
-            body = match.group("body")
-            if (
-                (_ELLIPSIS_RE.search(body) and _LAZY_WORDS_RE.search(body))
-                or _LAZY_PHRASES_RE.search(body)
-                or (pattern is _COMMENT_LINE_RE and _BARE_ELLIPSIS_RE.fullmatch(body))
-            ):
+            raw = match.group("body")
+            body = " ".join(_DECORATION_RE.sub(" ", raw).lower().split())
+            if not body:
+                elided = pattern is _COMMENT_LINE_RE and bool(_ELLIPSIS_RE.search(raw))
+            elif _ELISION_ONLY_RE.match(body):
+                elided = True
+            else:
+                elided = bool(_REFERENCE_RE.match(body)) and (
+                    len(body.split()) <= 4 or bool(_ELLIPSIS_RE.search(raw)) or bool(_ELISION_CUE_RE.search(body))
+                )
+            if elided:
                 return match.group(0).strip()[:80]
     return None
 
@@ -424,11 +438,16 @@ def _manage_verdict(workspace: str | None, args: dict[str, Any]) -> GuardVerdict
         target = _resolve(workspace, args.get("path"))
         if target is None or not target.is_dir():
             return None
-        files = _count_files(target, LARGE_DELETE_FILES * 8)
+        files = _count_files(target, MAX_FILES_PER_CALL + 1)
+        count = f"{MAX_FILES_PER_CALL:,}+" if files > MAX_FILES_PER_CALL else f"{files:,}"
+        restore = (
+            f"only the first {MAX_FILES_PER_CALL:,} files can be restored afterwards"
+            if files > MAX_FILES_PER_CALL else "a checkpoint can restore it"
+        )
         if (target / ".git").exists():
-            return _verdict("ask", "high", f"This deletes a git repository folder ({files:,}+ files).")
+            return _verdict("ask", "high", f"This deletes a git repository folder ({count} files); {restore}.")
         if files >= LARGE_DELETE_FILES:
-            return _verdict("ask", "high", f"This deletes a folder with {files:,}+ files; only part of it can be restored.")
+            return _verdict("ask", "high", f"This deletes a folder with {count} files; {restore}.")
     elif action in ("move", "copy"):
         target = _resolve(workspace, args.get("destination"))
         if target is not None and target.is_file():

@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from kiwibro.compute import TOOLS, evaluate
+from kiwibro.compute import ANALYZE_TABLE, TOOLS, evaluate
 from kiwibro.sandbox import SandboxError, Workspace
 
 TODAY = date(2026, 10, 22)
@@ -68,7 +68,9 @@ def analyze(ctx, path: str = "sales.csv", **options):
         ("7/7", "1"),
         ("10/4", "2.5"),
         ("5 % 3", "2"),
-        ("100 + 15%", "100.15"),
+        ("100 + 15%", "115"),
+        ("80 - 25%", "60"),
+        ("200 * 15%", "30"),
     ],
 )
 def test_math_exact_results(expression, expected):
@@ -268,3 +270,16 @@ def test_execute_returns_result_object(tool, ctx, sales):
     outcome = tool.execute(tool.validate(args), ctx)
     for field in ("ok", "content", "preview", "meta"):
         assert hasattr(outcome, field)
+
+
+def test_lowercase_data_units_mean_bytes():
+    assert evaluate("500 mb to gb")["result"] == "0.5 GB"
+    assert evaluate("1 Mb to kB")["result"] == "125 KB"  # capital M + lowercase b: megabit
+
+
+def test_aggregate_reports_skipped_non_numeric_cells(tmp_path):
+    ws = Workspace(tmp_path / "ws")
+    (ws.root / "t.csv").write_text("team,score\na,1\na,n/a\nb,3\n")
+    ctx = types.SimpleNamespace(workspace=ws, memory=None, search=None, conversation_id="c1")
+    out = ANALYZE_TABLE.execute(ANALYZE_TABLE.validate({"path": "t.csv", "group_by": "team", "aggregate": "sum:score"}), ctx)
+    assert "1 non-numeric value(s) were left out" in out.content

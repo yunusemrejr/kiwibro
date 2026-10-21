@@ -177,9 +177,11 @@ class CheckpointStore:
             path, display = Path(row["path"]), row["display"]
             try:
                 if not row["existed"]:
-                    if path.is_file():
+                    removed = path.is_file()
+                    if removed:
                         path.unlink()
-                    reports.append({"path": display, "action": "removed (it did not exist before)"})
+                    action = "removed (it did not exist before)" if removed else "already absent"
+                    reports.append({"path": display, "action": action})
                 elif row["sha256"] is None:
                     reports.append({"path": display, "action": "skipped: file was too large to checkpoint"})
                 else:
@@ -266,6 +268,15 @@ def _expand(workspace: Any, path: Path | None) -> list[tuple[Path, str]]:
     return [(path, workspace.public(path))]
 
 
+def _landing(workspace: Any, source: Path, destination: Path) -> list[tuple[Path, str]]:
+    """Destination files a move/copy will create or overwrite (one per source file)."""
+    if source.is_dir():
+        targets = [destination / path.relative_to(source) for path, _display in _expand(workspace, source)]
+    else:
+        targets = [destination]
+    return [(target, workspace.public(target)) for target in targets]
+
+
 def files_for(name: str, args: dict[str, Any], workspace: Any) -> list[tuple[Path, str]]:
     """Files a file-changing tool call may modify, as (absolute, display) pairs."""
     if name in ("write_file", "replace_in_file", "apply_patch"):
@@ -274,12 +285,11 @@ def files_for(name: str, args: dict[str, Any], workspace: Any) -> list[tuple[Pat
         action = args.get("action")
         source = _resolve(workspace, args.get("path"))
         files = _expand(workspace, source) if action in ("move", "delete") else []
-        if action in ("move", "copy"):
-            destination = _resolve(workspace, args.get("destination"))
-            if destination is not None and destination.is_dir() and source is not None:
+        destination = _resolve(workspace, args.get("destination")) if action in ("move", "copy") else None
+        if source is not None and destination is not None:
+            if destination.is_dir():
                 destination = destination / source.name
-            if destination is not None:
-                files += _expand(workspace, destination) if destination.is_dir() else [(destination, workspace.public(destination))]
+            files += _landing(workspace, source, destination)
         return files
     return []
 
