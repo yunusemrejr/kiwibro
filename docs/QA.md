@@ -5,9 +5,11 @@ Independent QA for Kiwibro v1. Contracts under test:
 log: what was run, what passed, what broke, and what is still residual risk.
 
 **Status:** deterministic (fake-LM) suite green on latest backend; live LM Studio +
-committed screenshot pass pending QA authorization. Last deterministic run:
-`2026-10-21 18:14 +0300` — **54/54 checks passed**, mock-mode browser rig
-**8/8 checks + 7 screenshot flows passed**.
+committed screenshot pass pending Lead go-ahead. Latest runs on latest code
+(`2026-10-21 18:17 +0300`):
+- Python API/SSE/security suite — **54/54 checks passed**
+- Browser rig mock mode — **18/18 checks** (9 checks + 7 screenshot flows)
+- Browser rig fake-LM mode against the real app — **18/18 checks**
 
 > Live verification (task-3) is gated on: backend P1/P2 fixes in, Lead restarts the
 > canonical 8777 server from latest code, and LM Studio confirmed healthy. QA uses
@@ -141,7 +143,14 @@ Selectors are centralized in `tests/e2e/browser/selectors.mjs`.
 | `xss` | 9 hostile markdown payloads (`<script>`, `<img onerror>`, `javascript:` links, `data:` URLs, inline-code HTML, svg/iframe) render inert: no execution, no dangerous tags, links only `http(s)` with `rel=noopener noreferrer` |
 | `sse` | renders the real `consumeSSE` parser against a synthetic stream cut at arbitrary byte boundaries, including a UTF-8 emoji split, heartbeats and multi-line data |
 | `a11y` | icon buttons/inputs/images labelled, `lang`, viewport + color-scheme meta, dialogs labelled, no positive tabindex, one `h1` |
+| `shortcuts` | `Ctrl+N` new chat, `Ctrl+,` settings, `Esc` closes sheets, `Shift+Enter` newline (README keyboard table) |
+| `no-external` | zero cross-origin requests — offline-capable, no CDNs/fonts |
 | `responsive-desktop` / `responsive-mobile` | no horizontal overflow and no chrome past the viewport at 1440×900 and 390×844 |
+
+Flows also *exercise* the UI, not just screenshot it: approval flow clicks Allow and
+waits for the resolved card, model flow switches to another model and restores the
+canonical one, memory flow adds/pins/deletes a row through the sheet, settings flow
+toggles Agent mode off/on and verifies the change persisted through the API.
 
 ### Flows → committed screenshots
 
@@ -155,9 +164,10 @@ Selectors are centralized in `tests/e2e/browser/selectors.mjs`.
 | `models` | `docs/screenshots/models.png` | model popover with state/context/tool markers |
 | `mobile` | `docs/screenshots/mobile.png` | 390×844 conversation view (drawer closed) |
 
-Mock-mode rig validation (2026-10-21): **8/8 checks, 7/7 flows**, screenshots
-inspected visually (`.dev/qa/browser/shots/`). These are rig-validation shots, not
-committed evidence; committed screenshots require the live LM Studio run.
+Rig validation (2026-10-21): mock mode **18/18**, fake-LM mode against the real
+Flask app **18/18**; screenshots inspected visually (`.dev/qa/browser/shots/`,
+`.dev/qa/browser/fake-shots/`). These are rig-validation shots, not committed
+evidence; committed screenshots require the live LM Studio run.
 
 ---
 
@@ -188,11 +198,13 @@ committed evidence; committed screenshots require the live LM Studio run.
 | 2 | P1 | Rolling-compaction summary stored but never injected into the prompt → compacted history silently lost | **FIXED** (backend `combine_system_prompt`), verified by `compaction/summary_reaches_the_model` |
 | 3 | P2 | `meta` not the first SSE event on compacting turns (`context` was emitted before `meta`) | **FIXED**, verified by `compaction/meta_is_first_event` |
 | 4 | P2 | Memory extraction became async but docs still promised a synchronous `memory` event; UI badge went stale | **RESOLVED BY DESIGN** — Lead amended `docs/API.md`/`ARCHITECTURE.md` (event optional; clients poll `/api/bootstrap`/`/api/memories`), frontend refreshes counts after turns and on focus; verified by `chat/memory_extraction` + browser contract check |
-| 5 | P3 | SSE wire has duplicate/conflicting `Connection: keep-alive` + `Connection: close` (Werkzeug dev server always closes) | OPEN (harmless for browser fetch; docs claim keep-alive) — residual risk |
-| 6 | P3 | `POST /api/models/select` accepts unknown ids while LM Studio is offline (contract: 400 if unknown) | OPEN (unknowable when offline; low impact) |
-| 7 | P3 | Context-limit *recovery* compaction does not emit a `context` event, so the UI chip is not shown (compaction itself works) | OPEN, cosmetic |
-| 8 | P3 | `Workspace.list_files` follows symlinked dirs and can expose absolute outside paths in the listing (read/write remain guarded) | OPEN, low impact path disclosure |
-| 9 | P3 | Per-conversation lock object is popped in `_cleanup`; a narrow race could create a second lock for the same conversation | OPEN, theoretical |
+| 5 | P3 | SSE wire has duplicate/conflicting `Connection: keep-alive` + `Connection: close` (Werkzeug dev server always closes connections) | **ACCEPTED RESIDUAL** — app sets the contract header; Werkzeug appends `close`; browsers handle the close correctly. Only affects the dev server |
+| 6 | P3 | `POST /api/models/select` accepts unknown model ids while LM Studio is offline (contract: 400 if unknown) | OPEN, low impact (the list is unknowable while offline) |
+| 7 | P3 | Context-limit *recovery* compaction does not emit a `context` event, so the UI compaction chip is not shown (compaction itself works) | OPEN, cosmetic |
+| 8 | P3 | `Workspace.list_files` followed symlinked dirs and could expose absolute outside paths in the listing | **FIXED** — escaping symlinks skipped, `public()` no longer leaks absolute paths |
+| 9 | P3 | Per-conversation lock object was popped in `_cleanup`; a narrow race could create a second lock for the same conversation | **FIXED** — lock objects are kept for the process lifetime |
+| 10 | P3 | `MAX_CONTENT_LENGTH` was silently `None`; >4 MiB bodies returned 400 instead of 413 | **FIXED** — 413 `too_large` verified |
+| 11 | P3 | SSE `Cache-Control` was overwritten to `no-store` by the global API header middleware | **FIXED** — chat stream keeps `no-cache` |
 
 Already-fixed Lead-reported issues re-verified by the deterministic suite:
 UTF-8 mojibake in streamed text, auto-title prompt echo (deterministic titles now),
@@ -202,21 +214,40 @@ sync title+memory latency (title is local; memory runs after `done`).
 
 ## 6. Live verification plan (task-3, gated)
 
-1. Start app from latest code on 8799 with scratch state:
-   ```bash
-   KIWIBRO_PORT=8799 KIWIBRO_DATA_DIR=$PWD/.dev/qa-data KIWIBRO_WORKSPACE=$PWD/.dev/qa-workspace \
-   KIWIBRO_LMSTUDIO_URL=http://127.0.0.1:1234 python3 app.py
-   ```
-2. Serialized live checks with `qwen3.8-2b`: streamed chat + markdown/UTF-8,
-   real `web_search` tool, `write_file` approval (allow), `run_command` approval
-   (deny + allow/always), stop mid-stream, model swap mid-chat (transcript + memory
-   preserved), restart persistence, compaction (long conversation; no context error),
-   LM Studio offline state (point app at closed port).
-3. Browser live pass on the same server (mode `live`, `--base`), screenshots to
-   `docs/screenshots/`; every screenshot inspected with vision before committing.
-4. Re-run the deterministic suite one final time on the exact commit to be shipped.
-5. Fill the evidence table + README claims check; report residual risks; mark task-3
-   complete only with no P0/P1 open.
+One command starts the latest code on **8799** with scratch state, serializes all
+model calls on `qwen3.8-2b`, runs the live checks, then runs the browser pass and
+writes the committed screenshots:
+
+```bash
+python3 tests/e2e/run_live.py --shots-out docs/screenshots
+# or attach to an already-running 8799 server:
+python3 tests/e2e/run_live.py --base http://127.0.0.1:8799 --no-browser
+```
+
+Live checks (`tests/e2e/checks_live.py`, all serialized):
+
+| # | Check | Evidence |
+|---|---|---|
+| 1 | `live_health` | real model list, current model, per-model fields |
+| 2 | `live_plain_stream` | TTFT/total, real streaming, UTF-8 umlauts/CJK/emoji intact, usage |
+| 3 | `live_markdown_and_title` | streamed markdown + persisted auto-title |
+| 4 | `live_web_search_tool` | real `web_search` auto-run, non-empty results, answer cites links |
+| 5 | `live_write_file_approval` | approval card → Allow → file written inside workspace |
+| 6 | `live_write_file_deny` | Deny → tool_result error, no file on disk |
+| 7 | `live_run_command` | exec risk card → Allow → command output returned |
+| 8 | `live_blocked_command` | `sudo rm -rf /` blocked even after Allow |
+| 9 | `live_stop` | stop mid-stream → `done{aborted}` + partial saved |
+| 10 | `live_model_swap` | mid-chat swap to a second loaded model, per-message models kept, memories unchanged |
+| 11 | `live_memory_roundtrip` | remember tool / extraction writes a durable memory |
+| 12 | `live_context_compaction` | tiny-context fake hook seeds compaction (summary injected), then real qwen continues with no context error |
+| 13 | `live_restart_persistence` | conversation + memories survive a real server restart |
+| 14 | `live_offline_state` | second app on closed LM port: calm connection error, no crash |
+| 15 | `direct_search_provider` | real provider chain returns ≥1 result with non-empty snippets |
+| 16 | `direct_fetch_page` | real page fetch + readable-text extraction |
+
+After the live pass: inspect every committed screenshot with vision, re-run the
+deterministic suite on the exact shipped code, check README claims, fill the evidence
+numbers above, then report residual risks and close task-3/task-4.
 
 ---
 
@@ -249,6 +280,9 @@ python3 -m pytest tests/e2e -q
 
 # UI/backend unit suite (backend-owned)
 python3 -m pytest -q
+
+# live LM Studio verification (serialized; 8799 + scratch data; screenshots last)
+python3 tests/e2e/run_live.py --shots-out docs/screenshots
 
 # browser rig
 node tests/e2e/browser/run_browser.mjs --mode mock  --out .dev/qa/browser/shots

@@ -713,22 +713,41 @@ def test_brave_parser_uses_current_markup(monkeypatch: pytest.MonkeyPatch):
     ]
 
 
-def test_bing_parser_falls_back_to_rss(monkeypatch: pytest.MonkeyPatch):
+def test_bing_html_parser_and_rss_last_resort(monkeypatch: pytest.MonkeyPatch):
     from kiwibro import search as search_module
 
-    calls: list[str] = []
+    blocked = FakeResponse("<html><body>no results</body></html>")
+    monkeypatch.setattr(search_module, "_get", lambda *a, **k: blocked)
+    assert search_module.bing_search("kiwi", 3) == []
 
-    def fake_get(url, **kwargs):
-        calls.append(url)
-        if kwargs.get("params", {}).get("format") == "rss":
-            return FakeResponse(BING_RSS)
-        return FakeResponse("<html><body>no results</body></html>")
-
-    monkeypatch.setattr(search_module, "_get", fake_get)
-    results = search_module.bing_search("kiwi", 3)
+    monkeypatch.setattr(
+        search_module, "_get", lambda *a, **k: FakeResponse(BING_RSS) if k.get("params", {}).get("format") == "rss" else blocked
+    )
+    results = search_module.bing_rss_search("kiwi", 3)
     assert results[0]["title"] == "Kiwi - Wikipedia"
     assert results[0]["url"].startswith("https://en.wikipedia.org")
-    assert len(calls) == 2
+    # The RSS provider is the last-resort entry after the documented chain.
+    assert search_module.PROVIDERS[-1][0] == "bing_rss"
+
+
+def test_search_provider_cooldown_skips_rate_limited_provider(monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import search as search_module
+
+    engine = SearchEngine()
+    calls: list[str] = []
+
+    def rate_limited(query, limit):
+        calls.append("limited")
+        raise SearchError("Brave returned HTTP 429")
+
+    def working(query, limit):
+        calls.append("working")
+        return [{"title": "Result", "url": "https://example.com", "snippet": "text"}]
+
+    monkeypatch.setattr(search_module, "PROVIDERS", (("brave", rate_limited), ("wikipedia", working)))
+    assert engine.web_search("one", 3)[0]["title"] == "Result"
+    assert engine.web_search("two", 3)[0]["title"] == "Result"
+    assert calls == ["limited", "working", "working"]
 
 
 def test_wikipedia_parser_uses_extracts(monkeypatch: pytest.MonkeyPatch):
@@ -1356,6 +1375,30 @@ def test_chat_busy_returns_409_and_stop_aborts(env: Env):
     events = stream.finish()
     assert events[-1][0] == "done"
     assert events[-1][1]["aborted"] is True
+
+
+def test_delete_conversation_during_turn_closes_quietly(env: Env):
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def blocking_stream() -> ChatResult:
+        entered.set()
+        assert gate.wait(5)
+        return ChatResult(content="late reply")
+
+    env.fake.stream_script = [blocking_stream]
+    response = env.client.post("/api/chat", json={"message": "delete me"}, buffered=False)
+    assert response.status_code == 200
+    stream = SSEStream(response).start()
+    assert entered.wait(5)
+    conversation_id = stream.wait_for("meta")["conversation_id"]
+    deleted = env.new_client().delete(f"/api/conversations/{conversation_id}")
+    assert deleted.get_json() == {"ok": True}
+    assert env.new_client().get(f"/api/conversations/{conversation_id}").status_code == 404
+    gate.set()
+    stream.finish()
+    internal = [payload for event, payload in stream.events if event == "error" and payload.get("code") == "internal"]
+    assert internal == []
 
 
 def test_chat_stop_saves_partial_text(env: Env):

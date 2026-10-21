@@ -183,30 +183,38 @@ def _bing_rss(query: str, limit: int) -> list[dict[str, str]]:
 
 
 def bing_search(query: str, limit: int) -> list[dict[str, str]]:
-    """Bing HTML (li.b_algo); fall back to Bing's RSS output when HTML is bot-blocked."""
+    """Bing HTML (li.b_algo, redirect links via u= base64). Empty when bot-blocked."""
     try:
         response = _get("https://www.bing.com/search", params={"q": query, "setlang": "en", "cc": "us"})
-    except requests.RequestException:
-        return _bing_rss(query, limit)
+    except requests.RequestException as exc:
+        raise SearchError("Bing is not reachable") from exc
+    if response.status_code != 200:
+        raise SearchError(f"Bing returned HTTP {response.status_code}")
+    soup = BeautifulSoup(response.text, "html.parser")
     results: list[dict[str, str]] = []
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, "html.parser")
-        for item in soup.select("li.b_algo"):
-            link = item.select_one("h2 a[href]")
-            if link is None:
-                continue
-            url = _decode_bing_url(link.get("href", ""))
-            if not url.startswith("http"):
-                continue
-            title = _clean(link.get_text(" ", strip=True), 200)
-            description = item.select_one(".b_caption p") or item.select_one("p")
-            snippet = _clean(description.get_text(" ", strip=True) if description else "", 500)
-            if title:
-                results.append({"title": title, "url": url, "snippet": snippet})
-            if len(results) >= limit:
-                break
-    if results:
-        return results
+    for item in soup.select("li.b_algo"):
+        link = item.select_one("h2 a[href]")
+        if link is None:
+            continue
+        url = _decode_bing_url(link.get("href", ""))
+        if not url.startswith("http"):
+            continue
+        title = _clean(link.get_text(" ", strip=True), 200)
+        description = item.select_one(".b_caption p") or item.select_one("p")
+        snippet = _clean(description.get_text(" ", strip=True) if description else "", 500)
+        if title:
+            results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def bing_rss_search(query: str, limit: int) -> list[dict[str, str]]:
+    """Bing's RSS output: last-resort provider (HTML is frequently bot-blocked).
+
+    Its relevance is noticeably lower than Brave/Wikipedia, so it is tried after the
+    documented chain rather than in Bing's place.
+    """
     return _bing_rss(query, limit)
 
 
@@ -290,7 +298,9 @@ PROVIDERS: tuple[tuple[str, Callable[[str, int], list[dict[str, str]]]], ...] = 
     ("bing", bing_search),
     ("ddg", ddg_search),
     ("wikipedia", wikipedia_search),
+    ("bing_rss", bing_rss_search),
 )
+PROVIDER_COOLDOWN_S = 30.0
 
 
 class SearchEngine:
@@ -300,6 +310,7 @@ class SearchEngine:
         self._cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
         self._lock = threading.Lock()
         self._cache_ttl = cache_ttl
+        self._cooldowns: dict[str, float] = {}
 
     def web_search(self, query: str, max_results: int = 5) -> list[dict[str, str]]:
         query = (query or "").strip()
@@ -312,10 +323,17 @@ class SearchEngine:
             if cached and time.monotonic() - cached[0] < self._cache_ttl:
                 return [dict(item) for item in cached[1]]
         results: list[dict[str, str]] = []
+        now = time.monotonic()
         for name, provider in PROVIDERS:
+            if self._cooldowns.get(name, 0.0) > now:
+                log.info("search provider %s cooling down after a rate limit", name)
+                continue
             try:
                 results = provider(query, max_results)
             except (SearchError, requests.RequestException) as exc:
+                message = str(exc).lower()
+                if "429" in message or "captcha" in message:
+                    self._cooldowns[name] = now + PROVIDER_COOLDOWN_S
                 log.info("search provider %s unavailable: %s", name, exc)
                 continue
             except Exception:  # pragma: no cover - parser drift is non-fatal

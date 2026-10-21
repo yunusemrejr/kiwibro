@@ -39,12 +39,15 @@ DEFAULT_PORT = 8799
 
 
 class Env:
-    def __init__(self, app: AppServer | None, base_url: str, conversation_id: str = "") -> None:
+    def __init__(
+        self, app: AppServer | None, base_url: str, conversation_id: str = "", real_lm_url: str = ""
+    ) -> None:
         self.app = app
         self.base_url = base_url
         self.client = ApiClient(base_url)
         self.workspace = Path(app.workspace) if app else WORKSPACE
         self.conversation_id = conversation_id
+        self.real_lm_url = real_lm_url
 
     def restart(self) -> None:
         if not self.app:
@@ -87,6 +90,49 @@ def direct_fetch_page(env: Env) -> str:
     return f"fetched {page['title']!r} ({len(page['text'])} chars, truncated={page['truncated']})"
 
 
+SEED_MEMORIES = [
+    ("Prefers dark, low-noise interfaces with generous spacing.", "preference", True),
+    ("Building Kiwibro, a local-first AI agent for Linux.", "project", True),
+    ("Workspace is ~/Kiwibro and notes live in notes.md.", "fact", False),
+    ("Wants Python examples to stay dependency-free where possible.", "preference", False),
+    ("Prefers short answers with bullet points and code examples.", "preference", False),
+]
+
+
+def prepare_screenshot_state(env: Env) -> None:
+    """Curate real state so the committed screenshots look like a used app.
+
+    All data is created through the public API on the scratch data dir: three real
+    (short) conversations with hand-set titles and a realistic memory set. The
+    live checks above have already produced their evidence, so clearing them here
+    does not hide anything; every screenshot is still a real backend + real model.
+    """
+    assert env.app is not None, "screenshot prep needs a spawned app"
+    # conversations: keep the sidebar plausible instead of full of QA probe titles
+    for conversation in env.client.get("/api/conversations").data["conversations"]:
+        env.client.delete(f"/api/conversations/{conversation['id']}")
+    seeds = [
+        ("What is one interesting fact about kiwi birds? Reply in one sentence.", "Kiwi facts"),
+        ("In one sentence, what is the point of a local AI agent?", "Local AI notes"),
+        ("Give me one quick dinner idea for tonight.", "Dinner ideas"),
+    ]
+    for prompt, title in seeds:
+        stream = env.client.chat({"message": prompt}, timeout=300)
+        stream.wait_done(timeout=300)
+        stream.wait_closed(timeout=60)
+        assert not stream.of("error"), f"seed screenshot chat failed: {stream.of('error')}"
+        conversation_id = stream.of("meta")[0]["conversation_id"]
+        env.client.patch(f"/api/conversations/{conversation_id}", {"title": title})
+    # let async memory extraction settle, then curate the memory sheet content
+    time.sleep(4.0)
+    env.client.delete("/api/memories")
+    for content, kind, pinned in SEED_MEMORIES:
+        created = env.client.post("/api/memories", {"content": content, "kind": kind})
+        if created.status == 200 and pinned:
+            env.client.patch(f"/api/memories/{created.data['memory']['id']}", {"pinned": True})
+    print(f"screenshot state ready: {len(seeds)} conversations, {len(SEED_MEMORIES)} memories")
+
+
 DIRECT_CHECKS: list[tuple[str, Any]] = [
     ("direct_search_provider", direct_search_provider),
     ("direct_fetch_page", direct_fetch_page),
@@ -125,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(LIVE_ROOT / "evidence.json"))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--skip-slow", action="store_true", help="skip compaction (costly) and screenshot flows")
+    parser.add_argument(
+        "--probe-only",
+        action="store_true",
+        help="only probe LM Studio + boot the app, then exit (plumbing check, no generation)",
+    )
     args = parser.parse_args(argv)
 
     LIVE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -137,12 +188,30 @@ def main(argv: list[str] | None = None) -> int:
         print("Aborting: run the deterministic suite instead until LM Studio is confirmed healthy.")
         return 2
 
+    if args.probe_only:
+        app = None
+        try:
+            app = AppServer(
+                "live-probe",
+                lmstudio_url=args.lm_url,
+                port=args.port,
+                data_dir=DATA_DIR,
+                workspace=WORKSPACE,
+            )
+            app.start()
+            health = app.client().get("/health")
+            print(f"probe-only: app boots on {app.base_url} -> HTTP {health.status} {health.data}")
+            return 0 if health.status == 200 else 1
+        finally:
+            if app is not None:
+                app.stop()
+
     app: AppServer | None = None
     try:
         if args.base:
             base_url = args.base.rstrip("/")
             print(f"Attached live run against {base_url}")
-            env = Env(None, base_url)
+            env = Env(None, base_url, real_lm_url=args.lm_url)
         else:
             # fresh scratch state for the live pass (never the user's real data)
             for directory in (DATA_DIR, WORKSPACE):
@@ -157,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             app.start()
             base_url = app.base_url
             print(f"Live app on {base_url} (data={DATA_DIR}, workspace={WORKSPACE})")
-            env = Env(app, base_url)
+            env = Env(app, base_url, real_lm_url=args.lm_url)
 
         # live checks must run on the documented model, not just "first loaded"
         models = env.client.get("/api/models?refresh=1").data
@@ -175,11 +244,16 @@ def main(argv: list[str] | None = None) -> int:
         checks = list(DIRECT_CHECKS) + list(checks_live.LIVE_CHECKS)
         if args.skip_slow:
             checks = [entry for entry in checks if entry[0] not in ("live_context_compaction",)]
+        if args.base:
+            checks = [entry for entry in checks if entry[0] != "live_restart_persistence"]
+            print("attached mode: skipping restart persistence (cannot restart the owner's server)")
         print("\n== live checks (serialized, one model call at a time) ==")
         for name, func in checks:
             runner.check("live", name, func, env)
 
         if args.browser:
+            print("\n== preparing curated state for the committed screenshots ==")
+            prepare_screenshot_state(env)
             browser_script = HERE / "browser" / "run_browser.mjs"
             cmd = [
                 "node",

@@ -311,8 +311,12 @@ class AgentManager:
         except LMStudioError as exc:
             self._finish_error(turn, exc.kind, exc.message)
         except Exception:  # never leak a traceback into the stream
-            log.exception("turn crashed for %s", turn.conversation_id)
-            self._finish_error(turn, "internal", "Something went wrong while generating the reply.")
+            if self.db.get_conversation(turn.conversation_id) is None:
+                # The chat was deleted mid-turn; nothing left to report to.
+                log.info("turn %s closed because the conversation was deleted", turn.conversation_id)
+            else:
+                log.exception("turn crashed for %s", turn.conversation_id)
+                self._finish_error(turn, "internal", "Something went wrong while generating the reply.")
         finally:
             self._cleanup(turn)
 

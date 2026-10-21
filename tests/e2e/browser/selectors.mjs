@@ -67,6 +67,12 @@ export const SEL = {
   forgetAll: "#forget-all-btn",
   kindChip: ".kind-chip",
   memoryRow: ".memory-row",
+  memoryItem: ".memory-item",
+  memoryPin: 'button[aria-label="Pin memory"]',
+  memoryDelete: 'button[aria-label="Delete memory"]',
+  memoryEdit: 'button[aria-label="Edit memory"]',
+  agentSwitch: 'button[role="switch"][aria-label="Agent mode"]',
+  memorySwitch: 'button[role="switch"][aria-label="Automatic memory"]',
 
   settingsSheet: "#settings-sheet",
   settingsBody: "#settings-body",

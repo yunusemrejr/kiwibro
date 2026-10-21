@@ -338,6 +338,38 @@ async function checkResponsive(page) {
   }).then((detail) => `${detail} (viewport ${viewport.width})`);
 }
 
+async function checkShortcuts(page) {
+  const problems = [];
+  // Ctrl+N -> new chat / empty state
+  await page.keyboard.press("Control+n");
+  await page.waitForSelector(`${SEL.emptyState}:not([hidden])`, { timeout: 5000 }).catch(() => {
+    problems.push("Ctrl+N did not open a new chat");
+  });
+  // Ctrl+, -> settings sheet; Esc closes it
+  await page.keyboard.press("Control+,");
+  try {
+    await page.waitForSelector(`${SEL.settingsSheet}[open]`, { timeout: 6000 });
+  } catch {
+    problems.push("Ctrl+, did not open settings");
+  }
+  await page.keyboard.press("Escape");
+  await page
+    .waitForSelector(`${SEL.settingsSheet}[open]`, { state: "detached", timeout: 6000 })
+    .catch(() => problems.push("Esc did not close settings"));
+  // Enter sends, Shift+Enter inserts a newline
+  const enabled = await page.evaluate(() => !document.querySelector("#composer-input")?.disabled);
+  if (enabled) {
+    await page.fill(SEL.composerInput, "shortcut line one");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("line two");
+    const value = await page.inputValue(SEL.composerInput);
+    if (!value.includes("\n")) problems.push("Shift+Enter did not insert a newline");
+    await page.fill(SEL.composerInput, "");
+  }
+  if (problems.length) throw new Error(problems.join("; "));
+  return "Ctrl+N, Ctrl+,, Esc and Shift+Enter behave as documented";
+}
+
 /* -------------------------------------------------------------------- flows */
 
 async function ensureEmptyState(page) {
@@ -379,15 +411,55 @@ async function flowModels(page, outDir, options) {
     { timeout: 8000 },
   );
   const file = await shot(page, outDir, "models", options.settle);
+  // switch away from the current model and back, proving selection works
+  const current = (await page.textContent(SEL.modelPillName)).trim();
+  const items = page.locator(`${SEL.modelPopover} .menu-item`);
+  const count = await items.count();
+  let switched = false;
+  for (let index = 0; index < count; index += 1) {
+    const label = (await items.nth(index).innerText()).split("\n")[0].trim();
+    if (label && label !== current) {
+      await items.nth(index).click();
+      await page.waitForFunction(
+        (previous) => document.querySelector("#model-pill-name")?.textContent?.trim() !== previous,
+        current,
+        { timeout: 10000 },
+      );
+      switched = true;
+      break;
+    }
+  }
   await page.keyboard.press("Escape");
   await page.waitForSelector(SEL.modelPopover, { state: "detached", timeout: 5000 }).catch(() => {});
+  if (!switched) throw new Error("model popover had no alternative model to switch to");
+  // restore the original selection so later flows/screenshots stay canonical
+  await page.click(SEL.modelPill);
+  await page.waitForSelector(SEL.modelPopover, { timeout: 5000 });
+  const rows = page.locator(`${SEL.modelPopover} .menu-item`);
+  for (let index = 0; index < (await rows.count()); index += 1) {
+    const label = (await rows.nth(index).innerText()).split("\n")[0].trim();
+    if (label === current) {
+      await rows.nth(index).click();
+      break;
+    }
+  }
+  await page.waitForFunction(
+    (expected) => document.querySelector("#model-pill-name")?.textContent?.trim() === expected,
+    current,
+    { timeout: 10000 },
+  ).catch(() => {});
+  await page.keyboard.press("Escape");
   return file;
 }
 
 async function flowChat(page, outDir, options) {
   await ensureEmptyState(page);
   const timeout = options.mode === "live" ? 180000 : 45000;
-  await page.fill(SEL.composerInput, SIMPLE_PROMPT);
+  const chatPrompt =
+    options.mode === "live"
+      ? "In one short sentence, what is a kiwi bird? Answer from your own knowledge, no tools needed."
+      : SIMPLE_PROMPT;
+  await page.fill(SEL.composerInput, chatPrompt);
   await page.keyboard.press("Enter");
   await page.waitForSelector(SEL.userBubble, { timeout: 15000 });
   await page.waitForSelector(SEL.assistantMarkdown, { state: "visible", timeout });
@@ -409,9 +481,16 @@ async function flowApproval(page, outDir, options) {
   await page.click(SEL.newChat).catch(() => {});
   await settle(page, 150);
   const timeout = options.mode === "live" ? 180000 : 45000;
-  // the fake LM needs a scenario marker to emit a tool call; it is not committed
-  const prompt =
-    options.mode === "fake" ? `${APPROVAL_PROMPT} [[scenario:tool_write]]` : APPROVAL_PROMPT;
+  // live mode asks for the exact tool so the approval card is deterministic;
+  // the fake LM needs a scenario marker to emit a tool call.
+  let prompt = APPROVAL_PROMPT;
+  if (options.mode === "live") {
+    prompt =
+      "Use the web_search tool to look up one kiwi conservation fact, then use the write_file " +
+      "tool to save a two-line note to kiwi-notes.md and tell me when it is saved.";
+  } else if (options.mode === "fake") {
+    prompt = `${APPROVAL_PROMPT} [[scenario:tool_write]]`;
+  }
   await page.fill(SEL.composerInput, prompt);
   await page.keyboard.press("Enter");
   await page.waitForSelector(SEL.approval, { state: "visible", timeout });
@@ -449,6 +528,31 @@ async function flowMemory(page, outDir, options) {
     await page.waitForSelector(SEL.memoryRow, { timeout: 8000 });
   });
   const file = await shot(page, outDir, "memory", options.settle);
+  // CRUD through the real sheet: add -> pin -> delete
+  const unique = `QA browser memory ${Date.now()}`;
+  await page.fill(SEL.memoryNew, unique);
+  await page.selectOption(SEL.memoryKind, "preference");
+  await page.click(SEL.memoryAddButton);
+  await page.waitForFunction(
+    (text) => Array.from(document.querySelectorAll(".memory-item")).some((row) => row.textContent.includes(text)),
+    unique,
+    { timeout: 10000 },
+  );
+  const row = page.locator(SEL.memoryItem, { hasText: unique }).first();
+  await row.locator(SEL.memoryPin).click();
+  await page.waitForFunction(
+    (text) => Array.from(document.querySelectorAll(".memory-item")).some(
+      (item) => item.textContent.includes(text) && item.classList.contains("is-pinned"),
+    ),
+    unique,
+    { timeout: 10000 },
+  );
+  await row.locator(SEL.memoryDelete).click();
+  await page.waitForFunction(
+    (text) => !Array.from(document.querySelectorAll(".memory-item")).some((item) => item.textContent.includes(text)),
+    unique,
+    { timeout: 10000 },
+  );
   await page.keyboard.press("Escape");
   await page.waitForSelector(SEL.dialogOpen, { state: "detached", timeout: 5000 }).catch(() => {});
   return file;
@@ -466,6 +570,35 @@ async function flowSettings(page, outDir, options) {
     { timeout: 10000 },
   );
   const file = await shot(page, outDir, "settings", options.settle);
+  // toggle Agent mode off and on again, proving the switch round-trips the API
+  const agentSwitch = page.locator(SEL.agentSwitch).first();
+  if (await agentSwitch.count()) {
+    const before = await agentSwitch.getAttribute("aria-checked");
+    await agentSwitch.click();
+    await page.waitForFunction(
+      (previous) =>
+        document.querySelector('button[role="switch"][aria-label="Agent mode"]')?.getAttribute("aria-checked") !==
+        previous,
+      before,
+      { timeout: 10000 },
+    );
+    const after = await agentSwitch.getAttribute("aria-checked");
+    const settings = await page.evaluate(async () => {
+      const { api } = await import("/static/js/api.js");
+      const data = await api.settings();
+      return data.settings;
+    });
+    const expected = after === "true";
+    if (Boolean(settings.agent_enabled) !== expected) throw new Error("agent toggle did not persist");
+    await agentSwitch.click();
+    await page.waitForFunction(
+      (previous) =>
+        document.querySelector('button[role="switch"][aria-label="Agent mode"]')?.getAttribute("aria-checked") !==
+        previous,
+      after,
+      { timeout: 10000 },
+    );
+  }
   await page.keyboard.press("Escape");
   await page.waitForSelector(SEL.dialogOpen, { state: "detached", timeout: 5000 }).catch(() => {});
   return file;
@@ -474,6 +607,12 @@ async function flowSettings(page, outDir, options) {
 async function flowMobile(page, outDir, options) {
   await page.setViewportSize({ width: 390, height: 844 });
   await settle(page, 300);
+  if (options.mode === "live") {
+    // committed mobile shot = clean empty state at 390 px (Lead's preference)
+    await page.click(SEL.newChat).catch(() => {});
+    await page.waitForSelector(`${SEL.emptyState}:not([hidden])`, { timeout: 10000 });
+    return shot(page, outDir, "mobile", options.settle);
+  }
   const hasMessages = await page.locator(`${SEL.assistantMessage}`).count();
   if (!hasMessages) {
     const timeout = options.mode === "live" ? 180000 : 30000;
@@ -570,6 +709,7 @@ async function main() {
       ["sse", checkSseParser],
       ["a11y", checkA11y],
       ["responsive-desktop", checkResponsive],
+      ["shortcuts", checkShortcuts],
     ];
     if (wanted.has("checks")) {
       console.log("\n== checks ==");

@@ -276,6 +276,9 @@ def patch_conversation(conversation_id: str) -> Response:
 @bp.delete("/api/conversations/<conversation_id>")
 def delete_conversation(conversation_id: str) -> Response:
     svc = services()
+    if svc.db.get_conversation(conversation_id) is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    svc.agent.stop(conversation_id)
     if not svc.db.delete_conversation(conversation_id):
         raise ApiError("not_found", "Conversation not found.", 404)
     return jsonify({"ok": True})

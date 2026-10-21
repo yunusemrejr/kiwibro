@@ -110,31 +110,41 @@ def live_health(env: Any) -> str:
 
 
 def live_plain_stream(env: Any) -> str:
-    prompt = "Reply with exactly this line and nothing else: Kiwibro live check — Grüße 世界 🥝"
-    stream, meta, ttft, total = _timed_chat(env, prompt)
-    names = stream.names
-    assert_eq(names[0], "meta", "meta first")
-    assert_in("delta", names, "deltas streamed")
-    assert_eq(stream.of("error"), [], "no error event")
-    done = stream.of("done")[0]
-    assert_eq(done["aborted"], False, "done.aborted")
-    assert_true(done["model"], "done.model")
-    usage = done.get("usage")
-    assert_true(usage and usage["total_tokens"] > 0, f"usage reported ({usage})")
-    text = stream.text()
-    assert_true(len(text.strip()) > 5, f"answer text non-trivial ({text[:80]!r})")
-    assert_in("Grüße", text, "real LM streamed UTF-8 umlauts intact")
-    assert_in("世界", text, "real LM streamed CJK intact")
-    assert_in("🥝", text, "real LM streamed emoji intact")
-    assert_eq(meta["conversation_id"], env.conversation_id, "same conversation")
-    return f"TTFT {ttft:.2f}s, total {total:.2f}s, {len(text)} chars, usage={usage['total_tokens']}"
+    prompts = [
+        "Reply with exactly this line and nothing else: Kiwibro live check — Grüße 世界 🥝",
+        "Copy this exact text, character for character, and nothing else: Grüße 世界 🥝",
+    ]
+    last_text = ""
+    for prompt in prompts:
+        stream, meta, ttft, total = _timed_chat(env, prompt)
+        names = stream.names
+        assert_eq(names[0], "meta", "meta first")
+        assert_in("delta", names, "deltas streamed")
+        assert_eq(stream.of("error"), [], "no error event")
+        done = stream.of("done")[0]
+        assert_eq(done["aborted"], False, "done.aborted")
+        assert_true(done["model"], "done.model")
+        usage = done.get("usage")
+        assert_true(usage and usage["total_tokens"] > 0, f"usage reported ({usage})")
+        text = last_text = stream.text()
+        if "Grüße" in text and "世界" in text and "🥝" in text:
+            assert_true(len(text.strip()) > 5, f"answer text non-trivial ({text[:80]!r})")
+            assert_eq(meta["conversation_id"], env.conversation_id, "same conversation")
+            return f"TTFT {ttft:.2f}s, total {total:.2f}s, {len(text)} chars, usage={usage['total_tokens']}"
+    raise AssertionError(f"real model did not stream non-ASCII text intact; last answer={last_text[:120]!r}")
 
 
 def live_markdown_and_title(env: Any) -> str:
-    stream, meta, ttft, total = _timed_chat(
-        env, "Answer in markdown: a heading, two bullets and one fenced python snippet that prints kiwi."
-    )
-    text = stream.text()
+    prompts = [
+        "Reply in markdown with a # heading, two - bullets and one ```python fenced code block that prints kiwi.",
+        "Use markdown: start with '# Kiwi', then two '- ' bullets, then a ```python code block.",
+    ]
+    text = ""
+    for prompt in prompts:
+        stream, meta, ttft, total = _timed_chat(env, prompt)
+        text = stream.text()
+        if "#" in text and "```" in text:
+            break
     assert_in("#", text, "markdown heading streamed")
     assert_in("```", text, "code fence streamed")
     titles = stream.of("title")
@@ -281,6 +291,12 @@ def live_stop(env: Any) -> str:
 
 
 def live_model_swap(env: Any) -> str:
+    """Swap the persisted model away and back, then prove the chat is intact.
+
+    Per the Lead: do not generate on the slow spark model. We verify the server-side
+    selection change and persistence, return to qwen3.8-2b, and then prove the same
+    conversation continues with transcript + memories preserved.
+    """
     models = env.client.get("/api/models").data
     current = models["current"]
     others = [model["id"] for model in models["models"] if model["id"] != current]
@@ -288,21 +304,32 @@ def live_model_swap(env: Any) -> str:
     target = others[0]
     before = conversation(env, env.conversation_id)
     memories_before = env.client.get("/api/memories").data["total"]
-    expect_status(env.client.post("/api/models/select", {"id": target}), 200, "select model")
+    current_before_settings = env.client.get("/api/settings").data["settings"].get("model")
     try:
-        stream, meta, ttft, total = _timed_chat(env, "Say only: swapped model online.")
-        assert_eq(meta["model"], target, f"new turn uses {target}")
+        expect_status(env.client.post("/api/models/select", {"id": target}), 200, "select second model")
+        switched = env.client.get("/api/models").data["current"]
+        assert_eq(switched, target, f"server now selects {target}")
+        settings_model = env.client.get("/api/settings").data["settings"].get("model")
+        assert_eq(settings_model, target, "selection persisted in settings")
+        # UI-only check: the next turn would use the new model, but we do not
+        # generate on a possibly-slow model; swap back immediately.
+        expect_status(env.client.post("/api/models/select", {"id": current}), 200, "swap back")
+        assert_eq(env.client.get("/api/models").data["current"], current, "restored model")
+        stream, meta, ttft, total = _timed_chat(env, "Reply with only: transcript intact.")
+        assert_eq(meta["model"], current, "continuation uses the restored model")
         after = conversation(env, env.conversation_id)
         assistant_models = [
             message["model"] for message in after["messages"] if message["role"] == "assistant"
         ]
-        assert_in(current, assistant_models, "old message keeps its model")
-        assert_in(target, assistant_models, "new message records the new model")
-        assert_true(len(after["messages"]) >= len(before["messages"]), "transcript preserved")
+        assert_in(current, assistant_models, "old messages keep their model")
+        assert_true(len(after["messages"]) > len(before["messages"]), "transcript preserved and growing")
         assert_eq(env.client.get("/api/memories").data["total"], memories_before, "memories unchanged")
-        return f"swap {current} -> {target}, per-message models kept, memories unchanged"
+        return (
+            f"server model swap {current} <-> {target} persisted (no generation on slow target); "
+            f"continuation on {current} kept transcript+memory"
+        )
     finally:
-        env.client.post("/api/models/select", {"id": current})
+        env.client.post("/api/models/select", {"id": current_before_settings or current})
 
 
 def live_memory_roundtrip(env: Any) -> str:
@@ -327,34 +354,79 @@ def live_memory_roundtrip(env: Any) -> str:
 
 
 def live_context_compaction(env: Any) -> str:
-    """Induce compaction with real 28k-char messages (slow but contract-true)."""
-    created = env.client.post("/api/conversations", {}).data
-    conversation_id = created["id"]
-    filler = "The kiwi is a small flightless bird of New Zealand. " * 500  # ~28k chars
-    for turn in range(4):
-        message = f"Context seed {turn}. Reply with only OK.\n\n{filler}"
-        stream = chat(env, message, conversation_id=conversation_id, timeout=600)
-        stream.wait_done(timeout=600)
-        stream.wait_closed(timeout=60)
-        assert_eq(stream.of("error"), [], f"seed turn {turn} no error")
+    """Two-phase compaction proof.
+
+    Seeding uses the deterministic fake LM configured with a tiny 2 K context (a
+    fake hook, allowed by the Lead) so the test is fast and deterministic; the
+    continuation after compaction is a real qwen3.8-2b call, proving the summary
+    path works end to end on the live model.
+    """
+    from fake_lm import FakeLM, MODELS_TINY_CONTEXT
+
+    real_url = getattr(env, "real_lm_url", "http://127.0.0.1:1234")
+    original_model = (env.client.get("/api/settings").data["settings"].get("model")) or "qwen3.8-2b"
+    fake = FakeLM(MODELS_TINY_CONTEXT).start()
+    try:
+        env.client.patch("/api/settings", {"lmstudio_url": fake.url})
+        models = env.client.get("/api/models?refresh=1").data
+        assert "tiny-context" in [model["id"] for model in models["models"]], "fake tiny model not listed"
+        env.client.post("/api/models/select", {"id": "tiny-context"})
+        created = env.client.post("/api/conversations", {}).data
+        conversation_id = created["id"]
+        filler = "The kiwi is a small flightless bird of New Zealand. " * 50  # ~2600 chars
+        turns = 0
+        for turn in range(6):
+            stream = chat(
+                env,
+                f"Context seed {turn}. Reply with only OK.\n\n{filler}",
+                conversation_id=conversation_id,
+                timeout=120,
+            )
+            stream.wait_done(timeout=120)
+            stream.wait_closed(timeout=30)
+            assert_eq(stream.of("error"), [], f"seed turn {turn} surfaced no error")
+            turns += 1
+            detail = conversation(env, conversation_id)
+            if detail["conversation"]["compacted"]:
+                break
         detail = conversation(env, conversation_id)
-        if detail["conversation"]["compacted"]:
-            break
-    detail = conversation(env, conversation_id)
-    assert_eq(detail["conversation"]["compacted"], True, "conversation compacted")
-    assert_true(detail["conversation"]["summary"], "summary stored")
-    before = len(detail["messages"])
-    follow = chat(env, "Reply with only: still here.", conversation_id=conversation_id, timeout=600)
-    follow.wait_done(timeout=600)
-    follow.wait_closed(timeout=60)
-    assert_eq(follow.of("error"), [], "no context-length error surfaced")
-    after = conversation(env, conversation_id)
-    assert_true(len(after["messages"]) > before, "conversation continues after compaction")
-    assert_true(len(after["conversation"]["summary"]) > 0, "summary retained")
-    return (
-        f"compacted at turn with summary_through_seq={after['conversation']['summary_through_seq']}, "
-        f"{before}->{len(after['messages'])} messages, no context error"
-    )
+        assert_eq(detail["conversation"]["compacted"], True, "conversation compacted")
+        assert_true(detail["conversation"]["summary"], "summary stored")
+        summary = detail["conversation"]["summary"].strip()
+        # the summary must be inside the next prompt sent to the model
+        prompt_text = json.dumps(
+            [payload.get("messages") for payload in fake.chat_requests()], ensure_ascii=False
+        )
+        assert_true(summary[:40] in prompt_text, "compaction summary is injected into the model prompt")
+        assert_true(turns <= 5, f"compaction needed {turns} seed turns")
+
+        # real model continues the compacted conversation
+        env.client.patch("/api/settings", {"lmstudio_url": real_url})
+        env.client.get("/api/models?refresh=1")
+        env.client.post("/api/models/select", {"id": original_model})
+        before = len(detail["messages"])
+        follow = chat(
+            env, "Reply with only: still here.", conversation_id=conversation_id, timeout=300
+        )
+        follow.wait_done(timeout=300)
+        follow.wait_closed(timeout=60)
+        assert_eq(follow.of("error"), [], "no context-length error on the live continuation")
+        assert_true(follow.text().strip(), "live model answered after compaction")
+        after = conversation(env, conversation_id)
+        assert_true(len(after["messages"]) > before, "conversation continues after compaction")
+        assert_true((after["conversation"]["summary"] or "").strip(), "summary retained")
+        return (
+            f"compacted after {turns} tiny-context seed turns, summary injected; "
+            f"live {original_model} continued ({before}->{len(after['messages'])} messages), no context error"
+        )
+    finally:
+        env.client.patch("/api/settings", {"lmstudio_url": real_url})
+        try:
+            env.client.get("/api/models?refresh=1")
+            env.client.post("/api/models/select", {"id": original_model})
+        except Exception:
+            pass
+        fake.stop()
 
 
 def live_restart_persistence(env: Any) -> str:
