@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Kiwibro local data (never commit user data)
+data/
+.env
+*.db
+*.db-wal
+*.db-shm
+
+# Dev-only helpers (paramiko ssh wrapper for this machine)
+.dev/
+.tmp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
