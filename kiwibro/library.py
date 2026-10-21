@@ -1733,7 +1733,7 @@ DOC_SEARCH = ExtensionTool(
     summary=_search_summary,
     validate=_validate_search,
     execute=_exec_search,
-    category="research",
+    category="core",  # paged tool output points here, so it must always be offered
 )
 
 DOC_READ = ExtensionTool(
@@ -1757,7 +1757,7 @@ DOC_READ = ExtensionTool(
     summary=_read_summary,
     validate=_validate_read,
     execute=_exec_read,
-    category="research",
+    category="core",  # paged tool output points here, so it must always be offered
 )
 
 DOC_ADD = ExtensionTool(
