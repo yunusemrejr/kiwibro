@@ -376,6 +376,32 @@ def test_summarize_long_text_map_reduce(env):
         assert prompt_tokens + 600 < 4096
 
 
+def test_extraction_watermark_retries_after_failure(env, monkeypatch: pytest.MonkeyPatch):
+    """A failed extraction must not skip facts: the watermark stays put."""
+    svc, fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "I just moved to Lisbon for work")
+    svc.db.add_message(conversation["id"], "assistant", "Congrats on the move!")
+
+    def boom(**kwargs):
+        raise LMStudioError("timeout", "slow model")
+
+    monkeypatch.setattr(svc.llm, "complete_json", boom)
+    assert svc.memory.extract_and_apply(conversation["id"], "fake-1")["added"] == 0
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 0
+
+    monkeypatch.setattr(svc.llm, "complete_json", fake.complete_json)
+    fake.memory_ops = {"ops": [{"op": "add", "kind": "fact", "content": "User moved to Lisbon for work"}]}
+    counts = svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    assert counts["added"] == 1  # the previously failed window was retried
+    watermark = svc.db.get_conversation(conversation["id"])["extracted_through_seq"]
+    assert watermark == svc.db.last_message_seq(conversation["id"])
+    # Nothing pending: a second pass is a no-op without new messages.
+    assert svc.memory.extract_and_apply(conversation["id"], "fake-1") == {
+        "added": 0, "updated": 0, "removed": 0,
+    }
+
+
 def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 

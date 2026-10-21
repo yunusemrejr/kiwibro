@@ -24,6 +24,7 @@ MAX_CONTENT = 300
 EXTRACT_TRANSCRIPT_CHARS = 9000
 EXTRACT_EXISTING_CHARS = 4000
 EXTRACT_EXISTING_LIMIT = 32
+EXTRACT_WINDOW_MESSAGES = 12
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -399,6 +400,48 @@ class MemoryEngine:
 
     # --- extraction --------------------------------------------------------
 
+    def _pending_window(self, conversation_id: str) -> tuple[list[dict[str, Any]], int]:
+        """Oldest un-extracted messages (bounded) + the seq they cover.
+
+        Watermark contract: ``extracted_through_seq`` advances only after a
+        successful extraction response, so a timed-out or failed attempt is
+        retried on a later turn instead of silently skipping those facts
+        forever (the v1 last-8-messages window lost them). Pre-v2 chats
+        start near the tail — v1 already extracted turn-by-turn as they
+        happened — rather than re-reading ancient history.
+        """
+        conversation = self.db.get_conversation(conversation_id)
+        if conversation is None:
+            return [], 0
+        watermark = int(conversation.get("extracted_through_seq") or 0)
+        last_seq = self.db.last_message_seq(conversation_id)
+        if watermark <= 0 and last_seq > EXTRACT_WINDOW_MESSAGES:
+            watermark = last_seq - EXTRACT_WINDOW_MESSAGES
+        pending = self.db.list_messages(
+            conversation_id, after_seq=watermark, limit=EXTRACT_WINDOW_MESSAGES * 2
+        )
+        window: list[dict[str, Any]] = []
+        spent = 0
+        for message in pending:
+            window.append(message)
+            # Match the transcript builder's per-message cap so nothing in
+            # the window is dropped there while the watermark advances.
+            spent += min(len(message.get("content") or ""), 1200)
+            if len(window) >= EXTRACT_WINDOW_MESSAGES or spent >= EXTRACT_TRANSCRIPT_CHARS:
+                break
+        through = window[-1]["seq"] if window else watermark
+        return window, through
+
+    def _advance_watermark(self, conversation_id: str, through_seq: int) -> None:
+        try:
+            current = self.db.get_conversation(conversation_id)
+            if current and through_seq > int(current.get("extracted_through_seq") or 0):
+                self.db.update_conversation(
+                    conversation_id, extracted_through_seq=through_seq, touch=False
+                )
+        except Exception:  # watermark bookkeeping must never fail a turn
+            log.warning("could not advance extraction watermark", exc_info=True)
+
     def extract_and_apply(self, conversation_id: str, model: str | None) -> dict[str, int]:
         """Synchronous post-turn extraction. Never raises, bounded by the 12s cap."""
         counts = {"added": 0, "updated": 0, "removed": 0}
@@ -406,9 +449,21 @@ class MemoryEngine:
         if not settings.get("memory_enabled", True) or not model:
             return counts
         try:
-            raw = self._bounded_extract(conversation_id, model)
-            if raw is None:
+            window, through_seq = self._pending_window(conversation_id)
+            if not window:
                 return counts
+            has_user_text = any(
+                m.get("role") == "user" and len((m.get("content") or "").strip()) >= 3
+                for m in window
+            )
+            if not has_user_text:
+                # Nothing learnable (tool chatter only): advance without an LLM call.
+                self._advance_watermark(conversation_id, through_seq)
+                return counts
+            raw = self._bounded_extract(conversation_id, model, window=window)
+            if raw is None:
+                return counts  # watermark unchanged: retried next turn
+            self._advance_watermark(conversation_id, through_seq)
             ops = parse_ops(raw)[:MAX_OPS_PER_TURN]
             if not ops:
                 return counts
@@ -417,8 +472,10 @@ class MemoryEngine:
             log.warning("memory extraction failed for %s", conversation_id, exc_info=True)
             return counts
 
-    def _bounded_extract(self, conversation_id: str, model: str) -> Any:
-        messages = self._extraction_messages(conversation_id)
+    def _bounded_extract(
+        self, conversation_id: str, model: str, window: list[dict[str, Any]] | None = None
+    ) -> Any:
+        messages = self._extraction_messages(conversation_id, window=window)
         if not messages:
             return None
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kiwibro-mem")
@@ -469,8 +526,10 @@ class MemoryEngine:
             add(self.db.all_memories(EXTRACT_EXISTING_LIMIT))
         return picked
 
-    def _extraction_messages(self, conversation_id: str) -> list[dict[str, Any]]:
-        recent = self.db.recent_messages(conversation_id, 8)
+    def _extraction_messages(
+        self, conversation_id: str, window: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        recent = window if window is not None else self._pending_window(conversation_id)[0]
         lines: list[str] = []
         budget = EXTRACT_TRANSCRIPT_CHARS
         for message in reversed(recent):
