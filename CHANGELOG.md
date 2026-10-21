@@ -29,7 +29,7 @@ ship in this version).
 - **Mid-turn steering.** `POST /api/chat/steer` (send while a reply runs) applies
   user corrections at the next step; `done` now reports turn `stats`.
 - **Autonomy safeguards.** Duplicate-call loop guard, per-turn write budget,
-  mass-delete caps, pre-edit snapshots in `.kiwibro-backups/`, all-or-nothing patches.
+  mass-delete caps, all-or-nothing patches.
 - **Tool calls that work on 1–4B models.** Malformed JSON, misspelled tool and argument
   names, wrong types and out-of-range values are repaired against each tool's schema;
   calls written as text in ten common formats (Hermes, Qwen, Llama, Mistral, harmony,

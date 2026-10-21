@@ -62,7 +62,7 @@ permission, inside its own workspace.
 | **Model teamwork** | The main model can delegate a bounded side-question to the smallest installed model with the needed capability (e.g. vision), then continue — check `model_info` for what's available locally. |
 | **Steering** | Type while a reply runs: the note is applied at the next step instead of waiting for a new turn. |
 | **Permissions** | Auto / Ask / Deny per tool, inline approval cards, "Always" remembers. |
-| **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps, pre-edit backups (`.kiwibro-backups/`), mass-delete caps, per-turn write budget, duplicate-call loop guard. |
+| **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps, automatic checkpoints with undo, mass-delete caps, per-turn write budget, duplicate-call loop guard. |
 | **Privacy** | Loopback-only server, local SQLite (`~/.local/share/kiwibro`), no external assets. |
 
 ## Requirements

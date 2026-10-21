@@ -77,7 +77,7 @@ def test_validation_rejects_bad_args():
 # --- codebase ---------------------------------------------------------------------
 
 
-def test_glob_outline_patch_and_backups(ws: Workspace):
+def test_glob_outline_and_atomic_patch(ws: Workspace):
     found = codebase.glob_files(ws, "**/*.py")
     assert [item["path"] for item in found["results"]] == ["a.py"]
     outline = codebase.file_outline(ws, "a.py")
@@ -85,7 +85,7 @@ def test_glob_outline_patch_and_backups(ws: Workspace):
     assert "def hello" in joined and "class Thing" in joined
     patched = codebase.apply_patch(ws, "a.py", [{"old": "def hello", "new": "def greet"}])
     assert patched["edits"] == 1 and "def greet" in patched["diff"]
-    assert patched["backup"] and (ws.root / patched["backup"]).exists()
+    assert not (ws.root / ".kiwibro-backups").exists()  # undo lives in kiwibro.checkpoints
     with pytest.raises(SandboxError):
         codebase.apply_patch(ws, "a.py", [{"old": "missing", "new": "x"}])
     # failed patch changed nothing
@@ -106,7 +106,7 @@ def test_file_manage_and_mass_delete_guard(ws: Workspace, tmp_path: Path):
     with pytest.raises(SandboxError):
         codebase.file_manage(ws, "delete", "big", recursive=True)
     deleted = codebase.file_manage(ws, "delete", "newdir/b2.md")
-    assert deleted["backup"]  # snapshot taken before unlink
+    assert deleted["action"] == "delete" and not (ws.root / "newdir/b2.md").exists()
     with pytest.raises(SandboxError):
         codebase.file_manage(ws, "delete", ".")
 

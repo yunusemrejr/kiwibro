@@ -36,40 +36,6 @@ SNIPPET_OUTPUT_CAP = 8000
 SNIPPET_MEMORY_BYTES = 1024**3
 SNIPPET_KEEP_RUNS = 20  # older scratch runs are pruned so long sessions stay tidy
 MAX_RECURSIVE_DELETE_ENTRIES = 100
-BACKUP_DIR = ".kiwibro-backups"
-BACKUP_KEEP = 50
-
-
-def snapshot_file(workspace: Workspace, source: Path) -> str | None:
-    """Copy a file into the workspace backup area before a destructive edit.
-
-    Returns the workspace-relative backup path, or None when the source is
-    not a regular file. Keeps the most recent BACKUP_KEEP snapshots.
-    """
-    import time as _time
-
-    if not source.is_file():
-        return None
-    backup_root = workspace.root / BACKUP_DIR
-    try:
-        backup_root.mkdir(parents=True, exist_ok=True)
-        stamp = _time.strftime("%Y%m%d-%H%M%S")
-        target = backup_root / f"{stamp}-{source.name}"
-        counter = 1
-        while target.exists():
-            target = backup_root / f"{stamp}-{counter}-{source.name}"
-            counter += 1
-        shutil.copy2(str(source), str(target))
-        snapshots = sorted(backup_root.iterdir(), key=lambda item: item.stat().st_mtime)
-        for stale in snapshots[:-BACKUP_KEEP]:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-    except OSError:
-        log.warning("could not snapshot %s before edit", source, exc_info=True)
-        return None
-    return workspace.public(target)
 
 
 # --- glob_files ---------------------------------------------------------------
@@ -241,7 +207,6 @@ def apply_patch(
         updated = updated.replace(old, new, 1)
     if len(updated.encode("utf-8")) > MAX_WRITE_BYTES:
         raise SandboxError("resulting file would be too large (nothing was changed)")
-    backup = snapshot_file(workspace, resolved) if updated != original else None
     if updated != original:
         try:
             resolved.write_text(updated, encoding="utf-8")
@@ -261,7 +226,6 @@ def apply_patch(
         "path": workspace.public(resolved),
         "edits": len(edits),
         "bytes": len(updated.encode("utf-8")),
-        "backup": backup,
         "diff": diff[:DIFF_CAP] + ("\n… [diff truncated]" if len(diff) > DIFF_CAP else ""),
     }
 
@@ -296,7 +260,6 @@ def file_manage(
     if source == root:
         raise SandboxError("the workspace root cannot be moved, copied or deleted")
     if action == "delete":
-        backup = snapshot_file(workspace, source) if source.is_file() else None
         try:
             if source.is_dir():
                 if recursive:
@@ -320,7 +283,7 @@ def file_manage(
             raise
         except OSError as exc:
             raise SandboxError(f"could not delete: {exc.strerror or exc}") from exc
-        return {"action": action, "path": workspace.public(source), "backup": backup}
+        return {"action": action, "path": workspace.public(source)}
     # move / copy
     if not destination:
         raise SandboxError(f"{action} needs a destination")

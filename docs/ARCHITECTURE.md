@@ -313,8 +313,8 @@ Efficiency rules of the loop:
   context engine additionally decays stale tool results with age.
 - **Steering**: `POST /api/chat/steer` queues a user note mid-turn; the worker
   persists it as a user message at the next round boundary (SSE `steering`).
-- **Safeguards**: `apply_patch` is all-or-nothing and snapshots the file to
-  `.kiwibro-backups/` first (as does file deletion); recursive deletes refuse
+- **Safeguards**: `apply_patch` is all-or-nothing; every write-risk call is
+  checkpointed first (see below); recursive deletes refuse
   >100 entries at once; snippets run without a shell under timeout/output caps.
 - **Turn stats**: `done` carries `stats {tool_calls, tool_rounds, duration_ms}`.
 
