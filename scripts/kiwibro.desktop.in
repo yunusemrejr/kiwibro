@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kiwibro
+GenericName=Local AI Agent
+Comment=Local AI agent with memory, web search and coding tools
+Exec=@ROOT@/scripts/kiwibro.sh
+Icon=kiwibro
+Terminal=false
+Categories=Utility;Chat;Development;
+Keywords=ai;assistant;chat;llm;local;agent;
+StartupNotify=true
+StartupWMClass=Kiwibro
