@@ -1003,6 +1003,9 @@ function handleStreamEvent(event, data, activeStream) {
     case "reasoning":
       if (typeof data.text === "string" && data.text) chatView.appendReasoning(data.text);
       break;
+    case "rewrite":
+      if (typeof data.text === "string") chatView.rewriteText(data.text, data.reasoning || "");
+      break;
     case "tool_call":
       chatView.addToolCall(data);
       break;

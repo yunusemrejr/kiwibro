@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+
 import pytest
 
 from kiwibro import inference as inf
+from tests.test_backend import env  # noqa: F401 - shared app fixture
 
 # --- fixtures: real LM Studio /api/v1/models shapes and a Kiwibro-normalised record -------
 
@@ -386,3 +389,77 @@ def test_round_timer_omits_tokens_per_s_for_negligible_decode_time():
     clock.now = 1.02
     timer.finish()
     assert "tokens_per_s" not in timer.stats(50)
+
+
+# --- leaked reasoning (bare </think> in content) ----------------------------------------
+
+
+class _SSE:
+    """Minimal stand-in for a streamed requests.Response."""
+
+    status_code = 200
+    encoding = "utf-8"
+
+    def __init__(self, deltas: list[str]) -> None:
+        chunks = [{"choices": [{"delta": {"content": text}}]} for text in deltas]
+        self._lines = [f"data: {json.dumps(chunk)}".encode() for chunk in chunks] + [b"data: [DONE]"]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_lines(self, decode_unicode=False):
+        return iter(self._lines)
+
+
+def _stream(monkeypatch, deltas: list[str]):
+    from kiwibro.llm import LMStudioClient
+
+    monkeypatch.setattr("kiwibro.llm.requests.post", lambda *a, **k: _SSE(deltas))
+    shown: list[str] = []
+    rewrites: list[tuple[str, str]] = []
+    client = LMStudioClient(lambda: {"lmstudio_url": "http://lm.test"})
+    result = client.stream_chat(
+        model="m", messages=[{"role": "user", "content": "hi"}],
+        on_delta=shown.append, on_rewrite=lambda text, why: rewrites.append((text, why)),
+    )
+    return result, shown, rewrites
+
+
+def test_bare_close_tag_moves_leaked_reasoning_out_of_the_answer(monkeypatch):
+    result, shown, rewrites = _stream(monkeypatch, ["The user wants", " a greeting.</th", "ink>\n\nHello", " there!"])
+    assert result.content == "Hello there!" and result.reasoning == "The user wants a greeting."
+    assert result.leaked_reasoning and rewrites == [("Hello", "The user wants a greeting.")]
+    assert "".join(shown).endswith("Hello there!")  # deltas still streamed; the UI rewrites once
+
+
+def test_full_think_block_in_content_is_split_too(monkeypatch):
+    result, _shown, rewrites = _stream(monkeypatch, ["<think>plan it</think>Answer."])
+    assert (result.content, result.reasoning, len(rewrites)) == ("Answer.", "plan it", 1)
+
+
+def test_literal_tags_inside_an_answer_are_left_alone(monkeypatch):
+    text = "Use `<think>` and `</think>` to mark reasoning."
+    result, _shown, rewrites = _stream(monkeypatch, [text])
+    assert result.content == text and not result.leaked_reasoning and rewrites == []
+
+
+def test_agent_turn_emits_rewrite_and_stores_the_clean_answer(env, monkeypatch):  # noqa: F811
+    from kiwibro.llm import ChatResult
+    from tests.test_backend import chat_events
+
+    def leaky_stream(*, on_delta=None, on_rewrite=None, **_kw):
+        on_delta("The user wants a greeting.</think>Hello!")
+        on_rewrite("Hello!", "The user wants a greeting.")
+        return ChatResult(content="Hello!", reasoning="The user wants a greeting.", leaked_reasoning=True)
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", leaky_stream)
+    events, _raw = chat_events(env, "hi")
+    names = [name for name, _data in events]
+    assert names[0] == "meta" and names[-1] == "done"
+    assert ("rewrite", {"text": "Hello!", "reasoning": "The user wants a greeting."}) in events
+    conversation_id = events[0][1]["conversation_id"]
+    reply = [m for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"][-1]
+    assert reply["content"] == "Hello!" and reply["reasoning"] == "The user wants a greeting."

@@ -115,6 +115,7 @@ class FakeLLM:
         on_reasoning: Any = None,
         abort: Any = None,
         extra: Any = None,
+        on_rewrite: Any = None,
     ) -> ChatResult:
         self.stream_calls.append(
             {"model": model, "messages": messages, "tools": tools, "abort": abort, "extra": extra}

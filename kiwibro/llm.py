@@ -61,6 +61,7 @@ class ChatResult:
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
     tools_disabled: bool = False
+    leaked_reasoning: bool = False  # the model "thought" in plain content (moved to reasoning)
 
 
 @dataclass
@@ -402,6 +403,7 @@ class LMStudioClient:
         on_reasoning: Callable[[str], None] | None = None,
         abort: threading.Event | None = None,
         extra: Mapping[str, Any] | None = None,
+        on_rewrite: Callable[[str, str], None] | None = None,
     ) -> ChatResult:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
@@ -450,7 +452,7 @@ class LMStudioClient:
                         except ValueError:
                             log.debug("skipping malformed stream chunk: %.200s", data)
                             continue
-                        self._consume_chunk(chunk, result, tool_acc, on_delta, on_reasoning)
+                        self._consume_chunk(chunk, result, tool_acc, on_delta, on_reasoning, on_rewrite)
                     if abort is not None and abort.is_set():
                         raise TurnAborted()
             except requests.ConnectionError as exc:
@@ -486,6 +488,7 @@ class LMStudioClient:
         tool_acc: dict[int, dict[str, Any]],
         on_delta: Callable[[str], None] | None,
         on_reasoning: Callable[[str], None] | None,
+        on_rewrite: Callable[[str, str], None] | None = None,
     ) -> None:
         if not isinstance(chunk, dict):
             return
@@ -506,6 +509,8 @@ class LMStudioClient:
             result.content += content
             if on_delta:
                 on_delta(content)
+            if not result.leaked_reasoning and "</think>" in result.content:
+                LMStudioClient._split_leaked_reasoning(result, on_rewrite)
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
             result.reasoning += reasoning
@@ -538,6 +543,24 @@ class LMStudioClient:
                     entry["function"]["arguments"] += json.dumps(
                         arguments, ensure_ascii=False, separators=(",", ":")
                     )
+
+    @staticmethod
+    def _split_leaked_reasoning(result: ChatResult, on_rewrite: Callable[[str, str], None] | None) -> None:
+        """Move reasoning a model wrote into plain content (ending in a bare ``</think>``).
+
+        With thinking switched off, the template pre-fills an empty think block and
+        some small models think anyway, closing a tag LM Studio never saw opened.
+        """
+        before, _sep, after = result.content.partition("</think>")
+        opened = before.lstrip().startswith("<think>")
+        if "<think>" in before and not opened:
+            return  # a literal tag pair inside an answer, not leaked reasoning
+        reasoning = before.lstrip()[len("<think>"):] if opened else before
+        result.leaked_reasoning = True
+        result.reasoning += reasoning.strip()
+        result.content = after.lstrip()
+        if on_rewrite:
+            on_rewrite(result.content, reasoning.strip())
 
     @staticmethod
     def _finish_tool_calls(tool_acc: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:

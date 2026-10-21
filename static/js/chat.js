@@ -811,6 +811,18 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       turn.reasoningBody.textContent = turn.reasoningText;
       scrollIfPinned();
     },
+    rewriteText(text, reasoning = "") {
+      // The model wrote its reasoning as plain text: move it to the reasoning block.
+      const turn = ensureTurn();
+      if (reasoning) {
+        this.appendReasoning(reasoning);
+        finishReasoning(turn);
+      }
+      if (turn.segment) {
+        turn.segment.text = text;
+        scheduleRender(turn);
+      }
+    },
     appendDelta(text) {
       const turn = ensureTurn();
       if (!turn.segment) {

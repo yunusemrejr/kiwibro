@@ -659,6 +659,7 @@ class AgentManager:
                     max_tokens=max_tokens,
                     on_delta=self._delta_callback(turn),
                     on_reasoning=self._reasoning_callback(turn),
+                    on_rewrite=self._rewrite_callback(turn),
                     abort=turn.abort,
                     extra=extra or None,
                 )
@@ -731,6 +732,17 @@ class AgentManager:
                 turn.emit("delta", {"text": visible})
 
         return on_delta
+
+    @staticmethod
+    def _rewrite_callback(turn: Turn) -> Callable[[str, str], None]:
+        """The model wrote reasoning as plain text: show it as reasoning, keep the answer."""
+
+        def on_rewrite(text: str, reasoning: str) -> None:
+            turn.partial_text = text
+            turn.partial_reasoning += reasoning
+            turn.emit("rewrite", {"text": text, "reasoning": reasoning})
+
+        return on_rewrite
 
     def _reasoning_callback(self, turn: Turn) -> Callable[[str], None]:
         def on_reasoning(text: str) -> None:
