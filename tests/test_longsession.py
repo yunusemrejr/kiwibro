@@ -168,6 +168,113 @@ def test_extraction_sends_relevant_memories_not_all_recent(env):
     assert estimate_tokens(prompt) < 2500
 
 
+# --- schema v2: episodic index, segments, token cache ------------------------
+
+
+def test_schema_v2_objects_and_token_cache(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    msg = svc.db.add_message(conversation["id"], "user", "a" * 360)
+    # 360 ASCII chars / 3.6 = 100 tokens + 4 overhead, cached at write time
+    # and in agreement with the context estimator (single formula, two homes).
+    assert msg["est_tokens"] == estimate_tokens("a" * 360) + 4
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 0
+    rows = svc.db.message_token_rows(conversation["id"])
+    assert rows and rows[0]["est_tokens"] == msg["est_tokens"]
+
+
+def test_v1_database_upgrades_with_backfill(tmp_path: Path):
+    """A pre-v2 database gains columns + a backfilled episodic index."""
+    import sqlite3
+
+    from kiwibro.db import _SCHEMA_V1, Database
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA_V1)
+    conn.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.execute("INSERT INTO schema_migrations VALUES (1, '2026-01-01T00:00:00+00:00')")
+    conn.execute(
+        "INSERT INTO conversations(id, title, created_at, updated_at) "
+        "VALUES ('c_old', 'Old chat', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO messages(id, conversation_id, seq, role, content, created_at) "
+        "VALUES ('m_old', 'c_old', 1, 'user', 'The launch code is kiwi-42', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    db.initialize()
+    hits = db.search_messages("launch code kiwi", conversation_id="c_old")
+    assert hits and hits[0]["id"] == "m_old"
+    # Re-running initialize is a no-op (guarded migration).
+    db.initialize()
+    assert db.search_messages("kiwi", conversation_id="c_old")
+
+
+def test_episodic_search_ranks_and_filters(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    other = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "We chose the name Weka for the boat")
+    svc.db.add_message(conversation["id"], "assistant", "Weka is a fine name for a boat")
+    for i in range(5):
+        svc.db.add_message(conversation["id"], "user", f"Unrelated sailing chatter {i}")
+    svc.db.add_message(other["id"], "user", "Weka appears in another chat too")
+
+    hits = svc.db.search_messages("Weka boat name", conversation_id=conversation["id"], limit=2)
+    assert hits and "Weka" in hits[0]["content"]
+    assert all(h["conversation_id"] == conversation["id"] for h in hits)
+    older = svc.db.search_messages("Weka", conversation_id=conversation["id"], before_seq=2)
+    assert older and all(h["seq"] < 2 for h in older)
+
+
+def test_episodic_index_stays_in_sync(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    msg = svc.db.add_message(conversation["id"], "user", "original harbor plan")
+    svc.db.update_message(msg["id"], content="revised mountain plan")
+    assert svc.db.search_messages("harbor", conversation_id=conversation["id"]) == []
+    assert svc.db.search_messages("mountain", conversation_id=conversation["id"])
+    svc.db.clear_conversation(conversation["id"])
+    assert svc.db.search_messages("mountain", conversation_id=conversation["id"]) == []
+
+
+def test_summary_segments_roundtrip(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_summary_segment(conversation["id"], 1, 40, "First part.", est_tokens=3)
+    svc.db.add_summary_segment(conversation["id"], 41, 90, "Second part.", est_tokens=3)
+    segments = svc.db.list_summary_segments(conversation["id"])
+    assert [s["through_seq"] for s in segments] == [40, 90]
+    assert svc.db.segments_through_seq(conversation["id"]) == 90
+    svc.db.clear_conversation(conversation["id"])
+    assert svc.db.list_summary_segments(conversation["id"]) == []
+
+
+def test_recall_includes_episodes(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "Remember the harbor gate code is 4815")
+    svc.db.add_message(conversation["id"], "assistant", "Noted: 4815")
+    items = svc.memory.recall("harbor gate code", conversation_id=conversation["id"], limit=4)
+    episodes = [i for i in items if i["source"] == "episode"]
+    assert episodes and "4815" in episodes[0]["content"]
+
+
+def test_use_count_increments_on_retrieval(env):
+    svc, _fake = env
+    memory = svc.memory.remember("User sails on weekends", "fact")
+    svc.memory.build_block("sails weekends")
+    refreshed = svc.db.get_memory(memory["id"])
+    assert refreshed["use_count"] >= 1
+    assert refreshed["last_used_at"] is not None
+
+
 def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 

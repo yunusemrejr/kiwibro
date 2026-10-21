@@ -210,7 +210,7 @@ class MemoryEngine:
         """
         query_tokens = _tokens(normalize(query or ""))
 
-        def score(memory: dict[str, Any]) -> tuple[int, float, float, str]:
+        def score(memory: dict[str, Any]) -> tuple[int, float, float, int, str]:
             tokens = _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
             if query_tokens and tokens:
                 matched = len(query_tokens & tokens)
@@ -218,8 +218,9 @@ class MemoryEngine:
                 jaccard_score = matched / len(query_tokens | tokens)
             else:
                 coverage = jaccard_score = 0.0
+            uses = min(int(memory.get("use_count") or 0), 50)
             recency = memory.get("last_used_at") or memory.get("updated_at") or ""
-            return (1 if memory.get("pinned") else 0, coverage, jaccard_score, recency)
+            return (1 if memory.get("pinned") else 0, coverage, jaccard_score, uses, recency)
 
         return sorted(memories, key=score, reverse=True)
 

@@ -103,7 +103,81 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 """
 
-_MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1)]
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """Schema v2: episodic recall + segmented summaries + token cache.
+
+    - ``messages_fts`` indexes every message's content so compacted history
+      stays searchable (episodic recall) instead of being lost to the prompt.
+    - ``summary_segments`` stores one bounded summary per seq range, so
+      summarisation never recurses into summary-of-summary decay.
+    - ``messages.est_tokens`` caches per-message prompt cost for O(window)
+      context planning; ``conversations.extracted_through_seq`` is the
+      memory-extraction watermark; ``memories.use_count`` feeds ranking.
+    Column adds are guarded so a crash mid-migration can safely re-run.
+    """
+
+    def has_column(table: str, column: str) -> bool:
+        return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})"))
+
+    if not has_column("messages", "est_tokens"):
+        conn.execute("ALTER TABLE messages ADD COLUMN est_tokens INTEGER")
+    if not has_column("conversations", "extracted_through_seq"):
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN extracted_through_seq INTEGER NOT NULL DEFAULT 0"
+        )
+    if not has_column("memories", "use_count"):
+        conn.execute("ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
+    conn.executescript(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            message_id UNINDEXED, conversation_id UNINDEXED, content, tokenize='unicode61'
+        );
+        CREATE TABLE IF NOT EXISTS summary_segments (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            from_seq INTEGER NOT NULL,
+            through_seq INTEGER NOT NULL,
+            summary TEXT NOT NULL,
+            est_tokens INTEGER,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_summary_segments_conv
+            ON summary_segments(conversation_id, through_seq);
+        """
+    )
+    # Backfill the FTS index once (guarded: only when it is still empty).
+    indexed = conn.execute("SELECT COUNT(*) AS n FROM messages_fts").fetchone()["n"]
+    if not indexed:
+        conn.execute(
+            "INSERT INTO messages_fts(message_id, conversation_id, content) "
+            "SELECT id, conversation_id, content FROM messages WHERE content <> ''"
+        )
+
+
+# A migration is either a SQL script or a callable taking the connection
+# (for steps that must inspect the live schema, e.g. guarded ALTERs).
+_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2)]
+
+
+def _est_tokens(text: str | None) -> int:
+    """Per-message token estimate stored at write time.
+
+    Mirrors ``kiwibro.context.estimate_tokens`` (~3.6 ASCII chars/token,
+    ~0.9 tokens/non-ASCII char); duplicated here to avoid a db→context
+    import cycle. A test asserts the two stay in agreement.
+    """
+    import math
+
+    if not text:
+        return 0
+    if text.isascii():
+        return max(1, math.ceil(len(text) / 3.6))
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    return max(1, math.ceil(ascii_chars / 3.6 + (len(text) - ascii_chars) * 0.9))
+
+
+def _message_est_tokens(content: str, tool_calls_json: str | None) -> int:
+    return _est_tokens(content) + _est_tokens(tool_calls_json) + 4
 
 
 def fts_query(query: str) -> str | None:
@@ -184,10 +258,13 @@ class Database:
                     "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
                 )
                 applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations")}
-                for version, script in _MIGRATIONS:
+                for version, migration in _MIGRATIONS:
                     if version in applied:
                         continue
-                    conn.executescript(script)
+                    if callable(migration):
+                        migration(conn)
+                    else:
+                        conn.executescript(migration)
                     conn.execute(
                         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                         (version, config.now_iso()),
@@ -198,6 +275,7 @@ class Database:
 
     @staticmethod
     def _conversation(row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
         return {
             "id": row["id"],
             "title": row["title"],
@@ -205,6 +283,7 @@ class Database:
             "model": row["model"],
             "summary": row["summary"] or "",
             "summary_through_seq": row["summary_through_seq"],
+            "extracted_through_seq": row["extracted_through_seq"] if "extracted_through_seq" in keys else 0,
             "pinned": bool(row["pinned"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -241,7 +320,10 @@ class Database:
         return result
 
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
-        allowed = {"title", "title_auto", "model", "summary", "summary_through_seq", "pinned"}
+        allowed = {
+            "title", "title_auto", "model", "summary", "summary_through_seq",
+            "extracted_through_seq", "pinned",
+        }
         sets: list[str] = []
         values: list[Any] = []
         for key, value in fields.items():
@@ -271,17 +353,34 @@ class Database:
 
     def delete_conversation(self, conversation_id: str) -> bool:
         with self.connect() as conn:
-            cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # messages/summary_segments cascade; the FTS index has no FK.
+                conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conversation_id,))
+                cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
         return cursor.rowcount > 0
 
     def clear_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         now = config.now_iso()
         with self.connect() as conn:
-            conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
-            conn.execute(
-                "UPDATE conversations SET summary = '', summary_through_seq = 0, updated_at = ? WHERE id = ?",
-                (now, conversation_id),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+                conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conversation_id,))
+                conn.execute("DELETE FROM summary_segments WHERE conversation_id = ?", (conversation_id,))
+                conn.execute(
+                    "UPDATE conversations SET summary = '', summary_through_seq = 0, "
+                    "extracted_through_seq = 0, updated_at = ? WHERE id = ?",
+                    (now, conversation_id),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
             row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
         return self._conversation(row) if row else None
 
@@ -296,6 +395,7 @@ class Database:
 
     @staticmethod
     def _message(row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
         return {
             "id": row["id"],
             "conversation_id": row["conversation_id"],
@@ -308,6 +408,7 @@ class Database:
             "tool_name": row["tool_name"],
             "model": row["model"],
             "tokens": row["tokens"],
+            "est_tokens": row["est_tokens"] if "est_tokens" in keys else None,
             "meta": _json_loads(row["meta"], {}),
             "created_at": row["created_at"],
         }
@@ -336,10 +437,11 @@ class Database:
                 ).fetchone()
                 seq = int(row["seq"]) + 1
                 mid = _new_id("m")
+                tool_calls_json = _json_dumps(tool_calls)
                 conn.execute(
                     "INSERT INTO messages(id, conversation_id, seq, role, content, reasoning, "
-                    "tool_calls, tool_call_id, tool_name, model, tokens, meta, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tool_calls, tool_call_id, tool_name, model, tokens, est_tokens, meta, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         mid,
                         conversation_id,
@@ -347,15 +449,21 @@ class Database:
                         role,
                         content or "",
                         reasoning or "",
-                        _json_dumps(tool_calls),
+                        tool_calls_json,
                         tool_call_id,
                         tool_name,
                         model,
                         tokens,
+                        _message_est_tokens(content or "", tool_calls_json),
                         _json_dumps(meta),
                         now,
                     ),
                 )
+                if (content or "").strip():
+                    conn.execute(
+                        "INSERT INTO messages_fts(message_id, conversation_id, content) VALUES (?, ?, ?)",
+                        (mid, conversation_id, content or ""),
+                    )
                 conn.execute(
                     "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id)
                 )
@@ -406,14 +514,176 @@ class Database:
             return self.get_message(message_id)
         values.append(message_id)
         with self.connect() as conn:
-            conn.execute(f"UPDATE messages SET {', '.join(sets)} WHERE id = ?", values)
-            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(f"UPDATE messages SET {', '.join(sets)} WHERE id = ?", values)
+                row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+                if row is not None and ("content" in fields or "tool_calls" in fields):
+                    # Keep the token cache and episodic index in sync.
+                    conn.execute(
+                        "UPDATE messages SET est_tokens = ? WHERE id = ?",
+                        (_message_est_tokens(row["content"] or "", row["tool_calls"]), message_id),
+                    )
+                    conn.execute("DELETE FROM messages_fts WHERE message_id = ?", (message_id,))
+                    if (row["content"] or "").strip():
+                        conn.execute(
+                            "INSERT INTO messages_fts(message_id, conversation_id, content) VALUES (?, ?, ?)",
+                            (message_id, row["conversation_id"], row["content"]),
+                        )
+                    row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
         return self._message(row) if row else None
+
+    # --- episodic search & planning (schema v2) ----------------------------
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        conversation_id: str | None = None,
+        limit: int = 8,
+        before_seq: int | None = None,
+        after_seq: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """bm25-ranked full-text search over message content (episodic recall).
+
+        This is the retrieval core that lets compacted history come back as
+        exact evidence: messages are never deleted by compaction, and this
+        finds the relevant ones again in milliseconds via FTS5.
+        """
+        match = fts_query(query)
+        if not match:
+            return []
+        sql = (
+            "SELECT m.* FROM messages m "
+            "JOIN messages_fts ON messages_fts.message_id = m.id "
+            "WHERE messages_fts MATCH ?"
+        )
+        params: list[Any] = [match]
+        if conversation_id:
+            sql += " AND m.conversation_id = ?"
+            params.append(conversation_id)
+        if before_seq is not None:
+            sql += " AND m.seq < ?"
+            params.append(before_seq)
+        if after_seq is not None:
+            sql += " AND m.seq > ?"
+            params.append(after_seq)
+        sql += " ORDER BY bm25(messages_fts), m.seq DESC LIMIT ?"
+        params.append(limit)
+        try:
+            with self.connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:  # pragma: no cover - defensive (pre-v2 DB)
+            log.warning("episodic search unavailable: %s", exc)
+            return []
+        return [self._message(row) for row in rows]
+
+    def message_token_rows(
+        self, conversation_id: str, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
+        """Lightweight (seq, role, est_tokens, has_tool_calls) rows for planning.
+
+        Context planning walks these instead of loading full message bodies,
+        so its cost stays tiny no matter how long the conversation grows.
+        Rows written before schema v2 have ``est_tokens = NULL``; callers
+        fall back to estimating those from content length.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT seq, role, est_tokens, (tool_calls IS NOT NULL) AS has_tool_calls, "
+                "LENGTH(content) AS content_chars, LENGTH(COALESCE(tool_calls, '')) AS tool_chars "
+                "FROM messages WHERE conversation_id = ? AND seq > ? ORDER BY seq ASC",
+                (conversation_id, after_seq),
+            ).fetchall()
+        return [
+            {
+                "seq": row["seq"],
+                "role": row["role"],
+                "est_tokens": row["est_tokens"],
+                "has_tool_calls": bool(row["has_tool_calls"]),
+                "content_chars": row["content_chars"],
+                "tool_chars": row["tool_chars"],
+            }
+            for row in rows
+        ]
+
+    def list_messages_range(
+        self, conversation_id: str, from_seq: int, through_seq: int
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE conversation_id = ? AND seq >= ? AND seq <= ? "
+                "ORDER BY seq ASC",
+                (conversation_id, from_seq, through_seq),
+            ).fetchall()
+        return [self._message(row) for row in rows]
+
+    def last_message_seq(self, conversation_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return int(row["seq"])
+
+    # --- summary segments (schema v2) ---------------------------------------
+
+    @staticmethod
+    def _segment(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "conversation_id": row["conversation_id"],
+            "from_seq": row["from_seq"],
+            "through_seq": row["through_seq"],
+            "summary": row["summary"],
+            "est_tokens": row["est_tokens"],
+            "created_at": row["created_at"],
+        }
+
+    def add_summary_segment(
+        self,
+        conversation_id: str,
+        from_seq: int,
+        through_seq: int,
+        summary: str,
+        est_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        sid = _new_id("seg")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO summary_segments(id, conversation_id, from_seq, through_seq, "
+                "summary, est_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, conversation_id, from_seq, through_seq, summary, est_tokens, config.now_iso()),
+            )
+            row = conn.execute("SELECT * FROM summary_segments WHERE id = ?", (sid,)).fetchone()
+        return self._segment(row)
+
+    def list_summary_segments(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM summary_segments WHERE conversation_id = ? ORDER BY from_seq ASC",
+                (conversation_id,),
+            ).fetchall()
+        return [self._segment(row) for row in rows]
+
+    def segments_through_seq(self, conversation_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(through_seq), 0) AS seq FROM summary_segments "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return int(row["seq"])
 
     # --- memories ----------------------------------------------------------
 
     @staticmethod
     def _memory(row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
         return {
             "id": row["id"],
             "kind": row["kind"],
@@ -423,6 +693,7 @@ class Database:
             "source_conversation_id": row["source_conversation_id"],
             "confidence": float(row["confidence"]),
             "pinned": bool(row["pinned"]),
+            "use_count": int(row["use_count"]) if "use_count" in keys and row["use_count"] is not None else 0,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_used_at": row["last_used_at"],
@@ -506,7 +777,11 @@ class Database:
         if kind:
             sql += " AND m.kind = ?"
             params.append(kind)
-        sql += " ORDER BY m.pinned DESC, m.updated_at DESC"
+        if match:
+            # Relevance first (bm25: lower is better), pinned still leads.
+            sql += " ORDER BY m.pinned DESC, bm25(memories_fts), m.updated_at DESC"
+        else:
+            sql += " ORDER BY m.pinned DESC, m.updated_at DESC"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
@@ -633,7 +908,7 @@ class Database:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.executemany(
-                    "UPDATE memories SET last_used_at = ? WHERE id = ?",
+                    "UPDATE memories SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?",
                     [(now, mid) for mid in memory_ids],
                 )
                 conn.execute("COMMIT")
@@ -652,7 +927,8 @@ class Database:
                     return 0
                 rows = conn.execute(
                     "SELECT id FROM memories WHERE pinned = 0 "
-                    "ORDER BY confidence ASC, updated_at ASC LIMIT ?",
+                    "ORDER BY confidence ASC, use_count ASC, "
+                    "COALESCE(last_used_at, updated_at) ASC LIMIT ?",
                     (excess,),
                 ).fetchall()
                 ids = [row["id"] for row in rows]
