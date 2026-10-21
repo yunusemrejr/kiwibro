@@ -711,8 +711,13 @@ _ARG_KEYS = ("arguments", "parameters", "args", "input", "action_input", "tool_i
 _OPEN_TAG_RE = re.compile(r"<\|?(tool_calls?|toolcall|function_calls?|functioncall)\|?>", re.IGNORECASE)
 _FUNCTION_TAG_RE = re.compile(r"<function=([\w.\-]+)>(.*?)(?:</function>|(?=<function=)|\Z)", re.DOTALL)
 _PARAM_TAG_RE = re.compile(r"<parameter=([\w.\-]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|(?=</function>)|\Z)", re.DOTALL)
-_INVOKE_RE = re.compile(r"<invoke\s+name=[\"']([\w.\-]+)[\"']\s*>(.*?)(?:</invoke>|\Z)", re.DOTALL)
-_INVOKE_PARAM_RE = re.compile(r"<parameter\s+name=[\"']([\w.\-]+)[\"'][^>]*>(.*?)</parameter>", re.DOTALL)
+# XML-style calls: <invoke|function|tool|call name="x"> with <parameter|param|arg|argument name="k">v</…>.
+_XML_CALL_RE = re.compile(
+    r"<(invoke|function|tool|call)\s+name\s*=\s*[\"']([\w.\-]+)[\"']\s*>(.*?)(?:</\1>|\Z)", re.DOTALL
+)
+_XML_PARAM_RE = re.compile(
+    r"<(parameter|param|arg|argument)\s+name\s*=\s*[\"']([\w.\-]+)[\"'][^>]*>(.*?)</\1>", re.DOTALL
+)
 _PYTHON_TAG_RE = re.compile(r"<\|python_tag\|>(.*?)(?:<\|eom_id\|>|<\|eot_id\|>|\Z)", re.DOTALL)
 _MISTRAL_RE = re.compile(r"\[TOOL_CALLS\](.*?)(?=\[TOOL_CALLS\]|\Z)", re.DOTALL)
 _MISTRAL_ARGS_RE = re.compile(r"([A-Za-z_][\w.\-]*)(?:\[CALL_ID\][\w\-]+)?\[ARGS\]")
@@ -835,10 +840,10 @@ def _parse_body(body: str) -> list[tuple[str, Any]]:
              or match.group(2).strip())
             for match in _FUNCTION_TAG_RE.finditer(body)
         ]
-    if "<invoke" in body:
+    if _XML_CALL_RE.search(body):
         return [
-            (match.group(1), {key: _param_value(value) for key, value in _INVOKE_PARAM_RE.findall(match.group(2))})
-            for match in _INVOKE_RE.finditer(body)
+            (match.group(2), {key: _param_value(value) for _tag, key, value in _XML_PARAM_RE.findall(match.group(3))})
+            for match in _XML_CALL_RE.finditer(body)
         ]
     if "<arg_key>" in body:  # GLM: name, then <arg_key>/<arg_value> pairs
         name = body.split("<arg_key>", 1)[0].strip()
@@ -904,7 +909,7 @@ def _strong_calls(text: str) -> list[_Found]:
     if not found:
         for match in _FUNCTION_TAG_RE.finditer(text):
             found += [_Found(name, args, match.start(), match.end()) for name, args in _parse_body(match.group(0))]
-    for match in _INVOKE_RE.finditer(text) if not found else ():
+    for match in _XML_CALL_RE.finditer(text) if not found else ():
         found += [_Found(name, args, match.start(), match.end()) for name, args in _parse_body(match.group(0))]
     for match in _PYTHON_TAG_RE.finditer(text):
         body = match.group(1)
@@ -1073,7 +1078,7 @@ def to_text_protocol(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 _STREAM_OPENERS = (
     "<tool_call>", "<|tool_call|>", "<tool_calls>", "<function=", "<function_calls>", "<|python_tag|>",
-    "[TOOL_CALLS]", "<invoke name=", "<｜tool▁calls▁begin｜>", "<｜tool▁call▁begin｜>",
+    "[TOOL_CALLS]", "<invoke name=", "<function name=", "<｜tool▁calls▁begin｜>", "<｜tool▁call▁begin｜>",
 )
 
 

@@ -1253,26 +1253,31 @@ class Library:
         max_files: int = 300,
         min_interval: float = 20.0,
     ) -> dict[str, int]:
-        """Index new or changed document files under ``root`` and drop entries whose file is gone."""
+        """Index new or changed document files under ``root`` and drop entries whose file is gone.
+
+        Holds the sync lock for the whole pass, so a concurrent caller (parallel
+        doc_search calls) waits for the in-progress sync instead of searching a
+        half-built index.
+        """
         counts = {"indexed": 0, "updated": 0, "removed": 0, "skipped": 0}
         root_path = Path(root).resolve()
         key = str(root_path)
-        now = time.monotonic()
         with self._sync_lock:
+            now = time.monotonic()
             last = self._last_sync.get(key)
             if last is not None and now - last < min_interval:
                 return counts
-            self._last_sync[key] = now
-        deadline = now + time_budget
-        worked = 0
-        for path in _walk(root_path, SYNC_EXTS):
-            if worked >= max_files or time.monotonic() >= deadline:
-                break
-            status = self._sync_one(path, display_fn(path))
-            if status is not None:
-                worked += 1
-                counts[status if status in ("indexed", "updated") else "skipped"] += 1
-        counts["removed"] = self._prune_missing(root_path)
+            deadline = now + time_budget
+            worked = 0
+            for path in _walk(root_path, SYNC_EXTS):
+                if worked >= max_files or time.monotonic() >= deadline:
+                    break
+                status = self._sync_one(path, display_fn(path))
+                if status is not None:
+                    worked += 1
+                    counts[status if status in ("indexed", "updated") else "skipped"] += 1
+            counts["removed"] = self._prune_missing(root_path)
+            self._last_sync[key] = time.monotonic()
         return counts
 
     def _sync_one(self, path: Path, display: str) -> str | None:

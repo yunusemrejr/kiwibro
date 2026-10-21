@@ -438,3 +438,18 @@ def test_glm_text_call_is_extracted():
     assert len(calls) == 1 and rest == ""
     assert calls[0]["function"]["name"] == "task_board"
     assert json.loads(calls[0]["function"]["arguments"]) == {"action": "update", "task_id": "file-ops"}
+
+
+def test_minicpm_style_xml_calls_are_extracted():
+    # Seen live: minicpm5-2b (no native tool support) answered in its own XML call format.
+    content = (
+        '<function name="calculate"><param name="expression">0.175 * 2340</param></function> '
+        '<function name="calculate"><param name="expression">2 ** 20</param></function>'
+    )
+    calls, rest = tc.extract_calls(content, list(tools.TOOL_SPECS))
+    assert [json.loads(call["function"]["arguments"]) for call in calls] == [
+        {"expression": "0.175 * 2340"}, {"expression": "2 ** 20"}
+    ]
+    assert rest == ""
+    stream = tc.StreamFilter()
+    assert stream.feed('Sure. <function name="doc_search">') == "Sure. "

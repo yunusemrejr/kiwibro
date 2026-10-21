@@ -628,3 +628,25 @@ def test_study_file_finds_answer_deep_in_long_document(tmp_path, monkeypatch):
     assert result.ok and "7731" in result.content
     assert "most relevant to the question" in result.content
     assert any("7731" in text for text in seen)
+
+
+def test_concurrent_first_searches_wait_for_the_sync(tmp_path):
+    """Regression (live run): two parallel doc_search calls; the second must not search a half-built index."""
+    import threading
+
+    ws = Workspace(tmp_path / "ws")
+    for index in range(12):
+        (ws.root / f"note{index}.md").write_text(f"# Note {index}\n\nThe colour printer is called Toucan {index}.\n")
+    library = Library(tmp_path / "data" / "library.db")
+    results: list[int] = []
+
+    def search() -> None:
+        library.sync(ws.root, ws.public)
+        results.append(len(library.search("Toucan printer", limit=3)))
+
+    threads = [threading.Thread(target=search) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results == [3, 3, 3, 3]
