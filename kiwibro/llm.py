@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import requests
 
+from . import capabilities as caps
 from . import config
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,12 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
     capabilities = raw.get("capabilities") or []
     if not isinstance(capabilities, list):
         capabilities = []
+    lowered_caps = {str(cap).lower() for cap in capabilities}
+    vision = (
+        model_type == "vlm"
+        or "vision" in lowered_caps
+        or bool(raw.get("vision"))
+    )
     return {
         "id": model_id,
         "name": raw.get("name") or model_id,
@@ -114,6 +121,8 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
         "context": context,
         "max_context": max_ctx or context,
         "tools": "tool_use" in capabilities or bool(raw.get("tool_use")),
+        "vision": vision,
+        "capabilities": [str(cap) for cap in capabilities],
         "publisher": raw.get("publisher") or "",
         "quantization": raw.get("quantization") or "",
     }
@@ -173,6 +182,7 @@ class LMStudioClient:
         self._cache_ttl = cache_ttl
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
+        self._load_api_supported: bool | None = None
 
     # --- model discovery ---------------------------------------------------
 
@@ -248,6 +258,8 @@ class LMStudioClient:
                 "context": 32768,
                 "max_context": 32768,
                 "tools": False,
+                "vision": False,
+                "capabilities": [],
                 "publisher": "",
                 "quantization": "",
             })
@@ -305,6 +317,7 @@ class LMStudioClient:
         temperature: float,
         max_tokens: int,
         stream: bool,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -318,6 +331,8 @@ class LMStudioClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if response_format:
+            payload["response_format"] = response_format
         return payload
 
     def stream_chat(
@@ -490,10 +505,14 @@ class LMStudioClient:
         temperature: float = 0.0,
         read_timeout: int = COMPLETE_READ_TIMEOUT,
         retries: int = 1,
+        response_format: dict[str, Any] | None = None,
     ) -> Completion:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
-        payload = self._payload(model, messages, None, temperature, max_tokens, stream=False)
+        payload = self._payload(
+            model, messages, None, temperature, max_tokens, stream=False,
+            response_format=response_format,
+        )
         last_error: LMStudioError | None = None
         for attempt in range(retries + 1):
             try:
@@ -563,3 +582,148 @@ class LMStudioClient:
             log.debug("complete_json failed: %s", exc.message)
             return None
         return parse_json_loose(completion.text)
+
+    # --- capability catalog, vision, embeddings, load control -------------
+    # Serving primitives consumed by the routing layers. Selection policy
+    # (which helper model to run) is NOT here; see routing.py.
+
+    def _fetch_raw_models(self) -> list[dict[str, Any]]:
+        base = self.base_url()
+        for path in ("/api/v0/models", "/v1/models"):
+            try:
+                response = requests.get(
+                    f"{base}{path}", timeout=(CONNECT_TIMEOUT, 15),
+                    headers={"User-Agent": USER_AGENT},
+                )
+            except requests.RequestException as exc:
+                raise LMStudioError("connection", self._connection_message(base)) from exc
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                return [raw for raw in data if isinstance(raw, dict)]
+        raise LMStudioError("http", "LM Studio did not return a model list.")
+
+    def catalog(self, force: bool = False) -> list[dict[str, Any]]:
+        """ALL installed models (chat + vision + embeddings), capability-annotated.
+
+        Unlike :meth:`list_models` (the UI's chat picker), nothing is filtered
+        out, and each entry carries ``vision``/``audio``/``embeddings``/
+        ``params_b``/``est_memory_gb`` from :mod:`kiwibro.capabilities`.
+        """
+        entries: list[dict[str, Any]] = []
+        for raw in self._fetch_raw_models():
+            entry = normalize_model(raw) or {
+                "id": raw.get("id"), "name": raw.get("id"),
+                "type": raw.get("type") or "embeddings",
+                "state": "loaded" if raw.get("state") == "loaded" else "not-loaded",
+                "context": _int(raw.get("loaded_context_length"))
+                or _int(raw.get("max_context_length")) or 2048,
+                "tools": False, "vision": False,
+                "capabilities": raw.get("capabilities") or [],
+                "publisher": raw.get("publisher") or "",
+                "quantization": raw.get("quantization") or "",
+            }
+            entries.append(caps.infer_capabilities(entry))
+        return entries
+
+    def complete_vision(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image_data_uris: list[str],
+        system: str | None = None,
+        max_tokens: int = 900,
+        temperature: float = 0.0,
+        read_timeout: int = COMPLETE_READ_TIMEOUT,
+    ) -> Completion:
+        """One non-streaming vision call. ``image_data_uris``: ``data:image/...;base64,...``."""
+        uris = [u for u in image_data_uris if isinstance(u, str) and u.startswith("data:image/")]
+        if not uris:
+            raise LMStudioError("bad_request", "No valid image data was provided.")
+        if len(uris) > 4 or sum(len(u) for u in uris) > 12_000_000:
+            raise LMStudioError("bad_request", "Too much image data for one request.")
+        parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        parts += [{"type": "image_url", "image_url": {"url": uri}} for uri in uris]
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": parts})
+        return self.complete(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, read_timeout=read_timeout, retries=0,
+        )
+
+    def embed(
+        self,
+        *,
+        model: str,
+        texts: list[str],
+        read_timeout: int = 120,
+    ) -> list[list[float]]:
+        """Embed texts via ``/v1/embeddings``; returns vectors in input order."""
+        if not texts:
+            return []
+        base = self.base_url()
+        try:
+            response = requests.post(
+                f"{base}/v1/embeddings",
+                json={"model": model, "input": texts},
+                timeout=(CONNECT_TIMEOUT, read_timeout),
+                headers={"User-Agent": USER_AGENT},
+            )
+        except requests.ConnectionError as exc:
+            raise LMStudioError("connection", self._connection_message(base)) from exc
+        except requests.RequestException as exc:
+            raise LMStudioError("timeout", "LM Studio did not answer in time.") from exc
+        if response.status_code != 200:
+            raise classify_http_error(response.status_code, self._read_body(response))
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LMStudioError("bad_response", "LM Studio returned an invalid embedding response.") from exc
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise LMStudioError("bad_response", "LM Studio returned no embeddings.")
+        ordered = sorted(
+            (d for d in data if isinstance(d, dict)),
+            key=lambda d: d.get("index") if isinstance(d.get("index"), int) else 0,
+        )
+        return [[float(v) for v in d.get("embedding") or []] for d in ordered]
+
+    def _load_api_call(self, action: str, model: str) -> bool:
+        if self._load_api_supported is False:
+            return False
+        base = self.base_url()
+        try:
+            response = requests.post(
+                f"{base}/api/v0/models/{action}",
+                json={"model": model},
+                timeout=(CONNECT_TIMEOUT, 180),
+                headers={"User-Agent": USER_AGENT},
+            )
+        except requests.RequestException:
+            return False
+        body = self._read_body(response)
+        # Builds without load control answer 200 + {"error":"Unexpected endpoint..."}.
+        if "Unexpected endpoint" in body:
+            self._load_api_supported = False
+            return False
+        if response.status_code != 200:
+            return False
+        self._load_api_supported = True
+        self.clear_cache()
+        return True
+
+    def load_model(self, model: str) -> bool:
+        """Best-effort explicit load; False means rely on LM Studio JIT loading."""
+        return self._load_api_call("load", model)
+
+    def unload_model(self, model: str) -> bool:
+        """Best-effort explicit unload; False means the build cannot unload via API."""
+        return self._load_api_call("unload", model)
