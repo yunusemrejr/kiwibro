@@ -62,6 +62,7 @@ const ASSISTANT_PHRASE = {
   doc_add: "index documents in your workspace",
   doc_list: "list your documents",
   convert_document: "convert a document to another format",
+  remote: "work on a remote server",
   undo_changes: "undo its recent file changes",
 };
 

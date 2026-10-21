@@ -118,6 +118,7 @@ const DEFAULT_PERMISSIONS = {
   doc_add: "auto",
   doc_list: "auto",
   convert_document: "auto",
+  remote: "ask",
   undo_changes: "auto",
 };
 

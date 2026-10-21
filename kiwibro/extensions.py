@@ -22,7 +22,7 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 # Modules scanned for a ``TOOLS`` tuple, in registration order.
-MODULES = ("compute", "library", "convert", "checkpoints")
+MODULES = ("compute", "library", "convert", "checkpoints", "remote")
 
 
 @dataclass(frozen=True)

@@ -2013,9 +2013,15 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
         text = args.get("command") if action in ("start", "run") else args.get("input") if action == "input" else None
         return classify_command(str(text), workspace=root, cwd=args.get("cwd")) if text else Risk(kind="exec")
     if name == "remote":
+        host, action = args.get("host") or "?", args.get("action") or "run"
+        if action == "hosts":
+            return SAFE
+        if action == "upload":
+            return _risk("medium", f"copies {args.get('path')} to {host}:{args.get('remote_path')}")
+        if action == "download":
+            return _file_tool_risk(str(args.get("path") or ""), root, verb=f"downloads from {host} into")
         command = str(args.get("command") or "")
-        risk = classify_command(command, remote=True) if command else SAFE
-        return risk | _risk("low", f"runs on the remote host {args.get('host') or '?'}")
+        return classify_command(command, remote=True) | _risk("low", f"runs on the remote host {host}")
     if name in ("run_python", "run_javascript"):
         if sandbox_status()["active"]:
             return _risk("low", "runs code in an isolated sandbox (no network, writes only its scratch folder)")
@@ -2072,6 +2078,12 @@ def permission(settings: dict[str, Any], name: str) -> str:
     return mode if mode in config.PERMISSION_MODES else config.permission_defaults().get(name, "ask")
 
 
+def _remote_host_known(host: str, settings: dict[str, Any]) -> bool:
+    from .remote import host_known  # lazy: remote imports the sandbox, which imports this module
+
+    return host_known(host, settings)
+
+
 def _guard_verdict(name: str, args: dict[str, Any], turn_state: dict[str, Any]) -> Any:
     try:
         from . import guard  # optional content-safety layer
@@ -2084,15 +2096,16 @@ def _guard_verdict(name: str, args: dict[str, Any], turn_state: dict[str, Any]) 
         return None
 
 
-def _policy_mode(perm: str, level: str, autonomy: str, kind: str) -> str:
+def _policy_mode(perm: str, level: str, autonomy: str, kind: str, *, remote: bool = False) -> str:
     if autonomy == "supervised":
         return "ask" if perm == "auto" and level == "high" else perm
     if level == "high":
         return "ask" if autonomy == "smart" else "deny"
     if perm == "auto" or autonomy == "autonomous" or level in ("safe", "low"):
         return "auto"
-    # smart + "ask" + medium: auto-approve while the blast radius is bounded.
-    return "auto" if kind != "exec" or sandbox_status()["active"] else "ask"
+    # smart + "ask" + medium: auto-approve while the blast radius is bounded — never
+    # on a remote server (often production; no local sandbox can contain it).
+    return "auto" if not remote and (kind != "exec" or sandbox_status()["active"]) else "ask"
 
 
 def decide(
@@ -2128,11 +2141,14 @@ def decide(
         if assessed.writes and writes > MASS_WRITE_LIMIT:
             level = _bump(level, (writes - 1) // MASS_WRITE_LIMIT)
             reasons.append(f"mass edit: {writes} file changes this turn")
+        if name == "remote" and args.get("action") != "hosts" and not _remote_host_known(str(args.get("host") or ""), settings):
+            level = "high"
+            reasons.append(f"{args.get('host')} is not a configured host (add it to ~/.ssh/config or Settings)")
         if state.get("tainted") and assessed.kind in ("exec", "write") and level != "safe":
             level = _bump(level)
             reasons.append("content read earlier contained instructions aimed at the AI (possible prompt injection)")
     autonomy = settings.get("autonomy") if settings.get("autonomy") in AUTONOMY_MODES else DEFAULT_AUTONOMY
-    mode = "deny" if level == "critical" else _policy_mode(perm, level, autonomy, assessed.kind)
+    mode = "deny" if level == "critical" else _policy_mode(perm, level, autonomy, assessed.kind, remote=name == "remote")
     source = "permission" if mode == perm else "policy"
     verdict = _guard_verdict(name, args, state)
     if verdict is not None and getattr(verdict, "mode", None) in _MODE_RANK:

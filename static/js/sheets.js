@@ -58,6 +58,7 @@ const PERMISSION_ORDER = [
   "doc_add",
   "doc_list",
   "convert_document",
+  "remote",
   "undo_changes",
 ];
 

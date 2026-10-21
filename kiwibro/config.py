@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,6 +158,7 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
         "reasoning": DEFAULT_REASONING,
         "autonomy": DEFAULT_AUTONOMY,
         "sandbox": DEFAULT_SANDBOX,
+        "remote_hosts": [],
         "max_tool_rounds": MAX_TOOL_ROUNDS,
     }
 
@@ -243,6 +245,13 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             if not isinstance(value, str) or len(value) > 80:
                 raise ValueError("user_name must be a string of at most 80 characters")
             cleaned["user_name"] = value.strip()
+        elif key == "remote_hosts":
+            if not isinstance(value, list) or len(value) > 32 or not all(
+                isinstance(h, str) and re.fullmatch(r"(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}", h)
+                for h in value
+            ):
+                raise ValueError("remote_hosts must be a list of up to 32 ssh aliases or user@host names")
+            cleaned["remote_hosts"] = list(dict.fromkeys(value))
         elif key in SETTING_CHOICES:
             if value not in SETTING_CHOICES[key]:
                 raise ValueError(f"{key} must be one of {', '.join(SETTING_CHOICES[key])}")
