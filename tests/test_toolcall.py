@@ -416,3 +416,25 @@ def test_phantom_roots_in_path_lists():
         pytest.skip("read_files not in this catalog")
     args, _notes = tc.normalize_args({"paths": ["/workspace/a.md", "b.md"]}, tools.TOOL_SPECS["read_files"].parameters)
     assert args["paths"] == ["a.md", "b.md"]
+
+
+# --- regression from live runs: GLM-style <arg_key>/<arg_value> calls ------------------
+
+
+def test_glm_pairs_leaked_into_a_value_are_split():
+    # Seen live: LM Studio half-parsed a GLM-style call into one string value.
+    raw = '{"action": "update<arg_key>task_id</arg_key><arg_value>file-ops", "status": "in_progress"}'
+    args, notes = tc.parse_arguments(raw)
+    assert args == {"action": "update", "task_id": "file-ops", "status": "in_progress"}
+    assert any("arg_key" in note for note in notes)
+
+
+def test_glm_text_call_is_extracted():
+    content = (
+        "<tool_call>task_board\n<arg_key>action</arg_key>\n<arg_value>update</arg_value>\n"
+        "<arg_key>task_id</arg_key>\n<arg_value>file-ops</arg_value>\n</tool_call>"
+    )
+    calls, rest = tc.extract_calls(content, list(tools.TOOL_SPECS))
+    assert len(calls) == 1 and rest == ""
+    assert calls[0]["function"]["name"] == "task_board"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"action": "update", "task_id": "file-ops"}

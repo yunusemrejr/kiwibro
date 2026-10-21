@@ -214,6 +214,29 @@ def repair_json(text: Any) -> Any:
     return None
 
 
+# GLM-style argument pairs: <arg_key>k</arg_key><arg_value>v</arg_value> (closers often missing).
+_GLM_PAIR_RE = re.compile(
+    r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)(?:</arg_value>|(?=<arg_key>)|\Z)", re.DOTALL
+)
+
+
+def _split_leaked_pairs(args: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+    """Recover GLM ``<arg_key>`` pairs that a server parser left inside one string value."""
+    if not any(isinstance(value, str) and "<arg_key>" in value for value in args.values()):
+        return args
+    fixed: dict[str, Any] = {}
+    for key, value in args.items():
+        if not (isinstance(value, str) and "<arg_key>" in value):
+            fixed.setdefault(key, value)
+            continue
+        head, _marker, rest = value.partition("<arg_key>")
+        fixed[key] = _param_value(head.replace("</arg_value>", ""))
+        for pair_key, pair_value in _GLM_PAIR_RE.findall("<arg_key>" + rest):
+            fixed.setdefault(pair_key.strip(), _param_value(pair_value))
+    notes.append("split <arg_key>/<arg_value> pairs that leaked into an argument")
+    return fixed
+
+
 def parse_arguments(raw: Any) -> tuple[dict[str, Any], list[str]]:
     """Turn a tool call's ``arguments`` (string, dict, anything) into a dict plus repair notes."""
     if raw is None or raw == "" or raw == {}:
@@ -242,7 +265,7 @@ def parse_arguments(raw: Any) -> tuple[dict[str, Any], list[str]]:
             return {POSITIONAL: value}, notes
     if not isinstance(value, dict):
         return {POSITIONAL: [value]}, notes
-    return dict(value), notes
+    return _split_leaked_pairs(dict(value), notes), notes
 
 
 # --- tool names -----------------------------------------------------------------------
@@ -817,6 +840,10 @@ def _parse_body(body: str) -> list[tuple[str, Any]]:
             (match.group(1), {key: _param_value(value) for key, value in _INVOKE_PARAM_RE.findall(match.group(2))})
             for match in _INVOKE_RE.finditer(body)
         ]
+    if "<arg_key>" in body:  # GLM: name, then <arg_key>/<arg_value> pairs
+        name = body.split("<arg_key>", 1)[0].strip()
+        if _IDENT_RE.fullmatch(name):
+            return [(name, {key.strip(): _param_value(value) for key, value in _GLM_PAIR_RE.findall(body)})]
     calls = [call for value, _start, _end in _json_values(body) for call in _calls_from_value(value)]
     if calls:
         return calls
