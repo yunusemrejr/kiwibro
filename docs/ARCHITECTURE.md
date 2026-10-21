@@ -179,9 +179,11 @@ returns a 400 mentioning tools, retry once without tools.
 ## 5. Context management
 
 Token estimation (no tokenizer dependency): `estimate_tokens(text)`, roughly
-`ascii_chars / 3.6 + non_ascii_chars * 0.9`, plus 4 tokens per message overhead and
-a 1.1 safety factor on totals. Also trust server-reported `usage` when present and
-store it on messages.
+`ascii_chars / 3.6 + non_ascii_chars * 0.9` (C-speed counting: `str.isascii`
+fast path / one `encode('ascii','ignore')` pass), plus 4 tokens per message
+overhead and a 1.1 safety factor on totals. Server-reported `prompt_tokens`
+calibrate the estimator per model (EMA, clamped 0.75–1.4), so budgets track the
+real tokenizer instead of drifting with the heuristic.
 
 Budget per request:
 
@@ -194,15 +196,23 @@ reserve(output) = min(settings.max_output_tokens, max(512, context // 8))
 
 History sent: system prompt + retrieval memory block + messages with
 `seq > conversation.summary_through_seq` + newest user message. Tool transcripts are
-included (they are part of the past) but each tool result is capped at ~4000 chars.
+included (they are part of the past) with age-decayed caps: the 2 newest tool
+results keep ~4000 chars, the next 4 get ~1200, older ones ~300 (head+tail, so
+conclusions survive). Stale tool output no longer dominates long prompts.
+Inside one turn, tool rounds after the first reuse the prepared context via
+`ContextEngine.extend` (append-only, full `prepare` fallback past the trigger)
+instead of rebuilding history from SQLite every round.
 
-Automatic compaction (`context.ensure_budget`):
+Automatic compaction (`ContextEngine.prepare`):
 
-1. Compute estimate at ~75 % of budget before every LLM call (including inside the
-   agent loop). If over, summarise the oldest eligible messages (all but the last
-   4 messages / last 2 exchanges) into `conversations.summary`, merged with the
-   previous summary, advancing `summary_through_seq`. One summariser call, non-
-   streaming, bounded (summary ≤ 600 tokens). Repeat up to 3 passes if needed.
+1. Compute estimate at ~75 % of budget before every LLM call. If over, summarise
+   only the oldest slice needed to land at ~92 % of the trigger (keeping at least
+   the last 4 messages verbatim, and more whenever that suffices) into
+   `conversations.summary`, merged with the previous summary, advancing
+   `summary_through_seq`. The summariser's transcript represents the whole
+   segment (per-message caps shrink adaptively) so old detail is condensed, not
+   dropped unseen. One summariser call, non-streaming, bounded (summary ≤ 600
+   tokens). Repeat up to 3 passes if needed.
 2. If still over: drop old tool results first, then hard-trim oldest messages, and
    set a `trimmed` flag. The user sees only a subtle "context compacted" chip.
 3. Keep the newest user message and the last assistant reply always.

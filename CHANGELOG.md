@@ -2,6 +2,25 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Major context and efficiency overhaul of the hot path.** Token estimation is
+  C-speed and now self-calibrates per model from LM Studio's reported
+  `prompt_tokens`. Old tool results decay with age (newest outputs stay detailed;
+  older ones shrink to a head+tail excerpt) instead of being re-sent in full on
+  every turn — a 360-message tool-heavy conversation now sends ~56% fewer prompt
+  tokens. Compaction summarises only the oldest slice needed to get back under
+  budget (more recent history stays verbatim), and the summariser now sees the
+  whole segment rather than only its newest part. Agent tool rounds append only
+  new messages instead of rebuilding the full history from SQLite each round.
+- **Faster plumbing.** SQLite connections are reused per thread, memory counting
+  uses `COUNT(*)`, settings reads are served from a write-versioned cache, model
+  list fetches are single-flight, and streamed token deltas are coalesced into
+  fewer SSE frames. Context preparation on the benchmark conversation dropped
+  from ~13 ms to ~3 ms.
+
 ## [1.1.0] — 2026-10-21
 
 Identity and polish update.
