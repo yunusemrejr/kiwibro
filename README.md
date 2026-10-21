@@ -54,6 +54,10 @@ permission, inside its own workspace.
 | **Context** | Automatic rolling summarisation with a quiet context meter. |
 | **Memory** | Global, deduped, FTS-searchable. Pin, edit, delete, forget all. |
 | **Agent tools (35)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), codebase (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python`/`run_javascript`, desktop (`system_info`, `open_path`, `clipboard`, `notify`, `screenshot`), model delegation (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`. |
+| **Small-model tool calls** | Built for 1–4B models: broken JSON, misspelled tool or argument names and out-of-range values are repaired against the schema; calls written as text (Hermes, Qwen, Llama, Mistral, DeepSeek, ReAct, JSON…) are recovered and never shown raw; errors explain the exact valid usage. Models without native tool support use a text tool protocol. |
+| **Documents** | `doc_search` / `doc_read` / `doc_add` / `doc_list` over a local full-text index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text, code, CSV and JSON — workspace documents are indexed automatically. Very long tool output is stored there and read in pages instead of being cut off. |
+| **Offline compute** | `calculate` for exact math, unit conversion and date arithmetic; `analyze_table` for CSV/JSON profiling, filters and group-by — no model arithmetic. |
+| **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first; `undo_changes` puts it back. |
 | **Tool profiles** | Auto/full/minimal/coding/research/desktop: small models see a task-shaped tool subset each turn (fewer wrong calls, less prompt cost). Independent read/search calls run in parallel. |
 | **Model teamwork** | The main model can delegate a bounded side-question to the smallest installed model with the needed capability (e.g. vision), then continue — check `model_info` for what's available locally. |
 | **Steering** | Type while a reply runs: the note is applied at the next step instead of waiting for a new turn. |
@@ -186,6 +190,14 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 - File tools are confined to the workspace; page fetching refuses localhost, private
   and link-local addresses (anti-SSRF).
 - Shell commands are blocklisted, time-limited and always approved by default.
+- Secrets found in tool output (API keys, tokens, private keys, passwords) are replaced
+  with `[SECRET_n]` placeholders before the model sees them and are never saved in chat
+  history; the placeholders work in local files and commands, and web requests carrying
+  a secret are refused.
+- Text in web pages, documents or files that tries to instruct the AI is fenced as
+  untrusted, and makes risky tools ask first for the next few turns.
+- File changes are checkpointed in Kiwibro's data folder and can be undone; overwrites
+  that would replace code with `... rest unchanged` placeholders are blocked.
 
 ## Verification
 

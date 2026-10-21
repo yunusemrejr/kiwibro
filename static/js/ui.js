@@ -409,6 +409,13 @@ const TOOL_META = {
   task_board: { label: "Task board", icon: "check" },
   recall: { label: "Recall", icon: "sparkles" },
   remember: { label: "Remember", icon: "sparkles" },
+  calculate: { label: "Calculate", icon: "tool" },
+  analyze_table: { label: "Analyze table", icon: "database" },
+  doc_search: { label: "Search documents", icon: "search" },
+  doc_read: { label: "Read document", icon: "file" },
+  doc_add: { label: "Index documents", icon: "layers" },
+  doc_list: { label: "Documents", icon: "folder" },
+  undo_changes: { label: "Undo changes", icon: "refresh" },
 };
 
 export function toolLabel(name) {
@@ -479,8 +486,11 @@ export function toolSummary(name, args) {
 }
 
 export function riskLevel(risk) {
+  // Accepts the safety levels (safe…critical) and the legacy low/medium/high.
   const value = String(risk || "medium").toLowerCase();
-  return value === "low" || value === "high" ? value : "medium";
+  if (value === "safe" || value === "low") return "low";
+  if (value === "high" || value === "critical") return "high";
+  return "medium";
 }
 
 export function summarizeArgs(args, fallback = "") {

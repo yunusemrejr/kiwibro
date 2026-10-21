@@ -1450,6 +1450,18 @@ p {
   transform: rotate(90deg);
 }
 
+.approval-reasons {
+  margin: -2px 14px 10px 17px;
+  padding-left: 16px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.approval-reasons li + li {
+  margin-top: 2px;
+}
+
 .approval-detail {
   display: flex;
   flex-direction: column;

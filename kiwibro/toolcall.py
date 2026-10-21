@@ -393,6 +393,10 @@ _KEY_SYNONYMS: dict[str, tuple[str, ...]] = {
     **dict.fromkeys(("memory", "fact", "note"), ("content",)),
 }
 _TEXT_KEYS = frozenset({"content", "code", "command", "new", "old", "text"})
+# Sandbox roots small models remember from training (agent harnesses, code interpreters).
+# The real workspace lives under $HOME, so these can only ever mean "the workspace".
+_PHANTOM_ROOT_RE = re.compile(r"^(?:/workspace|/mnt/data|/mnt/user-data|/home/user/workspace|/tmp/workspace)(?=/|$)/*")
+_PATH_KEYS = frozenset({"path", "paths", "cwd", "destination", "image_path", "filename"})
 _TRUE = frozenset({"true", "yes", "y", "1", "on", "enable", "enabled"})
 _FALSE = frozenset({"false", "no", "n", "0", "off", "disable", "disabled", "none"})
 _NUMERIC_TEXT_RE = re.compile(r"\s*([-+]?\d+(?:\.\d+)?)(?:\s*[A-Za-z%]+)?\s*")
@@ -482,6 +486,10 @@ def _coerce(value: Any, prop: Mapping[str, Any], key: str, notes: list[str]) -> 
     kind = _schema_type(prop)
     if kind == "string":
         value = _to_text(value, key)
+        if key in _PATH_KEYS and isinstance(value, str) and _PHANTOM_ROOT_RE.match(value):
+            relative = _PHANTOM_ROOT_RE.sub("", value) or "."
+            notes.append(f"{key} '{value}' → '{relative}' (paths are relative to the workspace)")
+            value = relative
     elif kind in ("integer", "number"):
         value = _to_number(value, prop, key, notes, integer=kind == "integer")
     elif kind == "boolean":

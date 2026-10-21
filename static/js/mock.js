@@ -111,6 +111,13 @@ const DEFAULT_PERMISSIONS = {
   task_board: "auto",
   recall: "auto",
   remember: "auto",
+  calculate: "auto",
+  analyze_table: "auto",
+  doc_search: "auto",
+  doc_read: "auto",
+  doc_add: "auto",
+  doc_list: "auto",
+  undo_changes: "auto",
 };
 
 const SEED_MEMORIES = [
@@ -1085,8 +1092,12 @@ I'll save these three points for you.`;
       tool: "write_file",
       args: { path: "kiwi-notes.md", content: fileContent },
       summary: "Save a 6-line summary to kiwi-notes.md",
-      risk: "medium",
+      risk: "write",
       timeout_s: 120,
+      // Mirrors safety.decide for this call under the supervised autonomy mode.
+      level: "low",
+      reasons: ["writes new file kiwi-notes.md"],
+      source: "permission",
     };
     const decision = await this._waitForApproval(turn, send, wait, approval);
     if (decision === "abort" || turn.aborted) return;

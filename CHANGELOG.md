@@ -30,6 +30,28 @@ ship in this version).
   user corrections at the next step; `done` now reports turn `stats`.
 - **Autonomy safeguards.** Duplicate-call loop guard, per-turn write budget,
   mass-delete caps, pre-edit snapshots in `.kiwibro-backups/`, all-or-nothing patches.
+- **Tool calls that work on 1–4B models.** Malformed JSON, misspelled tool and argument
+  names, wrong types and out-of-range values are repaired against each tool's schema;
+  calls written as text in ten common formats (Hermes, Qwen, Llama, Mistral, harmony,
+  DeepSeek, Gemma `tool_code`, ReAct, JSON, `name(...)`) are recovered, with their markup
+  hidden while streaming; errors show the exact valid usage. Models without native tool
+  calling get a text tool protocol. A silent reply after tool results gets one nudge.
+- **Content guard.** Secrets in tool output become `[SECRET_n]` placeholders (filled in
+  for local files and commands, refused in web requests, never stored in chat history);
+  prompt-injection text in pages, documents and files is fenced and makes risky tools
+  ask for approval for a few turns; overwrites that would replace code with
+  `... rest unchanged` placeholders or clobber binary files are blocked, and big
+  shrinks or folder deletes are escalated.
+- **Checkpoints and `undo_changes`.** Every agent file change (write, edit, patch,
+  move, copy, delete) is snapshotted outside the workspace and can be undone step by step.
+- **Document library.** `doc_search`, `doc_read`, `doc_add` and `doc_list` over an
+  on-disk FTS5 index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text,
+  code, CSV and JSON; workspace documents index automatically. Over-long tool output is
+  paged into the library (head and tail inline, the rest readable by handle) instead of
+  being truncated.
+- **Offline compute.** `calculate` (exact math, unit conversion, date arithmetic) is
+  offered on every turn; `analyze_table` profiles, filters and aggregates CSV/JSON files
+  by streaming them.
 
 ### Changed
 

@@ -307,7 +307,8 @@ Efficiency rules of the loop:
   run concurrently (`MAX_PARALLEL_TOOLS`); writes/commands stay serial. Results
   are recorded in original call order.
 - **Loop guard**: an identical (tool, args) call is refused on its third repeat in
-  a turn; write/exec executions are capped per turn (`MAX_WRITES_PER_TURN`).
+  a turn; bursts of writes/deletes are graded by `safety.decide` against
+  `MAX_WRITES_PER_TURN` (escalating to ask, or deny in autonomous mode).
 - **Result shaping**: long outputs are head+tail truncated before storage; the
   context engine additionally decays stale tool results with age.
 - **Steering**: `POST /api/chat/steer` queues a user note mid-turn; the worker
@@ -316,6 +317,73 @@ Efficiency rules of the loop:
   `.kiwibro-backups/` first (as does file deletion); recursive deletes refuse
   >100 entries at once; snippets run without a shell under timeout/output caps.
 - **Turn stats**: `done` carries `stats {tool_calls, tool_rounds, duration_ms}`.
+
+### Tool-call pipeline for small models
+
+Small (1–4B, heavily quantised) models are the design target, so every call passes a
+pipeline that turns near-misses into valid calls and keeps actions reversible
+(`agent._prepare_tool_call` → `run_one`):
+
+1. **Rescue** (`kiwibro/toolcall.py`). Arguments go through a lenient JSON parser
+   (single quotes, bare keys, missing/trailing commas, comments, Python literals,
+   unescaped inner quotes, missing closers). Tool names resolve through aliases and
+   fuzzy matching (`websearch`, `bash`, `functions.web_search`); argument names map
+   onto the schema (`q`→`query`, `file`→`path`, `start_line`→`start`); values are
+   coerced and clamped to it (`"20"`→`8` for `max_results`); `{"arguments": {…}}`
+   wrappers are peeled. A validation error returns the exact signature plus an
+   example, and the result notes what was fixed so the model learns the right form.
+2. **Text-written calls**. With no structured `tool_calls`, `extract_calls` recovers
+   calls written as text: Hermes `<tool_call>`, Qwen `<function=…>`, Llama
+   `<|python_tag|>`, Mistral `[TOOL_CALLS]`, harmony `to=functions.x`, DeepSeek
+   markers and `tool_code` fences always count; bare JSON, ReAct and `name(…)` lines
+   count only for known tools, outside "for example" prose, when the call dominates
+   the reply. `StreamFilter` holds call markup back while streaming. Models LM Studio
+   does not flag for tool use get the **text tool protocol**: a byte-stable manual in
+   message 0 (settings-only tool set) and tool history rewritten as plain text.
+3. **Decide**. `safety.decide` (policy, command risk, autonomy, breakers) merges
+   `guard.inspect_call` (content); the stricter verdict wins. The guard refuses
+   web-bound arguments that carry secrets, blocks overwrites containing elision
+   placeholders (`# ... rest unchanged`) or clobbering binary files, and escalates
+   large shrinks, big folder deletes and overwriting moves.
+4. **Checkpoint** (`kiwibro/checkpoints.py`). Before a write-risk call runs, every
+   file it may touch is snapshotted into `<data dir>/checkpoints` (zlib,
+   content-addressed, journaled per conversation; ≤512 MB / 20k rows, pruned oldest
+   first). `undo_changes` restores the newest change(s), optionally for one path; a
+   restore snapshots the current state first, so undoing never loses data.
+5. **Execute** under `safety.applied`; `guard.reveal` fills `[SECRET_n]`
+   placeholders back in for local write/exec tools only.
+6. **Postprocess** (`guard.postprocess`). Secrets in output (provider keys, tokens,
+   private keys, URL passwords, high-entropy credential assignments) become stable
+   `[SECRET_n]` placeholders held in memory only, so they never reach chat history.
+   Output scoring as prompt injection (override phrases, chat-template tokens,
+   exfiltration or "don't tell the user" requests, Unicode tag characters) is fenced
+   with a warning and taints the conversation for three turns, which makes
+   `safety.decide` escalate exec/write calls. Web and document output also has
+   chat-template tokens broken up (`< |im_start| >`) and invisible characters removed.
+7. **Page** (`library.page_output`). Output longer than ~15% of the context window
+   (1.5–8k chars) is stored in the document library as `D<n>`; the context keeps
+   head + tail plus `doc_read`/`doc_search` hints, so nothing is lost and small
+   windows are not flooded.
+
+An empty reply after tool results gets one transient nudge that is never stored.
+
+**Documents** (`kiwibro/library.py`, separate `library.db`). FTS5/BM25 index with
+streaming extraction (PDF via `pdftotext` with a pure-Python fallback, DOCX, ODT,
+EPUB, PPTX, XLSX, HTML, Markdown, text, code, CSV, JSON) into ~1k-char chunks that
+keep headings and locations (page, lines, slide, sheet). `doc_search` first indexes
+new or changed workspace documents (time-budgeted; files over 8 MB via `doc_add`);
+`doc_read` pages through a document with explicit `Next:` hints; `doc_list` shows
+documents or one outline. Memory stays flat: a 28 MB log indexes with ~3 MB RSS growth.
+
+**Offline compute** (`kiwibro/compute.py`). `calculate` (a core tool) evaluates math
+through an allow-listed AST walker (exact big integers, power/factorial guards),
+converts units across 12 categories and does date arithmetic; `analyze_table`
+profiles, filters, groups and aggregates CSV/TSV/JSON/JSONL by streaming rows with
+bounded heaps and reservoir samples.
+
+Extension tools (`calculate`, `analyze_table`, `doc_*`, `undo_changes`) are
+`ExtensionTool` records in their modules, registered into the `tools.py` catalog by
+`kiwibro/extensions.py`; they carry their own permission default and profile category.
 
 Permission evaluation per tool: explicit `deny` → deny; `auto` → allow; `ask` →
 create approval, emit `event: approval`, block the loop until the user resolves it

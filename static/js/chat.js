@@ -55,6 +55,13 @@ const ASSISTANT_PHRASE = {
   task_board: "update the task board",
   recall: "search memory",
   remember: "save a memory",
+  calculate: "calculate an exact result",
+  analyze_table: "analyze a data table",
+  doc_search: "search your documents",
+  doc_read: "read a document",
+  doc_add: "index documents in your workspace",
+  doc_list: "list your documents",
+  undo_changes: "undo its recent file changes",
 };
 
 function caretSpan() {
@@ -179,9 +186,11 @@ function approvalDetailRows(approval) {
 
 function buildApprovalCard(approval, resolve) {
   const tool = approval.tool || "tool";
-  const level = riskLevel(approval.risk);
+  // The safety level (when present) grades this specific call, not just the tool.
+  const level = riskLevel(approval.level || approval.risk);
   const summary = approval.summary || summarizeArgs(approval.args) || "";
   const phrase = ASSISTANT_PHRASE[tool] || "use a tool";
+  const reasons = Array.isArray(approval.reasons) ? approval.reasons.filter(Boolean) : [];
 
   const more = el(
     "button",
@@ -242,6 +251,13 @@ function buildApprovalCard(approval, resolve) {
         riskBadge(level),
       ]),
       el("div", { class: "approval-summary", text: summary }),
+      reasons.length
+        ? el(
+            "ul",
+            { class: "approval-reasons", "aria-label": "Why Kiwibro is asking" },
+            reasons.map((text) => el("li", { text })),
+          )
+        : null,
       more,
       detail,
       el("div", { class: "approval-actions" }, [deny, always, allow]),

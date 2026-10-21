@@ -51,6 +51,13 @@ const PERMISSION_ORDER = [
   "task_board",
   "recall",
   "remember",
+  "calculate",
+  "analyze_table",
+  "doc_search",
+  "doc_read",
+  "doc_add",
+  "doc_list",
+  "undo_changes",
 ];
 
 const TOOL_PROFILES = [

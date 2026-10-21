@@ -390,3 +390,29 @@ def test_is_empty_reply_false_for_visible_text():
 
 def test_is_empty_reply_false_when_there_is_a_tool_call():
     assert tc.is_empty_reply("", [{"id": "c1"}]) is False
+
+
+# --- regression from live runs: small models invent sandbox roots -------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("/workspace", "."), ("/workspace/notes/a.md", "notes/a.md"), ("/mnt/data/report.csv", "report.csv")],
+)
+def test_phantom_sandbox_roots_become_workspace_relative(raw, expected):
+    args, notes = tc.normalize_args({"path": raw}, tools.TOOL_SPECS["list_files"].parameters)
+    assert args["path"] == expected
+    assert any("relative to the workspace" in note for note in notes)
+
+
+def test_real_paths_are_left_alone():
+    for raw in ("notes/a.md", "/home/someone/Kiwibro/a.md", "/workspaces/a.md"):
+        args, _notes = tc.normalize_args({"path": raw}, tools.TOOL_SPECS["read_file"].parameters)
+        assert args["path"] == raw
+
+
+def test_phantom_roots_in_path_lists():
+    if "read_files" not in tools.TOOL_SPECS:
+        pytest.skip("read_files not in this catalog")
+    args, _notes = tc.normalize_args({"paths": ["/workspace/a.md", "b.md"]}, tools.TOOL_SPECS["read_files"].parameters)
+    assert args["paths"] == ["a.md", "b.md"]
