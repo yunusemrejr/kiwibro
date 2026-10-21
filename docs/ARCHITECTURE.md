@@ -91,10 +91,16 @@ Every chat request builds a system prompt (`kiwibro/prompts.py` +
 
 - identity: Kiwibro, a local AI agent on the user's Linux machine, running through
   LM Studio (never a cloud service);
-- the current LM Studio model id, the workspace path, and the current local time;
-- the tools available this turn (and their auto/ask permission split), or an explicit
-  "no tools" notice when agent mode is off or the model lacks tool support;
-- memory and conversation summary blocks added by the memory/context engines.
+- the current LM Studio model id and the workspace path;
+- the tools of the current profile (and their auto/ask permission split) plus one line
+  naming the rest of the catalog, or an explicit "no tools" notice when agent mode is
+  off or the model lacks tool support;
+- the rolling conversation summary added by the context engine.
+
+Everything in that system prompt is **stable across turns** (see §4.1): the local time,
+retrieved memories, recalled episodes and the directive ledger change per turn, so they
+travel in a context note on the newest user message instead
+(`Agent._turn_context` → `ContextEngine.prepare(turn_context=…)`).
 
 Utility prompts (titles, rolling summaries, memory extraction) also identify
 themselves as Kiwibro's, so even background calls stay on-brand.
@@ -173,6 +179,48 @@ returns a 400 mentioning tools, retry once without tools.
 - 5xx / timeouts → one retry for non-critical generation; stream errors emit
   `event: error` with `recoverable: true` and a short message.
 - Never surface raw HTML or Python tracebacks; log details to the log file.
+
+### 4.1 Local inference engine (`inference.py`, `routing.py`, `media.py`)
+
+On a CPU-only laptop, prompt prefill dominates latency. Measured on a Ryzen 5 7530U
+(LM Studio 0.4.26, `spark-x2.6-4b`, 4,052-token prompt): **124 s cold, 1.3 s** when
+LM Studio reuses its KV cache for the prefix, and 135 s again when one changing line
+(the clock) moved to the front. LM Studio keeps one cache per parallel slot (4 by
+default); a background request in between did not evict a chat's warm prefix.
+
+- **Prefix-stable prompts.** Message 0 (identity, profile tool set, summary) is
+  byte-identical across turns *and* conversations; per-turn text rides on the newest
+  user message. Tool results decay by user-turn age so old messages never re-render.
+  Live through Kiwibro: a new chat's first token came after 2.4 s instead of 17.3 s.
+- **Stable tool list.** Chat templates render the tool schemas ahead of all messages, so
+  `auto` is one fixed set (`tools.AUTO_TOOLS`, 20 tools sized for 1–4B models), never
+  re-selected per message. Other catalog tools run when called by exact name.
+- **Reasoning control** (setting `reasoning`: `auto`/`on`/`off`). LM Studio honours
+  `reasoning_effort: "none"` for models whose `/api/v1/models` entry lists a reasoning
+  toggle ("say hi" took 27.7 s with thinking and 2.1 s without). Templates render the
+  switch near the top, so a turn keeps one decision for all its rounds and `auto` only
+  changes it between turns while the prompt is ≤ 1,500 tokens. Non-streaming utility
+  calls (summaries, memory, titles, helpers) never think.
+- **Telemetry.** `done.inference` reports `ttft_ms`, `tokens_per_s`, a message-level
+  estimate of reused prompt tokens (`PrefixTracker`) and whether the turn thought; the
+  UI shows it as one quiet line under the reply. Time to first token includes waiting
+  for a free LM Studio slot.
+- **Model metadata.** `/api/v1/models` adds `key`, `display_name`, `arch`, `params`,
+  `size_bytes`, `quant_bits`, reasoning options and the loaded instance's
+  `loaded_config` (`context_length`, `parallel`, `flash_attention`) to every model record
+  (`llm.merge_native_metadata`); `inference.model_profile()` turns any record into a
+  size/tier/capability profile.
+- **Capability routing.** `routing.run_helper(llm, need, messages, current_model=…)` keeps
+  the main model when it can do the job, else leases the smallest capable installed model:
+  free-RAM check (never evicts the main model), `POST /api/v1/models/load` with an 8K
+  window, reference-counted sharing between concurrent calls, `POST /api/v1/models/unload`
+  after the last one, JIT `ttl` as a crash backstop. Live: `spark-x2.6-4b` (no vision) →
+  `qwen3.8-27b` loaded, answered, unloaded in 33 s. Images are downscaled to ≤1024 px
+  first (`media.image_data_url`); videos become keyframes (`media.video_frames`); with no
+  capable model, `media.media_facts` gives deterministic code-derived facts.
+- **Bigger windows for long chats.** `POST /api/models/context {id, context_length}`
+  reloads a loaded model with a larger context (`/api/models` lists `context_choices`);
+  if LM Studio refuses for lack of memory the previous window is restored.
 
 ---
 

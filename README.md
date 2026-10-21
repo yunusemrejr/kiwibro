@@ -49,8 +49,8 @@ permission, inside its own workspace.
 | | |
 |---|---|
 | **Chat** | Streaming replies, markdown + code with copy, collapsible reasoning, stop/abort. |
-| **Identity** | Every model run knows it is Kiwibro: local LM Studio model, workspace, tools, memory and current time are in its system prompt. |
-| **Models** | Live list from LM Studio, loaded/available state, context size, tool capability. |
+| **Identity** | Every model run knows it is Kiwibro: local LM Studio model, workspace and tools are in a system prompt that never changes between turns; time, memory and the current objective arrive with each message. |
+| **Models** | Live list from LM Studio with size, loaded vs. maximum context window, tool, vision and reasoning support. Click the context ring to reload a model with a larger window for long chats. |
 | **Context** | Automatic rolling summarisation with a quiet context meter. |
 | **Memory** | Global, deduped, FTS-searchable. Pin, edit, delete, forget all. |
 | **Agent tools (35)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), codebase (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python`/`run_javascript`, desktop (`system_info`, `open_path`, `clipboard`, `notify`, `screenshot`), model delegation (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`. |
@@ -58,8 +58,9 @@ permission, inside its own workspace.
 | **Documents** | `doc_search` / `doc_read` / `doc_add` / `doc_list` over a local full-text index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text, code, CSV and JSON — workspace documents are indexed automatically. Very long tool output is stored there and read in pages instead of being cut off. `convert_document` turns Markdown/HTML/Word/ODT/EPUB/Office files into PDF, Word, HTML, text and more with the converters you have installed (pandoc, WeasyPrint, LibreOffice, pdftotext). |
 | **Offline compute** | `calculate` for exact math, unit conversion and date arithmetic; `analyze_table` for CSV/JSON profiling, filters and group-by — no model arithmetic. |
 | **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first; `undo_changes` puts it back. |
-| **Tool profiles** | Auto/full/minimal/coding/research/desktop: small models see a task-shaped tool subset each turn (fewer wrong calls, less prompt cost). Independent read/search calls run in parallel. |
-| **Model teamwork** | The main model can delegate a bounded side-question to the smallest installed model with the needed capability (e.g. vision), then continue — check `model_info` for what's available locally. |
+| **Tool profiles** | Auto offers one fixed set of 20 tools sized for 1–4B models (the rest run when called by name); full/minimal/coding/research/desktop are explicit choices. Independent read/search calls run in parallel. |
+| **Fast local inference** | The prompt prefix stays byte-stable so LM Studio reuses its KV cache: on a laptop CPU a 4k-token prompt goes from 124 s to 1.3 s. A *Think* control (auto/on/off) spends reasoning tokens only where they help; background work never thinks. Each reply shows time to first token, tokens/s and the cached share. |
+| **Model teamwork** | When the main model lacks a capability (e.g. vision), Kiwibro loads the smallest installed model that has it, if it fits in free memory, asks it, unloads it and continues on the main model. With no capable model it falls back to code-based media analysis. |
 | **Steering** | Type while a reply runs: the note is applied at the next step instead of waiting for a new turn. |
 | **Permissions** | Auto / Ask / Deny per tool, inline approval cards, "Always" remembers. |
 | **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps, automatic checkpoints with undo, mass-delete caps, per-turn write budget, duplicate-call loop guard. |

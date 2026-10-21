@@ -23,9 +23,18 @@ ship in this version).
   to the smallest adequate installed model (e.g. vision) and return to the main
   model; `study_file` answers questions about long files by chunk→notes→merge.
   When no model fits, the playbook falls back to solving it with sandboxed code.
-- **Tool profiles & parallel execution.** Per-turn task-shaped tool subsets
-  (auto/full/minimal/coding/research/desktop) keep 1–4B models accurate and cheap;
-  independent read/search calls in one round run concurrently.
+- **Tool profiles & parallel execution.** `auto` offers one fixed 20-tool set sized for
+  1–4B models (the rest of the catalog runs when called by name); explicit profiles
+  (full/minimal/coding/research/desktop) remain. Independent read/search calls in one
+  round run concurrently.
+- **Local inference engine.** Prompts keep a byte-stable prefix so LM Studio reuses its
+  KV cache (measured 124 s → 1.3 s for a 4k-token prompt on a laptop CPU; a new chat's
+  first token in 2.4 s instead of 17.3 s); a `reasoning` setting (auto/on/off) with a
+  "Think" control in the composer, decided once per turn; utility calls never think;
+  per-reply speed line (time to first token, tokens/s, cached share); LM Studio v1
+  metadata (reasoning options, size, loaded window); helper models loaded/unloaded via
+  `/api/v1/models/load|unload` with a free-RAM guard and shared leases; images downscaled
+  before vision calls; one-click larger context window from the context ring.
 - **Mid-turn steering.** `POST /api/chat/steer` (send while a reply runs) applies
   user corrections at the next step; `done` now reports turn `stats`.
 - **Autonomy safeguards.** Duplicate-call loop guard, per-turn write budget,
