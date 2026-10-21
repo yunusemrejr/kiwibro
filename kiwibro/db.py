@@ -491,6 +491,27 @@ class Database:
             rows = conn.execute(sql, params).fetchall()
         return [self._message(row) for row in rows]
 
+    def list_messages_page(
+        self, conversation_id: str, *, before_seq: int | None = None, limit: int = 120
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Newest ``limit`` messages before ``before_seq`` (keyset pagination).
+
+        Returns (messages oldest→newest, has_more_older). Long conversations
+        page in from the tail instead of shipping megabytes per open.
+        """
+        sql = "SELECT * FROM messages WHERE conversation_id = ?"
+        params: list[Any] = [conversation_id]
+        if before_seq is not None:
+            sql += " AND seq < ?"
+            params.append(before_seq)
+        sql += " ORDER BY seq DESC LIMIT ?"
+        params.append(int(limit) + 1)
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        has_more = len(rows) > limit
+        page = [self._message(row) for row in reversed(rows[:limit])]
+        return page, has_more
+
     def recent_messages(self, conversation_id: str, limit: int = 8) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(

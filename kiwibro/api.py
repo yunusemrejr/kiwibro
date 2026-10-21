@@ -210,17 +210,53 @@ def create_conversation() -> Response:
     return jsonify(view), 201
 
 
+def _page_params() -> tuple[int | None, int | None]:
+    """Opt-in keyset pagination for long conversations (?limit=&before_seq=)."""
+    raw_limit = request.args.get("limit")
+    raw_before = request.args.get("before_seq")
+    limit: int | None = None
+    before: int | None = None
+    if raw_limit is not None:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            raise ApiError("bad_request", "limit must be an integer", 400) from None
+        if not 1 <= limit <= 500:
+            raise ApiError("bad_request", "limit must be between 1 and 500", 400)
+    if raw_before is not None:
+        try:
+            before = int(raw_before)
+        except ValueError:
+            raise ApiError("bad_request", "before_seq must be an integer", 400) from None
+        if before < 1:
+            raise ApiError("bad_request", "before_seq must be positive", 400)
+    return limit, before
+
+
 @bp.get("/api/conversations/<conversation_id>")
 def get_conversation(conversation_id: str) -> Response:
     svc = services()
     conversation = svc.db.get_conversation(conversation_id)
     if conversation is None:
         raise ApiError("not_found", "Conversation not found.", 404)
-    messages = svc.db.list_messages(conversation_id)
+    limit, before_seq = _page_params()
+    page: dict[str, Any] = {}
+    if limit is None:
+        messages = svc.db.list_messages(conversation_id)
+        estimate_messages = messages
+    else:
+        messages, has_more = svc.db.list_messages_page(
+            conversation_id, before_seq=before_seq, limit=limit
+        )
+        page = {
+            "has_more": has_more,
+            "oldest_seq": messages[0]["seq"] if messages else None,
+        }
+        estimate_messages = None  # estimate from the summary window, not the page
     model = conversation.get("model") or svc.settings_provider().get("model")
     context = (
         svc.context.estimate_conversation(
-            conversation_id, model or "", conversation=conversation, db_messages=messages
+            conversation_id, model or "", conversation=conversation, db_messages=estimate_messages
         )
         if model
         else {"used": 0, "budget": 30720, "percent": 0}

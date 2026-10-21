@@ -376,6 +376,48 @@ def test_summarize_long_text_map_reduce(env):
         assert prompt_tokens + 600 < 4096
 
 
+def test_message_pagination_keyset(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    for i in range(10):
+        svc.db.add_message(conversation["id"], "user", f"message {i}")
+    page, has_more = svc.db.list_messages_page(conversation["id"], limit=3)
+    assert [m["seq"] for m in page] == [8, 9, 10] and has_more is True
+    page, has_more = svc.db.list_messages_page(conversation["id"], before_seq=8, limit=3)
+    assert [m["seq"] for m in page] == [5, 6, 7] and has_more is True
+    page, has_more = svc.db.list_messages_page(conversation["id"], before_seq=2, limit=3)
+    assert [m["seq"] for m in page] == [1] and has_more is False
+
+
+def test_conversation_api_pagination_is_opt_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_app(
+        {"TESTING": True, "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
+         "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9"}
+    )
+    svc = app.extensions["kiwibro"]
+    fake = FakeLLM()
+    monkeypatch.setattr(svc.llm, "list_models", fake.list_models)
+    conversation = svc.db.create_conversation()
+    for i in range(10):
+        svc.db.add_message(conversation["id"], "user", f"message {i}")
+    client = app.test_client()
+
+    full = client.get(f"/api/conversations/{conversation['id']}").get_json()
+    assert len(full["messages"]) == 10 and "page" not in full  # back-compat
+
+    paged = client.get(f"/api/conversations/{conversation['id']}?limit=4").get_json()
+    assert [m["seq"] for m in paged["messages"]] == [7, 8, 9, 10]
+    assert paged["page"] == {"has_more": True, "oldest_seq": 7}
+    older = client.get(
+        f"/api/conversations/{conversation['id']}?limit=4&before_seq=7"
+    ).get_json()
+    assert [m["seq"] for m in older["messages"]] == [3, 4, 5, 6]
+    assert client.get(f"/api/conversations/{conversation['id']}?limit=0").status_code == 400
+    assert client.get(f"/api/conversations/{conversation['id']}?limit=x").status_code == 400
+
+
 def test_extraction_watermark_retries_after_failure(env, monkeypatch: pytest.MonkeyPatch):
     """A failed extraction must not skip facts: the watermark stays put."""
     svc, fake = env
