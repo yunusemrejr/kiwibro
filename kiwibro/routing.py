@@ -14,13 +14,24 @@ Layering (one policy, no duplication): capability *facts* come from
 orchestrates, duck-typing those primitives so it keeps working (JIT-only)
 on older clients. Everything is best-effort and bounded: a helper call
 never unloads the main model or a model that was already loaded.
+
+Lifecycle (``_lease``): the current model is used directly when it already
+has the capability; otherwise a helper is loaded only if free RAM allows it
+next to the main model, concurrent calls share one load (reference count),
+and it is unloaded when the last of them finishes. Helper calls never think
+(``reasoning_effort: "none"`` when the model supports the toggle) and carry
+a JIT ``ttl`` so a crash cannot leave a helper resident for long.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+import threading
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
+from . import media
+from .inference import model_profile, reasoning_payload
 from .llm import LMStudioError
 
 log = logging.getLogger(__name__)
@@ -30,6 +41,9 @@ NEEDS = ("vision", "audio", "reasoning", "coding", "long_context", "fast", "embe
 _REASONING_HINTS = ("r1", "reason", "think", "deepseek-r", "qwq", "o1", "o3", "magistral")
 _CODING_HINTS = ("coder", "code", "starcoder", "codellama", "devstral")
 _LONG_CONTEXT_MIN = 65536
+HELPER_CONTEXT = 8192
+HELPER_TTL_S = 600
+RAM_HEADROOM = 1.25  # weights + KV cache at HELPER_CONTEXT + runtime overhead
 
 
 def _annotate(model: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +189,89 @@ def _image_parts(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return prompt, uris
 
 
+def available_memory_bytes() -> int | None:
+    try:
+        with open("/proc/meminfo", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+MEMORY_PROBE: Callable[[], int | None] = available_memory_bytes
+_STATE_LOCK = threading.Lock()
+_LEASES: dict[str, int] = {}  # helper id -> active calls
+_LOADED: set[str] = set()  # helpers this process loaded and must unload
+_LOAD_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _check_memory(helper: dict[str, Any]) -> None:
+    needed = model_profile(str(helper["id"]), helper).cost
+    if needed == float("inf"):
+        gb = helper.get("est_memory_gb")
+        needed = gb * 1e9 if isinstance(gb, (int, float)) else needed
+    free = MEMORY_PROBE()
+    if free is not None and needed != float("inf") and needed * RAM_HEADROOM > free:
+        raise LMStudioError(
+            "no_memory",
+            f"{helper['id']} needs about {needed * RAM_HEADROOM / 1e9:.1f} GB but only "
+            f"{free / 1e9:.1f} GB is free, so it was not loaded next to the main model.",
+        )
+
+
+@contextmanager
+def _lease(llm: Any, helper: dict[str, Any]) -> Iterator[bool]:
+    """Hold ``helper`` loaded for one call; yields True when this process loaded it."""
+    model_id = str(helper["id"])
+    with _STATE_LOCK:
+        _LEASES[model_id] = _LEASES.get(model_id, 0) + 1
+        load_lock = _LOAD_LOCKS.setdefault(model_id, threading.Lock())
+    try:
+        with load_lock:  # concurrent calls on one cold helper load it once
+            with _STATE_LOCK:
+                needs_load = helper.get("state") != "loaded" and model_id not in _LOADED
+            if needs_load:
+                _check_memory(helper)
+                load_model = getattr(llm, "load_model", None)
+                loaded = False
+                if callable(load_model):
+                    try:
+                        loaded = bool(load_model(model_id))
+                    except Exception:  # JIT loading still applies on the call itself
+                        log.debug("best-effort load failed for %s", model_id, exc_info=True)
+                with _STATE_LOCK:
+                    # JIT-loaded helpers are tracked too, so they are unloaded after use.
+                    _LOADED.add(model_id)
+                if loaded:
+                    log.info("loaded helper %s", model_id)
+        with _STATE_LOCK:
+            temporary = model_id in _LOADED
+        yield temporary
+    finally:
+        with _STATE_LOCK:
+            remaining = _LEASES.get(model_id, 1) - 1
+            if remaining > 0:
+                _LEASES[model_id] = remaining
+                release = False
+            else:
+                _LEASES.pop(model_id, None)
+                release = model_id in _LOADED
+                _LOADED.discard(model_id)
+        unload_model = getattr(llm, "unload_model", None)
+        if release and callable(unload_model):
+            try:
+                unload_model(model_id)
+            except Exception:  # best-effort: the request ttl is the backstop
+                log.debug("best-effort unload failed for %s", model_id, exc_info=True)
+
+
+def temporary_models() -> list[str]:
+    with _STATE_LOCK:
+        return sorted(_LOADED)
+
+
 def run_helper(
     llm: Any,
     need: str,
@@ -194,21 +291,20 @@ def run_helper(
     ``embeddings`` vectors and ``text`` is empty.
     """
     models = _catalog(llm)
-    helper = pick_helper(models, need, current=current_model)
+    current = next((m for m in models if m.get("id") == current_model), None)
+    if current is not None and _satisfies(_annotate(current), need) and need not in ("fast", "long_context"):
+        helper = _annotate(current)  # the main model already can: no swap, no load
+    else:
+        helper = pick_helper(models, need, current=current_model)
     if helper is None:
         raise LMStudioError(
             "no_model", f"No installed LM Studio model provides '{need}'."
         )
     model_id = str(helper["id"])
-    was_loaded = helper.get("state") == "loaded"
-    load_model = getattr(llm, "load_model", None)
-    unload_model = getattr(llm, "unload_model", None)
-    if not was_loaded and callable(load_model):
-        try:
-            load_model(model_id)
-        except Exception:  # JIT loading still applies on the call itself
-            log.debug("best-effort load failed for %s", model_id, exc_info=True)
-    try:
+    with _lease(llm, helper) as temporary:
+        extra = reasoning_payload(model_profile(model_id, helper), think=False)
+        if temporary:
+            extra["ttl"] = HELPER_TTL_S
         if need == "embeddings":
             embed = getattr(llm, "embed", None)
             if not callable(embed):
@@ -219,24 +315,20 @@ def run_helper(
                 if isinstance(m.get("content"), str) and m.get("content")
             ]
             vectors = embed(model=model_id, texts=texts)
-            return {"model": model_id, "text": "", "embeddings": vectors}
+            return {"model": model_id, "text": "", "embeddings": vectors, "temporary": temporary}
         if need == "vision":
             prompt, uris = _image_parts(messages)
             complete_vision = getattr(llm, "complete_vision", None)
             if uris and callable(complete_vision):
                 completion = complete_vision(
                     model=model_id, prompt=prompt or "Describe this image.",
-                    image_data_uris=uris, max_tokens=max_tokens, temperature=0.0,
+                    image_data_uris=media.shrink_data_urls(uris), max_tokens=max_tokens,
+                    temperature=0.0, extra=extra or None,
                 )
-                return {"model": model_id, "text": (completion.text or "").strip()}
+                return {"model": model_id, "text": (completion.text or "").strip(), "temporary": temporary}
+            messages = media.shrink_image_parts(messages)
         completion = llm.complete(
             model=model_id, messages=messages, max_tokens=max_tokens,
-            temperature=0.0, retries=0,
+            temperature=0.0, retries=0, extra=extra or None,
         )
-        return {"model": model_id, "text": (completion.text or "").strip()}
-    finally:
-        if not was_loaded and model_id != current_model and callable(unload_model):
-            try:
-                unload_model(model_id)
-            except Exception:  # best-effort: LM Studio idle-eviction is the backstop
-                log.debug("best-effort unload failed for %s", model_id, exc_info=True)
+        return {"model": model_id, "text": (completion.text or "").strip(), "temporary": temporary}

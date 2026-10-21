@@ -8,12 +8,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import requests
 
 from . import capabilities as caps
 from . import config
+from .inference import model_profile, reasoning_payload
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ COMPLETE_READ_TIMEOUT = 300
 MODEL_CACHE_TTL = 5.0
 USER_AGENT = "Kiwibro/1.0 (local)"
 
+_CORE_PAYLOAD_KEYS = frozenset({"model", "messages", "stream", "tools"})
 _CONTEXT_MARKERS = ("context", "n_ctx", "token", "too long", "too many", "exceeds")
 _TOOL_MARKERS = ("tool",)
 
@@ -128,6 +130,54 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def merge_native_metadata(models: list[dict[str, Any]], native: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add LM Studio ``/api/v1/models`` facts to model records (additive; returns copies).
+
+    v1 adds what v0 lacks: reasoning toggle options, parameter count, file size,
+    architecture and the loaded instance's config. A v0 id is either a v1
+    ``key`` or one of its ``loaded_instances[].id``.
+    """
+    by_id: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for entry in native:
+        if not isinstance(entry, dict) or not entry.get("key"):
+            continue
+        instances = [i for i in entry.get("loaded_instances") or [] if isinstance(i, dict)]
+        by_id.setdefault(str(entry["key"]), (entry, (instances[0].get("config") or {}) if instances else {}))
+        for instance in instances:
+            if instance.get("id"):
+                by_id[str(instance["id"])] = (entry, instance.get("config") or {})
+    out = []
+    for model in models:
+        match = by_id.get(str(model.get("id")))
+        if match is None:
+            out.append(model)
+            continue
+        entry, loaded_config = match
+        caps_v1 = entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else {}
+        reasoning = caps_v1.get("reasoning") if isinstance(caps_v1.get("reasoning"), dict) else {}
+        quant = entry.get("quantization") if isinstance(entry.get("quantization"), dict) else {}
+        merged = dict(model)
+        merged.update({
+            "key": entry["key"],
+            "display_name": entry.get("display_name") or model.get("name"),
+            "arch": entry.get("architecture") or "",
+            "params": entry.get("params_string") or "",
+            "size_bytes": _int(entry.get("size_bytes")),
+            "quant_bits": quant.get("bits_per_weight"),
+            "reasoning": [str(o) for o in reasoning.get("allowed_options") or []],
+            "reasoning_default": reasoning.get("default"),
+            "vision": bool(model.get("vision") or caps_v1.get("vision")),
+            "tools": bool(model.get("tools") or caps_v1.get("trained_for_tool_use")),
+        })
+        if loaded_config and model.get("state") == "loaded":
+            merged["loaded_config"] = {
+                k: loaded_config.get(k) for k in ("context_length", "parallel", "flash_attention")
+                if k in loaded_config
+            }
+        out.append(merged)
+    return out
+
+
 def classify_http_error(status: int, body: str) -> LMStudioError:
     """Map a non-200 response from LM Studio to a typed error."""
     text = (body or "").lower()
@@ -183,6 +233,7 @@ class LMStudioClient:
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
         self._load_api_supported: bool | None = None
+        self._instances: dict[str, str] = {}  # model key -> instance id we loaded
 
     # --- model discovery ---------------------------------------------------
 
@@ -231,7 +282,7 @@ class LMStudioClient:
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, list):
                 models = [m for m in (normalize_model(raw) for raw in data if isinstance(raw, dict)) if m]
-                return models
+                return merge_native_metadata(models, self._native_models())
         # Older LM Studio builds: fall back to the OpenAI-style list.
         try:
             fallback = requests.get(
@@ -318,6 +369,7 @@ class LMStudioClient:
         max_tokens: int,
         stream: bool,
         response_format: dict[str, Any] | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -333,6 +385,9 @@ class LMStudioClient:
             payload["tool_choice"] = "auto"
         if response_format:
             payload["response_format"] = response_format
+        if extra:
+            # Server knobs such as reasoning_effort, ttl or draft_model; never the core fields.
+            payload.update({k: v for k, v in extra.items() if k not in _CORE_PAYLOAD_KEYS})
         return payload
 
     def stream_chat(
@@ -346,6 +401,7 @@ class LMStudioClient:
         on_delta: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
         abort: threading.Event | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> ChatResult:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
@@ -353,7 +409,8 @@ class LMStudioClient:
 
         def attempt(with_tools: bool) -> ChatResult:
             payload = self._payload(
-                model, messages, tools if with_tools else None, temperature, max_tokens, stream=True
+                model, messages, tools if with_tools else None, temperature, max_tokens, stream=True,
+                extra=extra,
             )
             result = ChatResult()
             tool_acc: dict[int, dict[str, Any]] = {}
@@ -506,12 +563,15 @@ class LMStudioClient:
         read_timeout: int = COMPLETE_READ_TIMEOUT,
         retries: int = 1,
         response_format: dict[str, Any] | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> Completion:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
+        if extra is None:
+            extra = self._utility_extra(model)
         payload = self._payload(
             model, messages, None, temperature, max_tokens, stream=False,
-            response_format=response_format,
+            response_format=response_format, extra=extra,
         )
         last_error: LMStudioError | None = None
         for attempt in range(retries + 1):
@@ -559,6 +619,15 @@ class LMStudioClient:
             return Completion(text=str(content), usage=_usage(data.get("usage")))
         raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
 
+    def _utility_extra(self, model: str) -> dict[str, Any] | None:
+        """Non-streaming calls are utility work (summaries, memory, titles, helpers), so they
+        never think: on a laptop, reasoning tokens cost as much as answer tokens, and an
+        answer that is all reasoning would otherwise be returned as the content."""
+        info = self.model_info(model)
+        if info is None:
+            return None
+        return reasoning_payload(model_profile(model, info), think=False) or None
+
     def complete_json(
         self,
         *,
@@ -568,6 +637,8 @@ class LMStudioClient:
         temperature: float = 0.0,
         read_timeout: int = COMPLETE_READ_TIMEOUT,
         retries: int = 1,
+        response_format: dict[str, Any] | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> Any:
         try:
             completion = self.complete(
@@ -577,6 +648,8 @@ class LMStudioClient:
                 temperature=temperature,
                 read_timeout=read_timeout,
                 retries=retries,
+                response_format=response_format,
+                extra=extra,
             )
         except LMStudioError as exc:
             log.debug("complete_json failed: %s", exc.message)
@@ -586,6 +659,19 @@ class LMStudioClient:
     # --- capability catalog, vision, embeddings, load control -------------
     # Serving primitives consumed by the routing layers. Selection policy
     # (which helper model to run) is NOT here; see routing.py.
+
+    def _native_models(self) -> list[dict[str, Any]]:
+        """``/api/v1/models`` entries, or [] on builds/servers without it (optional metadata)."""
+        try:
+            response = requests.get(
+                f"{self.base_url()}/api/v1/models", timeout=(CONNECT_TIMEOUT, 5),
+                headers={"User-Agent": USER_AGENT},
+            )
+            payload = response.json() if response.status_code == 200 else None
+        except Exception:  # metadata is optional: never fail the model list over it
+            return []
+        native = payload.get("models") if isinstance(payload, dict) else None
+        return [entry for entry in native if isinstance(entry, dict)] if isinstance(native, list) else []
 
     def _fetch_raw_models(self) -> list[dict[str, Any]]:
         base = self.base_url()
@@ -628,8 +714,8 @@ class LMStudioClient:
                 "publisher": raw.get("publisher") or "",
                 "quantization": raw.get("quantization") or "",
             }
-            entries.append(caps.infer_capabilities(entry))
-        return entries
+            entries.append(entry)
+        return [caps.infer_capabilities(e) for e in merge_native_metadata(entries, self._native_models())]
 
     def complete_vision(
         self,
@@ -641,6 +727,7 @@ class LMStudioClient:
         max_tokens: int = 900,
         temperature: float = 0.0,
         read_timeout: int = COMPLETE_READ_TIMEOUT,
+        extra: Mapping[str, Any] | None = None,
     ) -> Completion:
         """One non-streaming vision call. ``image_data_uris``: ``data:image/...;base64,...``."""
         uris = [u for u in image_data_uris if isinstance(u, str) and u.startswith("data:image/")]
@@ -656,7 +743,7 @@ class LMStudioClient:
         messages.append({"role": "user", "content": parts})
         return self.complete(
             model=model, messages=messages, max_tokens=max_tokens,
-            temperature=temperature, read_timeout=read_timeout, retries=0,
+            temperature=temperature, read_timeout=read_timeout, retries=0, extra=extra,
         )
 
     def embed(
@@ -696,34 +783,57 @@ class LMStudioClient:
         )
         return [[float(v) for v in d.get("embedding") or []] for d in ordered]
 
-    def _load_api_call(self, action: str, model: str) -> bool:
+    def _load_api_call(self, action: str, model: str, context_length: int | None = None) -> bool:
+        """LM Studio's v1 load control: ``POST /api/v1/models/load|unload``.
+
+        ``load`` takes ``{"model", "context_length"?}`` and answers
+        ``{"instance_id", "status": "loaded", ...}``; ``unload`` takes that
+        ``instance_id`` (remembered here; it can differ from the model key).
+        Builds without the API answer ``Unexpected endpoint``; that is cached.
+        """
         if self._load_api_supported is False:
             return False
-        base = self.base_url()
+        if action == "load":
+            body: dict[str, Any] = {"model": model}
+            if context_length:
+                body["context_length"] = int(context_length)
+        else:
+            with self._lock:
+                body = {"instance_id": self._instances.get(model, model)}
         try:
             response = requests.post(
-                f"{base}/api/v0/models/{action}",
-                json={"model": model},
+                f"{self.base_url()}/api/v1/models/{action}",
+                json=body,
                 timeout=(CONNECT_TIMEOUT, 180),
                 headers={"User-Agent": USER_AGENT},
             )
         except requests.RequestException:
             return False
-        body = self._read_body(response)
-        # Builds without load control answer 200 + {"error":"Unexpected endpoint..."}.
-        if "Unexpected endpoint" in body:
+        text = self._read_body(response)
+        if response.status_code == 404 or "Unexpected endpoint" in text:
             self._load_api_supported = False
             return False
         if response.status_code != 200:
             return False
         self._load_api_supported = True
+        instance = None
+        if action == "load":
+            try:
+                instance = (response.json() or {}).get("instance_id")
+            except (ValueError, AttributeError):
+                instance = None
+        with self._lock:
+            if action == "load":
+                self._instances[model] = str(instance or model)
+            else:
+                self._instances.pop(model, None)
         self.clear_cache()
         return True
 
-    def load_model(self, model: str) -> bool:
+    def load_model(self, model: str, context_length: int | None = None) -> bool:
         """Best-effort explicit load; False means rely on LM Studio JIT loading."""
-        return self._load_api_call("load", model)
+        return self._load_api_call("load", model, context_length)
 
     def unload_model(self, model: str) -> bool:
-        """Best-effort explicit unload; False means the build cannot unload via API."""
+        """Best-effort explicit unload of a model this client loaded (or a loaded instance id)."""
         return self._load_api_call("unload", model)

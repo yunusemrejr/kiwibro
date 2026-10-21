@@ -114,8 +114,11 @@ class FakeLLM:
         on_delta: Any = None,
         on_reasoning: Any = None,
         abort: Any = None,
+        extra: Any = None,
     ) -> ChatResult:
-        self.stream_calls.append({"model": model, "messages": messages, "tools": tools, "abort": abort})
+        self.stream_calls.append(
+            {"model": model, "messages": messages, "tools": tools, "abort": abort, "extra": extra}
+        )
         item = self.stream_script.pop(0) if self.stream_script else ChatResult(
             content="Hello from the fake model.",
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -1004,9 +1007,7 @@ def test_health_and_bootstrap(env: Env):
 
 def test_system_prompt_identity_and_capabilities(env: Env):
     settings = env.svc.settings_provider()
-    prompt = env.svc.agent._system_prompt(
-        settings, "", model="fake-1", model_info={"tools": True}
-    )
+    prompt = env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": True})
     assert "You are Kiwibro" in prompt
     assert "local AI agent" in prompt
     assert "LM Studio" in prompt
@@ -1014,17 +1015,17 @@ def test_system_prompt_identity_and_capabilities(env: Env):
     assert "## Workspace" in prompt
     assert "web_search" in prompt and "run_command" in prompt
     assert "permission" in prompt.lower()
-    assert "Current local date and time" in prompt
+    # KV-cache rule: nothing that changes per turn lives in message 0.
+    assert "Local time" not in prompt and "## Memory" not in prompt
+    assert "context note" in prompt
 
     disabled = env.svc.agent._system_prompt(
-        {**settings, "agent_enabled": False}, "", model="fake-1", model_info={"tools": True}
+        {**settings, "agent_enabled": False}, model="fake-1", model_info={"tools": True}
     )
     assert "Agent mode is off" in disabled
     assert "web_search, fetch_page" not in disabled
 
-    unsupported = env.svc.agent._system_prompt(
-        settings, "", model="fake-1", model_info={"tools": False}
-    )
+    unsupported = env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": False})
     assert "cannot make tool calls" in unsupported
 
 

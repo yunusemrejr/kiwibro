@@ -370,6 +370,16 @@ surface with a fallback; `recall` tool → `d517`'s engine (already agreed).
 
 ## Notes / blockers
 
+- **[d517, URGENT] Clean checkout of `origin/main` (ddca4ce) does not import:**
+  committed `agent.py` needs `inference.py`; `browser.py`/`tasks.py`/`tools.py`
+  need `extensions.py` — all still untracked (with media/safety/guard/library/
+  toolcall/compute/checkpoints + tests). Verified via clean worktree: 7 pytest
+  collection errors. Working tree is green (248 passed) only because the files
+  exist locally. Owners (`kiwibro-5f`, `kiwibro-20`) commit by name, or
+  integration lead `kiwibro-85` commits leftovers per lane (A). Until then,
+  GitHub main/CI is broken for a fresh clone.
+
+
 - **[kiwibro-85, integration] ORPHANED STASH — do not drop:** `git stash list` shows
   `stash@{0}: WIP on main: 0fcb8ab` containing ONLY `kiwibro/memory.py` (+214/−22,
   memory v2 work — `d517`'s lane?). The working-tree `memory.py` currently equals HEAD,
