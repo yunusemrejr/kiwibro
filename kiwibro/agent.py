@@ -287,16 +287,34 @@ class AgentManager:
 
     def event_stream(self, turn: Turn) -> Iterator[str]:
         """Yield SSE frames from the turn queue, with idle heartbeats."""
+        pending: Any = ...
         try:
             while True:
-                try:
-                    item = turn.queue.get(timeout=config.HEARTBEAT_S)
-                except queue.Empty:
-                    yield ": ping\n\n"
-                    continue
+                if pending is not ...:
+                    item, pending = pending, ...
+                else:
+                    try:
+                        item = turn.queue.get(timeout=config.HEARTBEAT_S)
+                    except queue.Empty:
+                        yield ": ping\n\n"
+                        continue
                 if item is None:
                     break
                 event, data = item
+                # Coalesce queued token deltas into one frame: fewer SSE
+                # writes and frontend renders when the consumer lags.
+                if event in ("delta", "reasoning"):
+                    texts = [str(data.get("text") or "")]
+                    while True:
+                        try:
+                            nxt = turn.queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if nxt is None or nxt[0] != event:
+                            pending = nxt
+                            break
+                        texts.append(str(nxt[1].get("text") or ""))
+                    data = {**data, "text": "".join(texts)}
                 yield self._frame(event, data)
         finally:
             if not turn.done_sent:
@@ -380,8 +398,11 @@ class AgentManager:
 
         for round_index in range(config.MAX_TOOL_ROUNDS):
             self._raise_if_aborted(turn)
-            prepared = self.context.prepare(turn.conversation_id, model, system_prompt)
-            self._emit_context(turn, prepared)
+            if round_index > 0:
+                # Append only the new assistant/tool messages; extend() falls
+                # back to a full prepare if the compaction trigger is crossed.
+                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt)
+                self._emit_context(turn, prepared)
             turn.emit(
                 "status",
                 {"phase": "thinking", "label": "Thinking" if round_index == 0 else "Working"},
@@ -399,7 +420,7 @@ class AgentManager:
             )
             if result.tools_disabled:
                 tool_list = None
-            self._record_usage(turn, result)
+            self._record_usage(turn, result, prepared)
             assistant_message = None
             if result.content or result.reasoning or result.tool_calls:
                 assistant_message = self.db.add_message(
@@ -588,10 +609,12 @@ class AgentManager:
             time_block=time_block,
         )
 
-    def _record_usage(self, turn: Turn, result: ChatResult) -> None:
+    def _record_usage(self, turn: Turn, result: ChatResult, prepared: PreparedContext | None = None) -> None:
         usage = result.usage
         if not usage:
             return
+        if prepared is not None and turn.model:
+            self.context.note_usage(turn.model, prepared.raw_sum, int(usage.get("prompt_tokens") or 0))
         turn.has_usage = True
         turn.usage_prompt += int(usage.get("prompt_tokens") or 0)
         turn.usage_completion += int(usage.get("completion_tokens") or 0)

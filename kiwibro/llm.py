@@ -172,6 +172,7 @@ class LMStudioClient:
         self._cache_at = 0.0
         self._cache_ttl = cache_ttl
         self._lock = threading.Lock()
+        self._fetch_lock = threading.Lock()
 
     # --- model discovery ---------------------------------------------------
 
@@ -188,11 +189,16 @@ class LMStudioClient:
         with self._lock:
             if not force and self._cache is not None and time.monotonic() - self._cache_at < self._cache_ttl:
                 return [dict(item) for item in self._cache]
-        models = self._fetch_models()
-        with self._lock:
-            self._cache = models
-            self._cache_at = time.monotonic()
-        return [dict(item) for item in models]
+        # Single-flight: concurrent callers share one fetch instead of stampeding.
+        with self._fetch_lock:
+            with self._lock:
+                if not force and self._cache is not None and time.monotonic() - self._cache_at < self._cache_ttl:
+                    return [dict(item) for item in self._cache]
+            models = self._fetch_models()
+            with self._lock:
+                self._cache = models
+                self._cache_at = time.monotonic()
+            return [dict(item) for item in models]
 
     def _fetch_models(self) -> list[dict[str, Any]]:
         base = self.base_url()

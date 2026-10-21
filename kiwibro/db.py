@@ -126,13 +126,42 @@ class Database:
         self.path = str(path)
         self._init_lock = threading.Lock()
         self._initialized = False
+        self._local = threading.local()
+        self._settings_version = 0
+        self._settings_version_lock = threading.Lock()
 
-    @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    @property
+    def settings_version(self) -> int:
+        """Monotonic counter bumped on every settings/permissions write."""
+        return self._settings_version
+
+    def _bump_settings_version(self) -> None:
+        with self._settings_version_lock:
+            self._settings_version += 1
+
+    def _thread_connection(self) -> sqlite3.Connection:
+        conns = getattr(self._local, "conns", None)
+        if conns is None:
+            conns = self._local.conns = {}
+        conn = conns.get(self.path)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                conns.pop(self.path, None)
         conn = sqlite3.connect(self.path, timeout=15, check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
+        conns[self.path] = conn
+        return conn
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        # One reused connection per thread (SQLite handles concurrency via WAL +
+        # busy_timeout); avoids a connect + pragma round-trip on every call.
+        conn = self._thread_connection()
         try:
             yield conn
         finally:
@@ -141,7 +170,6 @@ class Database:
                     conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            conn.close()
 
     def initialize(self) -> None:
         with self._init_lock:
@@ -494,7 +522,27 @@ class Database:
         return self.list_memories(query=query, limit=limit)
 
     def count_memories(self, kind: str | None = None, query: str | None = None) -> int:
-        return len(self.list_memories(kind=kind, query=query))
+        sql = "SELECT COUNT(*) AS n FROM memories m"
+        params: list[Any] = []
+        match = fts_query(query) if query else None
+        if match:
+            sql += " JOIN memories_fts ON memories_fts.memory_id = m.id WHERE memories_fts MATCH ?"
+            params.append(match)
+        elif query:
+            sql += " WHERE (m.content LIKE ? OR m.normalized LIKE ?)"
+            like = f"%{query}%"
+            params.extend([like, like])
+        else:
+            sql += " WHERE 1=1"
+        if kind:
+            sql += " AND m.kind = ?"
+            params.append(kind)
+        try:
+            with self.connect() as conn:
+                row = conn.execute(sql, params).fetchone()
+        except sqlite3.Error:  # pragma: no cover - defensive, mirrors list_memories
+            return self.count_memories(kind=kind, query=None)
+        return int(row["n"])
 
     def all_memories(self, limit: int = config.MEMORY_CAP) -> list[dict[str, Any]]:
         return self.list_memories(limit=limit)
@@ -637,6 +685,7 @@ class Database:
                 "ON CONFLICT(tool) DO UPDATE SET mode = excluded.mode",
                 (tool, mode),
             )
+        self._bump_settings_version()
 
     def set_permissions(self, permissions: dict[str, str]) -> None:
         for tool, mode in permissions.items():
@@ -662,6 +711,7 @@ class Database:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, json.dumps(value, ensure_ascii=False)),
             )
+        self._bump_settings_version()
 
     def patch_settings(self, values: dict[str, Any]) -> None:
         for key, value in values.items():

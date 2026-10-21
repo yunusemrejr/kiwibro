@@ -219,7 +219,9 @@ def get_conversation(conversation_id: str) -> Response:
     messages = svc.db.list_messages(conversation_id)
     model = conversation.get("model") or svc.settings_provider().get("model")
     context = (
-        svc.context.estimate_conversation(conversation_id, model or "")
+        svc.context.estimate_conversation(
+            conversation_id, model or "", conversation=conversation, db_messages=messages
+        )
         if model
         else {"used": 0, "budget": 30720, "percent": 0}
     )

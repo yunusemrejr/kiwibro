@@ -99,8 +99,19 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     except OSError:
         log.warning("could not create default workspace %s", defaults["workspace"])
 
+    _settings_cache: dict[str, Any] = {"version": -1, "value": None}
+
     def settings_provider() -> dict[str, Any]:
-        return db.get_settings(defaults)
+        # Settings are read many times per turn (agent, context, memory, llm,
+        # tools) but written rarely; serve from cache keyed by the DB write
+        # version so reads never go stale.
+        version = db.settings_version
+        cached = _settings_cache["value"]
+        if cached is None or _settings_cache["version"] != version:
+            cached = db.get_settings(defaults)
+            _settings_cache["value"] = cached
+            _settings_cache["version"] = db.settings_version
+        return {**cached, "permissions": dict(cached.get("permissions") or {})}
 
     llm = LMStudioClient(settings_provider)
     context = ContextEngine(db, llm, settings_provider)
