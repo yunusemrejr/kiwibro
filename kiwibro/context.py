@@ -351,6 +351,7 @@ class PreparedContext:
     trigger: int = 0
     recalled: int = 0
     anchored: bool = False
+    turn_context: str = ""
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -544,6 +545,7 @@ class ContextEngine:
             trigger=trigger,
             recalled=recalled,
             anchored=anchored,
+            turn_context="\n\n".join(note_parts),
         )
 
     def _recall_note(
@@ -659,9 +661,12 @@ class ContextEngine:
         conversation = self.db.get_conversation(conversation_id)
         if conversation is None:
             raise ValueError(f"unknown conversation {conversation_id}")
-        if conversation["summary"] != prepared.summary or turn_context.strip():
-            # A fresh turn note belongs to a full prepare (it rewrites the
-            # newest user message); tool rounds within a turn pass none.
+        if conversation["summary"] != prepared.summary or (
+            turn_context.strip() and turn_context.strip() not in prepared.turn_context
+        ):
+            # A *changed* turn note belongs to a full prepare (it rewrites the
+            # newest user message). The same note re-passed each tool round —
+            # the agent's pattern — must stay incremental.
             return self.prepare(conversation_id, model, system_prompt, turn_context=turn_context)
         new_db = self.db.list_messages(conversation_id, after_seq=prepared.last_seq)
         if not new_db:
@@ -689,6 +694,7 @@ class ContextEngine:
             trigger=prepared.trigger,
             recalled=prepared.recalled,
             anchored=prepared.anchored,
+            turn_context=prepared.turn_context,
         )
 
     @staticmethod

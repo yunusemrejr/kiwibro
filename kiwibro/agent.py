@@ -671,7 +671,11 @@ class AgentManager:
     def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
         memory_block, _memories = self.memory.build_block(
-            turn.message, enabled=bool(settings.get("memory_enabled", True))
+            turn.message,
+            enabled=bool(settings.get("memory_enabled", True)),
+            # Budget-scaled cap: a fixed 800-token block would starve the
+            # working window on small-context models.
+            max_tokens=self.context.memory_cap_for(turn.model) if turn.model else 800,
         )
         blocks = [inference.time_line(), memory_block, _directives_note(turn.conversation_id)]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())

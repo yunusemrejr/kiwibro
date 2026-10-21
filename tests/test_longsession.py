@@ -365,6 +365,27 @@ def test_prepare_prefix_is_stable_across_turns(env):
     assert upto_second_user(first.messages) == upto_second_user(second.messages)
 
 
+def test_extend_with_same_turn_context_stays_incremental(env):
+    """The agent re-passes its fixed turn note every tool round; extend must
+    append, not rebuild (a rebuild would re-render the KV prefix)."""
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "Question one")
+    prepared = svc.context.prepare(
+        conversation["id"], "fake-1", "SYSTEM", turn_context="## Note\nvolatile"
+    )
+    assert "volatile" in prepared.messages[-1]["content"]
+    svc.db.add_message(conversation["id"], "assistant", "working…")
+    svc.db.add_message(conversation["id"], "tool", "result", tool_call_id="c1")
+    extended = svc.context.extend(
+        prepared, conversation["id"], "fake-1", "SYSTEM", turn_context="## Note\nvolatile"
+    )
+    assert extended.messages[0] is prepared.messages[0]  # appended, not rebuilt
+    assert len(extended.messages) == len(prepared.messages) + 2
+    joined = "".join(str(m.get("content") or "") for m in extended.messages)
+    assert joined.count("volatile") == 1  # note placed exactly once
+
+
 def test_summarize_long_text_map_reduce(env):
     svc, fake = env
     text = "\n\n".join(f"Paragraph {i} about topic {i}. " + "Evidence sentence. " * 30 for i in range(20))
