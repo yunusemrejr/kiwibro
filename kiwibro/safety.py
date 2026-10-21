@@ -2147,6 +2147,7 @@ def decide(
     if mode != "deny":
         counters["writes"] = counters.get("writes", 0) + assessed.writes
         counters["deletes"] = counters.get("deletes", 0) + assessed.deletes
+        counters["actions"] = counters.get("actions", 0) + (assessed.kind in ("write", "exec"))
     return Decision(mode, level, tuple(reasons[:6]), source)
 
 

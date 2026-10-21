@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkpoints, config, guard, inference, library, prompts, safety, toolcall, tools
+from . import checkpoints, config, directives, guard, inference, library, prompts, safety, toolcall, tools
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
@@ -169,14 +169,10 @@ class Approval:
     decision: str | None = None
 
 
-def _directives_note(conversation_id: str) -> str:
-    """The directive ledger's per-turn note ('' until ``directives`` is installed or when quiet)."""
+def _directives_note(db: Database, conversation_id: str) -> str:
+    """The directive ledger's per-turn note ('' when it would add nothing)."""
     try:
-        from . import directives
-    except ImportError:
-        return ""
-    try:
-        return directives.render_note(conversation_id) or ""
+        return directives.render_note(db, conversation_id)
     except Exception:  # the ledger must never break a turn
         log.warning("directive note failed", exc_info=True)
         return ""
@@ -234,6 +230,8 @@ class Turn:
     stream_filter: toolcall.StreamFilter | None = None
     page_limit: int = 8000  # tool outputs longer than this are paged into the library
     nudged: bool = False
+    reviewed: bool = False  # the one end-of-turn self-check has been offered
+    pending_review: str = ""  # checklist nudge for the next round (transient)
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -501,7 +499,10 @@ class AgentManager:
             )
             turn.partial_text = ""
             turn.partial_reasoning = ""
-            result = self._stream_with_recovery(turn, model, prepared, tool_list, round_index, text_mode=text_mode)
+            review, turn.pending_review = turn.pending_review, ""
+            result = self._stream_with_recovery(
+                turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=review or None
+            )
             if round_index > 0 and not turn.nudged and toolcall.is_empty_reply(result.content, result.tool_calls):
                 # Small models sometimes stop with an empty reply after tool
                 # results; one transient nudge (never stored) gets them going.
@@ -509,7 +510,7 @@ class AgentManager:
                 self._record_usage(turn, result, prepared)
                 log.info("turn %s round %s: empty reply, nudging once", turn.conversation_id, round_index)
                 result = self._stream_with_recovery(
-                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=True
+                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=toolcall.EMPTY_REPLY_NUDGE
                 )
             log.info(
                 "turn %s round %s: finish_reason=%s content_chars=%s tool_calls=%s",
@@ -537,7 +538,11 @@ class AgentManager:
             turn.partial_text = ""
             turn.partial_reasoning = ""
             if not result.tool_calls:
-                break
+                turn.pending_review = self._review_nudge(turn, settings) if round_index < max_rounds - 1 else ""
+                if not turn.pending_review:
+                    break
+                turn.emit("status", {"phase": "thinking", "label": "Checking the work"})
+                continue
             turn.tool_rounds = round_index + 1
             self._handle_tool_calls(turn, result.tool_calls, settings)
             self._raise_if_aborted(turn)
@@ -575,6 +580,23 @@ class AgentManager:
             },
         )
 
+    def _review_nudge(self, turn: Turn, settings: dict[str, Any]) -> str:
+        """One end-of-turn self-check against the directive ledger, after real work.
+
+        Small models often stop one step short; a single checklist round catches
+        missed instructions cheaply (the prefix is KV-cached). Supervised turns
+        skip it: a human is already reviewing every step."""
+        if turn.reviewed or settings.get("autonomy", config.DEFAULT_AUTONOMY) == "supervised":
+            return ""
+        if turn.safety.get("counters", {}).get("actions", 0) < directives.REVIEW_MIN_ACTIONS:
+            return ""
+        turn.reviewed = True
+        try:
+            return directives.review_prompt(self.db, turn.conversation_id)
+        except Exception:  # the ledger must never break a turn
+            log.warning("review prompt failed", exc_info=True)
+            return ""
+
     def _stream_with_recovery(
         self,
         turn: Turn,
@@ -584,7 +606,7 @@ class AgentManager:
         round_index: int = 0,
         *,
         text_mode: bool = False,
-        nudge: bool = False,
+        nudge: str | None = None,
     ) -> ChatResult:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
@@ -603,8 +625,8 @@ class AgentManager:
         while True:
             self._raise_if_aborted(turn)
             messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
-            if nudge:
-                messages = [*messages, {"role": "user", "content": toolcall.EMPTY_REPLY_NUDGE}]
+            if nudge:  # transient: steers this one request, never stored
+                messages = [*messages, {"role": "user", "content": nudge}]
             reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
@@ -752,7 +774,7 @@ class AgentManager:
             # working window on small-context models.
             max_tokens=self.context.memory_cap_for(turn.model) if turn.model else 800,
         )
-        blocks = [inference.time_line(), memory_block, _directives_note(turn.conversation_id)]
+        blocks = [inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id)]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
 
