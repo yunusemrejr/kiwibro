@@ -48,7 +48,10 @@ ship in this version).
   on-disk FTS5 index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text,
   code, CSV and JSON; workspace documents index automatically. Over-long tool output is
   paged into the library (head and tail inline, the rest readable by handle) instead of
-  being truncated.
+  being truncated. `convert_document` converts between Markdown, HTML, Word, ODT, EPUB, RST,
+  LaTeX, text, PDF and Office formats with the installed pandoc / WeasyPrint / LibreOffice /
+  pdftotext (never overwriting; undoable). `study_file` now reads PDF/Office documents and
+  studies the parts of long documents that answer the question.
 - **Offline compute.** `calculate` (exact math, unit conversion, date arithmetic) is
   offered on every turn; `analyze_table` profiles, filters and aggregates CSV/JSON files
   by streaming them.

@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+import fnmatch
 import contextvars
 import functools
 import logging
@@ -78,6 +79,7 @@ class Risk:
     kind: str = "read"  # read | web | write | exec — drives breakers and taint
     writes: int = 0
     deletes: int = 0
+    flags: frozenset[str] = frozenset()  # "secret" (reads credentials), "net" (talks to the network)
 
     def __or__(self, other: Risk) -> Risk:
         first, second = (other, self) if _RANK[other.level] > _RANK[self.level] else (self, other)
@@ -87,14 +89,17 @@ class Risk:
             kind=max(self.kind, other.kind, key=_KINDS.index),
             writes=self.writes + other.writes,
             deletes=self.deletes + other.deletes,
+            flags=self.flags | other.flags,
         )
 
 
 SAFE = Risk()
+_NET = frozenset({"net"})
+_SECRET = frozenset({"secret"})
 
 
-def _risk(level: str, reason: str, kind: str = "exec", **counts: int) -> Risk:
-    return Risk(level, (reason,), kind, **counts)
+def _risk(level: str, reason: str, kind: str = "exec", *, flags: frozenset[str] = frozenset(), **counts: int) -> Risk:
+    return Risk(level, (reason,), kind, flags=flags, **counts)
 
 
 def _bump(level: str, steps: int = 1) -> str:
@@ -147,7 +152,17 @@ SECRET_PATHS = (
     ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh",
     ".password-store", ".local/share/keyrings", ".mozilla", ".config/google-chrome",
     ".config/chromium", ".config/BraveSoftware", ".thunderbird", ".netrc", ".git-credentials",
-    ".pypirc", ".npmrc", ".claude", ".config/rclone",
+    ".pypirc", ".npmrc", ".claude", ".config/rclone", ".pgpass", ".cargo/credentials",
+    ".cargo/credentials.toml", ".m2/settings.xml", ".s3cfg", ".vault-token", ".config/glab-cli",
+    ".config/microsoft-edge", ".config/hub", ".terraform.d", ".config/doctl", ".config/op",
+    ".local/share/kiwibro-secrets",
+)
+# Absolute (system) places whose contents are secret even when readable.
+_SYSTEM_SECRETS = ("/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d", "/etc/ssh", "/root")
+_SECRET_NAME = re.compile(
+    r"^(?:id_(?:rsa|dsa|ecdsa|ed25519)\*?|.*\.(?:pem|key|p12|pfx|kdbx|keystore|jks|asc|gpg)|credentials.*|"
+    r"\.netrc|\.pgpass|.*token.*|.*secret.*|.*passw.*|authorized_keys|known_hosts)$",
+    re.I,
 )
 # Relative to $HOME. Writing these runs code later (log-in, new shell, git, PATH).
 STARTUP_PATHS = (
@@ -155,6 +170,8 @@ STARTUP_PATHS = (
     ".zprofile", ".zshenv", ".zlogin", ".xprofile", ".xsessionrc", ".pam_environment",
     ".config/autostart", ".config/systemd", ".config/environment.d", ".local/bin", "bin",
     ".gitconfig", ".config/git", ".bash_history", ".zsh_history", ".local/share/applications",
+    ".bash_aliases", ".inputrc", ".config/fish", ".config/zsh", ".zsh", ".oh-my-zsh",
+    ".local/lib", ".config/nvim/init.lua", ".vimrc", ".config/nvim", ".emacs", ".emacs.d",
 )
 REGENERABLE_DIRS = frozenset({
     "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
@@ -199,6 +216,10 @@ class _Ctx:
     depth: int = 0
     stdin: str | None = None  # None | "pipe" | "text"
     stdin_text: str = ""
+    # Shared by every command of one command line: what earlier commands set up.
+    vars: dict[str, str] = field(default_factory=dict)  # D=/ ; for d in ~
+    links: dict[str, str] = field(default_factory=dict)  # ln -s TARGET LINK
+    files: dict[str, str] = field(default_factory=dict)  # echo '…' > s.sh (static content)
 
     def child(self, **changes: Any) -> _Ctx:
         values = {**self.__dict__, "stdin": None, "stdin_text": ""}
@@ -218,7 +239,7 @@ class _Scope:
 
 _SUBST = "__KB_SUBST__"  # stands for the output of $(…) / backticks / xargs input
 _PROCSUB = "__KB_PROCSUB__"  # stands for <(…) / >(…)
-_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|([A-Za-z_][A-Za-z0-9_]*)|[0-9@*#?!$-])")
+_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-=]([^}]*)|[^}]*)\}|([A-Za-z_][A-Za-z0-9_]*)|[0-9@*#?!$-])")
 _REMOTE_HOME = Path("/~")
 
 
@@ -233,11 +254,15 @@ def _scope(raw: str, ctx: _Ctx) -> _Scope:
         return _Scope("dynamic", text)
 
     def expand(match: re.Match[str]) -> str:
-        name = match.group(1) or match.group(2) or ""
+        name = match.group(1) or match.group(3) or ""
+        if name not in ctx.vars and name not in ("HOME", "PWD") and match.group(2) is not None:
+            return match.group(2)  # ${UNSET:-default}
         if name == "HOME":
             return str(ctx.home)
         if name == "PWD" and ctx.cwd is not None:
             return str(ctx.cwd)
+        if name in ctx.vars and not any(m in ctx.vars[name] for m in (_SUBST, _PROCSUB)):
+            return ctx.vars[name]
         raise LookupError(name)
 
     try:
@@ -247,7 +272,11 @@ def _scope(raw: str, ctx: _Ctx) -> _Scope:
     if text == "~" or text.startswith("~/"):
         text = str(ctx.home) + text[1:]
     elif text.startswith("~"):
-        return _Scope("outside" if ctx.remote else "system", text)  # ~otheruser
+        if ctx.remote:
+            return _Scope("outside", text)
+        text = os.path.expanduser(text)  # ~user
+        if text.startswith("~"):
+            return _Scope("system", text)
     if not text.startswith("/"):
         if ctx.cwd is None:
             return _Scope("dynamic", raw, any(ch in text for ch in "*?["))
@@ -257,10 +286,50 @@ def _scope(raw: str, ctx: _Ctx) -> _Scope:
         cut = text.rfind("/", 0, min(globs))
         base, rest = text[:cut] or "/", text[cut + 1 :]
         resolved = os.path.normpath(base) if ctx.remote else os.path.realpath(base)
-        path = os.path.join(resolved, rest)
+        path = os.path.join(_follow_links(resolved, ctx), rest)
     else:
-        path = os.path.normpath(text) if ctx.remote else os.path.realpath(text)
-    return _Scope(_classify_path(path, ctx), path, bool(globs))
+        path = _follow_links(os.path.normpath(text) if ctx.remote else os.path.realpath(text), ctx)
+    kind = _classify_path(path, ctx)
+    if globs:
+        kind = max((kind, *_glob_hits(path, ctx)), key=_HARM.index)
+    return _Scope(kind, path, bool(globs))
+
+
+# Kinds from least to most harmful; equal delete levels are ordered by how much the
+# kind means (a glob that can reach ~/.ssh is "secret", not merely "home").
+_HARM = ("null", "tmp", "regenerable", "workspace", "dynamic", "git", "workspace_root", "home",
+         "outside", "device", "system", "kiwibro", "home_root", "root", "startup", "secret")
+
+
+def _follow_links(path: str, ctx: _Ctx) -> str:
+    """Resolve through symlinks created earlier on the same command line."""
+    for link, target in sorted(ctx.links.items(), key=lambda item: -len(item[0])):
+        if path == link or path.startswith(link + "/"):
+            return target + path[len(link) :]
+    return path
+
+
+def _glob_hits(pattern: str, ctx: _Ctx) -> list[str]:
+    """Kinds of the dangerous places a glob could reach (bash rules: `*` skips dotfiles)."""
+    home = str(ctx.home)
+    candidates = [p for p in _SYSTEM_PREFIXES] + [home]
+    candidates += [f"{home}/{rel}" for rel in (*SECRET_PATHS, *STARTUP_PATHS)]
+    if not ctx.remote:
+        candidates.append(_data_dir(os.environ.get("KIWIBRO_DATA_DIR", "")))
+    parts = pattern.strip("/").split("/")
+    hits = []
+    for candidate in candidates:
+        cparts = candidate.strip("/").split("/")
+        if all(
+            fnmatch.fnmatchcase(c, p) and not (c.startswith(".") and not p.startswith("."))
+            for c, p in zip(cparts, parts)
+        ):
+            rest = ["x" if any(ch in p for ch in "*?[") else p for p in parts[len(cparts) :]]
+            hits.append(_classify_path("/" + "/".join(cparts[: len(parts)] + rest), ctx))
+    return hits
+
+
+_OTHER_HOME_SECRET = re.compile(r"^/home/[^/]+/(?:" + "|".join(re.escape(p) for p in SECRET_PATHS) + r")(?:/|$)")
 
 
 def _under(path: str, prefixes: tuple[str, ...] | list[str]) -> bool:
@@ -276,6 +345,8 @@ def _classify_path(path: str, ctx: _Ctx) -> str:
         return "device"
     if not ctx.remote and _under(path, [_data_dir(os.environ.get("KIWIBRO_DATA_DIR", ""))]):
         return "kiwibro"
+    if not ctx.remote and (_under(path, _SYSTEM_SECRETS) or _OTHER_HOME_SECRET.match(path)):
+        return "secret"
     workspace = str(ctx.workspace) if ctx.workspace else None
     if workspace and _under(path, [workspace]):
         rel = path[len(workspace) + 1 :]
@@ -345,7 +416,7 @@ def _read_risk(targets: list[str], ctx: _Ctx, *, verb: str) -> Risk:
     for target in targets:
         kind = _scope(target, ctx).kind
         if kind == "secret":
-            risk |= _risk("high", f"{verb} reads credential files ({target})", "read")
+            risk |= _risk("high", f"{verb} reads credential files ({target})", "read", flags=_SECRET)
         elif kind == "device":
             risk |= _risk("high", f"{verb} reads a raw device ({target})", "read")
     return risk
@@ -419,7 +490,7 @@ def _preprocess(text: str) -> tuple[str, list[str], list[str]]:
         if text.startswith("$(", i) or (quote is None and text.startswith(("<(", ">("), i)):
             close = _match_close(text, i + 1)
             subs.append(text[i + 2 : close])
-            out.append(_SUBST if text[i] == "$" else _PROCSUB)
+            out.append(f"{_SUBST}{len(subs) - 1}_" if text[i] == "$" else _PROCSUB)
             i = close + 1
             continue
         if ch == "`":
@@ -427,13 +498,22 @@ def _preprocess(text: str) -> tuple[str, list[str], list[str]]:
             if close < 0:
                 raise _ParseError("unbalanced backtick")
             subs.append(text[i + 1 : close])
-            out.append(_SUBST)
+            out.append(f"{_SUBST}{len(subs) - 1}_")
             i = close + 1
             continue
         if quote == '"':
             out.append(ch)
             quote = None if ch == '"' else quote
             i += 1
+            continue
+        if text.startswith("$'", i):  # ANSI-C quoting: decode it the way bash would
+            close = text.find("'", i + 2)
+            while close > 0 and text[close - 1] == "\\":
+                close = text.find("'", close + 1)
+            if close < 0:
+                raise _ParseError("unbalanced $'")
+            out.append(shlex.quote(_unescape(text[i + 2 : close])))
+            i = close + 1
             continue
         if ch in "'\"":
             quote = ch
@@ -535,7 +615,10 @@ _ANSI_C_ESCAPE = re.compile(r"\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3}|u[0-9a-fA-F]|
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 DANGEROUS_ENV = frozenset({
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND",
-    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "PYTHONSTARTUP", "NODE_OPTIONS", "PERL5OPT",
+    "GIT_SSH_COMMAND", "GIT_SSH", "GIT_EXEC_PATH", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "PAGER", "MANPAGER", "EDITOR",
+    "VISUAL", "LESSOPEN", "LESSCLOSE", "PYTHONSTARTUP", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT",
 })
 _SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "mksh", "ash", "fish", "tcsh", "csh", "rbash"})
 # interpreter: (exact inline-code flags, short-flag letter that ends a cluster with code)
@@ -543,7 +626,7 @@ _INTERPRETERS: dict[str, tuple[tuple[str, ...], str]] = {
     "python": (("-c",), "c"), "node": (("-e", "--eval", "-p", "--print"), ""),
     "perl": (("-e", "-E"), "eE"), "ruby": (("-e",), "e"), "php": (("-r",), ""),
     "lua": (("-e",), ""), "bun": (("-e", "--eval"), ""), "deno": ((), ""),
-    "rscript": (("-e",), ""), "julia": (("-e", "--eval"), ""), "pwsh": (("-c", "-command"), ""),
+    "rscript": (("-e",), ""), "R": (("-e",), ""), "julia": (("-e", "--eval"), ""), "pwsh": (("-c", "-command"), ""),
 }
 _PRIVILEGE = frozenset({"sudo", "su", "doas", "pkexec", "run0", "sudoedit", "chroot", "sg", "newgrp"})
 _CATASTROPHIC = frozenset({
@@ -552,7 +635,7 @@ _CATASTROPHIC = frozenset({
     "umount", "losetup", "cryptsetup", "lvremove", "vgremove", "pvremove", "mdadm", "dmsetup",
     "hdparm", "swapon", "swapoff", "iptables", "ip6tables", "nft", "ufw", "useradd", "userdel",
     "usermod", "groupadd", "groupdel", "passwd", "chpasswd", "visudo", "chsh", "chfn", "setcap",
-    "sysctl", "kexec", "killall5", "efibootmgr", "grub-install", "update-grub",
+    "sysctl", "kexec", "killall5", "efibootmgr", "grub-install", "update-grub", "init",
 })
 _REMOTE_TOOLS = frozenset({"ssh", "scp", "sftp", "sshfs", "mosh", "sshpass", "autossh", "rsh", "rlogin"})
 _SYS_PACKAGERS = frozenset({"apt", "apt-get", "aptitude", "dpkg", "snap", "flatpak", "dnf", "yum",
@@ -590,9 +673,9 @@ _READ_ONLY = frozenset({
     "hexdump", "strings", "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "sha512sum", "b2sum",
     "cksum", "seq", "sleep", "wait", "man", "help", "info", "tldr", "locale", "getent", "lscpu",
     "lsblk", "lsusb", "lspci", "lsof", "ss", "netstat", "ip", "tput", "clear", "printenv",
-    "history", "exit", "return", "read", "set", "shopt", "unset", "alias", "unalias", "umask",
+    "history", "exit", "return", "read", "set", "shopt", "unset", "unalias", "umask",
     "cd", "pushd", "popd",
-    "ulimit", "trap", "hash", "jobs", "fg", "bg", "disown", "dirs", "shift", "getopts", "yes",
+    "ulimit", "hash", "jobs", "fg", "bg", "disown", "dirs", "shift", "getopts", "yes",
     "nvidia-smi", "sensors", "journalctl", "dmesg", "top", "htop", "vmstat", "iostat", "look",
     "numfmt", "expr", "bc", "dc", "factor", "pdftotext", "pdfinfo", "identify", "exiftool",
     "mediainfo", "ffprobe", "notify-send", "base64", "base32", "xxd", "rev", "zcat", "gunzip",
@@ -684,6 +767,16 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
                          "--max-chars", "--replace", "--eof"}), 0),
     "flock": (frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"}), 1),
     "env": (frozenset({"-u", "--unset", "-C", "--chdir"}), 0),
+    "parallel": (frozenset({"-j", "--jobs", "-S", "--sshlogin", "--delay", "--timeout", "-a", "--arg-file"}), 0),
+    "numactl": (frozenset({"-C", "-m", "-N", "-p", "-i", "--physcpubind", "--membind", "--cpunodebind",
+                           "--preferred", "--interleave"}), 0),
+    "proxychains": (frozenset({"-f"}), 0),
+    "proxychains4": (frozenset({"-f"}), 0),
+    "fakeroot": (frozenset({"-i", "-s", "-l", "--lib", "--faked"}), 0),
+    "systemd-cat": (frozenset({"-t", "-p", "--identifier", "--priority", "--stderr-priority"}), 0),
+    "chronic": (frozenset(), 0),
+    "torsocks": (frozenset(), 0),
+    "firejail": (frozenset(), 0),
 }
 
 
@@ -723,21 +816,36 @@ def _command_risk(cmd: _Cmd, ctx: _Ctx, heredocs: list[str]) -> Risk:
         words.pop(0)
     while words and words[-1] in ("}", "fi", "done", "esac"):
         words.pop()
-    if not words or words[0] in ("for", "case", "select", "function"):
+    if words[:1] == ["function"]:
+        words = [w for w in words[2:] if w != "{"]  # `function f { body` → body
+    if words[:1] == ["for"] and len(words) >= 3 and words[2] == "in":
+        ctx.vars[words[1]] = " ".join(words[3:])
         return risk
+    if not words or words[0] in ("for", "case", "select"):
+        return risk
+    content = _static_output(words, ctx.stdin_text if ctx.stdin == "text" else None)
+    if content is not None:  # remember scripts written by this line (write-then-run)
+        for op, target in cmd.redirects:
+            if op in (">", ">>", ">|") and _scope(target, ctx).kind != "dynamic":
+                ctx.files[_scope(target, ctx).path] = content
     return risk | _argv_risk(words, ctx)
 
 
 def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
     risk = SAFE
     while argv and _ASSIGNMENT.match(argv[0]):
-        name = argv[0].split("=", 1)[0].rstrip("+")
-        if name in DANGEROUS_ENV:
-            risk |= _risk("high", f"sets {name}, which injects code into the programs it starts")
+        risk |= _assignment_risk(argv[0], ctx)
         argv = argv[1:]
     if not argv:
         return risk
+    argv = _expand_words(argv, ctx)
+    if not argv:
+        return risk
     word = argv[0]
+    base = os.path.basename(word)
+    if word not in ("[", "[[") and any(ch in word for ch in "*?[") and base and not any(ch in base for ch in "*?[$`"):
+        risk |= _risk("high", f"the program path `{word}` is a glob")
+        word = argv[0] = base  # /???/rm is rm
     if any(marker in word for marker in ("$", "`", _SUBST, _PROCSUB)) or (
         word not in ("[", "[[") and any(ch in word for ch in "*?[")
     ):
@@ -757,7 +865,7 @@ def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
     if name in _INTERPRETERS:
         return risk | _interpreter_risk(argv, ctx, name)
     if name in _REMOTE_TOOLS:
-        return risk | _risk("high", f"`{name}` connects to another machine (use the `remote` tool)")
+        return risk | _risk("high", f"`{name}` connects to another machine (use the `remote` tool)", flags=_NET)
     if name in _SYS_PACKAGERS:
         if set(argv[1:]) & _PACKAGE_QUERIES:
             return risk | _risk("low", f"queries installed packages with `{name}`", "read")
@@ -771,8 +879,86 @@ def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
     if name in _READ_ONLY:
         return risk | _read_only_risk(name, argv, ctx)
     if name in _DEV_TOOLS:
-        return risk | _dev_tool_risk(name, argv, ctx)
-    return risk | _risk("medium", f"runs `{word if '/' in word else name}`")
+        return risk | _dev_tool_risk(name, argv, ctx) | _operand_risk(name, argv, ctx)
+    if "/" in word:
+        return risk | _program_file_risk(word, ctx) | _operand_risk(name, argv, ctx)
+    return risk | _risk("medium", f"runs `{name}`") | _operand_risk(name, argv, ctx)
+
+
+_SAFE_HOOK_VALUES = frozenset({"", "cat", "less", "more", "head", "tail", "true", "false", "less -R", "cat -v"})
+_BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+_WORD_VAR = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$")
+
+
+def _assignment_risk(word: str, ctx: _Ctx) -> Risk:
+    """`NAME=value`: remember it for later words, flag code-injection variables."""
+    name, _, value = word.partition("=")
+    name = name.rstrip("+")
+    ctx.vars[name] = value
+    if (name in DANGEROUS_ENV or name.startswith("GIT_CONFIG_")) and value.strip() not in _SAFE_HOOK_VALUES:
+        return _risk("high", f"sets {name}, which injects code into the programs it starts")
+    if name == "PATH" and any(part and not part.startswith(("/", "$")) for part in value.split(":")):
+        return _risk("medium", "puts relative directories on PATH (programs could be shadowed)")
+    return SAFE
+
+
+def _expand_words(argv: list[str], ctx: _Ctx) -> list[str]:
+    """Apply what bash would: known `$VAR` words (with word splitting) and `{a,b}` braces."""
+    out: list[str] = []
+    for word in argv:
+        if "$IFS" in word or "${IFS}" in word:
+            out.extend(word.replace("${IFS}", " ").replace("$IFS", " ").split())
+            continue
+        match = _WORD_VAR.match(word)
+        name = match and (match.group(1) or match.group(2))
+        if name and name in ctx.vars:
+            out.extend(ctx.vars[name].split() or [""])
+            continue
+        if "{" in word and "," in word and not any(ch in word for ch in " \"'():=;"):
+            words = [word]
+            for _ in range(4):  # nesting depth
+                nxt = []
+                for item in words:
+                    found = _BRACE.search(item)
+                    nxt.extend(
+                        [item[: found.start()] + part + item[found.end() :] for part in found.group(1).split(",")]
+                        if found else [item]
+                    )
+                if nxt == words:
+                    break
+                words = nxt[:32]
+            out.extend(w for w in words if w)
+            continue
+        out.append(word)
+    return out[:256]
+
+
+def _operand_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
+    """Any program handed credential or start-up files as arguments."""
+    risk = SAFE
+    for token in argv[1:]:
+        value = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
+        if not value or not (value[0] in "~/." or "/" in value):
+            continue
+        kind = _scope(value, ctx).kind
+        if kind == "secret" and not ctx.remote:
+            risk |= _risk("high", f"`{name}` is handed credential files ({value})", "read", flags=_SECRET)
+        elif kind == "startup":
+            risk |= _risk("high", f"`{name}` is handed shell/login start-up files ({value})", "write")
+    return risk
+
+
+def _program_file_risk(word: str, ctx: _Ctx) -> Risk:
+    """`./tool` or `/path/script`: review the script it would run (by its #! line)."""
+    text = _script_text(word, ctx)
+    risk = _risk("medium", f"runs the program `{word}`")
+    if not text:
+        return risk
+    first = text.split("\n", 1)[0]
+    interpreter = _prog(first[2:].split()[-1]) if first.startswith("#!") and first[2:].split() else "sh"
+    if interpreter in _INTERPRETERS:
+        return risk | _code_risk(text, interpreter, inline=False, ctx=ctx)
+    return risk | _classify(text, ctx.nested())
 
 
 def _wrapper_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
@@ -793,7 +979,11 @@ def _wrapper_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
         return SAFE
     if name == "xargs":
         # Arguments arrive on stdin at run time; the command never sees the pipe as input.
-        return _argv_risk([*rest, _SUBST], ctx.child())
+        extra = ctx.stdin_text.split() if ctx.stdin == "text" and ctx.stdin_text.strip() else [_SUBST]
+        return _argv_risk([*rest, *extra[:64]], ctx.child())
+    if name == "parallel":
+        template, _sep, args = (rest + [":::"])[: (rest + [":::"]).index(":::")], ":::", rest[rest.index(":::") + 1 :] if ":::" in rest else [_SUBST]
+        return _argv_risk([*template, *args], ctx.child())
     return _argv_risk(rest, ctx.child(stdin=ctx.stdin, stdin_text=ctx.stdin_text))
 
 
@@ -811,8 +1001,13 @@ def _read_only_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
         return _risk("medium", "rewrites shell history", "write")
     if name == "journalctl" and any(f.startswith("--vacuum") or f == "--rotate" for f in flags):
         return _risk("high", "deletes system logs", "write")
+    if name in ("grep", "egrep", "fgrep", "rg", "ag", "ack") and (name != "grep" or flags & {"-r", "-R", "--recursive"}):
+        roots = operands[1:] if name in ("grep", "egrep", "fgrep") else operands[1:] or ["."]
+        wide = [r for r in roots if _scope(r, ctx).kind in ("home_root", "root")]
+        if wide:
+            return _risk("medium", f"`{name}` searches your whole home folder or disk ({wide[0]})", "read")
     if name in ("ping", "dig", "nslookup", "host", "whois", "traceroute", "tracepath"):
-        return _risk("low", f"`{name}` uses the network", "web")
+        return _risk("low", f"`{name}` uses the network", "web", flags=_NET)
     return _read_risk(operands, ctx, verb=f"`{name}`")
 
 
@@ -830,11 +1025,11 @@ def _builtin_risk(argv: list[str], ctx: _Ctx) -> Risk:
         return _risk("medium", f"sources {operands[0]}") | inner
     if name == "tee":
         return _write_risk(operands, ctx, verb="tee writes")
+    risk = SAFE
     for operand in operands:  # export / declare / typeset / local / readonly
-        var = operand.split("=", 1)[0]
-        if "=" in operand and var in DANGEROUS_ENV:
-            return _risk("high", f"exports {var}, which injects code into later programs")
-    return SAFE
+        if "=" in operand and _ASSIGNMENT.match(operand):
+            risk |= _assignment_risk(operand, ctx)
+    return risk
 
 
 def _shell_string(values: list[str], ctx: _Ctx) -> Risk:
@@ -845,11 +1040,20 @@ def _shell_string(values: list[str], ctx: _Ctx) -> Risk:
     return _classify(values[0], ctx.nested())
 
 
+_STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
+
+
 def _script_text(path: str, ctx: _Ctx) -> str:
     """Contents of a small local script so nested code gets reviewed, or ''."""
-    if ctx.remote or ctx.depth >= _MAX_DEPTH or path in (_SUBST, _PROCSUB):
+    if path in _STDIN_PATHS and ctx.stdin == "text":
+        return ctx.stdin_text
+    if ctx.depth >= _MAX_DEPTH or path in (_SUBST, _PROCSUB):
         return ""
     scope = _scope(path, ctx)
+    if scope.path in ctx.files:
+        return ctx.files[scope.path]
+    if ctx.remote:
+        return ""
     if scope.kind in ("dynamic", "device", "secret", "null") or scope.wildcard:
         return ""
     try:
@@ -879,7 +1083,7 @@ def _shell_risk(argv: list[str], ctx: _Ctx) -> Risk:
             continue
         break
     operands = argv[i:]
-    if operands and operands[0] != "-":
+    if operands and operands[0] not in _STDIN_PATHS:
         if operands[0] in (_PROCSUB, _SUBST):
             return _risk("high", "runs shell code produced by another command")
         text = _script_text(operands[0], ctx)
@@ -900,15 +1104,25 @@ _CODE_SECRETS = re.compile(
     re.I,
 )
 _CODE_TREE_DELETE = re.compile(
-    r"rmtree|removedirs|rm\s+-[a-zA-Z]*[rR]|fs\.rm(?:Sync)?\s*\([^)]*recursive|rimraf|remove_tree|"
-    r"rm_rf|FileUtils\.rm_r|File::Path|Remove-Item[^\n]*-Recurse",
+    r"rmtree|removedirs|rm\s+-[a-zA-Z]*[rR]|\.rm(?:Sync)?\s*\([^;]*recursive|rimraf|remove_tree|"
+    r"rm_rf|FileUtils\.rm_r|File::Path|Remove-Item[^\n]*-Recurse|Deno\.remove\s*\([^;]*recursive|"
+    r"rmdirSync\s*\([^;]*recursive|unlink\s+glob|unlink\s*\(\s*glob",
     re.I,
+)
+_CODE_HOME_OR_ROOT = re.compile(
+    r"""expanduser\(\s*['"]~|Path\.home\(\)|environ(?:\.get)?\s*[\[(]\s*['"]HOME|process\.env\.HOME|"""
+    r"""homedir\(\)|ENV\[['"]HOME|Deno\.env\.get\(\s*['"]HOME|\(\s*['"]/['"]\s*[,)]""",
+)
+_SPAWNED = re.compile(
+    r"(?:os\.system|os\.popen|subprocess\.\w+|\bpopen|execSync|spawnSync|\bspawn|\bsystem|shell_exec|"
+    r"passthru|\bexec|IO\.popen|Command)\s*\(?\s*(\[[^\]]*\]|(['\"`]).*?\2)"
 )
 _LITERAL_TREE_TARGET = re.compile(r"(?:rmtree|rimraf|rm_rf|remove_tree)\s*\(\s*(?:[rbuf]?)['\"]([^'\"]+)['\"]")
 _CODE_DELETE = re.compile(r"\bunlink|\bos\.remove\b|\.remove\(|\brmdir|\bfs\.rm|\bshred\b|\btruncate\s*\(", re.I)
 _CODE_MANY = re.compile(r"glob|listdir|os\.walk|scandir|iterdir|readdir|<\*>", re.I)
 _CODE_SPAWN = re.compile(
     r"os\.system|subprocess|\bpopen|os\.exec|\bexec[lv]p?e?\s*\(|child_process|execSync|"
+    r"\b(?:system|exec)\s+['\"]|"
     r"spawnSync|\bspawn\s*\(|\bsystem\s*\(|shell_exec|passthru|proc_open|IO\.popen|Kernel\.exec|"
     r"%x\{|pty\.spawn|Deno\.(?:run|Command)|Bun\.spawn|`[^`]*`",
     re.I,
@@ -930,19 +1144,29 @@ _CODE_WRITE = re.compile(
 )
 
 
-def _code_risk(code: str, language: str, *, inline: bool) -> Risk:
+def _code_risk(code: str, language: str, *, inline: bool, ctx: _Ctx | None = None) -> Risk:
     where = "inline code" if inline else "the script"
     if inline and (_SUBST in code or _PROCSUB in code or code.strip().startswith("$")):
         return _risk("high", f"runs {language} code that is only known at run time")
     risk = _risk("low" if inline else "medium", f"runs {'inline ' if inline else ''}{language} code")
+    code = code + "\n" + re.sub(r"""(['"])\s*[+.]?\s*(['"])""", "", code)  # '/.s' + 'sh' → '/.ssh'
     if _CODE_SECRETS.search(code):
-        risk |= _risk("high", f"{where} touches credentials or shell start-up files")
+        risk |= _risk("high", f"{where} touches credentials or shell start-up files", flags=_SECRET)
+    if ctx is not None and ctx.depth < _MAX_DEPTH:
+        for match in list(_SPAWNED.finditer(code))[:6]:  # review commands the code spawns
+            body = match.group(1)
+            command = " ".join(re.findall(r"['\"]([^'\"]*)['\"]", body)) if body.startswith("[") else body[1:-1]
+            if command.strip():
+                risk |= _classify(command, ctx.nested())
     if _CODE_TREE_DELETE.search(code):
         literal = _LITERAL_TREE_TARGET.findall(code)
         bounded = literal and all(os.path.basename(t.rstrip("/")) in REGENERABLE_DIRS for t in literal) and len(
             literal
         ) == len(_CODE_TREE_DELETE.findall(code))
         risk |= _risk("medium" if bounded else "high", f"{where} deletes directory trees", "write", deletes=1)
+        targets = [_scope(t, ctx).kind for t in literal] if ctx is not None else []
+        if _CODE_HOME_OR_ROOT.search(code) or any(k in ("root", "home_root", "system", "secret", "startup") for k in targets):
+            risk |= _risk("critical", f"{where} deletes your home folder, credentials or system files", "write")
     elif _CODE_DELETE.search(code):
         many = bool(_CODE_MANY.search(code))
         risk |= _risk("high" if many else "medium", f"{where} deletes {'many ' if many else ''}files", "write", deletes=1)
@@ -977,13 +1201,16 @@ def _interpreter_risk(argv: list[str], ctx: _Ctx, name: str) -> Risk:
         if token in exact or attached or (short and cluster_letters and token[-1] in cluster_letters):
             code_index = i if attached else i + 1
             code = attached or (argv[code_index] if code_index < len(argv) else "")
-            risk = _code_risk(code, name, inline=True)
+            risk = _code_risk(code, name, inline=True, ctx=ctx)
             if in_place:
                 files = [a for a in argv[code_index + 1 :] if not a.startswith("-")]
                 risk |= _write_risk(files, ctx, verb="edits in place")
             return risk
         if name in ("deno", "bun", "node") and token == "eval":
-            return _code_risk(argv[i + 1] if i + 1 < len(argv) else "", name, inline=True)
+            return _code_risk(argv[i + 1] if i + 1 < len(argv) else "", name, inline=True, ctx=ctx)
+        if name == "php" and token == "-S":
+            docroot = _option_values(argv, "-t")
+            return _serve_risk(docroot[0] if docroot else ".", ctx)
         if name in ("deno", "bun") and token in ("run", "test", "x", "install", "add", "upgrade", "task"):
             return _risk("medium", f"`{name} {token}` runs project code or installs packages")
         if token.startswith("-") and token != "-":
@@ -991,14 +1218,14 @@ def _interpreter_risk(argv: list[str], ctx: _Ctx, name: str) -> Risk:
             continue
         break
     operands = argv[i:]
-    if operands and operands[0] != "-":
+    if operands and operands[0] not in _STDIN_PATHS:
         if operands[0] in (_PROCSUB, _SUBST):
             return _risk("high", f"runs {name} code produced by another command")
         text = _script_text(operands[0], ctx)
         risk = _risk("medium", f"runs the {name} script {operands[0]}")
-        return risk | _code_risk(text, name, inline=False) if text else risk
+        return risk | _code_risk(text, name, inline=False, ctx=ctx) if text else risk
     if ctx.stdin == "text":
-        return _code_risk(ctx.stdin_text, name, inline=True)
+        return _code_risk(ctx.stdin_text, name, inline=True, ctx=ctx)
     if ctx.stdin == "pipe":
         return _risk("high", f"pipes generated text into the {name} interpreter")
     return _risk("low", f"starts an interactive {name} interpreter")
@@ -1012,8 +1239,16 @@ def _python_module(module: list[str], rest: list[str], ctx: _Ctx) -> Risk:
                 "pydoc", "timeit", "calendar", "doctest", "ast", "dis", "tabnanny"):
         return _risk("low", f"runs `python -m {name}`")
     if name == "http.server":
-        return _risk("medium", "starts a local web server")
+        directory = _option_values(rest, "-d", "--directory")
+        return _serve_risk(directory[0] if directory else ".", ctx)
     return _risk("medium", f"runs `python -m {name}`")
+
+
+def _serve_risk(directory: str, ctx: _Ctx) -> Risk:
+    kind = _scope(directory, ctx).kind
+    if kind in _IN_WORKSPACE or kind == "tmp":
+        return _risk("medium", "starts a local web server", flags=_NET)
+    return _risk("high", f"serves {_PLACE[kind]} over the network ({directory})", flags=_NET)
 
 
 # --- program-specific handlers ----------------------------------------------
@@ -1047,6 +1282,8 @@ def _find(argv: list[str], ctx: _Ctx) -> Risk:
     patterns = _option_values(expression, "-name", "-iname")
     regenerable = bool(patterns) and all(_REGENERABLE_GLOB.match(p) or p in REGENERABLE_DIRS for p in patterns)
     risk = _read_risk(roots, ctx, verb="find")
+    if any(_SECRET_NAME.match(p.strip("*")) for p in patterns + _option_values(expression, "-path", "-ipath")):
+        risk |= _risk("high", "find searches for credential files", "read", flags=_SECRET)
     deletes = "-delete" in expression
     j = 0
     while j < len(expression):
@@ -1101,11 +1338,18 @@ def _copy_move(argv: list[str], ctx: _Ctx) -> Risk:
                 risk |= _risk(_DELETE_LEVEL[scope.kind], f"mv takes {_PLACE[scope.kind]} away from where they are ({source})", "write")
     if name == "rsync" and any(f.startswith("--delete") for f in flags):
         risk |= _delete_risk([dest], ctx, recursive=True, verb="rsync --delete")
+    if name == "rsync" and "--remove-source-files" in flags:
+        risk |= _delete_risk(sources, ctx, recursive=True, verb="rsync --remove-source-files")
     return risk
 
 
 def _ln(argv: list[str], ctx: _Ctx) -> Risk:
-    operands = _split_flags(argv)[1]
+    flags, operands = _split_flags(argv)
+    if flags & {"-s", "--symbolic"} and operands:
+        target = _scope(operands[0], ctx)
+        link = _scope(operands[1], ctx) if len(operands) > 1 else _scope(os.path.basename(operands[0]), ctx)
+        if target.kind != "dynamic" and link.kind != "dynamic":
+            ctx.links[link.path] = target.path
     return _write_risk(operands[-1:] if len(operands) > 1 else operands, ctx, verb="ln creates a link in", create=True)
 
 
@@ -1146,22 +1390,35 @@ def _sed(argv: list[str], ctx: _Ctx) -> Risk:
     scripts = _option_values(argv, "-e", "--expression", "-f", "--file")
     operands = _split_flags([a for a in argv if a not in scripts])[1]
     files = operands if scripts else operands[1:]
+    script_text = "\n".join(scripts or operands[:1])
+    executes = re.search(r"(?:^|[;\n}])\s*e\s+(.+)", script_text)
+    replaced = re.search(r"\bs(.)((?:(?!\1).)*)\1((?:(?!\1).)*)\1[a-zA-Z0-9]*e", script_text)
+    risk = SAFE
+    if executes:
+        risk |= _shell_string([executes.group(1)], ctx)
+    if replaced:
+        risk |= _shell_string([replaced.group(3)], ctx) | _risk("high", "sed s///e runs its replacement as a command")
     if not in_place:
-        return _read_risk(files, ctx, verb="sed")
-    return _write_risk(files, ctx, verb="sed -i edits")
+        return risk | _read_risk(files, ctx, verb="sed")
+    return risk | _write_risk(files, ctx, verb="sed -i edits")
 
 
 def _awk(argv: list[str], ctx: _Ctx) -> Risk:
     program = next((a for a in argv[1:] if not a.startswith("-")), "")
     if re.search(r"\bsystem\s*\(|\|\s*\"|\|&|/inet/", program):
         return _risk("high", "the awk program runs shell commands")
-    if "inplace" in argv or re.search(r"print[^;]*>\s*\"", program):
-        return _risk("medium", "the awk program writes files", "write", writes=1)
-    return SAFE
+    files = [a for a in argv[1:] if not a.startswith("-") and a != program and a != "inplace"]
+    risk = _read_risk(files + re.findall(r'getline(?:\s+\w+)?\s*<\s*"([^"]+)"', program), ctx, verb="awk")
+    outputs = re.findall(r'print[^;]*>>?\s*"([^"]+)"', program)
+    if outputs:
+        risk |= _write_risk(outputs, ctx, verb="the awk program writes")
+    if "inplace" in argv:
+        risk |= _write_risk(files, ctx, verb="awk -i inplace edits")
+    return risk
 
 
 def _curl(argv: list[str], ctx: _Ctx) -> Risk:
-    risk = _risk("low", "downloads from the network", "web")
+    risk = _risk("low", "downloads from the network", "web", flags=_NET)
     data = _option_values(argv, "-d", "--data", "--data-binary", "--data-raw", "--data-urlencode",
                           "--data-ascii", "--json")
     forms = _option_values(argv, "-F", "--form")
@@ -1175,15 +1432,17 @@ def _curl(argv: list[str], ctx: _Ctx) -> Risk:
     if data or forms or methods & {"POST", "PUT", "PATCH", "DELETE"}:
         risk |= _risk("medium", "sends data to a remote server")
     risk |= _write_risk([o for o in _option_values(argv, "-o", "--output") if o != "-"], ctx, verb="curl saves into")
+    risk |= _write_risk(_option_values(argv, "--output-dir"), ctx, verb="curl saves into", create=True)
     if {"-O", "--remote-name", "-J", "--remote-name-all"} & set(argv):
         risk |= _risk("medium", "saves a download into the current directory", "write", writes=1)
     return risk
 
 
 def _wget(argv: list[str], ctx: _Ctx) -> Risk:
-    risk = _risk("low", "downloads from the network", "web")
-    if _option_values(argv, "--post-file", "--body-file"):
-        risk |= _risk("high", "uploads a local file to the network")
+    risk = _risk("low", "downloads from the network", "web", flags=_NET)
+    for path in _option_values(argv, "--post-file", "--body-file"):
+        kind = _scope(path, ctx).kind
+        risk |= _risk("critical" if kind in ("secret", "kiwibro") else "high", f"uploads a local file to the network ({path})")
     if _option_values(argv, "--post-data", "--body-data", "--method"):
         risk |= _risk("medium", "sends data to a remote server")
     outputs = [o for o in _option_values(argv, "-O", "--output-document") if o != "-"]
@@ -1197,6 +1456,10 @@ def _wget(argv: list[str], ctx: _Ctx) -> Risk:
 
 
 def _netcat(argv: list[str], ctx: _Ctx) -> Risk:
+    return replace(_netcat_level(argv, ctx), flags=_NET)
+
+
+def _netcat_level(argv: list[str], ctx: _Ctx) -> Risk:
     name = _prog(argv[0])
     if name == "socat":
         text = " ".join(argv[1:])
@@ -1268,9 +1531,14 @@ _GIT_READ = frozenset({
     "status", "log", "diff", "show", "ls-files", "ls-tree", "rev-parse", "rev-list", "blame",
     "grep", "describe", "shortlog", "cat-file", "show-ref", "for-each-ref", "help", "version",
     "count-objects", "fsck", "whatchanged", "name-rev", "merge-base", "cherry", "check-ignore",
-    "var", "annotate", "range-diff", "verify-commit", "difftool",
+    "var", "annotate", "range-diff", "verify-commit",
 })
-_GIT_EXEC_CONFIG = re.compile(r"(?i)core\.(?:sshCommand|hooksPath|fsmonitor|pager|editor|askPass)|alias\.|credential\.|protocol\.|filter\.|diff\.\w+\.textconv")
+_GIT_EXEC_CONFIG = re.compile(
+    r"(?i)core\.(?:sshCommand|hooksPath|fsmonitor|pager|editor|askPass|gitProxy)|alias\.|credential\.|"
+    r"protocol\.|filter\.|diff\.(?:external|\w+\.textconv|\w+\.command)|gpg\.(?:\w+\.)?program|"
+    r"sequence\.editor|merge\.\w+\.driver|uploadpack\.|receivepack\.|remote\.\S+\.(?:uploadpack|receivepack|proxy)"
+)
+_GIT_EXEC_OPTIONS = ("--upload-pack", "--receive-pack", "--exec", "--extcmd", "-x", "-u")
 
 
 def _git(argv: list[str], ctx: _Ctx) -> Risk:
@@ -1281,11 +1549,21 @@ def _git(argv: list[str], ctx: _Ctx) -> Risk:
                 return _risk("high", f"git -c {argv[i + 1].split('=')[0]} can run arbitrary programs")
             i += 2
             continue
+        if argv[i].startswith("--config-env=") and _GIT_EXEC_CONFIG.match(argv[i].split("=", 1)[1]):
+            return _risk("high", "git --config-env sets a key that can run arbitrary programs")
         i += 1
     if i >= len(argv):
         return SAFE
     verb, rest = argv[i], argv[i + 1 :]
     flags, operands = _split_flags([verb, *rest])
+    if verb in ("ls-remote", "fetch", "clone", "push", "pull", "archive", "difftool", "rebase") and any(
+        a == o or a.startswith(o + "=") for a in rest for o in _GIT_EXEC_OPTIONS if not (o in ("-x", "-u") and verb not in ("rebase", "clone", "difftool"))
+    ):
+        return _risk("high", f"git {verb} is told to run another program")
+    if verb == "bisect" and operands[:1] == ["run"]:
+        return _risk("high", "git bisect run executes a command repeatedly")
+    if verb in ("diff", "archive", "format-patch") and _option_values(rest, "--output", "-o"):
+        return _write_risk(_option_values(rest, "--output", "-o"), ctx, verb=f"git {verb} writes")
     if verb in _GIT_READ:
         return SAFE
     if verb in ("fetch", "ls-remote"):
@@ -1346,7 +1624,8 @@ def _git(argv: list[str], ctx: _Ctx) -> Risk:
 
 _DOCKER_HOST_ESCAPE = re.compile(
     r"--privileged|--pid[= ]host|--cap-add|--device|--security-opt|docker\.sock|podman\.sock|"
-    r"(?:-v|--volume)[= ]\s*(?:/|~|\$HOME|\$\{HOME\}|/home|/root|/etc[^\s:]*|/var/run[^\s:]*|/run[^\s:]*):"
+    r"(?:-v|--volume)[= ]?\s*(?:/|~|\$HOME|\$\{HOME\}|/home|/root|/etc[^\s:]*|/var/run[^\s:]*|/run[^\s:]*):|"
+    r"--mount[= ]\S*(?:src|source)=(?:/|~|\$HOME|/home|/root|/etc)(?:[,\s]|$)"
 )
 
 
@@ -1428,7 +1707,13 @@ def _watch(argv: list[str], ctx: _Ctx) -> Risk:
 
 
 def _script_cmd(argv: list[str], ctx: _Ctx) -> Risk:
-    return _shell_string(_option_values(argv, "-c", "--command"), ctx)
+    for index, token in enumerate(argv[1:], start=1):
+        if token.startswith("--command"):
+            return _shell_string(_option_values(argv, "--command"), ctx)
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            attached = token[token.index("c", 1) + 1 :]
+            return _shell_string([attached] if attached else argv[index + 1 : index + 2], ctx)
+    return SAFE
 
 
 def _desktop_input(argv: list[str], ctx: _Ctx) -> Risk:
@@ -1444,6 +1729,74 @@ def _desktop_config(argv: list[str], ctx: _Ctx) -> Risk:
 
 def _escape_hatch(argv: list[str], ctx: _Ctx) -> Risk:
     return _risk("high", f"`{_prog(argv[0])}` starts processes outside Kiwibro's sandbox")
+
+
+def _trap_alias(argv: list[str], ctx: _Ctx) -> Risk:
+    """`trap 'cmd' EXIT` and `alias x='cmd'` run their bodies later: review them now."""
+    bodies = argv[1:2] if _prog(argv[0]) == "trap" else [a.split("=", 1)[1] for a in argv[1:] if "=" in a]
+    return functools.reduce(lambda acc, body: acc | _shell_string([body], ctx), bodies, SAFE)
+
+
+def _ip(argv: list[str], ctx: _Ctx) -> Risk:
+    if argv[1:3] == ["netns", "exec"] and len(argv) > 4:
+        return _argv_risk(argv[4:], ctx)
+    return _read_only_risk("ip", argv, ctx)
+
+
+def _mailer(argv: list[str], ctx: _Ctx) -> Risk:
+    attachments = _option_values(argv, "-A", "-a", "--attach")
+    return _risk("medium", f"`{_prog(argv[0])}` sends email", flags=_NET) | _read_risk(attachments, ctx, verb="mail attaches")
+
+
+# program: (options whose value is executed as a command, options whose value is an output
+# path, how many trailing operands are outputs, flag that turns operands into in-place edits)
+_OPTION_EFFECTS: dict[str, tuple[tuple[str, ...], tuple[str, ...], int, str]] = {
+    "vim": (("-c", "--cmd", "+"), (), 0, ""), "vi": (("-c", "--cmd", "+"), (), 0, ""),
+    "nvim": (("-c", "--cmd", "+"), (), 0, ""), "view": (("-c", "--cmd", "+"), (), 0, ""),
+    "ex": (("-c", "--cmd", "+"), (), 0, ""), "gvim": (("-c", "--cmd", "+"), (), 0, ""),
+    "gdb": (("-ex", "--eval-command", "-iex"), (), 0, ""), "emacs": (("--eval", "-eval"), (), 0, ""),
+    "expect": (("-c",), (), 0, ""), "zip": (("-TT", "--unzip-command"), (), 0, ""),
+    "less": (("+",), (), 0, ""), "more": (("+",), (), 0, ""), "man": (("-P", "--pager"), (), 0, ""),
+    "sort": (("--compress-program",), ("-o", "--output"), 0, ""), "rg": (("--pre",), (), 0, ""),
+    "fd": (("-x", "--exec", "-X", "--exec-batch"), (), 0, ""),
+    "fdfind": (("-x", "--exec", "-X", "--exec-batch"), (), 0, ""),
+    "tree": ((), ("-o",), 0, ""), "aria2c": ((), ("-o", "--out", "-d", "--dir"), 0, ""),
+    "7z": ((), ("-o",), 0, ""), "7za": ((), ("-o",), 0, ""), "yq": ((), (), 0, "-i"),
+    "xxd": ((), (), 1, ""), "uniq": ((), (), 1, ""), "pdftotext": ((), (), 1, ""),
+}
+
+
+def _editor(argv: list[str], ctx: _Ctx) -> Risk:
+    """Tools whose options can run commands or write files (editors, pagers, sort -o, …)."""
+    name = _prog(argv[0])
+    if name == "dmesg":
+        return _risk("medium", "clears the kernel log", "write") if {"-C", "-c", "--clear"} & set(argv) else SAFE
+    executes, outputs, positional, in_place = _OPTION_EFFECTS[name]
+    risk = _risk("medium", f"runs `{name}`") if name in ("vim", "vi", "nvim", "gvim", "emacs", "gdb", "expect", "zip", "7z", "7za", "aria2c") else SAFE
+    commands = _option_values(argv, *(o for o in executes if o != "+"))
+    if "+" in executes:
+        commands += [a[1:] for a in argv[1:] if a.startswith("+") and len(a) > 1]
+    for command in commands:
+        text = command.lstrip(":")
+        if text.startswith("!"):
+            risk |= _shell_string([text[1:]], ctx)
+        elif name in ("fd", "fdfind"):
+            flag = next(a for a in argv if a in executes)
+            tail = argv[argv.index(flag) + 1 :]
+            risk |= _argv_risk([*(tail[: tail.index(";")] if ";" in tail else tail), _SUBST], ctx.child())
+        elif name in ("vim", "vi", "nvim", "view", "ex", "gvim") and not re.search(r"!|system|terminal|shell", text):
+            continue
+        else:
+            risk |= _risk("high", f"`{name}` runs commands passed in its options ({command[:40]})")
+            if name in ("man", "sort", "rg", "zip"):  # the option value is itself a command line
+                risk |= _shell_string([command], ctx)
+    targets = _option_values(argv, *outputs)
+    operands = _split_flags(argv)[1]
+    if positional and len(operands) > positional and not (name == "xxd" and "-r" not in argv):
+        targets += operands[-positional:]
+    if in_place and any(a == in_place or a.startswith(in_place) for a in argv[1:]):
+        targets += [o for o in operands if "/" in o or "." in o][1:] if name == "yq" else operands
+    return risk | (_write_risk(targets, ctx, verb=f"`{name}` writes") if targets else SAFE) | _operand_risk(name, argv, ctx)
 
 
 _HANDLERS: dict[str, Callable[[list[str], _Ctx], Risk]] = {
@@ -1463,7 +1816,13 @@ _HANDLERS: dict[str, Callable[[list[str], _Ctx], Risk]] = {
     "wtype": _desktop_input, "gsettings": _desktop_config, "dconf": _desktop_config,
     "update-alternatives": _desktop_config, "chattr": _desktop_config, "setfacl": _desktop_config,
     "systemd-run": _escape_hatch, "nsenter": _escape_hatch, "unshare": _escape_hatch,
-    "firejail": _escape_hatch, "bwrap": _escape_hatch,
+    "bwrap": _escape_hatch, "trap": _trap_alias, "alias": _trap_alias, "ip": _ip,
+    "vim": _editor, "vi": _editor, "nvim": _editor, "view": _editor, "ex": _editor, "gvim": _editor,
+    "gdb": _editor, "emacs": _editor, "expect": _editor, "zip": _editor, "less": _editor,
+    "more": _editor, "man": _editor, "sort": _editor, "rg": _editor, "fd": _editor, "fdfind": _editor,
+    "tree": _editor, "aria2c": _editor, "7z": _editor, "7za": _editor, "yq": _editor, "xxd": _editor,
+    "uniq": _editor, "pdftotext": _editor, "dmesg": _editor, "mail": _mailer, "mailx": _mailer,
+    "mutt": _mailer, "sendmail": _mailer,
 }
 
 
@@ -1475,11 +1834,13 @@ def _static_output(words: list[str], upstream: str | None) -> str | None:
         return None
     name, args = _prog(words[0]), words[1:]
     if name == "echo":
+        escapes = False
         while args and re.fullmatch(r"-[neE]+", args[0]):
+            escapes = escapes or "e" in args[0]
             args = args[1:]
-        return " ".join(args)
+        return _unescape(" ".join(args)) if escapes else " ".join(args)
     if name == "printf":
-        return " ".join(args)
+        return _unescape(" ".join(args))
     if upstream is None:
         return None
     try:
@@ -1496,6 +1857,21 @@ def _static_output(words: list[str], upstream: str | None) -> str | None:
     if name == "cat" and not args:
         return upstream
     return None
+
+
+def _unescape(text: str) -> str:
+    """printf / echo -e escapes (\\xHH, \\NNN octal, \\n …) as the shell would expand them."""
+    simple = {"n": "\n", "t": "\t", "\\": "\\", "a": "\a", "r": "\r", "e": "\x1b", "0": "\0"}
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(1)
+        if token[0] == "x":
+            return chr(int(token[1:], 16))
+        if token[0].isdigit() and len(token) > 1:
+            return chr(int(token.lstrip("0") or "0", 8) % 256)
+        return simple.get(token, token)
+
+    return re.sub(r"\\(x[0-9a-fA-F]{1,2}|0?[0-7]{1,3}|[ntr\\ae])", repl, text)
 
 
 _PIPE_SOURCES = frozenset({"curl", "wget", "nc", "ncat", "netcat", "socat", "aria2c", "base64",
@@ -1546,11 +1922,29 @@ def _classify(text: str, ctx: _Ctx) -> Risk:
         pipelines = _pipelines(clean)
     except ValueError as exc:  # _ParseError or shlex's "No closing quotation"
         return risk | _risk("high", f"cannot be parsed safely ({exc})")
-    for sub in subs:
+    for index, sub in enumerate(subs):
         risk |= _classify(sub, ctx.nested())
+        value = _static_value(sub)
+        if value is not None:  # `$(echo ~)` is just "~": judge the command on it
+            pipelines = _pipelines(clean.replace(f"{_SUBST}{index}_", shlex.quote(value)))
+            clean = clean.replace(f"{_SUBST}{index}_", shlex.quote(value))
     for pipeline in pipelines:
         risk |= _pipeline_risk(pipeline, ctx, heredocs)
+    if {"secret", "net"} <= risk.flags and not ctx.remote:
+        risk |= _risk("critical", "reads credential files and talks to the network (exfiltration)")
     return risk
+
+
+def _static_value(sub: str) -> str | None:
+    """Output of a substitution that is a single echo/printf of literals, else None."""
+    try:
+        pipelines = _pipelines(_preprocess(sub)[0])
+    except ValueError:
+        return None
+    if len(pipelines) != 1 or len(pipelines[0]) != 1 or pipelines[0][0].redirects:
+        return None
+    value = _static_output(pipelines[0][0].words, None)
+    return value.strip() if value is not None and "\n" not in value.strip() else None
 
 
 def _workspace_root(workspace: Any) -> Path | None:

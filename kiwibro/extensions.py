@@ -22,7 +22,7 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 # Modules scanned for a ``TOOLS`` tuple, in registration order.
-MODULES = ("compute", "library", "checkpoints")
+MODULES = ("compute", "library", "convert", "checkpoints")
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,8 @@ class ExtensionTool:
     execute: Callable[[dict[str, Any], Any], Any]
     permission: str = "auto"
     category: str = "coding"  # tool-profile group: core | research | coding | desktop
+    # Files a call will create or change (for checkpoints/undo); None = nothing to snapshot.
+    touches: Callable[[dict[str, Any], Any], list[Path]] | None = None
 
 
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:

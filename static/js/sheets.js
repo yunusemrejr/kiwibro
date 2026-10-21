@@ -57,6 +57,7 @@ const PERMISSION_ORDER = [
   "doc_read",
   "doc_add",
   "doc_list",
+  "convert_document",
   "undo_changes",
 ];
 

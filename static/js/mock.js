@@ -117,6 +117,7 @@ const DEFAULT_PERMISSIONS = {
   doc_read: "auto",
   doc_add: "auto",
   doc_list: "auto",
+  convert_document: "auto",
   undo_changes: "auto",
 };
 

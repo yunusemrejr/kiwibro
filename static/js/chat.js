@@ -61,6 +61,7 @@ const ASSISTANT_PHRASE = {
   doc_read: "read a document",
   doc_add: "index documents in your workspace",
   doc_list: "list your documents",
+  convert_document: "convert a document to another format",
   undo_changes: "undo its recent file changes",
 };
 

@@ -291,6 +291,11 @@ def files_for(name: str, args: dict[str, Any], workspace: Any) -> list[tuple[Pat
                 destination = destination / source.name
             files += _landing(workspace, source, destination)
         return files
+    from .extensions import all_tools  # extension tools declare the files they touch
+
+    tool = next((item for item in all_tools() if item.name == name), None)
+    if tool is not None and tool.touches is not None:
+        return [(path, workspace.public(path)) for path in tool.touches(args, workspace)]
     return []
 
 

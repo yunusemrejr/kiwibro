@@ -374,6 +374,12 @@ keep headings and locations (page, lines, slide, sheet). `doc_search` first inde
 new or changed workspace documents (time-budgeted; files over 8 MB via `doc_add`);
 `doc_read` pages through a document with explicit `Next:` hints; `doc_list` shows
 documents or one outline. Memory stays flat: a 28 MB log indexes with ~3 MB RSS growth.
+`convert_document` (`kiwibro/convert.py`) routes conversions to installed tools — pandoc
+(text formats), pandoc + WeasyPrint (PDF output), LibreOffice (Office formats), pdftotext
+(PDF input) — as fixed argv without a shell, never overwriting (`name-2.ext`). Extension
+tools declare the files they create or change (`ExtensionTool.touches`), so checkpoints and
+`undo_changes` cover them without name lists. `study_file` extracts through the same
+readers and, for long documents, map-reduces over the chunks most relevant to the question.
 
 **Offline compute** (`kiwibro/compute.py`). `calculate` (a core tool) evaluates math
 through an allow-listed AST walker (exact big integers, power/factorial guards),

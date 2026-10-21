@@ -415,6 +415,7 @@ const TOOL_META = {
   doc_read: { label: "Read document", icon: "file" },
   doc_add: { label: "Index documents", icon: "layers" },
   doc_list: { label: "Documents", icon: "folder" },
+  convert_document: { label: "Convert document", icon: "file-plus" },
   undo_changes: { label: "Undo changes", icon: "refresh" },
 };
 

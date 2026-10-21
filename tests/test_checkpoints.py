@@ -227,3 +227,18 @@ def test_undo_folder_moved_into_existing_folder(tmp_path):
     assert not (ws.root / "dest" / "src" / "a.txt").exists()
     assert not (ws.root / "dest" / "src" / "sub" / "b.txt").exists()
     assert all("failed" not in item["action"] for item in reports)
+
+
+def test_extension_tools_declare_touched_files_for_undo(tmp_path):
+    """convert_document creates a new file; undo must remove it (via ExtensionTool.touches)."""
+    ws = Workspace(tmp_path / "ws")
+    data = tmp_path / "data"
+    (ws.root / "notes.md").write_text("# Notes\n", encoding="utf-8")
+    (ws.root / "notes.html").write_text("<p>existing</p>", encoding="utf-8")  # forces notes-2.html
+    args = {"path": "notes.md", "to": "html", "output": None}
+    assert checkpoints.files_for("convert_document", args, ws) == [(ws.root / "notes-2.html", "notes-2.html")]
+    assert checkpoints.snapshot_call(data, ws, "convert_document", args, "conv")
+    (ws.root / "notes-2.html").write_text("<h1>Notes</h1>", encoding="utf-8")  # what the conversion produces
+    checkpoints.store_for(data).undo("conv")
+    assert not (ws.root / "notes-2.html").exists()
+    assert (ws.root / "notes.html").read_text(encoding="utf-8") == "<p>existing</p>"
