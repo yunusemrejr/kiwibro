@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import logging
 import re
-import shutil
 import socket
-import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -17,7 +14,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
 

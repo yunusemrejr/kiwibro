@@ -17,7 +17,6 @@ from bs4 import BeautifulSoup, Tag
 
 from .search import (
     FETCH_MAX_BYTES,
-    HEADERS,
     SearchEngine,
     SearchError,
     assert_public_host,
