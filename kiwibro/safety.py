@@ -44,16 +44,17 @@ _RANK = {level: index for index, level in enumerate(LEVELS)}
 _KINDS = ("read", "web", "write", "exec")
 _MODE_RANK = {"auto": 0, "ask": 1, "deny": 2}
 
-AUTONOMY_MODES = ("supervised", "smart", "autonomous")
-DEFAULT_AUTONOMY = "smart"
-SANDBOX_MODES = ("auto", "strict", "off")  # strict = sandbox without network
-DEFAULT_SANDBOX = "auto"
+AUTONOMY_MODES = config.AUTONOMY_MODES
+DEFAULT_AUTONOMY = config.DEFAULT_AUTONOMY
+SANDBOX_MODES = config.SANDBOX_MODES
+DEFAULT_SANDBOX = config.DEFAULT_SANDBOX
 
-# Per-turn circuit breakers: past these totals every further delete/write in
-# the turn is escalated one level, so a looping small model cannot mass-delete
-# or mass-edit without a human (or the autonomous-mode deny) stepping in.
+# Per-turn circuit breakers: each time a turn's deletions/file changes pass
+# another multiple of these limits, further ones are escalated one more level,
+# so a looping small model cannot mass-delete or mass-edit unnoticed while
+# legitimate big jobs (scaffolding a project) still finish without a human.
 MASS_DELETE_LIMIT = 8
-MASS_WRITE_LIMIT = 30
+MASS_WRITE_LIMIT = config.MAX_WRITES_PER_TURN
 MAX_TARGETS = 20  # operands on one delete command before it counts as "mass"
 _MAX_DEPTH = 4  # nested `bash -c`, `$(…)`, scripts calling scripts
 _SCRIPT_SCAN_BYTES = 64 * 1024
@@ -96,9 +97,9 @@ def _risk(level: str, reason: str, kind: str = "exec", **counts: int) -> Risk:
     return Risk(level, (reason,), kind, **counts)
 
 
-def _bump(level: str) -> str:
-    """One level up, capped at high: escalation never manufactures `critical`."""
-    return level if level == "critical" else LEVELS[min(_RANK[level] + 1, _RANK["high"])]
+def _bump(level: str, steps: int = 1) -> str:
+    """`steps` levels up, capped at high: escalation never manufactures `critical`."""
+    return level if level == "critical" else LEVELS[min(_RANK[level] + steps, _RANK["high"])]
 
 
 @dataclass(frozen=True)
@@ -532,7 +533,7 @@ def _pipelines(text: str) -> list[list[_Cmd]]:
 _FORK_BOMB = re.compile(r"(\w+|:)\s*\(\s*\)\s*\{[^}]*\1\s*\|\s*\1\s*&")
 _ANSI_C_ESCAPE = re.compile(r"\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3}|u[0-9a-fA-F]|c.)")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
-_DANGEROUS_ENV = frozenset({
+DANGEROUS_ENV = frozenset({
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND",
     "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "PYTHONSTARTUP", "NODE_OPTIONS", "PERL5OPT",
 })
@@ -731,7 +732,7 @@ def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
     risk = SAFE
     while argv and _ASSIGNMENT.match(argv[0]):
         name = argv[0].split("=", 1)[0].rstrip("+")
-        if name in _DANGEROUS_ENV:
+        if name in DANGEROUS_ENV:
             risk |= _risk("high", f"sets {name}, which injects code into the programs it starts")
         argv = argv[1:]
     if not argv:
@@ -831,7 +832,7 @@ def _builtin_risk(argv: list[str], ctx: _Ctx) -> Risk:
         return _write_risk(operands, ctx, verb="tee writes")
     for operand in operands:  # export / declare / typeset / local / readonly
         var = operand.split("=", 1)[0]
-        if "=" in operand and var in _DANGEROUS_ENV:
+        if "=" in operand and var in DANGEROUS_ENV:
             return _risk("high", f"exports {var}, which injects code into later programs")
     return SAFE
 
@@ -1555,8 +1556,10 @@ def _classify(text: str, ctx: _Ctx) -> Risk:
 def _workspace_root(workspace: Any) -> Path | None:
     if workspace is None:
         return None
+    # A sandbox.Workspace exposes `.root`; plain paths are used as-is (Path.root is "/"!).
+    raw = workspace if isinstance(workspace, (str, os.PathLike)) else workspace.root
     try:
-        return Path(getattr(workspace, "root", workspace)).expanduser().resolve()
+        return Path(raw).expanduser().resolve()
     except (OSError, TypeError):
         return None
 
@@ -1726,10 +1729,10 @@ def decide(
         deletes = counters.get("deletes", 0) + assessed.deletes
         writes = counters.get("writes", 0) + assessed.writes
         if assessed.deletes and deletes > MASS_DELETE_LIMIT:
-            level = _bump(level)
+            level = _bump(level, (deletes - 1) // MASS_DELETE_LIMIT)
             reasons.append(f"mass removal: {deletes} deletions this turn")
         if assessed.writes and writes > MASS_WRITE_LIMIT:
-            level = _bump(level)
+            level = _bump(level, (writes - 1) // MASS_WRITE_LIMIT)
             reasons.append(f"mass edit: {writes} file changes this turn")
         if state.get("tainted") and assessed.kind in ("exec", "write") and level != "safe":
             level = _bump(level)
@@ -1786,6 +1789,15 @@ def _probe(argv: list[str]) -> bool:
         return False
 
 
+def _bus() -> dict[str, str]:
+    """The user-bus variables systemd-run needs (workspace commands get a minimal env)."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return {
+        "XDG_RUNTIME_DIR": runtime,
+        "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS") or f"unix:path={runtime}/bus",
+    }
+
+
 @functools.lru_cache(maxsize=1)
 def _engines() -> tuple[str | None, str | None]:
     """(bwrap, systemd-run) paths for engines that actually work on this machine."""
@@ -1794,7 +1806,8 @@ def _engines() -> tuple[str | None, str | None]:
                              "--unshare-pid", "--die-with-parent", "--new-session", "--", "/bin/true"]):
         bwrap = None
     scope = shutil.which("systemd-run")
-    if scope and not _probe([scope, "--user", "--scope", "--quiet", "--collect", "-p", "TasksMax=64", "--", "/bin/true"]):
+    if scope and not _probe(["env", "-i", *(f"{k}={v}" for k, v in _bus().items()), scope, "--user",
+                             "--scope", "--quiet", "--collect", "-p", "TasksMax=64", "--", "/bin/true"]):
         scope = None
     return bwrap, scope
 
@@ -1821,23 +1834,59 @@ def _memory_limit() -> int:
 
 
 def _hidden_paths(writable: list[Path]) -> tuple[list[str], list[str]]:
-    """(directories to cover with tmpfs, files to cover with /dev/null)."""
+    """(directories to cover with tmpfs, files to cover with /dev/null), symlinks resolved."""
     home = Path.home().resolve()
-    dirs: list[str] = []
-    files: list[str] = []
-    for rel in SECRET_PATHS:
-        path = home / rel
-        if any(w == path or w.is_relative_to(path) for w in writable):
+    candidates = [home / rel for rel in SECRET_PATHS] + [Path(f"/run/user/{os.getuid()}")]
+    dirs: set[str] = set()
+    files: set[str] = set()
+    for path in candidates:  # runtime dir: D-Bus, systemd --user, Wayland, keyring sockets
+        real = Path(os.path.realpath(path))
+        if any(w == real or w.is_relative_to(real) for w in writable):
             continue
-        if path.is_dir():
-            dirs.append(str(path))
-        elif path.is_file():
-            files.append(str(path))
-    runtime = Path(f"/run/user/{os.getuid()}")
-    if runtime.is_dir() and not any(w.is_relative_to(runtime) for w in writable):
-        dirs.append(str(runtime))  # D-Bus, systemd --user, Wayland, keyring: escape hatches
-    files.extend(s for s in ("/var/run/docker.sock", "/run/docker.sock", "/run/podman/podman.sock") if os.path.exists(s))
-    return dirs, files
+        if real.is_dir():
+            dirs.add(str(real))
+        elif real.is_file():
+            files.add(str(real))
+    for sock in ("/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock"):
+        if os.path.exists(sock):
+            files.add(os.path.realpath(sock))
+    return sorted(dirs), sorted(files)
+
+
+def _bwrap_argv(argv: list[str], *, writable: list[Path], cwd: Path, network: bool, hide: bool, unset: tuple[str, ...] = ()) -> list[str]:
+    wrapped = [
+        str(_engines()[0]), "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+        "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
+        "--die-with-parent", "--new-session",
+    ]
+    if not network:
+        wrapped.append("--unshare-net")
+    if hide:
+        dirs, files = _hidden_paths(writable)
+        for directory in dirs:
+            wrapped += ["--tmpfs", directory]
+        for path in files:
+            wrapped += ["--ro-bind", "/dev/null", path]
+    for path in writable:
+        wrapped += ["--bind", str(path), str(path)]
+    for key in unset:
+        wrapped += ["--unsetenv", key]
+    return [*wrapped, "--chdir", str(cwd), "--", *argv]
+
+
+@functools.lru_cache(maxsize=32)
+def _hiding_works(root: str) -> bool:
+    """Verify once per workspace that the full mount set is valid here, so an
+    unusual layout degrades to minimal confinement instead of breaking commands."""
+    argv = _bwrap_argv(["/bin/true"], writable=[Path(root)], cwd=Path(root), network=True, hide=True)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("sandbox self-test failed (%s); using minimal confinement", exc)
+        return False
+    if result.returncode != 0:
+        log.warning("sandbox self-test failed (%s); using minimal confinement", result.stderr.strip()[:200])
+    return result.returncode == 0
 
 
 def confine(
@@ -1853,24 +1902,20 @@ def confine(
     status = sandbox_status()
     if not status["active"] or _UNCONFINED.get():
         return argv
-    bwrap, scope = _engines()
-    wrapped = [
-        str(bwrap), "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-        "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
-        "--die-with-parent", "--new-session",
-    ]
-    if not (status["network"] if network is None else network):
-        wrapped.append("--unshare-net")
-    dirs, files = _hidden_paths(writable)
-    for directory in dirs:
-        wrapped += ["--tmpfs", directory]
-    for path in files:
-        wrapped += ["--ro-bind", "/dev/null", path]
-    for path in writable:
-        wrapped += ["--bind", str(path), str(path)]
-    wrapped += ["--chdir", str(cwd), "--", *argv]
-    if scope:
-        wrapped = [scope, "--user", "--scope", "--quiet", "--collect",
-                   "-p", f"MemoryMax={memory_bytes or _memory_limit()}", "-p", "MemorySwapMax=0",
-                   "-p", f"TasksMax={tasks}", "--", *wrapped]
+    scope = _engines()[1]
+    bus = _bus()
+    socket = re.search(r"unix:path=([^,;]+)", bus["DBUS_SESSION_BUS_ADDRESS"])
+    use_scope = bool(scope and socket and os.path.exists(socket.group(1)))
+    wrapped = _bwrap_argv(
+        argv,
+        writable=writable,
+        cwd=cwd,
+        network=status["network"] if network is None else network,
+        hide=all(_hiding_works(str(path)) for path in writable),
+        unset=tuple(bus) if use_scope else (),  # systemd-run gets the bus; the command does not
+    )
+    if use_scope:
+        wrapped = ["env", *(f"{k}={v}" for k, v in bus.items()), str(scope), "--user", "--scope",
+                   "--quiet", "--collect", "-p", f"MemoryMax={memory_bytes or _memory_limit()}",
+                   "-p", "MemorySwapMax=0", "-p", f"TasksMax={tasks}", "--", *wrapped]
     return wrapped

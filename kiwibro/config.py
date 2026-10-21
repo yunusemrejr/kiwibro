@@ -88,6 +88,24 @@ PERMISSION_TOOLS = tuple(DEFAULT_PERMISSIONS)
 REASONING_MODES = ("auto", "on", "off")
 DEFAULT_REASONING = "auto"
 
+# How much a turn may do without a human (see safety.decide): supervised asks per
+# the permission table; smart auto-approves low-risk work and asks for high risk;
+# autonomous never waits and denies high risk with a reason the model can act on.
+AUTONOMY_MODES = ("supervised", "smart", "autonomous")
+DEFAULT_AUTONOMY = "smart"
+# Command confinement (see safety.confine): auto = bubblewrap when available,
+# strict = also no network, off = run commands unconfined.
+SANDBOX_MODES = ("auto", "strict", "off")
+DEFAULT_SANDBOX = "auto"
+
+# Settings whose value must be one of a fixed set.
+SETTING_CHOICES: dict[str, tuple[str, ...]] = {
+    "tool_profile": TOOL_PROFILES,
+    "reasoning": REASONING_MODES,
+    "autonomy": AUTONOMY_MODES,
+    "sandbox": SANDBOX_MODES,
+}
+
 MEMORY_KINDS = ("fact", "preference", "project", "person", "decision")
 
 
@@ -124,6 +142,8 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
         "user_name": "",
         "tool_profile": DEFAULT_TOOL_PROFILE,
         "reasoning": DEFAULT_REASONING,
+        "autonomy": DEFAULT_AUTONOMY,
+        "sandbox": DEFAULT_SANDBOX,
         "max_tool_rounds": MAX_TOOL_ROUNDS,
     }
 
@@ -210,14 +230,10 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             if not isinstance(value, str) or len(value) > 80:
                 raise ValueError("user_name must be a string of at most 80 characters")
             cleaned["user_name"] = value.strip()
-        elif key == "reasoning":
-            if value not in REASONING_MODES:
-                raise ValueError(f"reasoning must be one of {', '.join(REASONING_MODES)}")
-            cleaned["reasoning"] = value
-        elif key == "tool_profile":
-            if value not in TOOL_PROFILES:
-                raise ValueError(f"tool_profile must be one of {', '.join(TOOL_PROFILES)}")
-            cleaned["tool_profile"] = value
+        elif key in SETTING_CHOICES:
+            if value not in SETTING_CHOICES[key]:
+                raise ValueError(f"{key} must be one of {', '.join(SETTING_CHOICES[key])}")
+            cleaned[key] = value
         elif key == "max_tool_rounds":
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError("max_tool_rounds must be an integer")

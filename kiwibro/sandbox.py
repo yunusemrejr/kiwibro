@@ -6,6 +6,7 @@ import fnmatch
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import config, safety
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,73 @@ def check_command(command: str) -> None:
             raise SandboxError(f"command blocked for safety ({label})")
     if _BLOCKED_RM.search(command) and _BLOCKED_RM_ROOT.search(command):
         raise SandboxError("command blocked for safety (rm on root)")
+
+
+_SHELL = shutil.which("bash") or "/bin/sh"
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def command_env(root: Path, workdir: Path, env_vars: dict[str, str] | None = None, **extra: str) -> dict[str, str]:
+    """Minimal environment for workspace commands; HOME is the workspace."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(root),
+        "PWD": str(workdir),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TERM": "dumb",
+        **extra,
+    }
+    for key, value in (env_vars or {}).items():
+        if isinstance(key, str) and _ENV_NAME.match(key) and key not in ("PATH", "HOME") and key not in safety.DANGEROUS_ENV:
+            env[key] = str(value)[:1000]
+    return env
+
+
+def shell_argv(command: str, root: Path, workdir: Path) -> list[str]:
+    """`bash -c command`, confined to the workspace when a sandbox is available."""
+    return safety.confine([_SHELL, "-c", command], writable=[root], cwd=workdir)
+
+
+def kill_group(proc: subprocess.Popen[str], sig: int = signal.SIGKILL) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.send_signal(sig)
+        except OSError:
+            pass
+
+
+def run_process(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float, stdin: str | None = None
+) -> tuple[int | None, str]:
+    """Run argv in its own process group with stdout+stderr merged.
+
+    Returns (exit code, output); the exit code is None when the timeout fired,
+    in which case the whole group is killed so no grandchild keeps the pipes
+    (and the turn) hanging."""
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+    try:
+        output, _ = proc.communicate(stdin, timeout=timeout)
+        return proc.returncode, output or ""
+    except subprocess.TimeoutExpired:
+        kill_group(proc)
+        try:
+            output, _ = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            output = ""
+        return None, output or ""
 
 
 def _iso(timestamp: float) -> str:
@@ -427,66 +495,37 @@ class Workspace:
         if not workdir.is_dir():
             raise SandboxError(f"cwd is not a directory: {self.public(workdir)}")
         timeout = max(1, min(int(timeout or COMMAND_TIMEOUT_S), MAX_COMMAND_TIMEOUT_S))
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "HOME": str(self.root),
-            "PWD": str(workdir),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "TERM": "dumb",
-        }
-        if env_vars:
-            for k, v in env_vars.items():
-                if isinstance(k, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) and k not in ("PATH", "HOME", "LD_PRELOAD"):
-                    env[k] = str(v)[:1000]
+        env = command_env(self.root, workdir, env_vars)
         started = time.monotonic()
         try:
-            # shell=True is deliberate: agents run shell command lines (sandboxed, blocklisted).
-            completed = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(workdir),
-                input=stdin,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
+            exit_code, output = run_process(
+                shell_argv(command, self.root, workdir), cwd=workdir, env=env, timeout=timeout, stdin=stdin
             )
-        except subprocess.TimeoutExpired as exc:
-            duration = int((time.monotonic() - started) * 1000)
-            partial = ""
-            if exc.stdout:
-                partial += exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout)
-            if exc.stderr:
-                partial += exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr)
-            partial_msg = f"Command timed out after {timeout}s."
-            if partial.strip():
-                clipped, _ = self._truncate_output(partial.strip(), max_bytes=max(200, MAX_OUTPUT_BYTES - 80))
-                partial_msg += f"\nPartial output:\n{clipped}"
-            return {
-                "command": command,
-                "cwd": self.public(workdir),
-                "exit_code": None,
-                "output": partial_msg,
-                "truncated": False,
-                "duration_ms": duration,
-                "timed_out": True,
-            }
         except OSError as exc:
             raise SandboxError(f"could not run command: {exc.strerror or exc}") from exc
         duration = int((time.monotonic() - started) * 1000)
-        output = (completed.stdout or "") + (completed.stderr or "")
-        output, truncated = self._truncate_output(output, MAX_OUTPUT_BYTES)
-        if not output.strip():
-            output = "(no output)"
+        timed_out = exit_code is None
+        if timed_out:
+            partial = output.strip()
+            output = f"Command timed out after {timeout}s."
+            if partial:
+                clipped, _ = self._truncate_output(partial, max_bytes=max(200, MAX_OUTPUT_BYTES - 80))
+                output += f"\nPartial output:\n{clipped}"
+            truncated = False
+        else:
+            output, truncated = self._truncate_output(output, MAX_OUTPUT_BYTES)
+            if not output.strip():
+                output = "(no output)"
+            if exit_code < 0:
+                output += f"\n[killed by signal {-exit_code}: the sandbox stops commands that exceed its memory or process limits]"
         return {
             "command": command,
             "cwd": self.public(workdir),
-            "exit_code": completed.returncode,
+            "exit_code": exit_code,
             "output": output,
             "truncated": truncated,
             "duration_ms": duration,
-            "timed_out": False,
+            "timed_out": timed_out,
         }
 
 
@@ -599,24 +638,11 @@ class TerminalManager:
                 raise SandboxError(f"too many active background terminals ({running_count}); kill one first")
             session_id = f"term_{uuid.uuid4().hex[:10]}"
 
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "HOME": str(workspace.root),
-            "PWD": str(workdir),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "TERM": "dumb",
-            "PYTHONUNBUFFERED": "1",
-        }
-        if env_vars:
-            for k, v in env_vars.items():
-                if isinstance(k, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) and k not in ("PATH", "HOME", "LD_PRELOAD"):
-                    env[k] = str(v)[:1000]
+        env = command_env(workspace.root, workdir, env_vars, PYTHONUNBUFFERED="1")
 
         try:
             proc = subprocess.Popen(
-                command,
-                shell=True,
+                shell_argv(command, workspace.root, workdir),
                 cwd=str(workdir),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -781,24 +807,12 @@ class TerminalManager:
             raise SandboxError(f"unknown terminal session: {session_id}")
         proc = session.process
         if proc is not None and session.is_running:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except OSError:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+            kill_group(proc, signal.SIGTERM)
             deadline = time.monotonic() + 1.5
             while time.monotonic() < deadline and session.is_running:
                 time.sleep(0.05)
             if session.is_running:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                kill_group(proc)
             session.exit_code = proc.poll()
             session.finished_at = time.monotonic()
         return session.to_dict(workspace=workspace, include_output=True)
