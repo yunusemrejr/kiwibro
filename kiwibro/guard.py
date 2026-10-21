@@ -263,6 +263,16 @@ _INJECTION_SIGNALS: tuple[tuple[str, int, re.Pattern[str]], ...] = (
         r"your|the|system)\b[^.\n]{0,30}\b(?:instructions?|prompts?|directions?|rules|guidelines|guardrails|context)\b",
         re.IGNORECASE,
     )),
+    ("instruction override", 3, re.compile(  # the same attack in other common languages
+        r"önceki (?:tüm )?talimatları (?:yok say|görmezden gel|unut)|"
+        r"ignorier(?:e|en sie) (?:alle )?(?:vorherigen|bisherigen|obigen) (?:anweisungen|instruktionen)|"
+        r"ignora (?:todas )?las instrucciones (?:anteriores|previas)|"
+        r"ignore[rz]? (?:toutes )?les instructions (?:précédentes|antérieures)|"
+        r"ignora (?:tutte )?le istruzioni precedenti|"
+        r"игнорируй(?:те)? (?:все )?(?:предыдущие|прошлые) (?:инструкции|указания)|"
+        r"忽略(?:之前|以上|先前|上面)的?(?:所有)?(?:指令|说明|提示)",
+        re.IGNORECASE,
+    )),
     ("role hijack", 2, re.compile(
         r"\b(?:you are now|from now on,? you|act as (?:an? )?(?:unrestricted|jailbroken|dan\b|developer mode)|"
         r"new (?:system )?(?:instructions?|rules|prompt)\s*:|system prompt\s*:|enter developer mode)",
@@ -319,7 +329,7 @@ def injection_signals(text: str) -> tuple[int, list[str]]:
     sample = (text or "")[:SCAN_CHARS]
     score, names = 0, []
     for label, weight, pattern in _INJECTION_SIGNALS:
-        if pattern.search(sample):
+        if label not in names and pattern.search(sample):  # each signal counts once
             score += weight
             names.append(label)
     if _TAG_CHARS_RE.search(sample):
