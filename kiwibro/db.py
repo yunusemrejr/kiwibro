@@ -965,7 +965,7 @@ class Database:
     # --- permissions & settings -------------------------------------------
 
     def get_permissions(self) -> dict[str, str]:
-        merged = dict(config.DEFAULT_PERMISSIONS)
+        merged = config.permission_defaults()
         with self.connect() as conn:
             rows = conn.execute("SELECT tool, mode FROM permissions").fetchall()
         for row in rows:
@@ -974,7 +974,7 @@ class Database:
         return merged
 
     def set_permission(self, tool: str, mode: str) -> None:
-        if tool not in config.PERMISSION_TOOLS or mode not in config.PERMISSION_MODES:
+        if tool not in config.permission_defaults() or mode not in config.PERMISSION_MODES:
             raise ValueError("invalid permission")
         with self.connect() as conn:
             conn.execute(

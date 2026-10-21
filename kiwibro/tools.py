@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import codebase, config, delegate, desktop, research
+from . import codebase, config, delegate, desktop, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LMStudioClient
@@ -878,15 +878,7 @@ def phase_for(name: str) -> tuple[str, str]:
 
 
 def permission_mode(settings: dict[str, Any], name: str) -> str:
-    permissions = settings.get("permissions") or {}
-    mode = permissions.get(name)
-    if mode not in config.PERMISSION_MODES:
-        mode = config.DEFAULT_PERMISSIONS.get(name)
-    if mode not in config.PERMISSION_MODES and name in _EXTENSIONS:
-        mode = getattr(_EXTENSIONS[name], "permission", "ask")
-    if mode not in config.PERMISSION_MODES:
-        mode = "ask"
-    return mode
+    return safety.permission(settings, name)
 
 
 def requires_approval(settings: dict[str, Any], name: str) -> bool:

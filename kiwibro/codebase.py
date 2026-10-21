@@ -19,7 +19,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .sandbox import MAX_WRITE_BYTES, PRUNED_DIRS, SandboxError, Workspace
+from . import safety
+from .sandbox import MAX_WRITE_BYTES, PRUNED_DIRS, SandboxError, Workspace, command_env, run_process
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ MAX_PIPELINE_COMMANDS = 8
 SNIPPET_TIMEOUT_S = 30
 SNIPPET_MAX_CODE_BYTES = 64 * 1024
 SNIPPET_OUTPUT_CAP = 8000
+SNIPPET_MEMORY_BYTES = 1024**3
+SNIPPET_KEEP_RUNS = 20  # older scratch runs are pruned so long sessions stay tidy
 MAX_RECURSIVE_DELETE_ENTRIES = 100
 BACKUP_DIR = ".kiwibro-backups"
 BACKUP_KEEP = 50
@@ -406,10 +409,10 @@ def run_snippet(
     workspace, a hard timeout and capped output. Files the snippet creates
     in its scratch dir are listed so the agent can read or keep them. This is
     the safe way to compute, transform data, or analyse media with code when
-    no model capability fits. It is not a security container — approval and
-    the workspace boundary still apply.
+    no model capability fits. Where bubblewrap is available the snippet is
+    confined (safety.confine): no network, read-only filesystem except its
+    scratch dir, 1 GiB memory and 64 task caps; plots render headless (Agg).
     """
-    import os as _os
     import time as _time
     import uuid as _uuid
 
@@ -431,44 +434,38 @@ def run_snippet(
         missing = "node is not available on this machine (JavaScript snippets need Node.js)"
     if interpreter is None:
         raise SandboxError(missing)
-    scratch = workspace.root / ".kiwibro-sandbox" / f"run-{_uuid.uuid4().hex[:8]}"
+    runs = workspace.root / ".kiwibro-sandbox"
+    scratch = runs / f"run-{_uuid.uuid4().hex[:8]}"
+    cache = runs / ".cache"  # shared across runs (e.g. matplotlib's font cache)
     try:
         scratch.mkdir(parents=True, exist_ok=True)
+        cache.mkdir(exist_ok=True)
+        _prune_runs(runs, keep=SNIPPET_KEEP_RUNS)
         script = scratch / filename
         script.write_text(code, encoding="utf-8")
     except OSError as exc:
         raise SandboxError(f"could not prepare snippet: {exc.strerror or exc}") from exc
-    env = {
-        "PATH": _os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": str(scratch),
-        "PWD": str(scratch),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "TERM": "dumb",
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
+    env = command_env(
+        scratch, scratch, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1", MPLBACKEND="Agg",
+        XDG_CACHE_HOME=str(cache), MPLCONFIGDIR=str(cache / "matplotlib"),
+    )
+    argv = safety.confine(
+        [interpreter, *extra, filename],
+        writable=[scratch, cache],
+        readable=(workspace.root,),
+        cwd=scratch,
+        network=False,
+        memory_bytes=SNIPPET_MEMORY_BYTES,
+        tasks=64,
+    )
     started = _time.monotonic()
-    timed_out = False
     try:
-        completed = subprocess.run(
-            [interpreter, *extra, filename],
-            cwd=str(scratch),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-        exit_code: int | None = completed.returncode
-        output = (completed.stdout or "") + (completed.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        exit_code = None
-        out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        err = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        output = out + err + f"\nSnippet timed out after {timeout}s."
+        exit_code, output = run_process(argv, cwd=scratch, env=env, timeout=timeout)
     except OSError as exc:
         raise SandboxError(f"could not run snippet: {exc.strerror or exc}") from exc
+    timed_out = exit_code is None
+    if timed_out:
+        output += f"\nSnippet timed out after {timeout}s."
     duration = int((_time.monotonic() - started) * 1000)
     created = sorted(
         workspace.public(item)
@@ -487,6 +484,16 @@ def run_snippet(
         "scratch": workspace.public(scratch),
         "created_files": created,
     }
+
+
+def _prune_runs(runs: Path, *, keep: int) -> None:
+    """Delete all but the newest `keep` snippet scratch dirs (only run-* under runs/)."""
+    try:
+        old = sorted((d for d in runs.iterdir() if d.is_dir() and d.name.startswith("run-")), key=lambda d: d.stat().st_mtime)
+    except OSError:
+        return
+    for directory in old[:-keep] if len(old) > keep else []:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 # --- read-only git --------------------------------------------------------------

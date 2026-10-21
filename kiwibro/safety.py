@@ -1622,13 +1622,13 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
         command = str(args.get("command") or "")
         risk = classify_command(command, remote=True) if command else SAFE
         return risk | _risk("low", f"runs on the remote host {args.get('host') or '?'}")
-    if name == "run_code":
-        if not sandbox_status()["active"]:
-            return _risk("high", "no sandbox is available, so the code would run unconfined")
-        risk = _risk("low", "runs code in an isolated sandbox without network")
-        if args.get("network"):
-            risk |= _risk("medium", "the sandboxed code may use the network")
-        return risk
+    if name in ("run_python", "run_javascript"):
+        if sandbox_status()["active"]:
+            return _risk("low", "runs code in an isolated sandbox (no network, writes only its scratch folder)")
+        language = "python" if name == "run_python" else "node"
+        return _risk("medium", "runs code unconfined (no sandbox available)") | _code_risk(
+            str(args.get("code") or ""), language, inline=True
+        )
     if name == "write_file":
         return _file_tool_risk(str(args.get("path") or ""), root, verb="writes")
     if name in ("replace_in_file", "apply_patch"):
@@ -1673,9 +1673,9 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
 
 
 def permission(settings: dict[str, Any], name: str) -> str:
-    """The user's per-tool permission (same lookup as tools.permission_mode)."""
+    """The user's per-tool permission (the single lookup; tools.permission_mode delegates here)."""
     mode = (settings.get("permissions") or {}).get(name)
-    return mode if mode in config.PERMISSION_MODES else config.DEFAULT_PERMISSIONS.get(name, "ask")
+    return mode if mode in config.PERMISSION_MODES else config.permission_defaults().get(name, "ask")
 
 
 def _guard_verdict(name: str, args: dict[str, Any], turn_state: dict[str, Any]) -> Any:
@@ -1853,7 +1853,16 @@ def _hidden_paths(writable: list[Path]) -> tuple[list[str], list[str]]:
     return sorted(dirs), sorted(files)
 
 
-def _bwrap_argv(argv: list[str], *, writable: list[Path], cwd: Path, network: bool, hide: bool, unset: tuple[str, ...] = ()) -> list[str]:
+def _bwrap_argv(
+    argv: list[str],
+    *,
+    writable: list[Path],
+    cwd: Path,
+    network: bool,
+    hide: bool,
+    readable: tuple[Path, ...] = (),
+    unset: tuple[str, ...] = (),
+) -> list[str]:
     wrapped = [
         str(_engines()[0]), "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
         "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
@@ -1867,6 +1876,8 @@ def _bwrap_argv(argv: list[str], *, writable: list[Path], cwd: Path, network: bo
             wrapped += ["--tmpfs", directory]
         for path in files:
             wrapped += ["--ro-bind", "/dev/null", path]
+    for path in readable:  # e.g. a workspace under the private /tmp
+        wrapped += ["--ro-bind", str(path), str(path)]
     for path in writable:
         wrapped += ["--bind", str(path), str(path)]
     for key in unset:
@@ -1894,11 +1905,13 @@ def confine(
     *,
     writable: list[Path],
     cwd: Path,
+    readable: tuple[Path, ...] = (),
     network: bool | None = None,
     memory_bytes: int | None = None,
     tasks: int = 512,
 ) -> list[str]:
-    """`argv` wrapped in the strongest confinement available (or unchanged)."""
+    """`argv` wrapped in the strongest confinement available (or unchanged).
+    `writable` paths are bound read-write, `readable` ones read-only."""
     status = sandbox_status()
     if not status["active"] or _UNCONFINED.get():
         return argv
@@ -1912,6 +1925,7 @@ def confine(
         cwd=cwd,
         network=status["network"] if network is None else network,
         hide=all(_hiding_works(str(path)) for path in writable),
+        readable=readable,
         unset=tuple(bus) if use_scope else (),  # systemd-run gets the bus; the command does not
     )
     if use_scope:

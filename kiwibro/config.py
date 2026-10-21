@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import time
 from datetime import datetime, timezone
@@ -76,13 +77,25 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
 # hard stop instead of an unbounded edit/run spree in one autonomous turn.
 MAX_WRITES_PER_TURN = 30
 
+@functools.lru_cache(maxsize=1)
+def _extension_permissions() -> tuple[tuple[str, str], ...]:
+    try:
+        from .extensions import default_permissions  # lazy: extensions import tool modules
+    except ImportError:
+        return ()
+    return tuple(default_permissions().items())
+
+
+def permission_defaults() -> dict[str, str]:
+    """Every tool's default permission: built-ins plus each extension tool's own."""
+    return {**dict(_extension_permissions()), **DEFAULT_PERMISSIONS}
+
+
 # Tool profiles keep small local models effective: instead of sending every
 # tool schema each turn, the agent sends a task-shaped subset (see tools.py).
 TOOL_PROFILES = ("auto", "full", "minimal", "coding", "research", "desktop")
 DEFAULT_TOOL_PROFILE = "auto"
 TOOL_ROUNDS_RANGE = (1, 32)
-
-PERMISSION_TOOLS = tuple(DEFAULT_PERMISSIONS)
 
 # Thinking: "auto" thinks only where it pays off (see inference.wants_reasoning).
 REASONING_MODES = ("auto", "on", "off")
@@ -195,7 +208,7 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
                 raise ValueError("permissions must be an object")
             perms: dict[str, str] = {}
             for tool, mode in value.items():
-                if tool not in PERMISSION_TOOLS:
+                if tool not in permission_defaults():
                     raise ValueError(f"unknown tool: {tool}")
                 if mode not in PERMISSION_MODES:
                     raise ValueError(f"invalid permission mode for {tool}")
