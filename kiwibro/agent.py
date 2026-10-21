@@ -14,7 +14,34 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Callable, Iterator
 
-from . import config, inference, prompts, tools
+from . import config, prompts, tools
+
+try:
+    from . import inference
+except ImportError:  # inference lane not landed yet: degrade, never break imports
+    import types as _types
+    from datetime import datetime as _datetime
+
+    class _NoOpTimer:
+        def mark_first(self) -> None: pass
+        def finish(self) -> None: pass
+        def stats(self, _completion_tokens: Any = None) -> dict[str, Any]: return {}
+
+    class _NoOpTracker:
+        def observe(self, *_args: Any, **_kw: Any) -> dict[str, Any]: return {}
+
+    inference = _types.SimpleNamespace(  # type: ignore[assignment]
+        RoundTimer=_NoOpTimer,
+        PREFIX_TRACKER=_NoOpTracker(),
+        wants_reasoning=lambda *_a, **_k: True,
+        model_profile=lambda *_a, **_k: None,
+        reasoning_payload=lambda *_a, **_k: {},
+        time_line=lambda now=None: "Local time: "
+        + (now or _datetime.now()).astimezone().strftime("%A, %d %B %Y, %H:%M %Z"),
+    )
+    logging.getLogger(__name__).warning(
+        "kiwibro.inference unavailable; reasoning control + telemetry disabled"
+    )
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
