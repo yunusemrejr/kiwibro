@@ -823,7 +823,7 @@ try:
             phase=_ext.phase,
             label=_ext.label,
             summary=_ext.summary,
-            category="coding",
+            category=getattr(_ext, "category", "coding"),
             parallel=_ext.risk in ("read", "web"),
         )
 except Exception:  # extensions are optional; never break the core catalog
