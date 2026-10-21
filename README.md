@@ -53,9 +53,12 @@ permission, inside its own workspace.
 | **Models** | Live list from LM Studio, loaded/available state, context size, tool capability. |
 | **Context** | Automatic rolling summarisation with a quiet context meter. |
 | **Memory** | Global, deduped, FTS-searchable. Pin, edit, delete, forget all. |
-| **Agent tools** | `web_search`, `fetch_page`, `read_file`, `list_files`, `write_file`, `replace_in_file`, `run_command`, `remember`. |
+| **Agent tools (35)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), codebase (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python`/`run_javascript`, desktop (`system_info`, `open_path`, `clipboard`, `notify`, `screenshot`), model delegation (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`. |
+| **Tool profiles** | Auto/full/minimal/coding/research/desktop: small models see a task-shaped tool subset each turn (fewer wrong calls, less prompt cost). Independent read/search calls run in parallel. |
+| **Model teamwork** | The main model can delegate a bounded side-question to the smallest installed model with the needed capability (e.g. vision), then continue — check `model_info` for what's available locally. |
+| **Steering** | Type while a reply runs: the note is applied at the next step instead of waiting for a new turn. |
 | **Permissions** | Auto / Ask / Deny per tool, inline approval cards, "Always" remembers. |
-| **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps. |
+| **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps, pre-edit backups (`.kiwibro-backups/`), mass-delete caps, per-turn write budget, duplicate-call loop guard. |
 | **Privacy** | Loopback-only server, local SQLite (`~/.local/share/kiwibro`), no external assets. |
 
 ## Requirements
@@ -150,7 +153,7 @@ Environment variables:
 | `KIWIBRO_LMSTUDIO_URL` | `http://127.0.0.1:1234` | LM Studio server |
 
 Runtime settings (model, permissions, workspace, temperature, output tokens, user
-name) live in the Settings sheet and are stored in SQLite.
+name, tool profile, max tool steps per reply) live in the Settings sheet and are stored in SQLite.
 
 ## How it works
 
@@ -189,7 +192,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 Kiwibro's contract is tested at three levels, all runnable on your machine:
 
 ```bash
-python3 -m pytest -q              # 68 unit/API/security tests (offline, fake LM)
+python3 -m pytest -q              # 180+ unit/API/security tests (offline, fake LM)
 python3 tests/e2e/run_e2e.py      # 54 deterministic end-to-end checks (real app + fake LM)
 node tests/e2e/browser/run_browser.mjs --mode mock   # browser rig (needs playwright-core + Chrome)
 ```

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.1.0"
+VERSION = "2.0.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.
@@ -20,7 +20,8 @@ DEFAULT_TEMPERATURE = 0.6
 MAX_OUTPUT_TOKENS_RANGE = (256, 8192)
 TEMPERATURE_RANGE = (0.0, 2.0)
 
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 16
+MAX_PARALLEL_TOOLS = 6
 APPROVAL_TIMEOUT_S = 120.0
 HEARTBEAT_S = 15.0
 MEMORY_EXTRACTION_TIMEOUT_S = 8.0
@@ -36,15 +37,56 @@ PERMISSION_MODES = ("auto", "ask", "deny")
 DEFAULT_PERMISSIONS: dict[str, str] = {
     "web_search": "auto",
     "fetch_page": "auto",
+    "multi_search": "auto",
+    "fetch_pages": "auto",
+    "web_research": "auto",
+    "browse_page": "auto",
     "read_file": "auto",
+    "read_files": "auto",
     "list_files": "auto",
+    "glob_files": "auto",
+    "grep_files": "auto",
+    "file_outline": "auto",
+    "git": "auto",
     "write_file": "ask",
     "replace_in_file": "ask",
+    "apply_patch": "ask",
+    "file_manage": "ask",
     "run_command": "ask",
+    "multi_command": "ask",
+    "terminal_session": "ask",
+    "system_info": "auto",
+    "open_path": "ask",
+    "clipboard": "ask",
+    "notify": "auto",
+    "screenshot": "ask",
+    "browser": "auto",
+    "model_info": "auto",
+    "delegate": "auto",
+    "describe_image": "auto",
+    "study_file": "auto",
+    "run_python": "ask",
+    "run_javascript": "ask",
+    "task_board": "auto",
+    "recall": "auto",
     "remember": "auto",
 }
 
+# Per-turn ceiling on write/exec-class tool executions: small models get a
+# hard stop instead of an unbounded edit/run spree in one autonomous turn.
+MAX_WRITES_PER_TURN = 30
+
+# Tool profiles keep small local models effective: instead of sending every
+# tool schema each turn, the agent sends a task-shaped subset (see tools.py).
+TOOL_PROFILES = ("auto", "full", "minimal", "coding", "research", "desktop")
+DEFAULT_TOOL_PROFILE = "auto"
+TOOL_ROUNDS_RANGE = (1, 32)
+
 PERMISSION_TOOLS = tuple(DEFAULT_PERMISSIONS)
+
+# Thinking: "auto" thinks only where it pays off (see inference.wants_reasoning).
+REASONING_MODES = ("auto", "on", "off")
+DEFAULT_REASONING = "auto"
 
 MEMORY_KINDS = ("fact", "preference", "project", "person", "decision")
 
@@ -80,6 +122,9 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
         "temperature": DEFAULT_TEMPERATURE,
         "workspace": str(Path(ws).expanduser()),
         "user_name": "",
+        "tool_profile": DEFAULT_TOOL_PROFILE,
+        "reasoning": DEFAULT_REASONING,
+        "max_tool_rounds": MAX_TOOL_ROUNDS,
     }
 
 
@@ -165,6 +210,22 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             if not isinstance(value, str) or len(value) > 80:
                 raise ValueError("user_name must be a string of at most 80 characters")
             cleaned["user_name"] = value.strip()
+        elif key == "reasoning":
+            if value not in REASONING_MODES:
+                raise ValueError(f"reasoning must be one of {', '.join(REASONING_MODES)}")
+            cleaned["reasoning"] = value
+        elif key == "tool_profile":
+            if value not in TOOL_PROFILES:
+                raise ValueError(f"tool_profile must be one of {', '.join(TOOL_PROFILES)}")
+            cleaned["tool_profile"] = value
+        elif key == "max_tool_rounds":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("max_tool_rounds must be an integer")
+            if not TOOL_ROUNDS_RANGE[0] <= value <= TOOL_ROUNDS_RANGE[1]:
+                raise ValueError(
+                    f"max_tool_rounds must be between {TOOL_ROUNDS_RANGE[0]} and {TOOL_ROUNDS_RANGE[1]}"
+                )
+            cleaned["max_tool_rounds"] = value
         else:
             raise ValueError(f"unknown setting: {key}")
     return cleaned

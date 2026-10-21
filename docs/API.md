@@ -134,6 +134,13 @@ server aborts the turn (partial text is saved).
 ### `POST /api/chat/stop`
 Body `{"conversation_id": "c_..."}` → `{"ok": true}`. Idempotent.
 
+### `POST /api/chat/steer`
+
+Body: `{"conversation_id": "c_…", "message": "…"}`. Queues a steering note into the
+running turn; the worker persists it as a user message and emits an SSE `steering`
+event at the next tool round. `200 {"ok": true, "queued": true}`, `409` when no
+reply is running, `404` for unknown conversations.
+
 ### `POST /api/approvals/<approval_id>`
 Body `{"decision": "allow" | "always" | "deny"}` → `{"ok": true, "decision": "..."}`.
 `always` sets that tool's permission mode to `auto`. 404 if unknown/expired.
@@ -171,12 +178,13 @@ Body any of `{"content", "kind", "pinned"}` → `{"ok": true, "memory": {...}}`.
   "model": null, "lmstudio_url": "http://127.0.0.1:1234", "agent_enabled": true,
   "memory_enabled": true, "max_output_tokens": 2048, "temperature": 0.6,
   "workspace": "/home/you/Kiwibro", "user_name": "",
-  "permissions": {"web_search":"auto","fetch_page":"auto","read_file":"auto",
-    "list_files":"auto","write_file":"ask","run_command":"ask","remember":"auto"}
+  "tool_profile": "auto", "max_tool_rounds": 16,
+  "permissions": {"web_search":"auto", "...35 tools total, see config.DEFAULT_PERMISSIONS":"…"}
 }}
 ```
 ### `PATCH /api/settings`
 Body = subset of settings. Validate: temperature 0–2, max_output_tokens 256–8192,
+tool_profile in {auto, full, minimal, coding, research, desktop}, max_tool_rounds 1–32,
 workspace must be creatable inside `$HOME` (no root paths), lmstudio_url http(s),
 permissions modes in {auto, ask, deny}. Returns merged settings. Changing workspace
 does not move files.

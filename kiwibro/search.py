@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import logging
 import re
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -14,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 log = logging.getLogger(__name__)
 
@@ -301,6 +304,54 @@ PROVIDERS: tuple[tuple[str, Callable[[str, int], list[dict[str, str]]]], ...] = 
     ("bing_rss", bing_rss_search),
 )
 PROVIDER_COOLDOWN_S = 30.0
+FETCH_CACHE_TTL = 300.0
+FETCH_CACHE_MAX = 64
+BROWSE_MAX_LINKS = 40
+
+_WORDS = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def normalize_url(url: str) -> str:
+    """Canonical key for deduplicating search results (www/trailing slash/fragment-insensitive)."""
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return (url or "").strip().lower()
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    path = parts.path.rstrip("/") or "/"
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme.lower()}://{host}{path}{query}"
+
+
+def _query_terms(query: str) -> set[str]:
+    return {term.lower() for term in _WORDS.findall(query or "") if len(term) > 2}
+
+
+def rerank_results(query: str, results: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Stable re-ranking by query-term overlap (title weighted 3x, snippet 1x)."""
+    terms = _query_terms(query)
+    if not terms or len(results) < 2:
+        return list(results)
+
+    def score(result: dict[str, str]) -> int:
+        title_terms = {term.lower() for term in _WORDS.findall(result.get("title") or "")}
+        snippet_terms = {term.lower() for term in _WORDS.findall(result.get("snippet") or "")}
+        return 3 * len(terms & title_terms) + len(terms & snippet_terms)
+
+    return sorted(results, key=score, reverse=True)
+
+
+def dedupe_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Drop duplicate URLs (normalised), keeping the first occurrence."""
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for result in results:
+        key = normalize_url(result.get("url") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(result)
+    return unique
 
 
 class SearchEngine:
@@ -308,6 +359,7 @@ class SearchEngine:
 
     def __init__(self, cache_ttl: float = SEARCH_CACHE_TTL) -> None:
         self._cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self._fetch_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._cache_ttl = cache_ttl
         self._cooldowns: dict[str, float] = {}
@@ -469,6 +521,20 @@ class SearchEngine:
 
     def fetch_page(self, url: str, max_chars: int = 4000) -> dict[str, Any]:
         max_chars = max(200, min(int(max_chars or 4000), 8000))
+        cache_key = f"{normalize_url(url)}|{max_chars}"
+        with self._lock:
+            cached = self._fetch_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < FETCH_CACHE_TTL:
+                return dict(cached[1])
+        page = self._fetch_page_uncached(url, max_chars)
+        with self._lock:
+            if len(self._fetch_cache) >= FETCH_CACHE_MAX:
+                oldest = min(self._fetch_cache, key=lambda item: self._fetch_cache[item][0])
+                self._fetch_cache.pop(oldest, None)
+            self._fetch_cache[cache_key] = (time.monotonic(), dict(page))
+        return page
+
+    def _fetch_page_uncached(self, url: str, max_chars: int) -> dict[str, Any]:
         final_url, _content_type, encoding, raw = self._guarded_get(
             url, read_timeout=15, max_bytes=FETCH_MAX_BYTES
         )
@@ -489,4 +555,56 @@ class SearchEngine:
             "url": final_url,
             "text": extracted[:max_chars],
             "truncated": len(extracted) > max_chars,
+        }
+
+    def browse_page(
+        self,
+        url: str,
+        max_chars: int = 4000,
+        max_links: int = BROWSE_MAX_LINKS,
+    ) -> dict[str, Any]:
+        """Readable text plus a numbered link list, for step-by-step browsing.
+
+        The agent picks a link by number and calls ``fetch_page``/``browse_page``
+        on it next. Links are absolute, deduplicated, and same-page anchors are
+        dropped. SSRF guarding happens again when a link is actually fetched.
+        """
+        max_chars = max(200, min(int(max_chars or 4000), 8000))
+        max_links = max(1, min(int(max_links or BROWSE_MAX_LINKS), BROWSE_MAX_LINKS))
+        final_url, _content_type, encoding, raw = self._guarded_get(
+            url, read_timeout=15, max_bytes=FETCH_MAX_BYTES
+        )
+        soup = BeautifulSoup(self._decode(raw, encoding), "html.parser")
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        links: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for anchor in soup.find_all("a", href=True):
+            if len(links) >= max_links:
+                break
+            href = str(anchor.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                continue
+            absolute = urljoin(final_url, href)
+            if urlsplit(absolute).scheme not in ("http", "https"):
+                continue
+            key = normalize_url(absolute)
+            if key in seen or key == normalize_url(final_url):
+                continue
+            seen.add(key)
+            label = _clean(anchor.get_text(" ", strip=True), 120) or absolute
+            links.append({"n": str(len(links) + 1), "text": label, "url": absolute})
+        for tag in soup(
+            ["script", "style", "noscript", "nav", "footer", "header", "aside", "form", "svg", "iframe"]
+        ):
+            tag.decompose()
+        root = soup.find("article") or soup.find("main") or soup.body or soup
+        extracted = re.sub(r"\n{2,}", "\n\n", root.get_text("\n", strip=True)).strip()
+        if not extracted and not links:
+            raise SearchError("The page contained no readable text.")
+        return {
+            "title": _clean(title, 300) or urlsplit(final_url).hostname or "",
+            "url": final_url,
+            "text": extracted[:max_chars],
+            "truncated": len(extracted) > max_chars,
+            "links": links,
         }

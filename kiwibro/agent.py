@@ -9,12 +9,12 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Callable, Iterator
 
-from . import config, prompts, tools
+from . import config, inference, prompts, tools
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
@@ -168,6 +168,19 @@ class Approval:
     decision: str | None = None
 
 
+def _directives_note(conversation_id: str) -> str:
+    """The directive ledger's per-turn note ('' until ``directives`` is installed or when quiet)."""
+    try:
+        from . import directives
+    except ImportError:
+        return ""
+    try:
+        return directives.render_note(conversation_id) or ""
+    except Exception:  # the ledger must never break a turn
+        log.warning("directive note failed", exc_info=True)
+        return ""
+
+
 @dataclass
 class Turn:
     conversation_id: str
@@ -188,6 +201,16 @@ class Turn:
     approval_ids: list[str] = field(default_factory=list)
     finished: bool = False
     done_sent: bool = False
+    tool_signatures: dict[str, int] = field(default_factory=dict)
+    tool_calls_made: int = 0
+    tool_rounds: int = 0
+    writes_made: int = 0
+    steering_notes: list[str] = field(default_factory=list)
+    steering_lock: threading.Lock = field(default_factory=threading.Lock)
+    system_prompt: str = ""
+    turn_context: str = ""
+    timer: inference.RoundTimer | None = None
+    inference: dict[str, Any] = field(default_factory=dict)
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -258,6 +281,31 @@ class AgentManager:
             return False
         turn.abort.set()
         return True
+
+    def steer(self, conversation_id: str, message: str) -> bool:
+        """Queue a mid-turn steering note; the worker applies it at the next round."""
+        note = (message or "").strip()
+        if not note:
+            return False
+        with self._locks_guard:
+            turn = self._turns.get(conversation_id)
+        if turn is None:
+            return False
+        with turn.steering_lock:
+            turn.steering_notes.append(note[:4000])
+        return True
+
+    def _drain_steering(self, turn: Turn) -> None:
+        """Persist queued steering notes as user messages the model will see."""
+        with turn.steering_lock:
+            notes, turn.steering_notes = turn.steering_notes, []
+        for note in notes:
+            self.db.add_message(
+                turn.conversation_id,
+                "user",
+                f"[Steering note from the user, sent while you were working] {note}",
+            )
+            turn.emit("steering", {"text": note})
 
     def is_busy(self, conversation_id: str) -> bool:
         with self._locks_guard:
@@ -378,14 +426,16 @@ class AgentManager:
             )
         self._raise_if_aborted(turn)
 
-        memory_block, _memories = self.memory.build_block(
-            turn.message, enabled=bool(settings.get("memory_enabled", True))
-        )
         model_info = self.llm.model_info(model)
-        system_prompt = self._system_prompt(
-            settings, memory_block, model=model, model_info=model_info
+        # KV-cache rule: message 0 stays byte-identical across turns so LM Studio
+        # reuses the cached prefix; the clock, retrieved memories and directives
+        # ride on the newest user message (fixed for the whole turn).
+        system_prompt = self._system_prompt(settings, model=model, model_info=model_info)
+        turn_context = self._turn_context(turn, settings)
+        turn.system_prompt, turn.turn_context = system_prompt, turn_context
+        prepared = self.context.prepare(
+            turn.conversation_id, model, system_prompt, turn_context=turn_context
         )
-        prepared = self.context.prepare(turn.conversation_id, model, system_prompt)
         # meta is contractually the first SSE event; context follows it.
         self._emit_meta(turn, conversation, settings, model=model, prepared=prepared)
         self._emit_context(turn, prepared)
@@ -394,14 +444,24 @@ class AgentManager:
         model_info = prepared.model_info or model_info or {}
         tool_list: list[dict[str, Any]] | None = None
         if settings.get("agent_enabled", True) and model_info.get("tools", False):
-            tool_list = tools.tool_defs()
+            # Task-shaped subset (tool_profile) keeps small models effective;
+            # fixed for the whole turn so the prompt prefix stays stable.
+            tool_list = tools.tool_defs_for(settings=settings, message=turn.message)
+        try:
+            max_rounds = int(settings.get("max_tool_rounds") or config.MAX_TOOL_ROUNDS)
+        except (TypeError, ValueError):
+            max_rounds = config.MAX_TOOL_ROUNDS
+        max_rounds = max(config.TOOL_ROUNDS_RANGE[0], min(max_rounds, config.TOOL_ROUNDS_RANGE[1]))
 
-        for round_index in range(config.MAX_TOOL_ROUNDS):
+        for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
             if round_index > 0:
+                self._drain_steering(turn)
                 # Append only the new assistant/tool messages; extend() falls
                 # back to a full prepare if the compaction trigger is crossed.
-                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt)
+                prepared = self.context.extend(
+                    prepared, turn.conversation_id, model, system_prompt, turn_context=turn_context
+                )
                 self._emit_context(turn, prepared)
             turn.emit(
                 "status",
@@ -409,7 +469,7 @@ class AgentManager:
             )
             turn.partial_text = ""
             turn.partial_reasoning = ""
-            result = self._stream_with_recovery(turn, model, prepared, tool_list)
+            result = self._stream_with_recovery(turn, model, prepared, tool_list, round_index)
             log.info(
                 "turn %s round %s: finish_reason=%s content_chars=%s tool_calls=%s",
                 turn.conversation_id,
@@ -437,11 +497,10 @@ class AgentManager:
             turn.partial_reasoning = ""
             if not result.tool_calls:
                 break
-            for call in result.tool_calls:
-                self._raise_if_aborted(turn)
-                self._handle_tool_call(turn, call, settings)
-                self._raise_if_aborted(turn)
-            if round_index == config.MAX_TOOL_ROUNDS - 1:
+            turn.tool_rounds = round_index + 1
+            self._handle_tool_calls(turn, result.tool_calls, settings)
+            self._raise_if_aborted(turn)
+            if round_index == max_rounds - 1:
                 note = "I reached the tool-use limit for this turn, so I stopped here."
                 note_message = self.db.add_message(
                     turn.conversation_id, "assistant", note, model=model, meta={"truncated": True}
@@ -454,6 +513,7 @@ class AgentManager:
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
         # the UI refreshes its memory count from /api/bootstrap or /api/memories later).
         self._raise_if_aborted(turn)
+        self._drain_steering(turn)
         if conversation["title_auto"] and conversation["title"] == "New chat":
             self._maybe_title(turn)
         self._insert_usage(turn, model)
@@ -465,6 +525,12 @@ class AgentManager:
                 "aborted": False,
                 "model": model,
                 "usage": self._usage_payload(turn),
+                "stats": {
+                    "tool_calls": turn.tool_calls_made,
+                    "tool_rounds": turn.tool_rounds,
+                    "duration_ms": int((time.monotonic() - turn.started_at) * 1000),
+                },
+                "inference": turn.inference or None,
             },
         )
 
@@ -474,15 +540,20 @@ class AgentManager:
         model: str,
         prepared: PreparedContext,
         tool_list: list[dict[str, Any]] | None,
+        round_index: int = 0,
     ) -> ChatResult:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
         max_tokens = int(settings.get("max_output_tokens", config.DEFAULT_MAX_OUTPUT_TOKENS))
+        think = inference.wants_reasoning(settings.get("reasoning"), turn.message, round_index=round_index)
+        extra = inference.reasoning_payload(inference.model_profile(model, prepared.model_info), think=think)
         attempts = 0
         while True:
             self._raise_if_aborted(turn)
+            reuse = inference.PREFIX_TRACKER.observe(model, prepared.messages, tool_list)
+            turn.timer = inference.RoundTimer()
             try:
-                return self.llm.stream_chat(
+                result = self.llm.stream_chat(
                     model=model,
                     messages=prepared.messages,
                     tools=tool_list,
@@ -491,7 +562,11 @@ class AgentManager:
                     on_delta=self._delta_callback(turn),
                     on_reasoning=self._reasoning_callback(turn),
                     abort=turn.abort,
+                    extra=extra or None,
                 )
+                turn.timer.finish()
+                self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
+                return result
             except ContextLimitError:
                 attempts += 1
                 if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
@@ -502,19 +577,30 @@ class AgentManager:
                     raise
                 if turn.abort.is_set():
                     raise TurnAborted()
-                memory_block, _ = self.memory.build_block(
-                    turn.message, enabled=bool(settings.get("memory_enabled", True))
+                prepared = self.context.prepare(
+                    turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
                 )
-                system_prompt = self._system_prompt(
-                    settings,
-                    memory_block,
-                    model=model,
-                    model_info=prepared.model_info,
-                )
-                prepared = self.context.prepare(turn.conversation_id, model, system_prompt)
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
                 turn.partial_reasoning = ""
+
+    @staticmethod
+    def _note_round(
+        turn: Turn, round_index: int, *, think: bool, reuse: dict[str, int], result: ChatResult
+    ) -> None:
+        """Fold one round's inference telemetry into the turn's ``done.inference``."""
+        timing = turn.timer.stats((result.usage or {}).get("completion_tokens")) if turn.timer else {}
+        if round_index == 0:
+            turn.inference.update(reuse, thinking=think)
+            if "ttft_ms" in timing:
+                turn.inference["ttft_ms"] = timing["ttft_ms"]
+        if "tokens_per_s" in timing:
+            turn.inference["tokens_per_s"] = timing["tokens_per_s"]
+        log.info(
+            "turn %s round %s: think=%s reuse=%s%% ttft=%sms %s tok/s",
+            turn.conversation_id, round_index, think, reuse.get("reuse_percent"),
+            timing.get("ttft_ms"), timing.get("tokens_per_s"),
+        )
 
     # --- event helpers -----------------------------------------------------
 
@@ -522,6 +608,8 @@ class AgentManager:
         def on_delta(text: str) -> None:
             if turn.abort.is_set():
                 raise TurnAborted()
+            if turn.timer is not None:
+                turn.timer.mark_first()
             turn.partial_text += text
             turn.emit("delta", {"text": text})
 
@@ -531,6 +619,8 @@ class AgentManager:
         def on_reasoning(text: str) -> None:
             if turn.abort.is_set():
                 raise TurnAborted()
+            if turn.timer is not None:
+                turn.timer.mark_first()
             turn.partial_reasoning += text
             turn.emit("reasoning", {"text": text})
 
@@ -578,14 +668,23 @@ class AgentManager:
             },
         )
 
+    def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
+        """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
+        memory_block, _memories = self.memory.build_block(
+            turn.message, enabled=bool(settings.get("memory_enabled", True))
+        )
+        blocks = [inference.time_line(), memory_block, _directives_note(turn.conversation_id)]
+        body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
+        return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
     @staticmethod
     def _system_prompt(
         settings: dict[str, Any],
-        memory_block: str,
         *,
         model: str | None = None,
         model_info: dict[str, Any] | None = None,
     ) -> str:
+        """Message 0: everything here must be stable across turns (KV-cache prefix)."""
         name = str(settings.get("user_name") or "").strip()
         user_block = prompts.USER_BLOCK.format(name=name) if name else ""
         model_block = prompts.MODEL_BLOCK.format(model=model) if model else ""
@@ -597,16 +696,11 @@ class AgentManager:
             tools_block = prompts.TOOLS_UNSUPPORTED_BLOCK
         else:
             tools_block = prompts.TOOLS_BLOCK
-        time_block = prompts.TIME_BLOCK.format(
-            when=datetime.now().astimezone().strftime("%A, %d %B %Y, %H:%M %Z")
-        )
         return prompts.SYSTEM_PROMPT.format(
             model_block=model_block,
             workspace_block=workspace_block,
             tools_block=tools_block,
             user_block=user_block,
-            memory_block=memory_block,
-            time_block=time_block,
         )
 
     def _record_usage(self, turn: Turn, result: ChatResult, prepared: PreparedContext | None = None) -> None:
@@ -643,6 +737,74 @@ class AgentManager:
     # --- tools & approvals -------------------------------------------------
 
     def _handle_tool_call(self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]) -> None:
+        """Single-call convenience wrapper (see _handle_tool_calls)."""
+        self._handle_tool_calls(turn, [call], settings)
+
+    def _handle_tool_calls(
+        self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any]
+    ) -> None:
+        """Validate, approve and run one round of tool calls.
+
+        Approvals are always sequential. Independent read-only/web calls then
+        run concurrently; writes/commands run one by one. Results are recorded
+        in the original call order, and an identical call repeated 3+ times in
+        a turn is refused (loop guard) instead of re-executed.
+        """
+        prepared_calls: list[dict[str, Any]] = []
+        for call in calls:
+            self._raise_if_aborted(turn)
+            prepared_calls.append(self._prepare_tool_call(turn, call, settings))
+            self._raise_if_aborted(turn)
+        runnable = [item for item in prepared_calls if item["result"] is None]
+        outcomes: dict[str, tuple[ToolResult, int]] = {}
+
+        def run_one(item: dict[str, Any]) -> tuple[str, ToolResult, int]:
+            started = time.monotonic()
+            workspace = Workspace(self._settings().get("workspace") or config.default_workspace())
+            context = ToolContext(
+                workspace=workspace,
+                memory=self.memory,
+                search=self.search,
+                conversation_id=turn.conversation_id,
+                llm=self.llm,
+                current_model=turn.model,
+            )
+            result = tools.execute_tool(item["name"], item["args"], context)
+            return item["id"], result, int((time.monotonic() - started) * 1000)
+
+        parallel_items = [item for item in runnable if tools.is_parallel_safe(item["name"])]
+        serial_items = [item for item in runnable if not tools.is_parallel_safe(item["name"])]
+        if len(parallel_items) > 1:
+            phase, label = tools.phase_for(parallel_items[0]["name"])
+            turn.emit("status", {"phase": phase, "label": label})
+            workers = max(1, min(int(getattr(config, "MAX_PARALLEL_TOOLS", 4) or 4), len(parallel_items)))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kiwibro-tool") as pool:
+                for call_id, result, duration in pool.map(run_one, parallel_items):
+                    outcomes[call_id] = (result, duration)
+        else:
+            serial_items = parallel_items + serial_items
+        for item in serial_items:
+            self._raise_if_aborted(turn)
+            phase, label = tools.phase_for(item["name"])
+            turn.emit("status", {"phase": phase, "label": label})
+            call_id, result, duration = run_one(item)
+            outcomes[call_id] = (result, duration)
+            self._raise_if_aborted(turn)
+        for item in prepared_calls:
+            if item["result"] is not None:
+                result, duration = item["result"], 0
+            else:
+                result, duration = outcomes[item["id"]]
+                spec = tools.TOOL_SPECS.get(item["name"])
+                if spec is not None and spec.risk in ("write", "exec"):
+                    turn.writes_made += 1
+            turn.tool_calls_made += 1
+            self._record_tool_result(turn, item["id"], item["name"], result, duration)
+
+    def _prepare_tool_call(
+        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Parse, validate, permission-check and approve one call (no execution)."""
         function = call.get("function") or {}
         name = str(function.get("name") or "")
         call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:8]}")
@@ -663,8 +825,7 @@ class AgentManager:
                 {"id": call_id, "name": name, "args": args, "risk": "read", "requires_approval": False},
             )
             result = ToolResult(ok=False, content=f"Error: {exc}", preview=f"Error: {exc}")
-            self._record_tool_result(turn, call_id, name, result, 0)
-            return
+            return {"id": call_id, "name": name, "args": args, "result": result}
         mode = tools.permission_mode(self._settings(), name)
         requires = mode == "ask"
         turn.emit(
@@ -683,29 +844,39 @@ class AgentManager:
                 content="The user has disabled this tool. Do not retry it.",
                 preview="Tool disabled",
             )
-            self._record_tool_result(turn, call_id, name, result, 0)
-            return
+            return {"id": call_id, "name": name, "args": validated, "result": result}
+        if spec.risk in ("write", "exec") and turn.writes_made >= config.MAX_WRITES_PER_TURN:
+            result = ToolResult(
+                ok=False,
+                content=(
+                    f"Error: safety limit reached — {config.MAX_WRITES_PER_TURN} write/command "
+                    "actions already ran this turn. Summarise progress and let the user "
+                    "continue in a new message instead of making more changes."
+                ),
+                preview="Write limit reached for this turn",
+            )
+            return {"id": call_id, "name": name, "args": validated, "result": result}
+        signature = tools.tool_call_signature(name, validated)
+        seen = turn.tool_signatures.get(signature, 0)
+        turn.tool_signatures[signature] = seen + 1
+        if seen >= 2:
+            result = ToolResult(
+                ok=False,
+                content=(
+                    "Error: this exact tool call was already made twice this turn with the "
+                    "same arguments. Use the earlier result, change the arguments, or move on."
+                ),
+                preview="Duplicate tool call stopped",
+            )
+            return {"id": call_id, "name": name, "args": validated, "result": result}
         if requires and not self._request_approval(turn, name, spec.risk, validated):
             result = ToolResult(
                 ok=False,
                 content="The user denied permission for this tool call. Do not retry it.",
                 preview="Denied by user",
             )
-            self._record_tool_result(turn, call_id, name, result, 0)
-            return
-        phase, label = tools.phase_for(name)
-        turn.emit("status", {"phase": phase, "label": label})
-        started = time.monotonic()
-        workspace = Workspace(self._settings().get("workspace") or config.default_workspace())
-        context = ToolContext(
-            workspace=workspace,
-            memory=self.memory,
-            search=self.search,
-            conversation_id=turn.conversation_id,
-        )
-        result = tools.execute_tool(name, validated, context)
-        duration = int((time.monotonic() - started) * 1000)
-        self._record_tool_result(turn, call_id, name, result, duration)
+            return {"id": call_id, "name": name, "args": validated, "result": result}
+        return {"id": call_id, "name": name, "args": validated, "result": None}
 
     def _record_tool_result(
         self, turn: Turn, call_id: str, name: str, result: ToolResult, duration_ms: int
@@ -713,7 +884,7 @@ class AgentManager:
         self.db.add_message(
             turn.conversation_id,
             "tool",
-            (result.content or "")[:8000],
+            tools.shape_content(result.content or "", 8000),
             tool_call_id=call_id,
             tool_name=name,
             meta={"ok": result.ok, "duration_ms": duration_ms},

@@ -95,7 +95,7 @@ def live_health(env: Any) -> str:
     data = health.data
     assert_eq(data["lmstudio"], True, "LM Studio reachable")
     assert_eq(data["ok"], True, "health ok")
-    assert_eq(data["version"], "1.1.0", "version")
+    assert_eq(data["version"], "2.0.0", "version")
     models = env.client.get("/api/models?refresh=1")
     expect_status(models, 200, "GET /api/models")
     payload = models.data

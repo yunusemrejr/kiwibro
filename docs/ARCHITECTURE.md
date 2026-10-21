@@ -261,7 +261,7 @@ Kinds: `fact`, `preference`, `project`, `person`, `decision`.
 queue; the HTTP response streams that queue. Events and approval flow are in
 `docs/API.md`.
 
-Max 8 tool rounds per turn. After the final step, append a short note if truncated.
+Tool rounds per turn are configurable (`max_tool_rounds` setting, default 16, range 1–32). After the final step, append a short note if truncated.
 Every assistant tool-call message is stored; every tool result is stored as a
 `tool` message (content capped). Reasoning text is stored on assistant messages but
 not re-sent as history.
@@ -278,6 +278,44 @@ Tool catalog (OpenAI function schemas):
 | `replace_in_file` | `path`, `old`, `new` | ask | exactly-one-match replace, workspace-sandboxed |
 | `run_command` | `command`, `cwd?` | ask | cwd inside workspace, 60 s timeout, 6 KB output cap, blocklist |
 | `remember` | `content`, `kind?` | auto | writes memory immediately |
+
+### Tool layer 2.0 (35 built-ins + extensions)
+
+Tools live in `kiwibro/tools.py` (`ToolSpec` catalog) with implementations split by
+domain: `kiwibro/research.py` (parallel `multi_search`/`fetch_pages`/`web_research`
+evidence packs with `[n]` citations, URL dedupe + term-overlap rerank, fetch cache),
+`kiwibro/codebase.py` (`glob_files`, `file_outline`, atomic `apply_patch` with diff,
+`file_manage`, `multi_command` pipelines, read-only `git`, sandboxed
+`run_python`/`run_javascript` snippets in `.kiwibro-sandbox/` scratch dirs),
+`kiwibro/desktop.py` (`system_info`, `open_path`, `clipboard`, `notify`,
+`screenshot` — all degrade with a plain message when the desktop binary is absent),
+`kiwibro/delegate.py` + `kiwibro/routing.py` (capability registry over
+`/api/v0/models`; `model_info`, `delegate`, `describe_image` and map-reduce
+`study_file` keep the main model in charge while the *smallest adequate* installed
+model answers bounded side-questions, JIT-loaded and best-effort unloaded).
+Persistent terminals (`terminal_session`), grep (`grep_files`) and batched reads
+(`read_files`) ride on `kiwibro/sandbox.py`; the persistent `task_board` and the
+multi-tab `browser` ride on `kiwibro/tasks.py` / `kiwibro/browser.py`.
+Optional plug-ins register through `kiwibro/extensions.py` into the same catalog.
+
+Efficiency rules of the loop:
+
+- **Tool profiles** (`tool_profile` setting: auto/full/minimal/coding/research/
+  desktop) send a task-shaped schema subset per turn — fixed for the turn so the
+  prompt prefix stays cache-stable — minus user-denied tools.
+- **Parallel batches**: approvals are sequential, then independent read/web calls
+  run concurrently (`MAX_PARALLEL_TOOLS`); writes/commands stay serial. Results
+  are recorded in original call order.
+- **Loop guard**: an identical (tool, args) call is refused on its third repeat in
+  a turn; write/exec executions are capped per turn (`MAX_WRITES_PER_TURN`).
+- **Result shaping**: long outputs are head+tail truncated before storage; the
+  context engine additionally decays stale tool results with age.
+- **Steering**: `POST /api/chat/steer` queues a user note mid-turn; the worker
+  persists it as a user message at the next round boundary (SSE `steering`).
+- **Safeguards**: `apply_patch` is all-or-nothing and snapshots the file to
+  `.kiwibro-backups/` first (as does file deletion); recursive deletes refuse
+  >100 entries at once; snippets run without a shell under timeout/output caps.
+- **Turn stats**: `done` carries `stats {tool_calls, tool_rounds, duration_ms}`.
 
 Permission evaluation per tool: explicit `deny` → deny; `auto` → allow; `ask` →
 create approval, emit `event: approval`, block the loop until the user resolves it

@@ -376,11 +376,38 @@ export function closeSheet(dialog) {
 const TOOL_META = {
   web_search: { label: "Web search", icon: "search" },
   fetch_page: { label: "Fetch page", icon: "globe" },
+  multi_search: { label: "Multi search", icon: "search" },
+  fetch_pages: { label: "Fetch pages", icon: "globe" },
+  web_research: { label: "Web research", icon: "search" },
+  browse_page: { label: "Browse page", icon: "globe" },
+  browser: { label: "Browser", icon: "globe" },
   read_file: { label: "Read file", icon: "file" },
+  read_files: { label: "Read files", icon: "file" },
   list_files: { label: "List files", icon: "folder" },
+  glob_files: { label: "Find files", icon: "folder" },
+  grep_files: { label: "Search files", icon: "search" },
+  file_outline: { label: "File outline", icon: "layers" },
+  git: { label: "Git", icon: "database" },
   write_file: { label: "Write file", icon: "file-plus" },
   replace_in_file: { label: "Edit file", icon: "pencil" },
+  apply_patch: { label: "Patch file", icon: "pencil" },
+  file_manage: { label: "Manage files", icon: "folder" },
   run_command: { label: "Run command", icon: "terminal" },
+  multi_command: { label: "Run commands", icon: "terminal" },
+  terminal_session: { label: "Terminal", icon: "terminal" },
+  run_python: { label: "Run Python", icon: "terminal" },
+  run_javascript: { label: "Run JavaScript", icon: "terminal" },
+  system_info: { label: "System info", icon: "info" },
+  open_path: { label: "Open", icon: "external" },
+  clipboard: { label: "Clipboard", icon: "copy" },
+  notify: { label: "Notify", icon: "message" },
+  screenshot: { label: "Screenshot", icon: "image" },
+  model_info: { label: "Local models", icon: "sparkles" },
+  delegate: { label: "Helper model", icon: "sparkles" },
+  describe_image: { label: "Describe image", icon: "image" },
+  study_file: { label: "Study file", icon: "file" },
+  task_board: { label: "Task board", icon: "check" },
+  recall: { label: "Recall", icon: "sparkles" },
   remember: { label: "Remember", icon: "sparkles" },
 };
 
@@ -396,16 +423,54 @@ export function toolSummary(name, args) {
   if (!args || typeof args !== "object") return "";
   switch (name) {
     case "web_search":
-      return args.query || "";
+    case "web_research":
+    case "recall":
+    case "grep_files":
+      return args.query || args.pattern || "";
+    case "multi_search":
+      return Array.isArray(args.queries) ? args.queries.join(" · ") : "";
+    case "fetch_pages":
+      return Array.isArray(args.urls) ? `${args.urls.length} pages` : "";
     case "fetch_page":
+    case "browse_page":
+      return args.url || "";
+    case "browser":
+      return args.url || args.tab_id || args.action || "";
     case "read_file":
     case "write_file":
     case "replace_in_file":
+    case "file_outline":
+    case "apply_patch":
+    case "file_manage":
+    case "describe_image":
+    case "study_file":
       return args.path || "";
+    case "read_files":
+      return Array.isArray(args.paths) ? args.paths.join(", ") : "";
+    case "glob_files":
+      return args.pattern || "";
+    case "git":
+      return args.action || "status";
     case "list_files":
       return args.path && args.path !== "." ? args.path : "workspace";
     case "run_command":
-      return args.command || "";
+    case "run_python":
+    case "run_javascript":
+      return args.command || (typeof args.code === "string" ? args.code.split("\n")[0] : "") || "";
+    case "multi_command":
+      return Array.isArray(args.commands) ? args.commands.join(" && ") : "";
+    case "terminal_session":
+      return args.command || args.session_id || args.action || "";
+    case "open_path":
+      return args.target || "";
+    case "clipboard":
+      return args.action === "write" ? args.text || "" : "read clipboard";
+    case "notify":
+      return args.title || "";
+    case "delegate":
+      return args.task || "";
+    case "task_board":
+      return args.title || args.action || "";
     case "remember":
       return args.content || "";
     default:

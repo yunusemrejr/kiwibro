@@ -17,13 +17,49 @@ import {
 const KINDS = ["fact", "preference", "project", "person", "decision"];
 const PERMISSION_ORDER = [
   "web_search",
+  "multi_search",
   "fetch_page",
+  "fetch_pages",
+  "web_research",
+  "browse_page",
+  "browser",
   "read_file",
+  "read_files",
   "list_files",
+  "glob_files",
+  "grep_files",
+  "file_outline",
+  "git",
   "write_file",
   "replace_in_file",
+  "apply_patch",
+  "file_manage",
   "run_command",
+  "multi_command",
+  "terminal_session",
+  "run_python",
+  "run_javascript",
+  "system_info",
+  "open_path",
+  "clipboard",
+  "notify",
+  "screenshot",
+  "model_info",
+  "delegate",
+  "describe_image",
+  "study_file",
+  "task_board",
+  "recall",
   "remember",
+];
+
+const TOOL_PROFILES = [
+  ["auto", "Auto (task-shaped)"],
+  ["full", "Full (all tools)"],
+  ["minimal", "Minimal (classics)"],
+  ["coding", "Coding"],
+  ["research", "Research"],
+  ["desktop", "Desktop"],
 ];
 
 function titleCase(value) {
@@ -444,6 +480,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     const metaParts = [];
     if (model.context) metaParts.push(`${contextLabel(model.context)} context`);
     if (model.tools) metaParts.push("tools");
+    if (model.vision) metaParts.push("vision");
     if (model.quantization) metaParts.push(model.quantization);
     if (model.state !== "loaded") metaParts.push("not loaded");
 
@@ -716,6 +753,67 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         },
       }),
     );
+    // Tool profile + per-turn tool budget (small models do better with fewer tools).
+    const profileSelect = el("select", {
+      class: "memory-add-kind",
+      "aria-label": "Tool profile",
+    });
+    for (const [value, label] of TOOL_PROFILES) {
+      const option = el("option", { value, text: label });
+      if (value === (data.settings.tool_profile || "auto")) option.selected = true;
+      profileSelect.append(option);
+    }
+    profileSelect.addEventListener("change", async () => {
+      const previous = data.settings.tool_profile || "auto";
+      await patch({ tool_profile: profileSelect.value }, () => {
+        profileSelect.value = previous;
+      });
+    });
+    behaviour.append(
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: "Tool profile" }),
+          el("div", {
+            class: "setting-desc",
+            text: "Which tools the model sees each turn. Auto picks a task-shaped set — best for small models.",
+          }),
+        ]),
+        profileSelect,
+      ]),
+    );
+    const roundsInput = el("input", {
+      type: "number",
+      min: "1",
+      max: "32",
+      step: "1",
+      value: String(data.settings.max_tool_rounds || 16),
+      "aria-label": "Max tool steps per reply",
+      style: { width: "72px" },
+    });
+    roundsInput.addEventListener("change", async () => {
+      const previous = String(data.settings.max_tool_rounds || 16);
+      const value = Number(roundsInput.value);
+      if (!Number.isInteger(value) || value < 1 || value > 32) {
+        roundsInput.value = previous;
+        toast("Tool steps must be between 1 and 32", { tone: "error" });
+        return;
+      }
+      await patch({ max_tool_rounds: value }, () => {
+        roundsInput.value = previous;
+      });
+    });
+    behaviour.append(
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: "Max tool steps per reply" }),
+          el("div", {
+            class: "setting-desc",
+            text: "How many tool rounds one reply may take before Kiwibro wraps up.",
+          }),
+        ]),
+        roundsInput,
+      ]),
+    );
     body.append(behaviour);
 
     /* --- Workspace --- */
@@ -792,6 +890,7 @@ export function modelMetaLine(model) {
   const parts = [];
   if (model.context) parts.push(`${contextLabel(model.context)} context`);
   if (model.tools) parts.push("tools");
+  if (model.vision) parts.push("vision");
   if (model.quantization) parts.push(model.quantization);
   if (model.state !== "loaded") parts.push("not loaded");
   return parts.join(" · ");

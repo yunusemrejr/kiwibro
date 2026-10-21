@@ -2,6 +2,41 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [2.0.0] — 2026-10-22
+
+The agent release: complex tool use, model teamwork and autonomous-work safeguards,
+on top of the context/memory efficiency overhaul (see Unreleased notes below, which
+ship in this version).
+
+### Added
+
+- **27 new tools (35 total).** Parallel web research (`multi_search`, `fetch_pages`,
+  `web_research` with numbered evidence, `browse_page`, multi-tab `browser`);
+  codebase management (`grep_files`, `glob_files`, `read_files`, `file_outline`,
+  atomic `apply_patch` with diff + pre-edit backup, `file_manage`, read-only `git`,
+  `multi_command` pipelines, persistent `terminal_session`); sandboxed
+  `run_python`/`run_javascript` snippets; computer use (`system_info`, `open_path`,
+  `clipboard`, `notify`, `screenshot`); persistent `task_board`; `recall` over
+  memory + episodic history. Optional extension tools plug into the same catalog.
+- **Capability-aware model teamwork.** `model_info` lists every local LM Studio
+  model with capabilities; `delegate`/`describe_image` hand bounded side-questions
+  to the smallest adequate installed model (e.g. vision) and return to the main
+  model; `study_file` answers questions about long files by chunk→notes→merge.
+  When no model fits, the playbook falls back to solving it with sandboxed code.
+- **Tool profiles & parallel execution.** Per-turn task-shaped tool subsets
+  (auto/full/minimal/coding/research/desktop) keep 1–4B models accurate and cheap;
+  independent read/search calls in one round run concurrently.
+- **Mid-turn steering.** `POST /api/chat/steer` (send while a reply runs) applies
+  user corrections at the next step; `done` now reports turn `stats`.
+- **Autonomy safeguards.** Duplicate-call loop guard, per-turn write budget,
+  mass-delete caps, pre-edit snapshots in `.kiwibro-backups/`, all-or-nothing patches.
+
+### Changed
+
+- Tool rounds per reply are configurable (`max_tool_rounds`, default 16).
+- Model entries expose `vision` + `capabilities`; vision shown in model lists.
+- Tool results are head+tail shaped before storage; fetched pages are cached (5 min).
+
 ## [Unreleased]
 
 ### Changed

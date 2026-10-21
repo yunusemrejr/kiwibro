@@ -22,11 +22,38 @@ import {
 const ASSISTANT_PHRASE = {
   web_search: "search the web",
   fetch_page: "fetch a web page",
+  multi_search: "search the web with several queries",
+  fetch_pages: "fetch several web pages",
+  web_research: "research a question on the web",
+  browse_page: "browse a web page",
+  browser: "use the browser",
   read_file: "read a file from your workspace",
+  read_files: "read files from your workspace",
   list_files: "look through your workspace",
+  glob_files: "find files in your workspace",
+  grep_files: "search your files",
+  file_outline: "outline a file",
+  git: "inspect the git repository",
   write_file: "write a file in your workspace",
   replace_in_file: "edit a file in your workspace",
+  apply_patch: "patch a file in your workspace",
+  file_manage: "move, copy or delete files",
   run_command: "run a shell command",
+  multi_command: "run several shell commands",
+  terminal_session: "use a terminal session",
+  run_python: "run a Python snippet",
+  run_javascript: "run a JavaScript snippet",
+  system_info: "check this computer",
+  open_path: "open something on your desktop",
+  clipboard: "use your clipboard",
+  notify: "show a notification",
+  screenshot: "take a screenshot",
+  model_info: "list your local models",
+  delegate: "ask another local model",
+  describe_image: "look at an image with a vision model",
+  study_file: "study a long file with a helper model",
+  task_board: "update the task board",
+  recall: "search memory",
   remember: "save a memory",
 };
 
@@ -99,6 +126,47 @@ function approvalDetailRows(approval) {
       break;
     case "fetch_page":
       if (args.url) rows.push({ label: "URL", value: args.url, pre: false });
+      break;
+    case "apply_patch":
+      if (args.path) rows.push({ label: "Path", value: args.path, pre: false });
+      if (Array.isArray(args.edits)) {
+        for (const [index, edit] of args.edits.entries()) {
+          rows.push({ label: `Edit ${index + 1} — replace`, value: truncate(edit.old, 500), pre: true });
+          rows.push({ label: `Edit ${index + 1} — with`, value: truncate(edit.new, 500), pre: true });
+        }
+      }
+      break;
+    case "file_manage":
+      if (args.action) rows.push({ label: "Action", value: args.action, pre: false });
+      if (args.path) rows.push({ label: "Path", value: args.path, pre: false });
+      if (args.destination) rows.push({ label: "Destination", value: args.destination, pre: false });
+      if (args.recursive) rows.push({ label: "Recursive", value: "yes", pre: false });
+      break;
+    case "multi_command":
+      if (Array.isArray(args.commands)) {
+        rows.push({ label: "Commands", value: truncate(args.commands.join("\n"), 2000), pre: true });
+      }
+      if (args.cwd) rows.push({ label: "Working directory", value: args.cwd, pre: false });
+      break;
+    case "terminal_session":
+      if (args.action) rows.push({ label: "Action", value: args.action, pre: false });
+      if (args.command) rows.push({ label: "Command", value: truncate(args.command, 1000), pre: true });
+      if (args.session_id) rows.push({ label: "Session", value: args.session_id, pre: false });
+      if (args.input) rows.push({ label: "Input", value: truncate(args.input, 500), pre: true });
+      break;
+    case "run_python":
+    case "run_javascript":
+      if (args.code != null) rows.push({ label: "Code", value: truncate(args.code, 2000), pre: true });
+      break;
+    case "open_path":
+      if (args.target) rows.push({ label: "Open", value: args.target, pre: false });
+      break;
+    case "clipboard":
+      rows.push({ label: "Action", value: args.action || "", pre: false });
+      if (args.text != null) rows.push({ label: "Text", value: truncate(args.text, 800), pre: true });
+      break;
+    case "screenshot":
+      if (args.filename) rows.push({ label: "Save as", value: args.filename, pre: false });
       break;
     case "remember":
       if (args.content) rows.push({ label: "Memory", value: args.content, pre: false });
@@ -775,6 +843,15 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       pendingApprovals.set(approvalId, card);
       announce("Kiwibro needs approval to continue");
       scrollIfPinned();
+    },
+    addSteeringChip(text) {
+      const turn = ensureTurn();
+      const chip = el("span", {
+        class: "chip chip-context",
+        title: text || "Steering note sent while the reply was running",
+      });
+      chip.append(icon("message"), el("span", { text: "Steering note applied" }));
+      appendChip(turn, chip);
     },
     addContextChip() {
       const turn = ensureTurn();

@@ -33,7 +33,7 @@ def health_offline(env: "Any") -> str:
     data = response.data or {}
     assert_eq(data.get("ok"), True, "health.ok")
     assert_eq(data.get("lmstudio"), False, "health.lmstudio offline")
-    assert_eq(data.get("version"), "1.1.0", "health.version")
+    assert_eq(data.get("version"), "2.0.0", "health.version")
     assert_true(data.get("lmstudio_error"), "health.lmstudio_error present")
     assert_eq(response.headers.get("cache-control"), "no-store", "health cache-control")
     return "lmstudio=false with calm error message"
