@@ -118,7 +118,7 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `approval` | `{approval_id, tool, args, summary, risk, timeout_s}` | user action needed |
 | `tool_result` | `{id, name, ok, duration_ms, preview}` | after execution; `preview` ≤ 400 chars |
 | `context` | `{used, budget, percent, compacted}` | after context work |
-| `memory` | `{added, updated, removed}` | after memory extraction |
+| `memory` | `{added, updated, removed}` | optional; extraction is asynchronous after `done`, so the UI refreshes counts from `/api/bootstrap` or `/api/memories` |
 | `title` | `{id, title}` | auto-title updated |
 | `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null}` | end |
 | `error` | `{message, code, recoverable}` | end/failure |
@@ -189,13 +189,12 @@ does not move files.
 - All DB writes happen through `kiwibro/db.py` helpers; timestamps `datetime.now(timezone.utc).isoformat()`.
 - IDs: `c_<uuid4hex[:16]>`, `m_<uuid4hex[:16]>`, `mem_<uuid4hex[:16]>`, approval ids `ap_<uuid4hex>`.
   `seq` is `max(seq)+1` per conversation, allocated under the conversation lock.
-- Auto title: after first assistant response, if `title_auto` and title is "New chat",
-  ask the model for a 2–5 word title (max 40 chars, strip quotes); fall back to the
-  first 40 chars of the user message. Emit `title`.
-- Do not block streaming on memory extraction: run it in a daemon thread after
-  `done`, then emit `memory` before closing (or via a short poll endpoint — the
-  stream closes after done, so emit `memory` before `done` when extraction is
-  synchronous, or skip; frontend refreshes memory count on demand). Decision:
-  extraction runs synchronously after the final assistant message, before `done`,
-  with a 12 s timeout, so the `memory` event is reliable. It must never fail the
-  turn.
+- Auto title: deterministic first (derive 2–6 words from the first user message,
+  stripping request/tool noise), then optionally accept a model-written title only if
+  it validates as a title (≤40 chars, 2–6 words, no meta-instruction echo); fall back
+  to the deterministic title. Emit `title`. This keeps `done` fast.
+- Memory extraction runs in a daemon thread after `done`, so the stream closes
+  immediately and latency stays low. It uses a short timeout and must never fail the
+  turn. The stream's optional `memory` event is therefore not guaranteed; clients
+  refresh memory counts from `/api/bootstrap` (or `/api/memories`) after a turn,
+  when opening the memory sheet, or on window focus.

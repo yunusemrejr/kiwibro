@@ -204,8 +204,8 @@ Schema: `memories(id, kind, content, normalized, tags, source_conversation_id,
 confidence, pinned, created_at, updated_at, last_used_at)` with FTS5 index.
 Kinds: `fact`, `preference`, `project`, `person`, `decision`.
 
-- **Extraction**: after each completed assistant turn, if enabled, a background
-  worker asks the selected model for strict JSON operations
+- **Extraction**: after each completed assistant turn (after `done` is emitted), if
+  enabled, a background daemon worker asks the selected model for strict JSON operations
   (`{"ops":[{"op":"add|update|delete","id?":"...","kind":"...","content":"..."}]}`)
   given the last few turns plus a compact list of existing memories (top ~40).
   Validate: content 3–300 chars, kind whitelist, no duplicates, max 3 ops applied
@@ -217,6 +217,9 @@ Kinds: `fact`, `preference`, `project`, `person`, `decision`.
   user text, then most recently used; render compact bullets under
   `## Memory` capped at ~800 tokens. Mark retrieved memories' `last_used_at`.
 - **Explicit remember tool**: `remember(content, kind)` writes immediately.
+- **Titles**: conversation titles are derived deterministically from the first user
+  message (fast, no extra model round-trip); a model-written title is accepted only
+  when it validates, so `done` never waits on it.
 - **User control**: memory sheet with search, add, edit, pin, delete, and a
   "forget all" action; an SSE `memory` event tells the UI to refresh counts.
 - Model swap or a new conversation never touches memories or past messages; the

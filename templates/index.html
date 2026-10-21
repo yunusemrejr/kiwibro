@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#1b1b1f">
+  <meta name="description" content="Kiwibro — a local AI agent that lives on your machine.">
+  <title>Kiwibro</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/img/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/img/kiwibro-128.png">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3.5l1.75 4.75L18.5 10l-4.75 1.75L12 16.5l-1.75-4.75L5.5 10l4.75-1.75L12 3.5Z"/><path d="M18.5 15.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9Z"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h6M14 7h6M4 12h10M18 12h2M4 17h3M11 17h9"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.3V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.7a2 2 0 0 0-1.1-1.8l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l.8 12.2A2 2 0 0 0 9.3 21h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3.5a2.6 2.6 0 0 1 3.7 3.7L7.5 20.4 3 21.5l1.1-4.5Z"/><path d="M14.5 6l3.5 3.5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 20h17a1.5 1.5 0 0 0 1.5-1.5V8.5A1.5 1.5 0 0 0 20.5 7H13l-2-2.5A1.5 1.5 0 0 0 9.8 4H3.5A1.5 1.5 0 0 0 2 5.5v13A1.5 1.5 0 0 0 3.5 20Z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8Z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 17l5-5-5-5M12 19h8"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 3.6 9A14 14 0 0 1 12 21a14 14 0 0 1-3.6-9A14 14 0 0 1 12 3Z"/></symbol>
+    <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.4-3.4a6 6 0 0 1-7.6 7.6l-6.6 6.6a2.1 2.1 0 0 1-3-3l6.6-6.6a6 6 0 0 1 7.6-7.6Z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21s-7.5-3.5-7.5-9V5.8L12 3l7.5 2.8V12c0 5.5-7.5 9-7.5 9Z"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6M20.5 3.5V9H15"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M21 3l-9 9M18 13.5v6A1.5 1.5 0 0 1 16.5 21h-12A1.5 1.5 0 0 1 3 19.5v-12A1.5 1.5 0 0 1 4.5 6h6"/></symbol>
+    <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2.5 2.5 7.5 12 12.5l9.5-5L12 2.5Z"/><path d="M2.5 16.5 12 21.5l9.5-5M2.5 12 12 17l9.5-5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M20.5 15.5 16 11l-8.5 8"/></symbol>
+    <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3 21l1.4-5.6A8.5 8.5 0 1 1 21 12Z"/></symbol>
+    <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8Z"/><path d="M14 3v5h5M9.5 14h5M12 11.5v5"/></symbol>
+  </svg>
+
+  <div class="app" id="app">
+    <header class="headerbar">
+      <div class="header-left">
+        <button class="icon-btn" id="sidebar-toggle" type="button" aria-label="Toggle sidebar" title="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
+          <svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg>
+        </button>
+        <button class="brand" id="brand-home" type="button" aria-label="Kiwibro — new chat">
+          <img class="brand-mark" src="/static/img/kiwibro.svg" alt="" width="24" height="24">
+          <span class="brand-name">Kiwibro</span>
+        </button>
+      </div>
+      <div class="header-center">
+        <button class="model-pill" id="model-pill" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="model-popover" title="Switch model">
+          <span class="status-dot" id="model-dot" data-tone="idle" aria-hidden="true"></span>
+          <span class="model-pill-name" id="model-pill-name">Loading…</span>
+          <svg class="icon chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+        </button>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" id="memory-btn" type="button" aria-label="Memory" title="Memory">
+          <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
+          <span class="icon-badge" id="memory-badge" hidden>0</span>
+        </button>
+        <button class="icon-btn" id="settings-btn" type="button" aria-label="Settings" title="Settings — Ctrl+,">
+          <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+        <div class="sidebar-top">
+          <button class="new-chat" id="new-chat" type="button" title="New chat — Ctrl+N">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>New chat</span>
+          </button>
+        </div>
+        <nav class="conv-scroll" aria-label="Conversations">
+          <div class="conv-list" id="conv-list"></div>
+          <p class="conv-empty" id="conv-empty" hidden>No chats yet.</p>
+        </nav>
+        <div class="sidebar-footer">
+          <button class="sidebar-stat" id="sidebar-memory" type="button" title="Memory">
+            <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
+            <span id="sidebar-memory-count">—</span>
+          </button>
+          <button class="sidebar-stat sidebar-model" id="sidebar-model" type="button" title="Model">
+            <span class="status-dot" id="sidebar-dot" data-tone="idle" aria-hidden="true"></span>
+            <span id="sidebar-model-name">—</span>
+          </button>
+        </div>
+      </aside>
+      <div class="scrim" id="scrim" hidden></div>
+
+      <main class="main" id="main">
+        <div class="transcript" id="transcript" role="log" aria-label="Conversation">
+          <div class="chat" id="chat">
+            <section class="empty" id="empty-state" aria-labelledby="empty-title">
+              <div class="empty-mark">
+                <img src="/static/img/kiwibro.svg" alt="" width="120" height="120">
+              </div>
+              <h1 class="empty-title" id="empty-title">Kiwibro</h1>
+              <p class="empty-sub">A local AI that keeps its beak out of the cloud.</p>
+              <div class="suggestions" role="group" aria-label="Suggestions">
+                <button class="suggestion" type="button" data-prompt="What can you do?">
+                  <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
+                  <span>What can you do?</span>
+                </button>
+                <button class="suggestion" type="button" data-prompt="Summarise a long article in three bullets">
+                  <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
+                  <span>Summarise something</span>
+                </button>
+                <button class="suggestion" type="button" data-prompt="Write a small Python script that renames files by date">
+                  <svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>
+                  <span>Write a script</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <button class="scroll-bottom" id="scroll-bottom" type="button" aria-label="Scroll to latest message" hidden>
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-down"/></svg>
+        </button>
+
+        <div class="dock" id="dock">
+          <div class="dock-inner">
+            <div class="dock-hint" id="dock-hint" hidden>
+              <span class="status-dot" data-tone="warn" aria-hidden="true"></span>
+              <span class="dock-hint-text" id="dock-hint-text"></span>
+              <button class="text-btn" id="dock-retry" type="button">Retry</button>
+            </div>
+            <form class="composer" id="composer">
+              <label class="sr-only" for="composer-input">Message Kiwibro</label>
+              <textarea class="composer-input" id="composer-input" rows="1" maxlength="32000" placeholder="Ask Kiwibro…" autocomplete="off" spellcheck="true"></textarea>
+              <div class="composer-bar">
+                <button class="agent-toggle" id="agent-toggle" type="button" aria-pressed="true" title="Agent mode — tools and memory">
+                  <svg class="icon" aria-hidden="true"><use href="#i-tool"/></svg>
+                  <span>Agent</span>
+                </button>
+                <div class="composer-right">
+                  <div class="context-ring" id="context-ring" title="Context usage" aria-label="Context usage">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <circle class="ring-track" cx="12" cy="12" r="9"/>
+                      <circle class="ring-value" id="ring-value" cx="12" cy="12" r="9"/>
+                    </svg>
+                  </div>
+                  <button class="send-btn" id="send-btn" type="submit" aria-label="Send message" title="Send" disabled>
+                    <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
+                  </button>
+                  <button class="send-btn stop-btn" id="stop-btn" type="button" aria-label="Stop generating" title="Stop — Esc" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="popover-layer" id="popover-layer"></div>
+  <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+  <div class="sr-only" id="live-status" role="status" aria-live="polite"></div>
+
+  <dialog class="sheet sheet-memory" id="memory-sheet" aria-labelledby="memory-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="memory-title">Memory</h2>
+        <span class="sheet-count" id="memory-count"></span>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close memory" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-toolbar">
+      <div class="search-field">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <input type="search" id="memory-search" placeholder="Search memory" aria-label="Search memories" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="kind-chips" id="memory-kinds" role="group" aria-label="Filter memories by kind">
+        <button class="kind-chip" type="button" data-kind="" aria-pressed="true">All</button>
+        <button class="kind-chip" type="button" data-kind="fact" aria-pressed="false">Fact</button>
+        <button class="kind-chip" type="button" data-kind="preference" aria-pressed="false">Preference</button>
+        <button class="kind-chip" type="button" data-kind="project" aria-pressed="false">Project</button>
+        <button class="kind-chip" type="button" data-kind="person" aria-pressed="false">Person</button>
+        <button class="kind-chip" type="button" data-kind="decision" aria-pressed="false">Decision</button>
+      </div>
+    </div>
+    <div class="sheet-scroll">
+      <div class="memory-list" id="memory-list"></div>
+    </div>
+    <form class="memory-add" id="memory-add-form">
+      <input class="memory-add-input" id="memory-new" type="text" maxlength="300" placeholder="Add a memory…" aria-label="New memory" autocomplete="off">
+      <select class="memory-add-kind" id="memory-new-kind" aria-label="Memory kind">
+        <option value="fact">Fact</option>
+        <option value="preference">Preference</option>
+        <option value="project">Project</option>
+        <option value="person">Person</option>
+        <option value="decision">Decision</option>
+      </select>
+      <button class="btn btn-primary btn-compact" type="submit" disabled>Add</button>
+    </form>
+    <div class="sheet-foot">
+      <span class="sheet-foot-hint">Things Kiwibro remembers about you.</span>
+      <button class="text-btn danger" id="forget-all-btn" type="button">Forget all</button>
+    </div>
+  </dialog>
+
+  <dialog class="sheet sheet-settings" id="settings-sheet" aria-labelledby="settings-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="settings-title">Settings</h2>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close settings" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-scroll" id="settings-body"></div>
+    <div class="sheet-foot">
+      <span class="sheet-foot-hint" id="settings-version">Kiwibro</span>
+      <span class="sheet-foot-hint" id="settings-lm-url"></span>
+    </div>
+  </dialog>
+
+  <noscript>
+    <div class="noscript">Kiwibro needs JavaScript to run. It is served locally — no data leaves this machine.</div>
+  </noscript>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
