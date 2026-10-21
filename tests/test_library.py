@@ -569,3 +569,62 @@ def test_doc_add_refuses_paths_outside_workspace(tmp_path: Path) -> None:
     (tmp_path / "x.md").write_text("# Outside\n", encoding="utf-8")
     with pytest.raises(SandboxError):
         DOC_ADD.execute(DOC_ADD.validate({"path": "../x.md"}), ctx)
+
+
+# --- delegate.study_file reads documents through the library's extractors ----------
+
+
+def test_study_document_text_uses_extractors(tmp_path):
+    from kiwibro import delegate
+
+    docx = tmp_path / "report.docx"
+    _docx(docx)
+    assert "Revenue grew strongly." in delegate.document_text(docx)
+    pdf = tmp_path / "budget.pdf"
+    _pdf(pdf, "Budget 42000 euros")
+    assert "42000" in delegate.document_text(pdf)
+    plain = tmp_path / "notes.weird"
+    plain.write_text("plain text with an unknown extension", encoding="utf-8")
+    assert "unknown extension" in delegate.document_text(plain)
+
+
+def test_study_focus_keeps_relevant_parts_in_order():
+    from kiwibro import delegate
+
+    filler = "Lorem ipsum dolor sit amet. " * 120  # ~3.4k chars per part, never relevant
+    parts = [filler] * 20
+    parts[3] = "The launch date for Project Kiwi is March 4. " + filler
+    parts[15] = "Project Kiwi budget: 42000 euros. " + filler
+    focused, kept, total = delegate.focus_text("\n\n".join(parts), "When is the Project Kiwi launch and what is its budget?")
+    assert kept < total
+    assert "March 4" in focused and "42000 euros" in focused
+    assert focused.index("March 4") < focused.index("42000 euros")
+    short, kept_short, total_short = delegate.focus_text("tiny text", "anything")
+    assert short == "tiny text" and kept_short == total_short == 1
+
+
+def test_study_file_finds_answer_deep_in_long_document(tmp_path, monkeypatch):
+    from kiwibro import delegate, tools
+    from kiwibro.tools import ToolContext
+
+    filler = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 60
+    parts = [f"## Section {index}\n\n{filler}" for index in range(30)]
+    parts[24] = "## Section 24\n\nThe Kiwi server room door code is 7731. " + filler
+    ws = Workspace(tmp_path / "ws")
+    (ws.root / "handbook.md").write_text("\n\n".join(parts), encoding="utf-8")
+    seen: list[str] = []
+
+    def fake_helper(llm, need, messages, *, current_model=None, max_tokens=600):
+        text = messages[-1]["content"]
+        seen.append(text)
+        answer = "door code 7731" if "7731" in text else "(nothing relevant)"
+        return {"model": "fake-helper", "text": answer, "usage": None}
+
+    monkeypatch.setattr(delegate, "run_helper", fake_helper)
+    ctx = ToolContext(workspace=ws, memory=None, search=None, conversation_id="c1", llm=object(), current_model="m")  # type: ignore[arg-type]
+    result = tools.execute_tool(
+        "study_file", tools.validate_args("study_file", {"path": "handbook.md", "question": "What is the server room door code?"}), ctx
+    )
+    assert result.ok and "7731" in result.content
+    assert "most relevant to the question" in result.content
+    assert any("7731" in text for text in seen)

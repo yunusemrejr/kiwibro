@@ -1518,7 +1518,10 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             llm, ctx.workspace, args["path"], args["question"], current_model=ctx.current_model
         )
         suffix = f"\n\n(Studied {result['source']} in {result['chunks']} part(s) with {result['model']}"
-        suffix += "; file was truncated to fit.)" if result.get("truncated") else ".)"
+        if result.get("focused"):
+            suffix += f"; used the {result['focused']} parts most relevant to the question.)"
+        else:
+            suffix += "; file was truncated to fit.)" if result.get("truncated") else ".)"
         return ToolResult(ok=True, content=result["text"] + suffix, preview=_preview(result["text"]), meta=result)
     if name in ("run_python", "run_javascript"):
         language = "python" if name == "run_python" else "javascript"

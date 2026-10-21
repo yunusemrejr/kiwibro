@@ -31,6 +31,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 STUDY_CHUNK_CHARS = 3000
 STUDY_OVERLAP_CHARS = 200
 STUDY_MAX_CHUNKS = 8
+STUDY_READ_CAP = 2_000_000  # extracted characters considered for one question
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z])")
 _CODING_HINTS = ("coder", "code", "starcoder", "deepseek-coder", "qwen2.5-coder", "codellama")
@@ -347,6 +348,46 @@ def study_text(
     }
 
 
+def document_text(path: Path) -> str:
+    """A file's text. PDF, Office, e-book and HTML files go through the library's extractors."""
+    from . import library
+
+    try:
+        sections = library.extract(path)
+    except ValueError:  # not a document type the library knows: read it as plain text
+        return path.read_text(encoding="utf-8", errors="replace")[:STUDY_READ_CAP]
+    parts: list[str] = []
+    size = 0
+    for _heading, _location, text in sections:
+        parts.append(text)
+        size += len(text)
+        if size >= STUDY_READ_CAP:
+            break
+    return "\n\n".join(parts)
+
+
+def focus_text(text: str, question: str) -> tuple[str, int, int]:
+    """Keep the parts most relevant to the question when text exceeds the study budget.
+
+    Returns (text, parts kept, parts total); kept parts stay in document order, so
+    a long report is studied where it answers the question, not just at its start.
+    """
+    from .library import STOPWORDS
+
+    chunks = chunk_text(text, max_chunks=STUDY_READ_CAP // STUDY_CHUNK_CHARS + 1)
+    budget = STUDY_MAX_CHUNKS - 1  # leaves room for re-chunking overlap in study_text
+    if len(chunks) <= budget:
+        return text, len(chunks), len(chunks)
+    terms = {word for word in re.findall(r"[^\W_]{3,}", question.lower()) if word not in STOPWORDS}
+
+    def score(index: int) -> int:
+        lowered = chunks[index].lower()
+        return sum(lowered.count(term) for term in terms)
+
+    keep = sorted(sorted(range(len(chunks)), key=score, reverse=True)[:budget])
+    return "\n\n".join(chunks[index] for index in keep), len(keep), len(chunks)
+
+
 def study_file(
     llm: LMStudioClient,
     workspace: Workspace,
@@ -356,14 +397,16 @@ def study_file(
     current_model: str | None = None,
 ) -> dict[str, Any]:
     resolved = workspace.resolve(path, must_exist=True)
+    source = workspace.public(resolved)
     if not resolved.is_file():
-        raise SandboxError(f"not a file: {workspace.public(resolved)}")
+        raise SandboxError(f"not a file: {source}")
     try:
-        text = resolved.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise DelegateError(f"could not read file: {exc.strerror or exc}") from exc
-    return study_text(
-        llm, text, question,
-        current_model=current_model, source=workspace.public(resolved),
-    )
+        text = document_text(resolved)
+    except Exception as exc:  # unreadable or corrupt document: a clear error, not a crash
+        raise DelegateError(f"could not read {source}: {exc}") from exc
+    focused, kept, total = focus_text(text, question)
+    result = study_text(llm, focused, question, current_model=current_model, source=source)
+    if kept < total:
+        result["focused"] = f"{kept} of {total}"
+    return result
 
