@@ -275,6 +275,107 @@ def test_use_count_increments_on_retrieval(env):
     assert refreshed["last_used_at"] is not None
 
 
+# --- context v2: small-context safety, segments, recall, prefix stability ----
+
+
+def test_utility_limits_scale_with_context():
+    from kiwibro.context import utility_limits
+
+    in_4k, out_4k = utility_limits(4096)
+    in_32k, out_32k = utility_limits(32768)
+    assert in_4k + out_4k < 4096  # the call itself must fit the model
+    assert in_32k > in_4k and out_32k >= out_4k
+    assert utility_limits(0)[0] >= 700  # defensive floor, never zero
+
+
+def test_summary_calls_always_fit_small_context(env):
+    """Regression: v1 sent a fixed ~4k-token summary prompt to 4k models."""
+    svc, fake = env  # MODEL context is 4096 in this module's fixture
+    # Long partial summaries force the multi-level reduce to actually run.
+    fake.summary_text = "Summary sentence retaining several concrete details and names. " * 8
+    conversation = svc.db.create_conversation()
+    for i in range(60):
+        svc.db.add_message(conversation["id"], "user", f"Topic {i} " + "detail " * 40)
+        svc.db.add_message(conversation["id"], "assistant", f"Reply {i} " + "answer " * 40)
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    assert prepared.compacted is True
+    assert fake.complete_calls, "summariser must have been called"
+    for messages in fake.complete_calls:
+        prompt_tokens = sum(estimate_tokens(m.get("content") or "") for m in messages)
+        assert prompt_tokens + 600 < 4096, f"summary prompt {prompt_tokens} tok cannot fit 4k ctx"
+    assert prepared.used <= prepared.budget
+
+
+def test_compaction_records_summary_segments(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    for i in range(60):
+        svc.db.add_message(conversation["id"], "user", f"Segment topic {i} " + "word " * 40)
+        svc.db.add_message(conversation["id"], "assistant", f"Segment reply {i} " + "text " * 40)
+    svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    segments = svc.db.list_summary_segments(conversation["id"])
+    assert segments, "compaction must persist fine-grained segment summaries"
+    refreshed = svc.db.get_conversation(conversation["id"])
+    assert segments[-1]["through_seq"] == refreshed["summary_through_seq"]
+
+
+def test_recall_note_returns_exact_early_fact_after_compaction(env):
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "Plan the harbor trip; the gate code is 4815")
+    svc.db.add_message(conversation["id"], "assistant", "Harbor trip planned, code noted")
+    for i in range(50):
+        svc.db.add_message(conversation["id"], "user", f"Filler sailing topic {i} " + "chat " * 30)
+        svc.db.add_message(conversation["id"], "assistant", f"Filler reply {i} " + "talk " * 30)
+    svc.db.add_message(conversation["id"], "user", "What was the harbor gate code again?")
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    assert prepared.recalled >= 1
+    newest_user = [m for m in prepared.messages if m["role"] == "user"][-1]
+    assert "4815" in newest_user["content"], "exact excerpt must ride on the newest user message"
+    assert "4815" not in prepared.messages[0]["content"], "volatile recall must not enter system prompt"
+    assert prepared.anchored is True
+    assert prepared.used <= prepared.budget
+
+
+def test_prepare_prefix_is_stable_across_turns(env):
+    """KV rule: older rendered messages never change when a new turn arrives."""
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "First question")
+    svc.db.add_message(
+        conversation["id"], "tool", "tool output " * 800, tool_call_id="c1", tool_name="read_file"
+    )
+    svc.db.add_message(conversation["id"], "assistant", "First answer")
+    svc.db.add_message(conversation["id"], "user", "Second question")
+    first = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    svc.db.add_message(conversation["id"], "assistant", "Second answer")
+    svc.db.add_message(conversation["id"], "user", "Third question")
+    second = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    # Everything before the second user message must be byte-identical.
+    def upto_second_user(messages):
+        out, users = [], 0
+        for m in messages:
+            if m["role"] == "user":
+                users += 1
+                if users == 2:
+                    break
+            out.append(m)
+        return out
+
+    assert upto_second_user(first.messages) == upto_second_user(second.messages)
+
+
+def test_summarize_long_text_map_reduce(env):
+    svc, fake = env
+    text = "\n\n".join(f"Paragraph {i} about topic {i}. " + "Evidence sentence. " * 30 for i in range(20))
+    result = svc.context.summarize_long_text(text, "fake-1")
+    assert result
+    assert len(fake.complete_calls) >= 2  # chunked, not one oversized call
+    for messages in fake.complete_calls:
+        prompt_tokens = sum(estimate_tokens(m.get("content") or "") for m in messages)
+        assert prompt_tokens + 600 < 4096
+
+
 def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 

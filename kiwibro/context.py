@@ -155,7 +155,12 @@ def to_llm_message(message: dict[str, Any], tool_cap: int = TOOL_RESULT_CAP) -> 
 
 
 def tool_cap_for_age(age_from_newest: int) -> int:
-    """Character cap for a tool result given how many tool results are newer."""
+    """Character cap tiers by age (kept as the shared tier table).
+
+    The build path keys tiers on *user-turn* age (see ``build_llm_messages``)
+    so a rendered tool result changes tier at most once; this helper remains
+    for callers that count raw tool-result age.
+    """
     if age_from_newest < TOOL_RECENT_FULL:
         return TOOL_RESULT_CAP_RECENT
     if age_from_newest < TOOL_RECENT_FULL + TOOL_MID_COUNT:
@@ -164,20 +169,47 @@ def tool_cap_for_age(age_from_newest: int) -> int:
 
 
 def build_llm_messages(system_prompt: str, db_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert DB messages to LLM messages with prefix-stable tool caps.
+
+    KV-cache rule: text rendered for older turns must not change when a new
+    turn arrives, or the model server re-prefills the whole history. Tool
+    caps therefore key on user-turn age with a single transition — results
+    from the newest user turn stay full-size, everything older is compact
+    forever (exact content remains available via episodic recall).
+    """
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    tool_total = sum(1 for m in db_messages if m.get("role") == "tool")
-    tool_seen = 0
-    for db_message in db_messages:
-        cap = TOOL_RESULT_CAP
-        if db_message.get("role") == "tool":
-            cap = tool_cap_for_age(tool_total - 1 - tool_seen)
-            tool_seen += 1
+    last_user = max(
+        (i for i, m in enumerate(db_messages) if m.get("role") == "user"), default=-1
+    )
+    for index, db_message in enumerate(db_messages):
+        cap = TOOL_RESULT_CAP_RECENT if index > last_user else TOOL_RESULT_CAP_OLD
         converted = to_llm_message(db_message, cap)
         if converted is not None:
             messages.append(converted)
     return messages
+
+
+def place_turn_context(messages: list[dict[str, Any]], note: str) -> list[dict[str, Any]]:
+    """Append volatile per-turn context to the newest user message only.
+
+    Volatile text (time, recalled excerpts, anchors) must never enter the
+    system prompt or older messages — that would invalidate the server's
+    KV prefix for the whole conversation. Returns a new list; the input
+    messages are not mutated.
+    """
+    note = (note or "").strip()
+    if not note:
+        return messages
+    result = list(messages)
+    for index in range(len(result) - 1, -1, -1):
+        if result[index].get("role") == "user":
+            merged = dict(result[index])
+            merged["content"] = f"{merged.get('content') or ''}\n\n{note}"
+            result[index] = merged
+            return result
+    return result
 
 
 def format_transcript(db_messages: list[dict[str, Any]], cap: int = SUMMARY_TRANSCRIPT_CAP) -> str:
@@ -226,6 +258,63 @@ def combine_system_prompt(system_prompt: str, summary: str) -> str:
     return f"{system_prompt.rstrip()}\n\n## Earlier conversation summary\n{summary}"
 
 
+# --- small-context adaptation (v2) -------------------------------------------
+#
+# Every prompt share and every utility (summariser) call is derived from the
+# model's own context length. Fixed sizes are what broke v1 on 4k models:
+# the summary call alone needed ~4k tokens regardless of the model.
+
+RECALL_MAX_TOKENS = 1200
+RECALL_EXCERPT_CHARS = 500
+ANCHOR_MAX_CHARS = 280
+
+
+def utility_limits(ctx_len: int) -> tuple[int, int]:
+    """(max input tokens, max output tokens) for a summariser call on this model."""
+    ctx = max(1024, int(ctx_len or 32768))
+    output = min(SUMMARY_MAX_TOKENS, max(150, ctx // 16))
+    # Leave room for the system prompt + previous summary + the output itself.
+    input_tokens = min(5000, max(700, ctx // 3))
+    return input_tokens, output
+
+
+def recall_token_cap(budget: int) -> int:
+    """Tokens available for recalled exact excerpts within a prompt budget."""
+    return min(RECALL_MAX_TOKENS, max(0, budget // 8))
+
+
+def memory_token_cap(budget: int) -> int:
+    """Tokens available for the durable-memory block within a prompt budget."""
+    return min(800, max(150, budget // 10))
+
+
+def _db_message_est(message: dict[str, Any]) -> int:
+    """Token estimate for a DB message, preferring the cached ``est_tokens``."""
+    est = message.get("est_tokens")
+    if isinstance(est, int) and est > 0:
+        return est
+    return estimate_tokens(message.get("content") or "") + MESSAGE_OVERHEAD
+
+
+def _chunk_messages(
+    segment: list[dict[str, Any]], max_tokens: int
+) -> list[list[dict[str, Any]]]:
+    """Split a message segment into chunks each fitting ``max_tokens``."""
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    spent = 0
+    for message in segment:
+        cost = _db_message_est(message)
+        if current and spent + cost > max_tokens:
+            chunks.append(current)
+            current, spent = [], 0
+        current.append(message)
+        spent += cost
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _clean_leading_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop orphan leading tool results so the history starts at a valid turn boundary."""
     start = 0
@@ -260,6 +349,8 @@ class PreparedContext:
     raw_sum: int = 0
     last_seq: int = 0
     trigger: int = 0
+    recalled: int = 0
+    anchored: bool = False
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -348,7 +439,16 @@ class ContextEngine:
         system_prompt: str,
         *,
         allow_compaction: bool = True,
+        turn_context: str = "",
     ) -> PreparedContext:
+        """Build the prompt for one turn.
+
+        ``turn_context`` is volatile per-turn text from the caller (time,
+        directives, …); it is merged with this engine's recalled excerpts
+        and task anchor and appended to the newest user message only, so
+        the stable prefix (system + older turns) stays byte-identical
+        between turns for KV-cache reuse.
+        """
         settings = self._settings()
         conversation = self.db.get_conversation(conversation_id)
         if conversation is None:
@@ -370,7 +470,9 @@ class ContextEngine:
                 segment = self._target_segment(history, messages, raw, trigger, model)
                 if not segment:
                     break
-                summary = self.summarise(conversation["summary"], segment, model)
+                summary = self.summarise(
+                    conversation["summary"], segment, model, conversation_id=conversation_id
+                )
                 if not summary:
                     break
                 conversation = self.db.update_conversation(
@@ -408,6 +510,23 @@ class ContextEngine:
                 raw = raw_message_sum(messages)
                 trimmed = True
 
+        # Volatile per-turn note: caller context + recalled exact excerpts +
+        # task anchor, appended to the newest user message only (KV rule).
+        recalled = 0
+        anchored = False
+        note_parts = [turn_context.strip()] if turn_context.strip() else []
+        if conversation["summary_through_seq"] > 0:
+            cap = recall_token_cap(budget)
+            room = budget - self._used(raw, model)
+            note, recalled, anchored = self._recall_note(
+                conversation, history, min(cap, max(0, room))
+            )
+            if note:
+                note_parts.append(note)
+        if note_parts:
+            messages = place_turn_context(messages, "\n\n".join(note_parts))
+            raw = raw_message_sum(messages)
+
         used = self._used(raw, model)
         stats = context_stats(used, budget)
         return PreparedContext(
@@ -423,7 +542,71 @@ class ContextEngine:
             raw_sum=raw,
             last_seq=history[-1]["seq"] if history else conversation["summary_through_seq"],
             trigger=trigger,
+            recalled=recalled,
+            anchored=anchored,
         )
+
+    def _recall_note(
+        self,
+        conversation: dict[str, Any],
+        history: list[dict[str, Any]],
+        token_cap: int,
+    ) -> tuple[str, int, bool]:
+        """Exact older excerpts + original-task anchor for compacted chats.
+
+        Returns (note_text, excerpt_count, anchored). Everything here is
+        budget-capped and best-effort: recall failures degrade to the
+        summary alone, never to a failed turn. Invariant: the note never
+        pushes the prompt over budget (callers pass remaining room).
+        """
+        if token_cap < 80 or not history:
+            return "", 0, False
+        window_start = history[0]["seq"]
+        lines: list[str] = []
+        spent = 0
+        anchored = False
+        try:
+            first_rows = self.db.list_messages(conversation["id"], after_seq=0, limit=12)
+            first_user = next((m for m in first_rows if m.get("role") == "user"), None)
+            if first_user and first_user["seq"] < window_start:
+                anchor = " ".join((first_user.get("content") or "").split())[:ANCHOR_MAX_CHARS]
+                if anchor:
+                    block = f"## Original task (anchor)\n{anchor}"
+                    spent += estimate_tokens(block)
+                    lines.append(block)
+                    anchored = True
+            queries = [
+                (m.get("content") or "") for m in reversed(history) if m.get("role") == "user"
+            ][:2]
+            query = " ".join(q for q in queries if q.strip())[:600]
+            excerpts: list[str] = []
+            if query.strip():
+                hits = self.db.search_messages(
+                    query, conversation_id=conversation["id"], before_seq=window_start, limit=6
+                )
+                for hit in hits:
+                    text = " ".join((hit.get("content") or "").split())[:RECALL_EXCERPT_CHARS]
+                    if not text:
+                        continue
+                    label = "User" if hit.get("role") == "user" else "Assistant" if hit.get("role") == "assistant" else "Tool"
+                    line = f"- [{label}, earlier] {text}"
+                    cost = estimate_tokens(line)
+                    if spent + cost > token_cap and excerpts:
+                        break
+                    excerpts.append(line)
+                    spent += cost
+            if excerpts:
+                header = "## Recalled from earlier in this conversation (exact excerpts)"
+                lines.append(header + "\n" + "\n".join(excerpts))
+            return "\n\n".join(lines), len(excerpts), anchored
+        except Exception:  # recall is an enhancement, never a failure mode
+            log.warning("episodic recall note failed", exc_info=True)
+            return "", 0, False
+
+    def memory_cap_for(self, model: str) -> int:
+        """Durable-memory prompt cap scaled to this model's budget."""
+        _ctx, budget, _info = self.budget_for(model)
+        return memory_token_cap(budget)
 
     def _target_segment(
         self,
@@ -433,15 +616,19 @@ class ContextEngine:
         trigger: int,
         model: str,
     ) -> list[dict[str, Any]]:
-        """Oldest prefix whose summarisation brings usage under ~92% of trigger.
+        """Oldest prefix whose summarisation brings usage to ~60% of trigger.
 
         Summarising only what is needed keeps more recent history verbatim
-        instead of always folding everything except the last few messages.
+        instead of always folding everything except the last few messages,
+        while the 60% target (hysteresis) keeps compaction infrequent.
         """
         if len(history) <= MIN_KEEP_MESSAGES:
             return []
         candidates = history[:-MIN_KEEP_MESSAGES]
-        excess = self._used(raw, model) - int(trigger * 0.92) + SUMMARY_MAX_TOKENS
+        # Hysteresis: compact down to ~60% of the trigger, not just under it.
+        # Compaction rewrites the prompt prefix (full re-prefill on the
+        # server), so it should happen rarely and buy many turns of headroom.
+        excess = self._used(raw, model) - int(trigger * 0.6) + SUMMARY_MAX_TOKENS
         # messages[0] is the system prompt; the rest align with converted history.
         body = messages[1:] if messages and messages[0].get("role") == "system" else messages
         factor = SAFETY_FACTOR * self.calibration_factor(model)
@@ -461,6 +648,8 @@ class ContextEngine:
         conversation_id: str,
         model: str,
         system_prompt: str,
+        *,
+        turn_context: str = "",
     ) -> PreparedContext:
         """Append only new DB messages to a prepared context (agent tool rounds).
 
@@ -470,8 +659,10 @@ class ContextEngine:
         conversation = self.db.get_conversation(conversation_id)
         if conversation is None:
             raise ValueError(f"unknown conversation {conversation_id}")
-        if conversation["summary"] != prepared.summary:
-            return self.prepare(conversation_id, model, system_prompt)
+        if conversation["summary"] != prepared.summary or turn_context.strip():
+            # A fresh turn note belongs to a full prepare (it rewrites the
+            # newest user message); tool rounds within a turn pass none.
+            return self.prepare(conversation_id, model, system_prompt, turn_context=turn_context)
         new_db = self.db.list_messages(conversation_id, after_seq=prepared.last_seq)
         if not new_db:
             return prepared
@@ -496,6 +687,8 @@ class ContextEngine:
             raw_sum=raw,
             last_seq=new_db[-1]["seq"],
             trigger=prepared.trigger,
+            recalled=prepared.recalled,
+            anchored=prepared.anchored,
         )
 
     @staticmethod
@@ -522,14 +715,9 @@ class ContextEngine:
 
     # --- summarisation & recovery -----------------------------------------
 
-    def summarise(self, previous_summary: str, segment: list[dict[str, Any]], model: str) -> str | None:
-        transcript = format_transcript(segment)
-        if not transcript.strip():
-            return None
+    def _summary_call(self, previous: str, transcript: str, model: str, max_out: int) -> str | None:
         user_prompt = prompts.SUMMARY_USER.format(
-            previous=previous_summary or "(none)",
-            transcript=transcript,
-            max_tokens=SUMMARY_MAX_TOKENS,
+            previous=previous or "(none)", transcript=transcript, max_tokens=max_out
         )
         try:
             completion = self.llm.complete(
@@ -538,16 +726,142 @@ class ContextEngine:
                     {"role": "system", "content": prompts.SUMMARY_SYSTEM},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=SUMMARY_MAX_TOKENS,
+                max_tokens=max_out,
                 temperature=0.0,
             )
         except LMStudioError as exc:
             log.warning("summary call failed: %s", exc.message)
             return None
-        text = (completion.text or "").strip()
-        if not text:
+        return (completion.text or "").strip() or None
+
+    def summarise(
+        self,
+        previous_summary: str,
+        segment: list[dict[str, Any]],
+        model: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> str | None:
+        """Summarise a segment in chunks that always fit the model's window.
+
+        Each chunk becomes a durable ``summary_segments`` row (when the
+        conversation is known), so the fine-grained record survives even
+        after the rolling digest is reduced again. A single-chunk segment
+        keeps the exact v1 prompt shape (previous + transcript).
+        Invariant: no summariser call ever exceeds the model's context —
+        input and output sizes come from ``utility_limits(ctx_len)``.
+        """
+        if not segment:
             return None
-        return text[:4000]
+        ctx_len, _info = self.inventory(model)
+        in_tokens, out_tokens = utility_limits(ctx_len)
+        chunks = _chunk_messages(segment, in_tokens)
+        char_cap = max(1200, in_tokens * 3)
+
+        def run_chunk(chunk: list[dict[str, Any]], previous: str) -> str | None:
+            transcript = format_transcript(chunk, cap=char_cap)
+            if not transcript.strip():
+                return None
+            text = self._summary_call(previous, transcript, model, out_tokens)
+            if text and conversation_id:
+                try:
+                    self.db.add_summary_segment(
+                        conversation_id, chunk[0]["seq"], chunk[-1]["seq"], text,
+                        est_tokens=estimate_tokens(text),
+                    )
+                except Exception:  # segment bookkeeping must never fail compaction
+                    log.warning("could not store summary segment", exc_info=True)
+            return text
+
+        if len(chunks) == 1:
+            text = run_chunk(chunks[0], previous_summary)
+            return text[:4000] if text else None
+        partials: list[str] = []
+        for chunk in chunks:
+            text = run_chunk(chunk, "")
+            if not text:
+                return None  # all-or-nothing: never advance past unsummarised history
+            partials.append(text)
+        merged = self._reduce_summaries(partials, previous_summary, model, in_tokens, out_tokens)
+        if not merged:
+            # The segment rows are durable; a concatenated digest still beats loss.
+            merged = "\n\n".join(partials)
+        return merged[:4000]
+
+    def _reduce_summaries(
+        self, partials: list[str], previous: str, model: str, in_tokens: int, out_tokens: int
+    ) -> str | None:
+        """Merge partial summaries in batches that each fit the model.
+
+        A flat join of many partials would itself overflow a small window
+        (the v1 bug one level up), so reduction is a bounded tree: group
+        consecutive partials under the input cap, summarise each group,
+        repeat until one text remains. The caller's ``previous`` summary
+        only enters the final merge.
+        """
+        level = list(partials)
+        for _round in range(6):
+            joined = "\n\n".join(level)
+            if estimate_tokens(joined) + estimate_tokens(previous) <= in_tokens:
+                return self._summary_call(previous, joined, model, out_tokens)
+            groups: list[list[str]] = []
+            group: list[str] = []
+            spent = 0
+            for part in level:
+                cost = estimate_tokens(part)
+                if group and spent + cost > in_tokens:
+                    groups.append(group)
+                    group, spent = [], 0
+                group.append(part)
+                spent += cost
+            if group:
+                groups.append(group)
+            if len(groups) == len(level):  # single oversized partials: cannot shrink further
+                return self._summary_call(previous, joined[: in_tokens * 3], model, out_tokens)
+            reduced: list[str] = []
+            for batch in groups:
+                text = self._summary_call("", "\n\n".join(batch), model, out_tokens)
+                if not text:
+                    return None
+                reduced.append(text)
+            level = reduced
+        return self._summary_call(previous, "\n\n".join(level)[: in_tokens * 3], model, out_tokens)
+
+    def summarize_long_text(self, text: str, model: str) -> str | None:
+        """Map-reduce summary of one long text (tool output, document, page).
+
+        Splits on paragraph boundaries into model-sized chunks, summarises
+        each, then reduces. Returns None when the model cannot summarise —
+        callers fall back to head+tail truncation, never to silent loss of
+        the only copy (the full text stays wherever the caller stored it).
+        """
+        if not (text or "").strip():
+            return None
+        ctx_len, _info = self.inventory(model)
+        in_tokens, out_tokens = utility_limits(ctx_len)
+        char_cap = max(1200, in_tokens * 3)
+        pieces: list[str] = []
+        current = ""
+        for paragraph in text.split("\n\n"):
+            if current and len(current) + len(paragraph) > char_cap:
+                pieces.append(current)
+                current = ""
+            current = f"{current}\n\n{paragraph}".strip()
+            while len(current) > char_cap:  # one oversized paragraph
+                pieces.append(current[:char_cap])
+                current = current[char_cap:]
+        if current:
+            pieces.append(current)
+        partials = []
+        for piece in pieces:
+            summary = self._summary_call("", piece, model, out_tokens)
+            if not summary:
+                return None
+            partials.append(summary)
+        if len(partials) == 1:
+            return partials[0][:4000]
+        merged = self._reduce_summaries(partials, "", model, in_tokens, out_tokens)
+        return (merged or "\n\n".join(partials))[:4000]
 
     def recover_aggressive(self, conversation_id: str, model: str) -> bool:
         """Summarise roughly half of the remaining history (context-limit recovery)."""
@@ -561,7 +875,9 @@ class ContextEngine:
         segment = _clean_summary_segment(history[:-keep])
         if not segment:
             return False
-        summary = self.summarise(conversation["summary"], segment, model)
+        summary = self.summarise(
+            conversation["summary"], segment, model, conversation_id=conversation_id
+        )
         if not summary:
             return False
         self.db.update_conversation(
