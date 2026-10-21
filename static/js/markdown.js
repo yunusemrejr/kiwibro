@@ -107,11 +107,186 @@ function codeBlock(code, language) {
 
 const FENCE = /^(```+|~~~+)\s*([\w+#.-]*)\s*$/;
 const FENCE_CLOSE = /^(```+|~~~+)\s*$/;
-const HEADING = /^(#{1,4})\s+(.+)$/;
+const HEADING = /^(#{1,6})\s+(.+)$/;
 const RULE = /^(-{3,}|\*{3,}|_{3,})$/;
 const QUOTE = /^\s*>\s?/;
-const UL = /^\s*[-*+]\s+(.+)$/;
-const OL = /^\s*\d{1,2}[.)]\s+(.+)$/;
+// A list item on a right-trimmed raw line: leading indent, marker, text.
+const ITEM = /^(\s*)([-*+]|\d{1,2}[.)])\s+(.+)$/;
+// Task marker at the start of an item's text: "[ ]", "[x]" or "[X]".
+const TASK = /^\[([ xX])\](?:\s+(.*))?$/;
+const TABLE_CELL_RULE = /^:?-{3,}:?$/;
+const MAX_LIST_DEPTH = 3;
+const ALIGN_STYLE = {
+  center: ' style="text-align:center"',
+  right: ' style="text-align:right"',
+};
+
+/** Splits a GFM table row into trimmed cells. `\|` is a literal pipe. */
+function splitRow(line) {
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|") && !row.endsWith("\\|")) row = row.slice(0, -1);
+
+  const cells = [];
+  let cell = "";
+  for (let k = 0; k < row.length; k += 1) {
+    const char = row[k];
+    if (char === "\\" && row[k + 1] === "|") {
+      cell += "|";
+      k += 1;
+    } else if (char === "|") {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+/** Returns per-column alignments ("left" | "center" | "right") or null. */
+function parseAlignment(line) {
+  if (!line.includes("|")) return null;
+  const cells = splitRow(line);
+  if (!cells.length || !cells.every((cell) => TABLE_CELL_RULE.test(cell))) return null;
+  return cells.map((cell) => {
+    const start = cell.startsWith(":");
+    const end = cell.endsWith(":");
+    if (start && end) return "center";
+    if (end) return "right";
+    return "left";
+  });
+}
+
+function renderTable(headerCells, alignments, bodyRows) {
+  const cell = (tag, content, align) =>
+    `<${tag}${ALIGN_STYLE[align] ?? ""}>${renderInline(content)}</${tag}>`;
+  const head = headerCells.map((content, k) => cell("th", content, alignments[k])).join("");
+  const body = bodyRows
+    .map((cells) => {
+      let row = "";
+      // Missing cells are padded with empty ones; extra cells are dropped.
+      for (let k = 0; k < alignments.length; k += 1) {
+        row += cell("td", cells[k] ?? "", alignments[k]);
+      }
+      return `<tr>${row}</tr>`;
+    })
+    .join("");
+  return (
+    '<div class="table-wrap"><table>' +
+    `<thead><tr>${head}</tr></thead>` +
+    `<tbody>${body}</tbody>` +
+    "</table></div>"
+  );
+}
+
+/**
+ * Parses a GFM table starting at `start` (header row, separator row, body rows).
+ * Returns null when there is no valid separator row yet, so a lone header line
+ * (for example while a reply is still streaming) stays a normal paragraph.
+ */
+function parseTable(lines, start) {
+  if (!lines[start].includes("|")) return null;
+  const alignments = parseAlignment(lines[start + 1] ?? "");
+  if (!alignments) return null;
+  const headerCells = splitRow(lines[start]);
+  if (headerCells.length !== alignments.length) return null;
+
+  const bodyRows = [];
+  let i = start + 2;
+  while (i < lines.length) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || FENCE.test(trimmed) || HEADING.test(trimmed) || QUOTE.test(raw)) break;
+    bodyRows.push(splitRow(raw));
+    i += 1;
+  }
+  return { html: renderTable(headerCells, alignments, bodyRows), next: i };
+}
+
+function indentWidth(whitespace) {
+  let width = 0;
+  for (const char of whitespace) width += char === "\t" ? 4 : 1;
+  return width;
+}
+
+function parseItem(line) {
+  const match = line.trimEnd().match(ITEM);
+  if (!match) return null;
+  return {
+    indent: indentWidth(match[1]),
+    ordered: /\d/.test(match[2]),
+    text: match[3],
+  };
+}
+
+function parseTask(text) {
+  const match = text.match(TASK);
+  if (!match) return { checked: null, text };
+  return { checked: match[1] !== " ", text: match[2] ?? "" };
+}
+
+function openList(container, ordered, level) {
+  const node = { tag: ordered ? "ol" : "ul", items: [] };
+  container.push(node);
+  return { level, node, container };
+}
+
+/**
+ * Collects a run of list items starting at `start` and builds a tree of
+ * nested lists. Two spaces (or a tab) of extra indentation nest one level;
+ * nesting stops at MAX_LIST_DEPTH and deeper items join the innermost list.
+ * Mixed ordered/unordered siblings start a new list, as before.
+ */
+function collectList(lines, start) {
+  const base = Math.floor(parseItem(lines[start]).indent / 2);
+  const roots = [];
+  const open = [];
+  let i = start;
+  let item = parseItem(lines[i]);
+
+  while (item) {
+    i += 1;
+    const level = Math.max(0, Math.floor(item.indent / 2) - base);
+    while (open.length && open[open.length - 1].level > level) open.pop();
+
+    let frame = open[open.length - 1];
+    if (!frame) {
+      frame = openList(roots, item.ordered, level);
+      open.push(frame);
+    } else if (frame.level < level && open.length < MAX_LIST_DEPTH) {
+      const parent = frame.node.items[frame.node.items.length - 1];
+      frame = openList(parent.subs, item.ordered, level);
+      open.push(frame);
+    } else if (frame.node.tag !== (item.ordered ? "ol" : "ul")) {
+      open.pop();
+      frame = openList(frame.container, item.ordered, frame.level);
+      open.push(frame);
+    }
+
+    frame.node.items.push({ ...parseTask(item.text), subs: [] });
+    item = i < lines.length ? parseItem(lines[i]) : null;
+  }
+
+  return { html: roots.map((node) => renderList(node)).join(""), next: i };
+}
+
+function renderList(node) {
+  const items = node.items.map((item) => {
+    let cls = "";
+    let box = "";
+    if (item.checked !== null) {
+      cls = ' class="task"';
+      box = item.checked
+        ? '<input type="checkbox" disabled checked> '
+        : '<input type="checkbox" disabled> ';
+    }
+    const nested = item.subs.map((sub) => renderList(sub)).join("");
+    return `<li${cls}>${box}${renderInline(item.text)}${nested}</li>`;
+  });
+  return `<${node.tag}>${items.join("")}</${node.tag}>`;
+}
 
 export function renderMarkdown(source) {
   const text = String(source ?? "").replace(/\r\n?/g, "\n");
@@ -184,21 +359,19 @@ export function renderMarkdown(source) {
       continue;
     }
 
-    const unordered = trimmed.match(UL);
-    const ordered = trimmed.match(OL);
-    if (unordered || ordered) {
+    const table = parseTable(lines, i);
+    if (table) {
       flushParagraph();
-      const isOrdered = Boolean(ordered);
-      const items = [];
-      while (i < lines.length) {
-        const candidate = lines[i].trim();
-        const next = isOrdered ? candidate.match(OL) : candidate.match(UL);
-        if (!next) break;
-        items.push(next[1]);
-        i += 1;
-      }
-      const tag = isOrdered ? "ol" : "ul";
-      html.push(`<${tag}>${items.map((item) => `<li>${renderInline(item)}</li>`).join("")}</${tag}>`);
+      html.push(table.html);
+      i = table.next;
+      continue;
+    }
+
+    if (parseItem(line)) {
+      flushParagraph();
+      const list = collectList(lines, i);
+      html.push(list.html);
+      i = list.next;
       continue;
     }
 

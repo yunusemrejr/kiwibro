@@ -5,6 +5,7 @@
 
 import { api, IS_MOCK, consumeSSE, chatError } from "./api.js";
 import { createChatView } from "./chat.js";
+import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
 import {
   $,
@@ -125,6 +126,15 @@ const chatView = createChatView({
   },
 });
 
+const inferenceUI = createInferenceUI({
+  agentToggle: els.agentToggle,
+  contextRing: els.contextRing,
+  transcript: els.transcript,
+  getState: () => state,
+  patchSettings: (patch) => patchSettingsAndSync(patch),
+  onModelsChanged: () => refreshModels({ quiet: true }),
+});
+
 /* -------------------------------------------------------------------------- */
 /* Bootstrap                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -209,6 +219,7 @@ function renderOfflineState() {
 /* -------------------------------------------------------------------------- */
 
 function renderHeaderModel() {
+  inferenceUI.applySettings(state.settings);
   let name = "Kiwibro";
   let tone = "idle";
   let title = "Switch model";
@@ -1007,6 +1018,7 @@ function handleStreamEvent(event, data, activeStream) {
       break;
     case "done":
       chatView.finishDone({ aborted: Boolean(data.aborted) });
+      inferenceUI.onDone(data);
       scheduleConversationRefresh();
       break;
     case "error":
@@ -1153,6 +1165,7 @@ function applySettingsUI() {
   els.agentToggle.title = agentEnabled
     ? "Agent mode — tools and memory"
     : "Agent mode is off — tools disabled";
+  inferenceUI.applySettings(state.settings);
 }
 
 async function forgetAllMemories() {
@@ -1202,6 +1215,7 @@ function updateContext(context) {
     : `Context ${Math.round(percent)}% used`;
   els.contextRing.title = description;
   els.contextRing.setAttribute("aria-label", description);
+  inferenceUI.setContext({ used, budget, percent });
 }
 
 /* -------------------------------------------------------------------------- */

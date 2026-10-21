@@ -137,6 +137,8 @@ export const api = {
 
   models: () => request("/api/models"),
   selectModel: (id) => request("/api/models/select", { method: "POST", body: { id } }),
+  resizeContext: (id, contextLength) =>
+    request("/api/models/context", { method: "POST", body: { id, context_length: contextLength } }),
 
   conversations: () => request("/api/conversations"),
   conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),

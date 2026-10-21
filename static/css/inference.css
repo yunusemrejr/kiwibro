@@ -1,0 +1,117 @@
+/* Inference controls (static/js/inference.js): thinking toggle, per-reply
+   speed line, context-window popover. Uses app.css tokens only. */
+
+/* Sits beside the Agent toggle: the auto margin absorbs the composer bar's free space. */
+.think-toggle {
+  margin-right: auto;
+}
+
+.think-toggle .think-mode {
+  color: inherit;
+  opacity: 0.75;
+  text-transform: capitalize;
+}
+
+.think-toggle[data-mode="on"] {
+  border-color: rgba(155, 206, 107, 0.22);
+  background: var(--green-dim);
+  color: #b7d995;
+}
+
+.think-toggle[data-mode="off"] .icon {
+  opacity: 0.55;
+}
+
+.msg-stats {
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+/* Measured facts stay out of the way until the reader looks at a reply. */
+.msg-assistant:hover .msg-stats,
+.msg-assistant:focus-within .msg-stats,
+.msg-assistant:last-of-type .msg-stats {
+  opacity: 1;
+}
+
+.context-ring[role="button"] {
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.context-ring[role="button"]:focus-visible {
+  outline: 2px solid var(--green-line);
+  outline-offset: 2px;
+}
+
+.ctx-pop {
+  display: grid;
+  gap: 6px;
+  width: 268px;
+  padding: 2px 4px 8px;
+}
+
+.ctx-pop .menu-label {
+  padding: 6px 6px 0;
+}
+
+.ctx-usage,
+.ctx-window,
+.ctx-hint {
+  margin: 0;
+  padding: 0 6px;
+}
+
+.ctx-usage {
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-window {
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.ctx-max {
+  color: var(--faint);
+}
+
+.ctx-choices {
+  display: flex;
+  gap: 6px;
+  padding: 4px 6px 0;
+}
+
+.ctx-choice {
+  padding: 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-choice:hover:not(:disabled) {
+  border-color: var(--green-line);
+  color: var(--text);
+}
+
+.ctx-choice:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.ctx-hint {
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-stats {
+    transition: none;
+  }
+}
