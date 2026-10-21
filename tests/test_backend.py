@@ -1313,6 +1313,7 @@ def test_chat_tool_call_runs_with_auto_permission(env: Env):
 
 
 def _approval_chat(env: Env, decision: str):
+    env.settings_patch({"autonomy": "supervised"})  # the per-call approval flow under test
     env.fake.stream_script = [
         tool_call_result("write_file", {"path": "approved.txt", "content": "approved content"}),
         ChatResult(content="Approved and written."),
@@ -1363,6 +1364,32 @@ def test_chat_approval_always_persists_auto(env: Env):
     events, _raw = chat_events(env, "write second.txt")
     assert "approval" not in [event for event, _ in events]
     assert (env.workspace / "second.txt").read_text(encoding="utf-8") == "second"
+
+
+def test_chat_smart_autonomy_runs_workspace_write_without_asking(env: Env):
+    env.fake.stream_script = [
+        tool_call_result("write_file", {"path": "smart.txt", "content": "smart"}),
+        ChatResult(content="Written."),
+    ]
+    events, _raw = chat_events(env, "write smart.txt")
+    assert "approval" not in [event for event, _ in events]
+    call = next(payload for event, payload in events if event == "tool_call")
+    assert (call["requires_approval"], call["level"], call["source"]) == (False, "low", "policy")
+    assert (env.workspace / "smart.txt").read_text(encoding="utf-8") == "smart"
+
+
+def test_chat_critical_command_is_denied_without_asking(env: Env):
+    env.fake.stream_script = [
+        tool_call_result("run_command", {"command": "rm -rf ~"}),
+        ChatResult(content="I won't do that."),
+    ]
+    events, _raw = chat_events(env, "clean up my home folder")
+    assert "approval" not in [event for event, _ in events]
+    call = next(payload for event, payload in events if event == "tool_call")
+    assert call["level"] == "critical" and call["reasons"]
+    assert next(payload for event, payload in events if event == "tool_result")["ok"] is False
+    messages = env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])
+    assert "Blocked by Kiwibro" in next(m for m in messages if m["role"] == "tool")["content"]
 
 
 def test_chat_denied_tool_is_not_executed(env: Env):

@@ -95,6 +95,7 @@ CHAT_CHECKS = [
     ("chat", "security_read_traversal", checks_chat.security_read_traversal),
     ("chat", "security_ssrf", checks_chat.security_ssrf),
     ("chat", "security_command_blocklist", checks_chat.security_command_blocklist),
+    ("chat", "smart_autonomy_write", checks_chat.smart_autonomy_write),
     ("chat", "busy_409_and_stop", checks_chat.busy_409_and_stop),
     ("chat", "client_disconnect_aborts", checks_chat.client_disconnect_aborts),
     ("chat", "context_limit_recovery", checks_chat.context_limit_recovery),

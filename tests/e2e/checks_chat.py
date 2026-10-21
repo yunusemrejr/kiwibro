@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from fake_lm import UTF8_REPLY
 from harness import (
@@ -62,6 +63,16 @@ def approve(env: "Any", approval: dict[str, Any], decision: str = "allow") -> No
 # ---------------------------------------------------------------------------
 # streaming basics
 # ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def autonomy(env: "Any", mode: str) -> Iterator[None]:
+    """Run a check under an autonomy mode, then restore the default (smart)."""
+    env.client.patch("/api/settings", {"autonomy": mode})
+    try:
+        yield
+    finally:
+        env.client.patch("/api/settings", {"autonomy": "smart"})
 
 
 def plain_stream(env: "Any") -> str:
@@ -202,7 +213,7 @@ def memory_extraction(env: "Any") -> str:
 # ---------------------------------------------------------------------------
 
 
-def tool_write_allow(env: "Any") -> str:
+def _tool_write_allow(env: "Any") -> str:
     stream = chat(env, "Please save a note [[scenario:tool_write]]")
     meta = stream.wait_for("meta", timeout=20)
     tool_call = stream.wait_for("tool_call", timeout=20)
@@ -240,7 +251,12 @@ def tool_write_allow(env: "Any") -> str:
     return "tool_call -> approval -> tool_result -> final answer; file on disk"
 
 
-def tool_write_deny(env: "Any") -> str:
+def tool_write_allow(env: "Any") -> str:
+    with autonomy(env, "supervised"):  # the per-call approval flow under test
+        return _tool_write_allow(env)
+
+
+def _tool_write_deny(env: "Any") -> str:
     stream = chat(env, "Write it anyway [[scenario:tool_write_deny]]")
     stream.wait_for("meta", timeout=20)
     stream.wait_for("tool_call", timeout=20)
@@ -254,7 +270,12 @@ def tool_write_deny(env: "Any") -> str:
     return "deny blocks execution and reports it to the model"
 
 
-def tool_write_always(env: "Any") -> str:
+def tool_write_deny(env: "Any") -> str:
+    with autonomy(env, "supervised"):  # the per-call approval flow under test
+        return _tool_write_deny(env)
+
+
+def _tool_write_always(env: "Any") -> str:
     try:
         stream = chat(env, "Two files please [[scenario:tool_always_flow]]")
         stream.wait_for("meta", timeout=20)
@@ -282,6 +303,11 @@ def tool_write_always(env: "Any") -> str:
         return "always upgrades to auto, persists across turns and conversations"
     finally:
         env.client.patch("/api/settings", {"permissions": {"write_file": "ask"}})
+
+
+def tool_write_always(env: "Any") -> str:
+    with autonomy(env, "supervised"):  # the per-call approval flow under test
+        return _tool_write_always(env)
 
 
 def tool_errors(env: "Any") -> str:
@@ -325,7 +351,7 @@ def tool_remember(env: "Any") -> str:
 # ---------------------------------------------------------------------------
 
 
-def security_write_traversal(env: "Any") -> str:
+def _security_write_traversal(env: "Any") -> str:
     stream = chat(env, "Escape the sandbox [[scenario:tool_write_traversal]]")
     stream.wait_for("meta", timeout=20)
     stream.wait_for("tool_call", timeout=20)
@@ -338,6 +364,11 @@ def security_write_traversal(env: "Any") -> str:
     escaped = env.app.run_dir / "pwned.txt"
     assert_true(not escaped.exists(), f"nothing written outside the workspace ({escaped})")
     return "write_file '../../pwned.txt' refused by the sandbox"
+
+
+def security_write_traversal(env: "Any") -> str:
+    with autonomy(env, "supervised"):  # the per-call approval flow under test
+        return _security_write_traversal(env)
 
 
 def security_read_traversal(env: "Any") -> str:
@@ -370,15 +401,30 @@ def security_ssrf(env: "Any") -> str:
 def security_command_blocklist(env: "Any") -> str:
     stream = chat(env, "Run something [[scenario:tool_run_blocklist]]")
     stream.wait_for("meta", timeout=20)
-    stream.wait_for("tool_call", timeout=20)
-    approval = stream.wait_for("approval", timeout=20)
-    assert_eq(approval["risk"], "exec", "command risk badge")
-    approve(env, approval, "allow")
+    call = stream.wait_for("tool_call", timeout=20)
+    assert_eq(call.get("level"), "critical", "command graded critical")
+    assert_eq(call["requires_approval"], False, "critical commands are never offered for approval")
     result = stream.wait_for("tool_result", timeout=20)
     finish(stream)
+    assert_eq(stream.of("approval"), [], "no approval card for a blocked command")
     assert_eq(result["ok"], False, "blocklisted command refused")
-    assert_in("blocked for safety", str(result["preview"]).lower(), "blocklist message")
-    return "run_command 'sudo rm -rf /' blocked even with approval"
+    assert_in("blocked", str(result["preview"]).lower(), "blocked message")
+    return "run_command 'sudo rm -rf /' denied up front by the safety policy (no approval card)"
+
+
+def smart_autonomy_write(env: "Any") -> str:
+    stream = chat(env, "Save it [[scenario:tool_write]]")
+    stream.wait_for("meta", timeout=20)
+    call = stream.wait_for("tool_call", timeout=20)
+    assert_eq(call["requires_approval"], False, "smart autonomy runs a workspace write without asking")
+    assert_in(call.get("level"), ("low", "medium"), "risk level reported on tool_call")
+    assert_true(isinstance(call.get("reasons"), list), "risk reasons reported on tool_call")
+    result = stream.wait_for("tool_result", timeout=30)
+    finish(stream)
+    assert_eq(stream.of("approval"), [], "no approval card")
+    assert_eq(result["ok"], True, "write executed")
+    assert_true((env.workspace / "notes" / "hello.txt").is_file(), "file written")
+    return f"smart mode auto-ran a {call.get('level')}-risk workspace write with reasons attached"
 
 
 # ---------------------------------------------------------------------------
