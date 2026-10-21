@@ -22,6 +22,8 @@ MAX_OPS_PER_TURN = 3
 MIN_CONTENT = 3
 MAX_CONTENT = 300
 EXTRACT_TRANSCRIPT_CHARS = 9000
+EXTRACT_EXISTING_CHARS = 4000
+EXTRACT_EXISTING_LIMIT = 32
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -53,15 +55,31 @@ def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, na, nb).ratio()
 
 
-def is_similar(a: str, b: str) -> bool:
-    na, nb = normalize(a), normalize(b)
+def _similar_normalized(na: str, tokens_a: set[str], nb: str, tokens_b: set[str]) -> bool:
+    """Similarity on pre-normalised text/token sets (hot dedupe path).
+
+    Semantically identical to ``is_similar`` on the raw strings, but avoids
+    re-normalising stored memories on every comparison. Cheap bounds run
+    first so ``SequenceMatcher`` only executes when it can still pass:
+    its ratio is at most ``2*min(len)/(len_a+len_b)``.
+    """
     if not na or not nb:
         return False
     if na == nb:
         return True
-    if jaccard(na, nb) >= DEDUPE_JACCARD:
-        return True
+    if tokens_a and tokens_b:
+        overlap = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+        if overlap >= DEDUPE_JACCARD:
+            return True
+    shorter, longer = min(len(na), len(nb)), max(len(na), len(nb))
+    if 2 * shorter / (shorter + longer) < DEDUPE_SEQ_RATIO:
+        return False
     return SequenceMatcher(None, na, nb).ratio() >= DEDUPE_SEQ_RATIO
+
+
+def is_similar(a: str, b: str) -> bool:
+    na, nb = normalize(a), normalize(b)
+    return _similar_normalized(na, _tokens(na), nb, _tokens(nb))
 
 
 def clean_content(text: Any) -> str:
@@ -125,29 +143,85 @@ class MemoryEngine:
 
     # --- retrieval ---------------------------------------------------------
 
-    def retrieve(self, query: str, limit: int = 12) -> list[dict[str, Any]]:
-        seen: set[str] = set()
-        result: list[dict[str, Any]] = []
+    def _search_pool(self, query: str, per_query_limit: int = 24) -> list[dict[str, Any]]:
+        """Candidate memories for a query: full-query FTS + per-token passes.
 
-        def add(memories: list[dict[str, Any]], cap: int) -> None:
+        The FTS expression is an OR over query tokens, so one common word
+        ("subject", "user") can fill the whole result window with recent
+        noise and push the true match out. A single-token pass per
+        discriminative term guarantees memories containing that exact term
+        enter the pool; coverage ranking then orders the merged pool.
+        """
+        seen: set[str] = set()
+        pool: list[dict[str, Any]] = []
+
+        def add(memories: list[dict[str, Any]]) -> None:
             for memory in memories:
-                if len(result) >= limit or len(result) >= cap:
-                    return
+                if memory["id"] not in seen:
+                    seen.add(memory["id"])
+                    pool.append(memory)
+
+        add(self.db.search_memories(query, per_query_limit))
+        tokens = [t for t in _tokens(normalize(query)) if len(t) >= 2]
+        for token in tokens[:4]:
+            add(self.db.search_memories(token, 12))
+        return pool
+
+    def retrieve(self, query: str, limit: int = 12) -> list[dict[str, Any]]:
+        """Gather candidates (pinned + search + recently used), then rank them.
+
+        Pinned memories always lead. The rest are ordered by query-token
+        overlap, then by most recent use/update — so the token-capped prompt
+        block spends its budget on the most relevant memories first instead
+        of whichever happened to be updated last.
+        """
+        seen: set[str] = set()
+        candidates: list[dict[str, Any]] = []
+
+        def add(memories: list[dict[str, Any]]) -> None:
+            for memory in memories:
                 if memory["id"] in seen:
                     continue
                 seen.add(memory["id"])
-                result.append(memory)
+                candidates.append(memory)
 
-        add(self.db.pinned_memories(5), limit)
+        # Fetch a wider pool than the limit so ranking has a choice. (The
+        # FTS query is an OR over query tokens, so common words match many
+        # rows; coverage scoring below separates true matches from noise.)
+        add(self.db.pinned_memories(8))
         if (query or "").strip():
-            add(self.db.search_memories(query, 8), limit)
-        add(self.db.recently_used_memories(5), limit)
+            add(self._search_pool(query))
+        add(self.db.recently_used_memories(8))
+        result = self._rank(candidates, query)[:limit]
         if result:
             try:
                 self.db.mark_memories_used([memory["id"] for memory in result])
             except Exception:  # pragma: no cover - defensive
                 log.warning("could not mark memories as used", exc_info=True)
         return result
+
+    @staticmethod
+    def _rank(memories: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+        """Rank by pinned, then query-token coverage, Jaccard, recency.
+
+        Coverage (fraction of *query* tokens present) leads because the FTS
+        pool is an OR-match: a memory matching every query term must beat a
+        newer one matching a single common word.
+        """
+        query_tokens = _tokens(normalize(query or ""))
+
+        def score(memory: dict[str, Any]) -> tuple[int, float, float, str]:
+            tokens = _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
+            if query_tokens and tokens:
+                matched = len(query_tokens & tokens)
+                coverage = matched / len(query_tokens)
+                jaccard_score = matched / len(query_tokens | tokens)
+            else:
+                coverage = jaccard_score = 0.0
+            recency = memory.get("last_used_at") or memory.get("updated_at") or ""
+            return (1 if memory.get("pinned") else 0, coverage, jaccard_score, recency)
+
+        return sorted(memories, key=score, reverse=True)
 
     @staticmethod
     def render_block(memories: list[dict[str, Any]], max_tokens: int = MEMORY_PROMPT_TOKEN_CAP) -> str:
@@ -162,21 +236,105 @@ class MemoryEngine:
             used += cost
         return "\n".join(lines)
 
-    def build_block(self, query: str, enabled: bool = True) -> tuple[str, list[dict[str, Any]]]:
+    def build_block(
+        self,
+        query: str,
+        enabled: bool = True,
+        max_tokens: int = MEMORY_PROMPT_TOKEN_CAP,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Render the prompt memory block within ``max_tokens``.
+
+        The default (800) preserves the v1 behaviour; the context engine
+        passes a budget-scaled cap so small-context models are not starved
+        by a fixed-size memory block.
+        """
         if not enabled:
             return "", []
         memories = self.retrieve(query)
-        bullets = self.render_block(memories)
+        # The block header costs tokens too; on small budgets it is a real
+        # share, so charge it against the cap (keeping a floor so at least
+        # the top-ranked memory survives).
+        overhead = estimate_tokens(prompts.MEMORY_BLOCK.format(bullets=""))
+        bullets = self.render_block(memories, max_tokens=max(30, max_tokens - overhead))
         if not bullets:
             return "", []
         return prompts.MEMORY_BLOCK.format(bullets=bullets), memories
 
+    def recall(
+        self,
+        query: str,
+        conversation_id: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        """Unified recall for tools/UI: durable memories + conversation episodes.
+
+        Returns ranked items shaped ``{"source": "memory"|"episode", ...}``.
+        Episodes come from ``Database.search_messages`` when available
+        (schema v2); on older databases only memories are returned. This is
+        the single recall engine — prompt injection and the ``recall`` tool
+        both call it so behaviour cannot drift apart.
+        """
+        items: list[dict[str, Any]] = []
+        memories = self._rank(self._search_pool(query, per_query_limit=max(limit * 4, 32)), query)
+        for memory in memories:
+            items.append(
+                {
+                    "source": "memory",
+                    "id": memory["id"],
+                    "kind": memory["kind"],
+                    "content": memory["content"],
+                    "pinned": memory["pinned"],
+                    "updated_at": memory["updated_at"],
+                }
+            )
+        search_messages = getattr(self.db, "search_messages", None)
+        if callable(search_messages):
+            try:
+                episodes = search_messages(query, conversation_id=conversation_id, limit=max(limit, 8))
+            except Exception:  # pragma: no cover - recall must never fail a turn/tool
+                log.warning("episodic search failed", exc_info=True)
+                episodes = []
+            for message in episodes or []:
+                items.append(
+                    {
+                        "source": "episode",
+                        "id": message["id"],
+                        "conversation_id": message.get("conversation_id"),
+                        "seq": message.get("seq"),
+                        "role": message.get("role"),
+                        "content": message.get("content") or "",
+                        "created_at": message.get("created_at"),
+                    }
+                )
+        # Durable facts lead, but reserve up to half the slots for exact
+        # episode wording when episodes exist; backfill from either side.
+        mem_items = [item for item in items if item["source"] == "memory"]
+        ep_items = [item for item in items if item["source"] == "episode"]
+        ep_reserve = min(len(ep_items), limit // 2) if ep_items else 0
+        mem_taken = mem_items[: limit - ep_reserve]
+        merged = list(mem_taken)
+        merged.extend(ep_items[: limit - len(merged)])
+        merged.extend(mem_items[len(mem_taken):][: limit - len(merged)])
+        return merged[:limit]
+
     # --- user-facing operations -------------------------------------------
 
     def find_similar(self, content: str, existing: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
-        candidates = existing if existing is not None else self.db.all_memories()
+        normalised = normalize(content)
+        tokens = _tokens(normalised)
+        if existing is not None:
+            candidates = existing
+        else:
+            # A near-duplicate must share most of its tokens (Jaccard path) or
+            # most of its characters (sequence path), so an FTS OR-query over
+            # the content is a safe prefilter. Fall back to a full scan only
+            # when FTS finds nothing at all (e.g. tokeniser edge cases).
+            candidates = self.db.search_memories(content, 50)
+            if not candidates:
+                candidates = self.db.all_memories()
         for memory in candidates:
-            if is_similar(content, memory["content"]):
+            stored = memory.get("normalized") or normalize(memory.get("content") or "")
+            if _similar_normalized(normalised, tokens, stored, _tokens(stored)):
                 return memory
         return None
 
@@ -190,8 +348,7 @@ class MemoryEngine:
         """Insert a memory, merging into a near-duplicate when one exists."""
         cleaned = validate_content(content)
         kind_name = validate_kind(kind)
-        existing = self.db.all_memories()
-        match = self.find_similar(cleaned, existing)
+        match = self.find_similar(cleaned)
         if match:
             if len(cleaned) > len(match["content"]):
                 updated = self.db.update_memory(
@@ -284,6 +441,33 @@ class MemoryEngine:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    def _relevant_existing_memories(self, transcript_lines: list[str]) -> list[dict[str, Any]]:
+        """Memories the extractor might update/delete for this transcript.
+
+        Pinned first, then FTS matches against the transcript text, then
+        recently used — deduped and capped. Sending only relevant memories
+        (instead of the latest 40) both improves dedupe decisions and keeps
+        the extraction prompt viable on small-context models.
+        """
+        seen: set[str] = set()
+        picked: list[dict[str, Any]] = []
+
+        def add(memories: list[dict[str, Any]]) -> None:
+            for memory in memories:
+                if len(picked) >= EXTRACT_EXISTING_LIMIT or memory["id"] in seen:
+                    continue
+                seen.add(memory["id"])
+                picked.append(memory)
+
+        add(self.db.pinned_memories(8))
+        query = " ".join(transcript_lines)[:600]
+        if query.strip():
+            add(self.db.search_memories(query, 20))
+        add(self.db.recently_used_memories(8))
+        if len(picked) < EXTRACT_EXISTING_LIMIT:
+            add(self.db.all_memories(EXTRACT_EXISTING_LIMIT))
+        return picked
+
     def _extraction_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         recent = self.db.recent_messages(conversation_id, 8)
         lines: list[str] = []
@@ -303,10 +487,18 @@ class MemoryEngine:
         if not lines:
             return []
         lines.reverse()
-        existing = self.db.all_memories(40)
-        existing_lines = [
-            f"{memory['id']} | {memory['kind']} | {memory['content'][:160]}" for memory in existing
-        ]
+        existing = self._relevant_existing_memories(lines)
+        existing_lines: list[str] = []
+        spent = 0
+        for memory in existing:
+            line = f"{memory['id']} | {memory['kind']} | {memory['content'][:160]}"
+            # Keep the utility prompt small enough for small-context models:
+            # the dedupe decision needs the *relevant* memories, not all 40
+            # most recent ones (~2k tokens before the transcript even starts).
+            if spent + len(line) > EXTRACT_EXISTING_CHARS and existing_lines:
+                break
+            existing_lines.append(line)
+            spent += len(line) + 1
         user_prompt = prompts.MEMORY_USER.format(
             existing="\n".join(existing_lines) if existing_lines else "(none)",
             transcript="\n\n".join(lines),
