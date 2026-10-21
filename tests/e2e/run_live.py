@@ -26,6 +26,10 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+from harness import REPO_ROOT as _REPO_ROOT  # noqa: E402
+
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import requests  # noqa: E402
 
@@ -98,39 +102,81 @@ SEED_MEMORIES = [
     ("Prefers short answers with bullet points and code examples.", "preference", False),
 ]
 
+SCREENSHOT_CONVERSATIONS = [
+    (
+        "What is one interesting fact about kiwi birds? Reply in one warm sentence.",
+        "Kiwi facts",
+    ),
+    (
+        "Explain what a small Python script that renames files by date would look like. "
+        "Answer with one short code block.",
+        "Write a Python script",
+    ),
+    (
+        "In one sentence, what is the point of a local AI agent?",
+        "Local AI notes",
+    ),
+    (
+        "Give me one quick dinner idea for tonight.",
+        "Dinner ideas",
+    ),
+]
+
+DEFAULT_PERMISSIONS = {
+    "web_search": "auto",
+    "fetch_page": "auto",
+    "read_file": "auto",
+    "list_files": "auto",
+    "write_file": "ask",
+    "replace_in_file": "ask",
+    "run_command": "ask",
+    "remember": "auto",
+}
+
+DENY_PERMISSIONS = {
+    "web_search": "deny",
+    "fetch_page": "deny",
+    "read_file": "deny",
+    "list_files": "deny",
+    "write_file": "deny",
+    "replace_in_file": "deny",
+    "run_command": "deny",
+    "remember": "auto",
+}
+
 
 def prepare_screenshot_state(env: Env) -> None:
     """Curate real state so the committed screenshots look like a used app.
 
-    All data is created through the public API on the scratch data dir: three real
-    (short) conversations with hand-set titles and a realistic memory set. The
-    live checks above have already produced their evidence, so clearing them here
-    does not hide anything; every screenshot is still a real backend + real model.
+    All data is created through the public API on the scratch data dir: four real
+    (short) conversations with hand-set titles and a realistic memory set. Tools are
+    denied during seeding so a chatty model cannot block on an approval prompt.
     """
     assert env.app is not None, "screenshot prep needs a spawned app"
-    # conversations: keep the sidebar plausible instead of full of QA probe titles
-    for conversation in env.client.get("/api/conversations").data["conversations"]:
-        env.client.delete(f"/api/conversations/{conversation['id']}")
-    seeds = [
-        ("What is one interesting fact about kiwi birds? Reply in one sentence.", "Kiwi facts"),
-        ("In one sentence, what is the point of a local AI agent?", "Local AI notes"),
-        ("Give me one quick dinner idea for tonight.", "Dinner ideas"),
-    ]
-    for prompt, title in seeds:
-        stream = env.client.chat({"message": prompt}, timeout=300)
-        stream.wait_done(timeout=300)
-        stream.wait_closed(timeout=60)
-        assert not stream.of("error"), f"seed screenshot chat failed: {stream.of('error')}"
-        conversation_id = stream.of("meta")[0]["conversation_id"]
-        env.client.patch(f"/api/conversations/{conversation_id}", {"title": title})
-    # let async memory extraction settle, then curate the memory sheet content
-    time.sleep(4.0)
-    env.client.delete("/api/memories")
-    for content, kind, pinned in SEED_MEMORIES:
-        created = env.client.post("/api/memories", {"content": content, "kind": kind})
-        if created.status == 200 and pinned:
-            env.client.patch(f"/api/memories/{created.data['memory']['id']}", {"pinned": True})
-    print(f"screenshot state ready: {len(seeds)} conversations, {len(SEED_MEMORIES)} memories")
+    env.client.patch("/api/settings", {"permissions": DENY_PERMISSIONS})
+    try:
+        for conversation in env.client.get("/api/conversations").data["conversations"]:
+            env.client.delete(f"/api/conversations/{conversation['id']}")
+        for prompt, title in SCREENSHOT_CONVERSATIONS:
+            stream = env.client.chat({"message": prompt}, timeout=300)
+            stream.wait_done(timeout=300)
+            stream.wait_closed(timeout=60)
+            assert not stream.of("error"), f"seed screenshot chat failed: {stream.of('error')}"
+            conversation_id = stream.of("meta")[0]["conversation_id"]
+            env.client.patch(f"/api/conversations/{conversation_id}", {"title": title})
+        # give async memory extraction a moment, then curate the memory sheet
+        time.sleep(4.0)
+        env.client.delete("/api/memories")
+        for content, kind, pinned in SEED_MEMORIES:
+            created = env.client.post("/api/memories", {"content": content, "kind": kind})
+            if created.status == 200 and pinned:
+                env.client.patch(f"/api/memories/{created.data['memory']['id']}", {"pinned": True})
+    finally:
+        env.client.patch("/api/settings", {"permissions": DEFAULT_PERMISSIONS})
+    print(
+        f"screenshot state ready: {len(SCREENSHOT_CONVERSATIONS)} conversations, "
+        f"{len(SEED_MEMORIES)} memories"
+    )
 
 
 DIRECT_CHECKS: list[tuple[str, Any]] = [
@@ -175,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
         "--probe-only",
         action="store_true",
         help="only probe LM Studio + boot the app, then exit (plumbing check, no generation)",
+    )
+    parser.add_argument(
+        "--screenshots-only",
+        action="store_true",
+        help="skip API checks; curate state and re-run the browser screenshot pass",
     )
     args = parser.parse_args(argv)
 
@@ -237,11 +288,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Using model qwen3.8-2b for all live checks")
 
         # a conversation shared by the read-only live checks
-        created = env.client.post("/api/conversations", {"title": "QA live verification"})
+        created = env.client.post("/api/conversations", {})
         assert created.status == 201, f"conversation create failed: {created.status} {created.text[:200]}"
         env.conversation_id = created.data["id"]
 
-        checks = list(DIRECT_CHECKS) + list(checks_live.LIVE_CHECKS)
+        checks = [] if args.screenshots_only else list(DIRECT_CHECKS) + list(checks_live.LIVE_CHECKS)
         if args.skip_slow:
             checks = [entry for entry in checks if entry[0] not in ("live_context_compaction",)]
         if args.base:
@@ -304,11 +355,11 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _raise_browser() -> str:
-    raise AssertionError("live browser rig failed (see output above)")
+def _raise_browser(env: Env) -> str:
+    raise AssertionError("live browser rig failed (see browser output above)")
 
 
-def _raise_browser_timeout() -> str:
+def _raise_browser_timeout(env: Env) -> str:
     raise AssertionError("live browser rig timed out after 900s")
 
 

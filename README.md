@@ -37,8 +37,11 @@ permission, inside its own workspace.
 <br>
 
 <div align="center">
-<img src="docs/screenshots/chat.png" alt="A conversation" width="440">
-<img src="docs/screenshots/approval.png" alt="Permission request" width="440">
+<img src="docs/screenshots/chat.png" alt="A conversation with streamed code" width="440">
+<img src="docs/screenshots/approval.png" alt="A pending permission request" width="440">
+<br>
+<img src="docs/screenshots/memory.png" alt="Memory sheet" width="440">
+<img src="docs/screenshots/settings.png" alt="Settings and permissions" width="440">
 </div>
 
 ## Features
@@ -68,11 +71,15 @@ permission, inside its own workspace.
 git clone https://github.com/yunusemrejr/kiwibro.git
 cd kiwibro
 
-# 1. install the three Python dependencies (Flask, requests, beautifulsoup4)
-python3 -m pip install --user -r requirements.txt
+# start it (installs Flask/requests/beautifulsoup4 into a local .venv if needed)
+./scripts/run.sh
+```
 
-# 2. run
-python3 app.py            # or ./scripts/run.sh
+Prefer doing it by hand?
+
+```bash
+python3 -m pip install --user -r requirements.txt
+python3 app.py
 ```
 
 Open **<http://127.0.0.1:8777>**.
@@ -172,6 +179,23 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
   and link-local addresses (anti-SSRF).
 - Shell commands are blocklisted, time-limited and always approved by default.
 
+## Verification
+
+Kiwibro's contract is tested at three levels, all runnable on your machine:
+
+```bash
+python3 -m pytest -q              # 67 unit/API/security tests (offline, fake LM)
+python3 tests/e2e/run_e2e.py      # 54 deterministic end-to-end checks (real app + fake LM)
+node tests/e2e/browser/run_browser.mjs --mode mock   # browser rig (needs playwright-core + Chrome)
+```
+
+The deterministic suite covers SSE framing, UTF-8 streaming, approvals
+(allow / always / deny), stop/abort, context-limit recovery, rolling-summary
+injection, model swap preserving transcript and memory, LM Studio-offline
+behaviour, path-traversal/SSRF/shell-blocklist probes and restart persistence.
+The full evidence log, including live LM Studio runs and residual risks, lives in
+[docs/QA.md](docs/QA.md). CI runs the deterministic suite on every push.
+
 ## Development
 
 ```bash
@@ -181,7 +205,8 @@ python3 app.py
 ```
 
 Project layout and contracts are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-Contributions are welcome — keep it local, calm and dependency-light.
+Contributions are welcome — keep it local, calm and dependency-light. See
+[CHANGELOG.md](CHANGELOG.md) for the release notes.
 
 ## License
 

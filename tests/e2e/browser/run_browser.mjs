@@ -146,7 +146,7 @@ async function shot(page, outDir, name, settleMs) {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
   const file = path.join(outDir, `${name}.png`);
-  await page.screenshot({ path: file, animations: "disabled" });
+  await page.screenshot({ path: file, type: "png", animations: "disabled" });
   return file;
 }
 
@@ -378,6 +378,36 @@ async function ensureEmptyState(page) {
   await page.waitForSelector(`${SEL.emptyState}:not([hidden])`, { timeout: 10000 });
 }
 
+async function resetUi(page) {
+  // Close popovers/sheets and stop any in-flight stream so one failed flow cannot
+  // cascade into the next one.
+  await page.keyboard.press("Escape").catch(() => {});
+  await settle(page, 120);
+  await page.keyboard.press("Escape").catch(() => {});
+  const stop = page.locator(SEL.stopBtn);
+  if (await stop.count()) {
+    const hidden = await stop.first().evaluate((node) => node.hidden);
+    if (!hidden) {
+      await page.keyboard.press("Escape").catch(() => {});
+      await waitStreamIdle(page, 30000).catch(() => {});
+    }
+  }
+  for (const dialog of await page.locator("dialog[open]").all()) {
+    await page.keyboard.press("Escape").catch(() => {});
+    await settle(page, 120);
+    void dialog;
+  }
+}
+
+async function openSeededConversation(page, title) {
+  const row = page.locator(".conv-row", { hasText: title }).first();
+  if (!(await row.count())) return false;
+  await row.locator(".conv-open").click();
+  await page.waitForSelector(SEL.assistantMarkdown, { state: "visible", timeout: 20000 });
+  await settle(page, 250);
+  return true;
+}
+
 async function waitStreamIdle(page, timeoutMs) {
   await page.waitForFunction(
     () => {
@@ -390,6 +420,7 @@ async function waitStreamIdle(page, timeoutMs) {
 }
 
 async function flowHero(page, outDir, options) {
+  await resetUi(page);
   await ensureEmptyState(page);
   await page.waitForFunction(
     () => {
@@ -403,6 +434,7 @@ async function flowHero(page, outDir, options) {
 }
 
 async function flowModels(page, outDir, options) {
+  await resetUi(page);
   await page.click(SEL.modelPill);
   await page.waitForSelector(SEL.modelPopover, { timeout: 8000 });
   await page.waitForFunction(
@@ -453,8 +485,27 @@ async function flowModels(page, outDir, options) {
 }
 
 async function flowChat(page, outDir, options) {
+  await resetUi(page);
+  if (options.mode === "live") {
+    const opened = await openSeededConversation(page, "Write a Python script");
+    if (!opened) throw new Error("seeded conversation 'Write a Python script' not found");
+    const before = await page.locator(`${SEL.assistantMarkdown}`).count();
+    await page.fill(SEL.composerInput, "Add two short comments to the code and show the snippet again.");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      (previous) => document.querySelectorAll(".msg-assistant .md").length > previous,
+      before,
+      { timeout: 240000 },
+    );
+    await waitStreamIdle(page, 240000);
+    await page.evaluate(() => {
+      const transcript = document.querySelector("#transcript");
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    });
+    return shot(page, outDir, "chat", options.settle);
+  }
   await ensureEmptyState(page);
-  const timeout = options.mode === "live" ? 180000 : 45000;
+  const timeout = options.mode === "live" ? 240000 : 45000;
   const chatPrompt =
     options.mode === "live"
       ? "In one short sentence, what is a kiwi bird? Answer from your own knowledge, no tools needed."
@@ -478,18 +529,22 @@ async function flowChat(page, outDir, options) {
 }
 
 async function flowApproval(page, outDir, options) {
-  await page.click(SEL.newChat).catch(() => {});
-  await settle(page, 150);
-  const timeout = options.mode === "live" ? 180000 : 45000;
-  // live mode asks for the exact tool so the approval card is deterministic;
-  // the fake LM needs a scenario marker to emit a tool call.
+  await resetUi(page);
+  const timeout = options.mode === "live" ? 90000 : 45000;
   let prompt = APPROVAL_PROMPT;
   if (options.mode === "live") {
+    const opened = await openSeededConversation(page, "Write a Python script");
+    if (!opened) throw new Error("seeded conversation 'Write a Python script' not found");
     prompt =
-      "Use the web_search tool to look up one kiwi conservation fact, then use the write_file " +
-      "tool to save a two-line note to kiwi-notes.md and tell me when it is saved.";
+      "Use the write_file tool to save this Python script as scripts/rename_by_date.py, " +
+      "then tell me it is saved:\n\n```python\nfrom datetime import date\nfrom pathlib import Path\n\n" +
+      "for path in sorted(Path('.').glob('*.txt')):\n    " +
+      "path.rename(path.with_name(f'{date.today()}-{path.name}'))\n```";
   } else if (options.mode === "fake") {
     prompt = `${APPROVAL_PROMPT} [[scenario:tool_write]]`;
+  } else {
+    await page.click(SEL.newChat).catch(() => {});
+    await settle(page, 150);
   }
   await page.fill(SEL.composerInput, prompt);
   await page.keyboard.press("Enter");
@@ -505,12 +560,15 @@ async function flowApproval(page, outDir, options) {
   const file = await shot(page, outDir, "approval", options.settle);
   // Continue the flow so the UI ends in a clean state, and prove Allow works.
   await page.click(SEL.approvalAllow);
-  await page.waitForSelector(SEL.approvalResolved, { timeout: 20000 });
+  await page.waitForSelector(SEL.approvalResolved, { timeout: 30000 });
   await waitStreamIdle(page, timeout);
+  const evidenceDir = path.resolve(REPO_ROOT, ".dev/qa/browser/screens");
+  await shot(page, evidenceDir, "approval-resolved", options.settle).catch(() => {});
   return file;
 }
 
 async function flowMemory(page, outDir, options) {
+  await resetUi(page);
   await page.click(SEL.memoryBtn);
   await page.waitForSelector(`${SEL.memorySheet}[open]`, { timeout: 8000 });
   await page.waitForFunction(
@@ -559,6 +617,7 @@ async function flowMemory(page, outDir, options) {
 }
 
 async function flowSettings(page, outDir, options) {
+  await resetUi(page);
   await page.click(SEL.settingsBtn);
   await page.waitForSelector(`${SEL.settingsSheet}[open]`, { timeout: 8000 });
   await page.waitForFunction(
@@ -605,6 +664,7 @@ async function flowSettings(page, outDir, options) {
 }
 
 async function flowMobile(page, outDir, options) {
+  await resetUi(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await settle(page, 300);
   if (options.mode === "live") {
@@ -750,7 +810,7 @@ async function main() {
   }
 
   const failures = results.filter((entry) => !entry.ok);
-  const summaryPath = path.join(outDir, "browser-evidence.json");
+  const summaryPath = path.resolve(REPO_ROOT, ".dev", "qa", "browser", "browser-evidence.json");
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(
     summaryPath,
