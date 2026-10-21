@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkpoints, config, delegate, directives, guard, inference, library, prompts, safety, toolcall, tools
+from . import checkpoints, config, delegate, directives, guard, inference, library, prompts, safety, toolcall, tools, workspaces
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
@@ -446,7 +446,8 @@ class AgentManager:
         turn.user_message_id = user_message["id"]
         # Content-safety state: taint from injected content and secret placeholders
         # carry over between turns of the same conversation.
-        turn.safety = guard.begin_turn(turn.conversation_id, self._workspace().root)
+        turn.safety = guard.begin_turn(turn.conversation_id, self._workspace(turn.conversation_id).root)
+        turn.safety["user_message"] = turn.message  # lets safety tell user-asked folder switches apart
         self._raise_if_aborted(turn)
 
         try:
@@ -470,7 +471,9 @@ class AgentManager:
         # KV-cache rule: message 0 stays byte-identical across turns so LM Studio
         # reuses the cached prefix; the clock, retrieved memories and directives
         # ride on the newest user message (fixed for the whole turn).
-        system_prompt = self._system_prompt(settings, model=model, model_info=model_info)
+        system_prompt = self._system_prompt(
+            {**settings, "workspace": self._folder(turn.conversation_id)}, model=model, model_info=model_info
+        )
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
@@ -791,7 +794,7 @@ class AgentManager:
         for the file and document tools. Stored in the message's meta, the result
         renders identically on every later turn.
         """
-        workspace = Workspace(self._settings().get("workspace") or str(config.default_workspace()))
+        workspace = self._workspace(turn.conversation_id)
         seen = []
         for item in turn.attachments:
             self._raise_if_aborted(turn)
@@ -906,7 +909,7 @@ class AgentManager:
             started = time.monotonic()
             name, args = item["name"], item["args"]
             context = ToolContext(
-                workspace=self._workspace(),
+                workspace=self._workspace(turn.conversation_id),
                 memory=self.memory,
                 search=self.search,
                 conversation_id=turn.conversation_id,
@@ -978,7 +981,7 @@ class AgentManager:
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
             return refuse(message, message.splitlines()[0])
         decision = safety.decide(
-            self._settings(), name, item["args"], workspace=self._workspace(), turn_state=turn.safety, risk=spec.risk
+            self._settings(), name, item["args"], workspace=self._workspace(turn.conversation_id), turn_state=turn.safety, risk=spec.risk
         )
         requires = decision.mode == "ask"
         turn.emit(
@@ -1011,8 +1014,13 @@ class AgentManager:
             item["approved"] = True
         return item
 
-    def _workspace(self) -> Workspace:
-        return Workspace(self._settings().get("workspace") or config.default_workspace())
+    def _folder(self, conversation_id: str | None = None) -> str:
+        """The conversation's own folder when it has one, else the Settings workspace."""
+        bound = workspaces.folder_for(self.db, conversation_id)
+        return bound or str(self._settings().get("workspace") or config.default_workspace())
+
+    def _workspace(self, conversation_id: str | None = None) -> Workspace:
+        return Workspace(self._folder(conversation_id))
 
     def _library(self) -> library.Library:
         return library.get_library(self.data_dir / "library.db")

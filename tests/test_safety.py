@@ -3,7 +3,6 @@ circuit breakers, guard merging and the bubblewrap confinement of commands."""
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 import time

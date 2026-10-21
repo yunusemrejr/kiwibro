@@ -154,9 +154,15 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """Schema v3: a conversation's own working folder (NULL = the Settings workspace)."""
+    if not any(row["name"] == "workspace" for row in conn.execute("PRAGMA table_info(conversations)")):
+        conn.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
+
+
 # A migration is either a SQL script or a callable taking the connection
 # (for steps that must inspect the live schema, e.g. guarded ALTERs).
-_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2)]
+_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3)]
 
 
 def _est_tokens(text: str | None) -> int:
@@ -284,6 +290,7 @@ class Database:
             "summary": row["summary"] or "",
             "summary_through_seq": row["summary_through_seq"],
             "extracted_through_seq": row["extracted_through_seq"] if "extracted_through_seq" in keys else 0,
+            "workspace": row["workspace"] if "workspace" in keys else None,
             "pinned": bool(row["pinned"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -322,7 +329,7 @@ class Database:
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
         allowed = {
             "title", "title_auto", "model", "summary", "summary_through_seq",
-            "extracted_through_seq", "pinned",
+            "extracted_through_seq", "pinned", "workspace",
         }
         sets: list[str] = []
         values: list[Any] = []

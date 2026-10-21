@@ -13,7 +13,7 @@ ship in this version).
 - **27 new tools (35 total).** Parallel web research (`multi_search`, `fetch_pages`,
   `web_research` with numbered evidence, `browse_page`, multi-tab `browser`);
   codebase management (`grep_files`, `glob_files`, `read_files`, `file_outline`,
-  atomic `apply_patch` with diff + pre-edit backup, `file_manage`, read-only `git`,
+  atomic `apply_patch` with diff, `file_manage`, read-only `git`,
   `multi_command` pipelines, persistent `terminal_session`); sandboxed
   `run_python`/`run_javascript` snippets; computer use (`system_info`, `open_path`,
   `clipboard`, `notify`, `screenshot`); persistent `task_board`; `recall` over
@@ -35,10 +35,34 @@ ship in this version).
   metadata (reasoning options, size, loaded window); helper models loaded/unloaded via
   `/api/v1/models/load|unload` with a free-RAM guard and shared leases; images downscaled
   before vision calls; one-click larger context window from the context ring.
+- **Attachments.** Attach, paste or drop images, audio, video and documents. Images and
+  video keyframes are described by the main model if it can see, otherwise by the
+  smallest installed vision model (loaded and unloaded for it); audio, SVG — and images
+  when no vision model exists — get facts measured by code. Files live in the workspace,
+  so every tool can work on them.
+- **Markdown:** tables with alignment, task lists, nested lists, h5/h6.
 - **Mid-turn steering.** `POST /api/chat/steer` (send while a reply runs) applies
   user corrections at the next step; `done` now reports turn `stats`.
-- **Autonomy safeguards.** Duplicate-call loop guard, per-turn write budget,
-  mass-delete caps, all-or-nothing patches.
+- **Risk-graded autonomy.** Every tool call is graded safe → critical by a bash-aware
+  command analyser (quotes, heredocs, substitutions, pipelines, wrappers, scripts it
+  runs, decodable payloads; hardened against ~150 red-team bypasses) and decided
+  auto/ask/deny by the new `autonomy` setting: *smart* (default) runs safe and undoable
+  work and asks before risky steps, *supervised* follows the permission list,
+  *autonomous* never waits and refuses risky steps with reasons the model can act on.
+  Critical actions (wiping home, `sudo`, start-up-file writes, credential
+  exfiltration) are always refused. Graded per-turn breakers escalate mass deletes and
+  edits; a duplicate-call loop guard and all-or-nothing patches remain.
+- **Command sandbox.** `run_command`, terminal sessions and `run_python`/`run_javascript`
+  run in bubblewrap inside a systemd scope: read-only root, writable workspace (snippets:
+  scratch only, no network), private `/tmp`, own PID namespace, credentials and session
+  bus hidden, memory/task caps, whole process group killed on timeout. Feature-detected
+  and self-tested; `sandbox` setting auto / strict (no network) / off.
+- **Staying on task.** A directive ledger built from your messages (no extra model calls)
+  carries the goal, constraints, standing choices and overridden instructions into each
+  turn; after real work the model gets one transient checklist to verify its result.
+- **Folders and servers.** `workspace` binds a conversation to a folder you name
+  (schema v3); `remote` runs commands and copies files over SSH with your own keys and
+  `~/.ssh/config` hosts (unknown hosts need approval; server commands graded).
 - **Tool calls that work on 1–4B models.** Malformed JSON, misspelled tool and argument
   names, wrong types and out-of-range values are repaired against each tool's schema;
   calls written as text in ten common formats (Hermes, Qwen, Llama, Mistral, harmony,
@@ -68,6 +92,8 @@ ship in this version).
 ### Changed
 
 - Tool rounds per reply are configurable (`max_tool_rounds`, default 16).
+- One permission table: extension tools carry their own defaults
+  (`config.permission_defaults()`); Settings validates enum settings from one table.
 - Model entries expose `vision` + `capabilities`; vision shown in model lists.
 - Tool results are head+tail shaped before storage; fetched pages are cached (5 min).
 

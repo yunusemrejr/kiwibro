@@ -21,10 +21,13 @@ Version 1.1.0 · MIT · Python 3.10+ · Flask 3
 4. **Memory without chaos.** Durable facts are extracted, deduplicated, categorised,
    searchable, editable and capped. Switching models or starting a new chat never
    changes what is remembered or rewrites past transcripts.
-5. **Safe autonomy.** Tool calls are reviewed. Read-only tools are auto-allowed;
-   writes and shell commands ask first, with an "always" opt-in. File access is
-   sandboxed to the workspace; shell commands are blocklisted, time-limited and
-   run in the workspace.
+5. **Safe autonomy.** Every tool call is graded (safe → critical) and the
+   `autonomy` setting decides what runs without a human: *smart* (default) runs
+   safe and undoable work and asks before risky steps, *supervised* follows the
+   per-tool permission list, *autonomous* never waits and refuses risky steps with
+   a reason the model can act on. Critical actions are always refused. Commands
+   and code run confined (bubblewrap + a systemd scope): read-only system,
+   writable workspace, credentials hidden, memory/process caps.
 6. **Native feel.** A GNOME-style window: header bar, model pill, sidebar, sheets,
    subtle motion, Ubuntu typography, dark theme, a hand-drawn kiwi mark. Installed
    with an app icon and `.desktop` launcher that opens a Chrome app window
@@ -37,28 +40,53 @@ Version 1.1.0 · MIT · Python 3.10+ · Flask 3
 ```
 kiwibro/
 ├── app.py                  # Flask entry point: create_app(), python3 app.py
-├── kiwibro/                # Python package (backend)
-│   ├── __init__.py         # create_app, extension wiring
-│   ├── config.py           # paths, env, defaults, settings helpers
-│   ├── db.py               # SQLite schema, connections, CRUD helpers
-│   ├── llm.py              # LM Studio client: models, streaming, tools, JSON calls
-│   ├── context.py          # token estimation, budget, rolling compaction
-│   ├── memory.py           # extraction, dedupe, retrieval, rendering
-│   ├── prompts.py          # system / summary / memory / title prompts
-│   ├── tools.py            # tool catalog, dispatch, permission evaluation
-│   ├── search.py           # web search providers + page fetching/SSRF guard
-│   ├── sandbox.py          # workspace path + shell safety
-│   ├── agent.py            # agent loop, SSE event queue, approvals, abort
-│   └── api.py              # HTTP API + SSE endpoints
+├── kiwibro/                # Python package (backend), grouped by concern
+│   ├── __init__.py         # application factory and service wiring
+│   ├── api.py              # HTTP API + SSE endpoints (docs/API.md)
+│   ├── config.py           # paths, defaults, settings values + validation
+│   ├── db.py               # SQLite schema, forward migrations, CRUD
+│   │   # model & inference
+│   ├── llm.py              # LM Studio client: discovery, streaming, JSON helpers
+│   ├── inference.py        # KV-stable prompt layout, thinking control, telemetry
+│   ├── capabilities.py     # model capability inference, smallest-capable pick
+│   ├── routing.py          # temporary helper models (load → use → unload)
+│   ├── media.py            # image/audio/video handling, no-model fallbacks
+│   ├── delegate.py         # agent-facing delegation to other local models
+│   │   # context & memory
+│   ├── context.py          # token estimation, budgets, compaction
+│   ├── memory.py           # durable memory: extraction, dedupe, retrieval
+│   ├── directives.py       # standing-instruction ledger + end-of-turn self-check
+│   ├── prompts.py          # prompt templates
+│   │   # agent & tools
+│   ├── agent.py            # agent loop, SSE queue, approvals, abort
+│   ├── tools.py            # tool catalog, validation, dispatch
+│   ├── extensions.py       # plug-in surface for tool modules outside tools.py
+│   ├── toolcall.py         # tool-call rescue for small models
+│   ├── codebase.py         # grep/glob/outline/patch/file management, snippets
+│   ├── research.py         # parallel multi-search, batch fetch, evidence packs
+│   ├── search.py           # web search providers + SSRF-guarded fetching
+│   ├── browser.py          # headless browser and page inspection
+│   ├── desktop.py          # system info, open, clipboard, notify, screenshot
+│   ├── library.py          # on-disk document library (FTS5), output paging
+│   ├── convert.py          # document conversion with installed converters
+│   ├── compute.py          # exact math, units, dates, table analysis
+│   ├── tasks.py            # task board for long-running workflows
+│   ├── remote.py           # SSH remote hosts: run, upload, download
+│   ├── workspaces.py       # per-conversation working folders
+│   │   # safety
+│   ├── safety.py           # risk grading, auto/ask/deny policy, confinement
+│   ├── sandbox.py          # workspace paths, file tools, process runner
+│   ├── guard.py            # content safety: secrets, injections, bad writes
+│   └── checkpoints.py      # automatic file checkpoints + undo
 ├── templates/index.html    # single page shell
 ├── static/
-│   ├── css/app.css
+│   ├── css/*.css
 │   ├── js/*.js             # ES modules, no build step
 │   └── img/                # kiwi logo SVG + PNG icons
 ├── scripts/                # run.sh, kiwibro.sh, install.sh, kiwibro.desktop
-├── tests/                  # pytest unit + API tests
-├── docs/                   # architecture, API contract, screenshots, QA
-├── requirements.txt
+├── tests/                  # pytest unit + API tests, fake-LM e2e suite (tests/e2e)
+├── docs/                   # architecture, API contract, memory, QA
+├── requirements.txt        # Flask, requests, beautifulsoup4 (nothing else)
 └── README.md
 ```
 
@@ -221,6 +249,22 @@ default); a background request in between did not evict a chat's warm prefix.
 - **Bigger windows for long chats.** `POST /api/models/context {id, context_length}`
   reloads a loaded model with a larger context (`/api/models` lists `context_choices`);
   if LM Studio refuses for lack of memory the previous window is restored.
+- **Attachments.** Files the user attaches (button, paste, drop) are stored under
+  `<workspace>/attachments/<day>/` so every tool reaches them by path. Before the main
+  model runs, `Agent._see_attachments` → `delegate.see_attachment` describes images and
+  video keyframes with the main model if it can see, else with the smallest vision model
+  (leased as above); audio and SVG get code-measured facts, and so do images when no
+  vision model is installed. The result is stored in the user message's meta and rendered
+  as one fixed note *before* the user's words (`context.to_llm_message`), so it is
+  KV-stable and the user's question is what a small model reads last. Live: a test image
+  sent to `spark-x2.6-4b` was described by `qwen3.8-27b` ("green triangle … ORDER 7781")
+  and answered correctly.
+- **Leaked reasoning.** With thinking off some small models think anyway and close a
+  `</think>` LM Studio never saw opened. `LMStudioClient` moves that text into the
+  reasoning channel mid-stream and the agent sends an SSE `rewrite` so the UI replaces it.
+- **Models that cannot stop thinking.** `qwen3.8-27b` (the only installed vision model)
+  reasons on every request whatever `reasoning_effort` or a `/no_think` prompt says, so
+  helper calls budget tokens for reasoning plus the answer.
 
 ---
 
@@ -439,21 +483,56 @@ Extension tools (`calculate`, `analyze_table`, `doc_*`, `undo_changes`) are
 `ExtensionTool` records in their modules, registered into the `tools.py` catalog by
 `kiwibro/extensions.py`; they carry their own permission default and profile category.
 
-Permission evaluation per tool: explicit `deny` → deny; `auto` → allow; `ask` →
-create approval, emit `event: approval`, block the loop until the user resolves it
-(`allow`, `always`, `deny`) or 120 s timeout (deny). `always` upgrades that tool to
-`auto` persistently. Approvals are keyed by UUID and live in memory.
+Permission evaluation per call goes through `safety.decide` (below): the result is
+`auto` (run), `deny` (refused with reasons the model can act on) or `ask` → create
+an approval, emit `event: approval` (with `level`/`reasons`), block the loop until
+the user resolves it (`allow`, `always`, `deny`) or 120 s timeout (deny). `always`
+upgrades that tool to `auto` persistently (critical actions stay refused).
+Approvals are keyed by UUID and live in memory.
 
-Safety:
+Staying on task (`directives.py`): a ledger derived from the user's messages keeps
+the goal, the current request, standing constraints and choices ("never push
+without asking", "use TypeScript") and what the user changed their mind about.
+It rides in the per-turn note when it adds something, so small models keep
+following instructions after compaction and topic switches; course changes
+("actually…", "instead…") supersede what they overlap. After a turn with real
+work (3+ write/exec actions, smart/autonomous) the model gets one transient
+checklist from the ledger to verify its work before finishing.
 
-- Workspace root resolved once; every path is `resolve()`d and must be inside the
-  root (`is_relative_to`). Symlinks escape checks; reject `..` after resolution.
-- `run_command`: `shell=True`, `cwd` inside workspace, timeout, limited env, blocks
-  patterns such as `sudo`, `su `, `doas`, `rm -rf /`, `mkfs`, `shutdown`, `reboot`,
-  `dd of=/dev/`, fork bombs, `:()`; output truncated. Honest limit: this is
-  best-effort safety, not a container. It always asks first by default.
-- Never auto-run commands or writes without an approval unless the user set
-  `always` for that tool.
+Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
+
+- **Grading.** `safety.classify_command` reads a shell command the way bash does:
+  quotes, comments, heredocs, `$(…)`/backticks/process substitution, pipelines,
+  wrappers (`env`, `xargs`, `timeout`, `find -exec`, `bash -c`, `eval`), variables
+  and symlinks set earlier on the same line, brace/`$IFS`/ANSI-C tricks, the
+  scripts it runs (by `#!` line) and statically decodable payloads
+  (`echo … | base64 -d | sh`). It knows where paths point: workspace, regenerable
+  build output, the rest of `$HOME`, credentials, start-up files, Kiwibro's own
+  data, system files, and grades `safe < low < medium < high < critical`.
+  File, code, desktop and remote tools are graded by `safety.assess`.
+- **Policy.** `safety.decide` combines the grade with the per-tool permission
+  (`deny` always wins), the `autonomy` setting, graded per-turn circuit breakers
+  (mass deletes/edits escalate one level per multiple of the limit), conversation
+  taint from prompt injection, and `guard.inspect_call` (stricter wins). Critical
+  is always denied; autonomous mode turns every "ask" into a deny with reasons.
+  Denials reach the model as `Decision.denial_text()`.
+- **Confinement.** `safety.confine` wraps commands, terminals and
+  `run_python`/`run_javascript` in a transient systemd user scope
+  (`MemoryMax`, `TasksMax`) and bubblewrap: read-only root, writable workspace
+  (snippets: writable scratch only, no network), private `/tmp`, own PID
+  namespace, `~/.ssh`/credential dirs and the session bus hidden. Every layer is
+  feature-detected and self-tested; the `sandbox` setting picks auto/strict
+  (no network)/off. A high-risk call the user explicitly approved (e.g.
+  `git push`, which needs `~/.ssh`) runs unconfined.
+- **Processes.** `sandbox.run_process` puts each command in its own process group
+  and kills the whole group on timeout; stdin is EOF; one env builder drops
+  code-injection variables (`LD_PRELOAD`, `GIT_EXTERNAL_DIFF`, …).
+- **Paths.** Every file-tool path is resolved and must stay inside the workspace;
+  a conversation can bind its own folder (`workspaces.py`, schema v3), and the
+  model may switch folders on its own only to a folder the user's message names.
+- **Remote.** `remote.py` uses the system ssh/scp in BatchMode; hosts from
+  `~/.ssh/config` or `remote_hosts` are trusted, others need approval; commands are
+  graded for a server (`sudo` high, wiping `/` or `~` critical).
 
 Web search: requests with a desktop Chrome UA, `Accept-Language: en`. Parse Brave
 `div.snippet` (title/url/description) → Bing `li.b_algo h2 a` (+ decode `u=` base64

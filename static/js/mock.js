@@ -119,6 +119,7 @@ const DEFAULT_PERMISSIONS = {
   doc_list: "auto",
   convert_document: "auto",
   remote: "ask",
+  workspace: "auto",
   undo_changes: "auto",
 };
 
@@ -273,6 +274,9 @@ export class MockBackend {
       workspace: "/home/yemre/Kiwibro",
       user_name: "",
       tool_profile: "auto",
+      autonomy: "smart",
+      sandbox: "auto",
+      remote_hosts: [],
       max_tool_rounds: 16,
       permissions: clone(DEFAULT_PERMISSIONS),
     };

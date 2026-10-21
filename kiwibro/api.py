@@ -58,6 +58,7 @@ def _conversation_full(conversation: dict[str, Any], *, with_messages: bool = Fa
         "updated_at": conversation["updated_at"],
         "summary": summary or None,
         "summary_through_seq": conversation["summary_through_seq"],
+        "workspace": conversation.get("workspace"),
         "compacted": bool(summary),
     }
     if with_messages:

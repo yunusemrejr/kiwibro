@@ -50,6 +50,18 @@ If LM Studio is offline: `health.lmstudio=false`, `models=[]`, still 200.
 ```
 `context` = `loaded_context_length` if loaded else `min(max_context_length, 32768)`.
 Embedding models are excluded. `tools` = capabilities include `tool_use`.
+Additive fields from LM Studio's `/api/v1/models` when available: `key`, `display_name`,
+`arch`, `params`, `size_bytes`, `quant_bits`, `vision`, `reasoning` (allowed options, e.g.
+`["off","on"]`), `reasoning_default`, and for loaded models `loaded_config`
+(`context_length`, `parallel`, `flash_attention`) plus `context_choices` (larger windows
+the model supports, at most three).
+
+### `POST /api/models/context`
+Body `{"id": "spark-x2.6-4b", "context_length": 65536}` (one of the model's
+`context_choices`). Reloads the loaded model with that window (LM Studio cannot resize
+in place). `200 {"ok": true, "current": "<instance id>", "context_length": 65536}`;
+`409 no_memory` when LM Studio refuses the larger window — the previous window is
+loaded again; `409 busy` while a reply runs.
 
 ### `POST /api/models/select`
 Body `{"id": "qwen3.8-2b"}`. Persists the model in settings; does **not** touch
@@ -75,7 +87,7 @@ Body `{"title": "..."}` (optional). Returns full conversation object
 ### `GET /api/conversations/<id>`
 ```json
 {"ok": true, "conversation": {"id","title","model","created_at","updated_at",
-  "summary": "..." | null, "compacted": true},
+  "workspace": "/home/you/Desktop/app" | null, "summary": "..." | null, "compacted": true},
  "messages": [{"id":"m_...","seq":1,"role":"user|assistant|tool","content":"...",
    "reasoning": "", "tool_calls": [...], "tool_name": null, "model": "...",
    "created_at": "...", "meta": {}}],
@@ -100,8 +112,12 @@ Delete messages and summary of one conversation, keep the conversation.
 ### `POST /api/chat`
 Body:
 ```json
-{"conversation_id": "c_...", "message": "hello", "model": "qwen3.8-2b" /* optional */}
+{"conversation_id": "c_...", "message": "hello", "model": "qwen3.8-2b" /* optional */,
+ "attachments": [{"path": "attachments/2026-10-22/1a2b3c4d-photo.png", "name": "photo.png"}] /* optional */}
 ```
+- `attachments`: up to 8 records returned by `POST /api/attachments`; `kind` and `size`
+  are re-derived from the file. With attachments, `message` may be empty (the file names
+  become the caption) and `meta` is sent before the server describes them.
 - If `conversation_id` is null/missing, create a conversation and use it.
 - If a turn is active for that conversation → `409 {"error":{"code":"busy"}}`.
 - Response `200 text/event-stream`, headers: `Cache-Control: no-cache`,
@@ -117,19 +133,26 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `status` | `{phase: "thinking"\|"web"\|"tool"\|"reading"\|"writing"\|"running", label}` | optional, for activity line |
 | `delta` | `{text}` | streaming assistant text |
 | `reasoning` | `{text}` | streaming reasoning fragment |
+| `rewrite` | `{text, reasoning}` | the model wrote reasoning as plain text ending in `</think>`: replace the reply text so far with `text` and show `reasoning` as reasoning |
 | `tool_call` | `{id, name, args, risk, requires_approval}` | before approval/execution |
 | `approval` | `{approval_id, tool, args, summary, risk, timeout_s}` | user action needed |
 | `tool_result` | `{id, name, ok, duration_ms, preview}` | after execution; `preview` ≤ 400 chars |
 | `context` | `{used, budget, percent, compacted}` | after context work |
 | `memory` | `{added, updated, removed}` | optional; extraction is asynchronous after `done`, so the UI refreshes counts from `/api/bootstrap` or `/api/memories` |
 | `title` | `{id, title}` | auto-title updated |
-| `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null}` | end |
+| `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null, stats, inference:{ttft_ms, tokens_per_s, prompt_tokens_est, reused_tokens_est, reuse_percent, thinking}\|null}` | end |
 | `error` | `{message, code, recoverable}` | end/failure |
 
 Tool-call loop happens inside this one stream: after each tool result the model is
 called again; assistant messages produced along the way are persisted and the final
 `done` references the last assistant message id. Client may disconnect at any time;
 server aborts the turn (partial text is saved).
+
+### `POST /api/attachments`
+`multipart/form-data` with one field `file` (≤ 25 MB). Stores it as
+`<workspace>/attachments/<YYYY-MM-DD>/<id>-<safe name>` so every tool can reach it.
+`200 {"ok": true, "attachment": {"path", "name", "kind": "image|audio|video|svg|other", "size"}}`;
+`400 bad_attachment` for empty or oversized files.
 
 ### `POST /api/chat/stop`
 Body `{"conversation_id": "c_..."}` → `{"ok": true}`. Idempotent.
@@ -178,16 +201,21 @@ Body any of `{"content", "kind", "pinned"}` → `{"ok": true, "memory": {...}}`.
   "model": null, "lmstudio_url": "http://127.0.0.1:1234", "agent_enabled": true,
   "memory_enabled": true, "max_output_tokens": 2048, "temperature": 0.6,
   "workspace": "/home/you/Kiwibro", "user_name": "",
-  "tool_profile": "auto", "max_tool_rounds": 16,
-  "permissions": {"web_search":"auto", "...35 tools total, see config.DEFAULT_PERMISSIONS":"…"}
+  "tool_profile": "auto", "reasoning": "auto", "max_tool_rounds": 16,
+  "autonomy": "smart", "sandbox": "auto", "remote_hosts": [],
+  "permissions": {"web_search":"auto", "...every tool, see config.permission_defaults()":"…"}
 }}
 ```
 ### `PATCH /api/settings`
 Body = subset of settings. Validate: temperature 0–2, max_output_tokens 256–8192,
-tool_profile in {auto, full, minimal, coding, research, desktop}, max_tool_rounds 1–32,
-workspace must be creatable inside `$HOME` (no root paths), lmstudio_url http(s),
-permissions modes in {auto, ask, deny}. Returns merged settings. Changing workspace
-does not move files.
+tool_profile in {auto, full, minimal, coding, research, desktop}, reasoning in
+{auto, on, off}, autonomy in {supervised, smart, autonomous}, sandbox in {auto,
+strict, off}, remote_hosts a list of ≤32 ssh aliases or `user@host`, max_tool_rounds
+1–32, workspace must be creatable inside `$HOME` (no root paths), lmstudio_url
+http(s), permissions modes in {auto, ask, deny} for any known tool (built-in or
+extension). Returns merged settings. Changing workspace does not move files; a
+conversation bound to its own folder (`conversation.workspace`, set by the
+`workspace` tool) keeps using that folder.
 
 ### `GET /api/workspace`
 `{"ok": true, "root": "/home/you/Kiwibro", "files": [{"path":"notes.md","type":"file","size":123,"modified":"..."}]}`

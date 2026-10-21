@@ -417,6 +417,7 @@ const TOOL_META = {
   doc_list: { label: "Documents", icon: "folder" },
   convert_document: { label: "Convert document", icon: "file-plus" },
   remote: { label: "Remote server", icon: "terminal" },
+  workspace: { label: "Working folder", icon: "folder" },
   undo_changes: { label: "Undo changes", icon: "refresh" },
 };
 

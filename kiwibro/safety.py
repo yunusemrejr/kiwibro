@@ -60,13 +60,6 @@ MAX_TARGETS = 20  # operands on one delete command before it counts as "mass"
 _MAX_DEPTH = 4  # nested `bash -c`, `$(…)`, scripts calling scripts
 _SCRIPT_SCAN_BYTES = 64 * 1024
 
-RUNS_DIR_NAME = "runs"
-
-
-def runs_root() -> Path:
-    """Where `run_code` keeps each run's files (outputs, rendered images)."""
-    return config.data_dir() / RUNS_DIR_NAME
-
 
 # --------------------------------------------------------------------------
 # Values
@@ -359,8 +352,6 @@ def _classify_path(path: str, ctx: _Ctx) -> str:
     base = path[:-2] if path.endswith("/*") else path
     if workspace and workspace.startswith(base.rstrip("/") + "/") and base != str(ctx.home):
         return "outside"  # an ancestor: touching it touches the workspace and its neighbours
-    if _under(path, _TEMP_PREFIXES):
-        return "tmp"
     home = str(ctx.home)
     if path in (home, home + "/*"):
         return "home_root"
@@ -371,9 +362,29 @@ def _classify_path(path: str, ctx: _Ctx) -> str:
         if _under(rel, STARTUP_PATHS):
             return "startup"
         return "home"
+    if _under(path, _TEMP_PREFIXES):
+        return "tmp"
     if _under(path, _REMOTE_SYSTEM_PREFIXES if ctx.remote else _SYSTEM_PREFIXES):
         return "system"
     return "outside"
+
+
+def place_of(path: str, *, workspace: Any = None) -> str:
+    """What kind of place an absolute path is (workspace, home, secret, system, …)."""
+    root = _workspace_root(workspace)
+    return _scope(path, _Ctx(workspace=root, cwd=root, home=Path.home().resolve())).kind
+
+
+def describe_place(kind: str) -> str:
+    return _PLACE.get(kind, kind)
+
+
+def _mentioned(path: str, message: str) -> bool:
+    """Did the user's message name this folder (full path, ~/ form or its own name)?"""
+    text = message.lower()
+    home = str(Path.home())
+    forms = {path, path.replace(home, "~", 1), os.path.basename(path.rstrip("/"))}
+    return any(len(form) >= 3 and form.lower() in text for form in forms)
 
 
 def _delete_risk(targets: list[str], ctx: _Ctx, *, recursive: bool, verb: str) -> Risk:
@@ -981,8 +992,12 @@ def _wrapper_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
         # Arguments arrive on stdin at run time; the command never sees the pipe as input.
         extra = ctx.stdin_text.split() if ctx.stdin == "text" and ctx.stdin_text.strip() else [_SUBST]
         return _argv_risk([*rest, *extra[:64]], ctx.child())
-    if name == "parallel":
-        template, _sep, args = (rest + [":::"])[: (rest + [":::"]).index(":::")], ":::", rest[rest.index(":::") + 1 :] if ":::" in rest else [_SUBST]
+    if name == "parallel":  # `parallel CMD ::: ARGS` runs CMD once per argument
+        if ":::" in rest:
+            split = rest.index(":::")
+            template, args = rest[:split], rest[split + 1 :]
+        else:
+            template, args = rest, [_SUBST]
         return _argv_risk([*template, *args], ctx.child())
     return _argv_risk(rest, ctx.child(stdin=ctx.stdin, stdin_text=ctx.stdin_text))
 
@@ -2053,6 +2068,10 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
         if target.lower().endswith(_EXECUTABLE_SUFFIXES):
             return _risk("high", f"opening {target} may run it as a program")
         return _risk("low", f"opens {target} in its default application")
+    if name == "workspace":
+        if args.get("action") != "switch":
+            return SAFE
+        return _risk("low", f"switches this conversation's working folder to {args.get('path')}", "write")
     if name == "clipboard":
         if args.get("action") == "read":
             return _risk("medium", "reads your clipboard (may hold private data)", "read")
@@ -2144,6 +2163,11 @@ def decide(
         if name == "remote" and args.get("action") != "hosts" and not _remote_host_known(str(args.get("host") or ""), settings):
             level = "high"
             reasons.append(f"{args.get('host')} is not a configured host (add it to ~/.ssh/config or Settings)")
+        if name == "workspace" and args.get("action") == "switch" and not _mentioned(
+            str(args.get("path") or ""), str(state.get("user_message") or "")
+        ):
+            level = "high"
+            reasons.append("the user's message does not mention this folder")
         if state.get("tainted") and assessed.kind in ("exec", "write") and level != "safe":
             level = _bump(level)
             reasons.append("content read earlier contained instructions aimed at the AI (possible prompt injection)")

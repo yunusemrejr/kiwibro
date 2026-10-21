@@ -61,9 +61,14 @@ permission, inside its own workspace.
 | **Tool profiles** | Auto offers one fixed set of 20 tools sized for 1–4B models (the rest run when called by name); full/minimal/coding/research/desktop are explicit choices. Independent read/search calls run in parallel. |
 | **Fast local inference** | The prompt prefix stays byte-stable so LM Studio reuses its KV cache: on a laptop CPU a 4k-token prompt goes from 124 s to 1.3 s. A *Think* control (auto/on/off) spends reasoning tokens only where they help; background work never thinks. Each reply shows time to first token, tokens/s and the cached share. |
 | **Model teamwork** | When the main model lacks a capability (e.g. vision), Kiwibro loads the smallest installed model that has it, if it fits in free memory, asks it, unloads it and continues on the main model. With no capable model it falls back to code-based media analysis. |
+| **Attachments** | Attach, paste or drop images, audio, video and documents. Images and video frames are described by a vision model before your model answers; audio and other media get measured facts; every file lands in the workspace for the agent's tools. |
 | **Steering** | Type while a reply runs: the note is applied at the next step instead of waiting for a new turn. |
-| **Permissions** | Auto / Ask / Deny per tool, inline approval cards, "Always" remembers. |
-| **Safety** | Workspace sandbox, path-traversal guards, SSRF protection, command blocklist, timeouts, output caps, automatic checkpoints with undo, mass-delete caps, per-turn write budget, duplicate-call loop guard. |
+| **Autonomy** | Every step is graded from safe to critical. *Smart* (default) runs safe, undoable work on its own and asks before risky steps; *Supervised* follows the permission list; *Autonomous* never waits and refuses risky steps with a reason the model can act on. Dangerous commands (wiping home, `sudo`, credential exfiltration…) are always refused. |
+| **Staying on task** | Your standing instructions — the goal, constraints like "never push without asking", choices like "use TypeScript", and what you changed your mind about — are carried into every turn, and after real work the model checks its result against them once before finishing. |
+| **Command sandbox** | Commands and code snippets run sealed: read-only system, writable workspace (snippets: scratch folder, no network), private `/tmp`, `~/.ssh` and other credentials hidden, memory and process caps, whole process tree killed on timeout. |
+| **Folders & servers** | "Work on ~/Desktop/my-app" switches that conversation to the folder; the `remote` tool runs commands and copies files on servers from your `~/.ssh/config`. |
+| **Permissions** | Auto / Ask / Deny per tool, inline approval cards with the reasons, "Always" remembers. |
+| **Safety** | Risk-graded autonomy, bubblewrap sandbox, path-traversal guards, SSRF protection, secret redaction, prompt-injection fencing, automatic checkpoints with undo, graded mass-delete/edit breakers, duplicate-call loop guard. |
 | **Privacy** | Loopback-only server, local SQLite (`~/.local/share/kiwibro`), no external assets. |
 
 ## Requirements
@@ -157,8 +162,9 @@ Environment variables:
 | `KIWIBRO_DATA_DIR` | `~/.local/share/kiwibro` | Database and logs |
 | `KIWIBRO_LMSTUDIO_URL` | `http://127.0.0.1:1234` | LM Studio server |
 
-Runtime settings (model, permissions, workspace, temperature, output tokens, user
-name, tool profile, max tool steps per reply) live in the Settings sheet and are stored in SQLite.
+Runtime settings (model, permissions, autonomy, command sandbox, remote hosts,
+workspace, temperature, output tokens, user name, thinking, tool profile, max tool
+steps per reply) live in the Settings sheet and are stored in SQLite.
 
 ## How it works
 
@@ -190,7 +196,13 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 - No analytics, no accounts, no CDNs, no fonts fetched from the internet.
 - File tools are confined to the workspace; page fetching refuses localhost, private
   and link-local addresses (anti-SSRF).
-- Shell commands are blocklisted, time-limited and always approved by default.
+- Every tool call is graded; with the default *Smart* autonomy only safe or undoable
+  steps run unattended and risky ones ask first. Wiping your home folder, `sudo`,
+  writing shell start-up files or sending credentials off the machine are always
+  refused.
+- Commands and code run in a bubblewrap sandbox inside a systemd scope: the system is
+  read-only, only the workspace is writable, `~/.ssh` and other credential folders are
+  hidden, and memory/process use is capped.
 - Secrets found in tool output (API keys, tokens, private keys, passwords) are replaced
   with `[SECRET_n]` placeholders before the model sees them and are never saved in chat
   history; the placeholders work in local files and commands, and web requests carrying

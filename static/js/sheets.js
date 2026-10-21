@@ -59,16 +59,29 @@ const PERMISSION_ORDER = [
   "doc_list",
   "convert_document",
   "remote",
+  "workspace",
   "undo_changes",
 ];
 
 const TOOL_PROFILES = [
-  ["auto", "Auto (task-shaped)"],
+  ["auto", "Auto (core set)"],
   ["full", "Full (all tools)"],
   ["minimal", "Minimal (classics)"],
   ["coding", "Coding"],
   ["research", "Research"],
   ["desktop", "Desktop"],
+];
+
+// How much a reply may do without asking (safety.decide on the server).
+const AUTONOMY_MODES = [
+  ["smart", "Smart — ask only for risky steps"],
+  ["supervised", "Supervised — follow the permission list"],
+  ["autonomous", "Autonomous — never wait, refuse risky steps"],
+];
+const SANDBOX_MODES = [
+  ["auto", "On"],
+  ["strict", "On, no network"],
+  ["off", "Off"],
 ];
 
 function titleCase(value) {
@@ -762,32 +775,75 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         },
       }),
     );
-    // Tool profile + per-turn tool budget (small models do better with fewer tools).
-    const profileSelect = el("select", {
-      class: "memory-add-kind",
-      "aria-label": "Tool profile",
+    // One select row per enum setting; a failed save puts the old value back.
+    const choiceRow = (key, name, description, choices) => {
+      const current = data.settings[key] || choices[0][0];
+      const select = el("select", { class: "memory-add-kind", "aria-label": name });
+      for (const [value, label] of choices) {
+        const option = el("option", { value, text: label });
+        if (value === current) option.selected = true;
+        select.append(option);
+      }
+      select.addEventListener("change", async () => {
+        const previous = data.settings[key] || choices[0][0];
+        await patch({ [key]: select.value }, () => {
+          select.value = previous;
+        });
+      });
+      return el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: name }),
+          el("div", { class: "setting-desc", text: description }),
+        ]),
+        select,
+      ]);
+    };
+    behaviour.append(
+      choiceRow(
+        "autonomy",
+        "Autonomy",
+        "Smart runs safe and undoable steps on its own and asks before risky ones; dangerous commands are always refused.",
+        AUTONOMY_MODES,
+      ),
+      choiceRow(
+        "sandbox",
+        "Command sandbox",
+        "Commands and code run in a sealed box: read-only system, your workspace writable, credentials hidden.",
+        SANDBOX_MODES,
+      ),
+      choiceRow(
+        "tool_profile",
+        "Tool profile",
+        "Which tools the model sees. Auto offers one fixed core set sized for small models; others run when called by name.",
+        TOOL_PROFILES,
+      ),
+    );
+    // Servers the `remote` tool may use without asking (plus your ~/.ssh/config hosts).
+    const hostsText = () => (data.settings.remote_hosts || []).join(", ");
+    const hostsInput = el("input", {
+      type: "text",
+      value: hostsText(),
+      placeholder: "prod, deploy@10.0.0.5",
+      "aria-label": "Remote hosts",
+      spellcheck: "false",
     });
-    for (const [value, label] of TOOL_PROFILES) {
-      const option = el("option", { value, text: label });
-      if (value === (data.settings.tool_profile || "auto")) option.selected = true;
-      profileSelect.append(option);
-    }
-    profileSelect.addEventListener("change", async () => {
-      const previous = data.settings.tool_profile || "auto";
-      await patch({ tool_profile: profileSelect.value }, () => {
-        profileSelect.value = previous;
+    hostsInput.addEventListener("change", async () => {
+      const previous = hostsText();
+      const hosts = hostsInput.value.split(/[\s,]+/).filter(Boolean);
+      await patch({ remote_hosts: hosts }, () => {
+        hostsInput.value = previous;
       });
     });
     behaviour.append(
       el("div", { class: "setting-row" }, [
         el("div", { class: "setting-text" }, [
-          el("div", { class: "setting-name", text: "Tool profile" }),
+          el("div", { class: "setting-name", text: "Remote hosts" }),
           el("div", {
             class: "setting-desc",
-            text: "Which tools the model sees each turn. Auto picks a task-shaped set — best for small models.",
+            text: "Servers Kiwibro may work on over SSH. Hosts from your ~/.ssh/config are trusted too.",
           }),
         ]),
-        profileSelect,
+        hostsInput,
       ]),
     );
     const roundsInput = el("input", {
