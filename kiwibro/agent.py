@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Callable, Iterator
 
@@ -362,14 +363,17 @@ class AgentManager:
         memory_block, _memories = self.memory.build_block(
             turn.message, enabled=bool(settings.get("memory_enabled", True))
         )
-        system_prompt = self._system_prompt(settings, memory_block)
+        model_info = self.llm.model_info(model)
+        system_prompt = self._system_prompt(
+            settings, memory_block, model=model, model_info=model_info
+        )
         prepared = self.context.prepare(turn.conversation_id, model, system_prompt)
         # meta is contractually the first SSE event; context follows it.
         self._emit_meta(turn, conversation, settings, model=model, prepared=prepared)
         self._emit_context(turn, prepared)
         self._raise_if_aborted(turn)
 
-        model_info = prepared.model_info or {}
+        model_info = prepared.model_info or model_info or {}
         tool_list: list[dict[str, Any]] | None = None
         if settings.get("agent_enabled", True) and model_info.get("tools", False):
             tool_list = tools.tool_defs()
@@ -480,7 +484,12 @@ class AgentManager:
                 memory_block, _ = self.memory.build_block(
                     turn.message, enabled=bool(settings.get("memory_enabled", True))
                 )
-                system_prompt = self._system_prompt(settings, memory_block)
+                system_prompt = self._system_prompt(
+                    settings,
+                    memory_block,
+                    model=model,
+                    model_info=prepared.model_info,
+                )
                 prepared = self.context.prepare(turn.conversation_id, model, system_prompt)
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
@@ -549,10 +558,35 @@ class AgentManager:
         )
 
     @staticmethod
-    def _system_prompt(settings: dict[str, Any], memory_block: str) -> str:
+    def _system_prompt(
+        settings: dict[str, Any],
+        memory_block: str,
+        *,
+        model: str | None = None,
+        model_info: dict[str, Any] | None = None,
+    ) -> str:
         name = str(settings.get("user_name") or "").strip()
         user_block = prompts.USER_BLOCK.format(name=name) if name else ""
-        return prompts.SYSTEM_PROMPT.format(user_block=user_block, memory_block=memory_block)
+        model_block = prompts.MODEL_BLOCK.format(model=model) if model else ""
+        workspace = str(settings.get("workspace") or "").strip()
+        workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=workspace) if workspace else ""
+        if not settings.get("agent_enabled", True):
+            tools_block = prompts.TOOLS_DISABLED_BLOCK
+        elif model_info is not None and not model_info.get("tools"):
+            tools_block = prompts.TOOLS_UNSUPPORTED_BLOCK
+        else:
+            tools_block = prompts.TOOLS_BLOCK
+        time_block = prompts.TIME_BLOCK.format(
+            when=datetime.now().astimezone().strftime("%A, %d %B %Y, %H:%M %Z")
+        )
+        return prompts.SYSTEM_PROMPT.format(
+            model_block=model_block,
+            workspace_block=workspace_block,
+            tools_block=tools_block,
+            user_block=user_block,
+            memory_block=memory_block,
+            time_block=time_block,
+        )
 
     def _record_usage(self, turn: Turn, result: ChatResult) -> None:
         usage = result.usage

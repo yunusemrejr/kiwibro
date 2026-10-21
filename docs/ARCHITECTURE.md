@@ -5,7 +5,7 @@ Kiwibro is a local-first AI agent for Linux: a **Python Flask** backend serving 
 **LM Studio** on `127.0.0.1:1234` (OpenAI-compatible API). No cloud, no accounts,
 no external CDNs, no bundled JS frameworks.
 
-Version 1.0.0 · MIT · Python 3.10+ · Flask 3
+Version 1.1.0 · MIT · Python 3.10+ · Flask 3
 
 ---
 
@@ -80,6 +80,24 @@ Data lives **outside** the repo:
 - Bind loopback only. Local app, no auth. Add `X-Kiwibro` response header maybe not
   needed. Reject requests whose `Host` is not localhost/127.0.0.1 to avoid DNS
   rebinding.
+- `/health` exposes `started_at` (Unix seconds). The desktop launcher
+  (`scripts/kiwibro.sh`) compares it with the newest source mtime and restarts a
+  running server when the repository changed, so the app always serves current code.
+
+### Prompt identity
+
+Every chat request builds a system prompt (`kiwibro/prompts.py` +
+`Agent._system_prompt`) that tells the model exactly what it is and what it can do:
+
+- identity: Kiwibro, a local AI agent on the user's Linux machine, running through
+  LM Studio (never a cloud service);
+- the current LM Studio model id, the workspace path, and the current local time;
+- the tools available this turn (and their auto/ask permission split), or an explicit
+  "no tools" notice when agent mode is off or the model lacks tool support;
+- memory and conversation summary blocks added by the memory/context engines.
+
+Utility prompts (titles, rolling summaries, memory extraction) also identify
+themselves as Kiwibro's, so even background calls stay on-brand.
 
 ---
 

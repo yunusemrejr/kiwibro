@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_NAME = "Kiwibro"
+# Unix timestamp of process start: lets the desktop launcher notice when the repo
+# changed underneath a still-running server and restart it.
+STARTED_AT = int(time.time())
 
 DEFAULT_LMSTUDIO_URL = "http://127.0.0.1:1234"
 DEFAULT_MAX_OUTPUT_TOKENS = 2048

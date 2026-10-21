@@ -2,6 +2,27 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [1.1.0] — 2026-10-21
+
+Identity and polish update.
+
+### Changed
+
+- **Models now know they are Kiwibro.** The system prompt explicitly names the agent,
+  its local LM Studio setup, the current model id, the workspace, the tools available
+  this turn (and their permission model), memory/summary context, and the current
+  local time. Utility prompts (titles, summaries, memory extraction) are branded too.
+- **Status markers are no longer green dots.** Loaded/idle/warning states use a small
+  geometric diamond marker (header model pill, sidebar footer, model popover, settings
+  status card and model list). The memory metadata separator is a thin dash.
+- **Desktop launcher self-updates.** `/health` now reports `started_at`; launching
+  Kiwibro restarts a running server when repository sources changed since it started,
+  so the app always serves current code after an update.
+
+### Fixed
+
+- Fake-LM e2e harness matches prompt text case-insensitively after the prompt rewrite.
+
 ## [1.0.0] — 2026-10-21
 
 First release: a local-first AI agent for Linux with a native-feel browser GUI.

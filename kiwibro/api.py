@@ -107,6 +107,7 @@ def health() -> Response:
     payload: dict[str, Any] = {
         "ok": True,
         "version": config.VERSION,
+        "started_at": config.STARTED_AT,
         "lmstudio": ok,
         "lmstudio_url": settings.get("lmstudio_url"),
         "model": _current_model(models) if ok else settings.get("model"),

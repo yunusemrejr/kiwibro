@@ -991,6 +991,7 @@ def test_health_and_bootstrap(env: Env):
     assert payload["ok"] is True and payload["lmstudio"] is True
     assert payload["version"] == config.VERSION
     assert payload["model"] == "fake-1"
+    assert isinstance(payload["started_at"], int) and payload["started_at"] > 0
     assert health.headers["Cache-Control"] == "no-store"
 
     bootstrap = env.client.get("/api/bootstrap").get_json()
@@ -999,6 +1000,32 @@ def test_health_and_bootstrap(env: Env):
     assert bootstrap["settings"]["permissions"]["write_file"] == "ask"
     assert bootstrap["memories_count"] == 0
     assert isinstance(bootstrap["conversations"], list)
+
+
+def test_system_prompt_identity_and_capabilities(env: Env):
+    settings = env.svc.settings_provider()
+    prompt = env.svc.agent._system_prompt(
+        settings, "", model="fake-1", model_info={"tools": True}
+    )
+    assert "You are Kiwibro" in prompt
+    assert "local AI agent" in prompt
+    assert "LM Studio" in prompt
+    assert "fake-1" in prompt
+    assert "## Workspace" in prompt
+    assert "web_search" in prompt and "run_command" in prompt
+    assert "permission" in prompt.lower()
+    assert "Current local date and time" in prompt
+
+    disabled = env.svc.agent._system_prompt(
+        {**settings, "agent_enabled": False}, "", model="fake-1", model_info={"tools": True}
+    )
+    assert "Agent mode is off" in disabled
+    assert "web_search, fetch_page" not in disabled
+
+    unsupported = env.svc.agent._system_prompt(
+        settings, "", model="fake-1", model_info={"tools": False}
+    )
+    assert "cannot make tool calls" in unsupported
 
 
 def test_health_offline_is_calm(env: Env, monkeypatch: pytest.MonkeyPatch):

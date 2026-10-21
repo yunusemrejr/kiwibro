@@ -292,12 +292,13 @@ class _Handler(BaseHTTPRequestHandler):
             if message.get("role") == "user":
                 user_text += str(message.get("content") or "")
         content = "Fake completion text."
-        if "write chat titles" in system or "name conversations" in system:
+        lowered = system.lower()
+        if "write chat titles" in lowered or "name conversations" in lowered:
             if "[[scenario:title_echo]]" in user_text:
                 content = user_text  # a bad model echoing the prompt back
             else:
                 content = "Kiwi Test Title"
-        elif "extract durable memory" in system:
+        elif "memory keeper" in lowered or "extract durable memory" in lowered:
             content = json.dumps(
                 {
                     "ops": [
@@ -310,7 +311,7 @@ class _Handler(BaseHTTPRequestHandler):
                 },
                 ensure_ascii=False,
             )
-        elif "rolling summary" in system:
+        elif "rolling summary" in lowered:
             content = "Summary: the user talked about kiwis, files and the fake model."
         body = {
             "id": "chatcmpl-fake",

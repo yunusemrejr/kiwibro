@@ -14,14 +14,17 @@ port). No auth. `Cache-Control: no-store` on API responses.
 
 ### `GET /health`
 ```json
-{"ok": true, "version": "1.0.0", "lmstudio": true, "lmstudio_url": "http://127.0.0.1:1234", "model": "qwen3.8-2b"}
+{"ok": true, "version": "1.1.0", "started_at": 1761000000, "lmstudio": true,
+ "lmstudio_url": "http://127.0.0.1:1234", "model": "qwen3.8-2b"}
 ```
+`started_at` is the server process start (Unix seconds); the desktop launcher uses it
+to restart a stale server when the repository has changed since it was launched.
 
 ### `GET /api/bootstrap`
 Aggregate for first paint.
 ```json
 {
-  "health": {"ok": true, "version": "1.0.0", "lmstudio": true, "lmstudio_url": "..."},
+  "health": {"ok": true, "version": "1.1.0", "lmstudio": true, "lmstudio_url": "..."},
   "settings": {...},                       // see settings
   "models": [{"id": "qwen3.8-2b", "name": "qwen3.8-2b", "type": "llm",
               "state": "loaded", "context": 32768, "max_context": 262144,

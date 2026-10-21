@@ -364,3 +364,33 @@ python3 tests/e2e/fake_lm.py --port 0 --print-url
   container), DNS-rebinding TOCTOU window in the SSRF guard, in-memory approvals
   (lost on restart), Werkzeug dev-server duplicate `Connection: close`, unknown-model
   selection while LM Studio is offline, no `context` event on context-limit recovery.
+
+---
+
+## 10. Addendum — v1.1.0 identity & visual update (post-QA)
+
+Requested after the QA run above: models must know they are Kiwibro, and the green
+status dots had to become a different shape. Evidence for the v1.1.0 code paths:
+
+- **Tests:** deterministic suite **54/54 PASS** and pytest **68 passed** on the v1.1
+  code; fake-LM prompt matching made case-insensitive after the prompt rewrite.
+- **Identity prompt (live):** with `qwen3.8-2b`, asking who it is answers e.g.
+  *"I am an AI assistant named Kiwibro, running on this local machine…"*.
+  `test_system_prompt_identity_and_capabilities` asserts the prompt includes the
+  Kiwibro identity, local-LM-Studio framing, current model id, workspace, tool list +
+  permission split, memory/summary context and local time, plus the agent-disabled
+  and model-without-tools variants.
+- **Status markers:** round green dots replaced by small diamond markers (loaded /
+  idle / warning) in the header pill, sidebar footer, model popover, LM Studio status
+  card and model list; the memory metadata separator is a thin dash. All seven
+  screenshots in `docs/screenshots/` were re-captured and inspected in Chrome with
+  zero console errors.
+- **Launcher self-update:** `/health` exposes `started_at`; `scripts/kiwibro.sh`
+  restarts a running server when repository sources are newer. Verified locally:
+  cold start → chrome args correct; second launch keeps the server when unchanged;
+  after touching sources the server restarts and `started_at` increases.
+- **Screenshot provenance (supersedes §6):** hero, chat, models, memory, settings and
+  mobile were captured against the live app with `qwen3.8-2b`; `approval.png` uses the
+  mock-mode UI state (identical committed frontend) because the small live model
+  sometimes answers tool requests as plain text. The real approval flow (allow/deny,
+  file written) remains live-verified in §6.

@@ -37,7 +37,7 @@ permission, inside its own workspace.
 <br>
 
 <div align="center">
-<img src="docs/screenshots/chat.png" alt="A conversation with streamed code" width="440">
+<img src="docs/screenshots/chat.png" alt="Kiwibro introduces itself" width="440">
 <img src="docs/screenshots/approval.png" alt="A pending permission request" width="440">
 <br>
 <img src="docs/screenshots/memory.png" alt="Memory sheet" width="440">
@@ -49,6 +49,7 @@ permission, inside its own workspace.
 | | |
 |---|---|
 | **Chat** | Streaming replies, markdown + code with copy, collapsible reasoning, stop/abort. |
+| **Identity** | Every model run knows it is Kiwibro: local LM Studio model, workspace, tools, memory and current time are in its system prompt. |
 | **Models** | Live list from LM Studio, loaded/available state, context size, tool capability. |
 | **Context** | Automatic rolling summarisation with a quiet context meter. |
 | **Memory** | Global, deduped, FTS-searchable. Pin, edit, delete, forget all. |
@@ -97,6 +98,10 @@ chat model you have; models not currently loaded are loaded just in time by LM S
 Kiwibro appears in your application grid with its kiwi icon. Launching it starts the
 local server (if needed) and opens a Chrome app window — a browser GUI that looks and
 feels like a native Ubuntu application. No root required.
+
+The launcher notices when the repository has changed since the server started (for
+example after `git pull`) and restarts the local server automatically, so launching
+Kiwibro always runs the current code.
 
 ## Using it
 
@@ -184,7 +189,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 Kiwibro's contract is tested at three levels, all runnable on your machine:
 
 ```bash
-python3 -m pytest -q              # 67 unit/API/security tests (offline, fake LM)
+python3 -m pytest -q              # 68 unit/API/security tests (offline, fake LM)
 python3 tests/e2e/run_e2e.py      # 54 deterministic end-to-end checks (real app + fake LM)
 node tests/e2e/browser/run_browser.mjs --mode mock   # browser rig (needs playwright-core + Chrome)
 ```

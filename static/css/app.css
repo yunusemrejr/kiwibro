@@ -349,33 +349,32 @@ p {
   transform: rotate(180deg);
 }
 
+/* Small diamond status marker (loaded / idle / warning) — deliberately not a "green dot". */
 .status-dot {
   display: inline-block;
   flex: none;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: 1.5px;
   background: rgba(255, 255, 255, 0.28);
-  transition: background var(--dur), box-shadow var(--dur);
+  transform: rotate(45deg);
+  transition: background var(--dur), opacity var(--dur);
 }
 
 .status-dot[data-tone="loaded"] {
   background: var(--green);
-  box-shadow: 0 0 0 2px rgba(155, 206, 107, 0.15);
 }
 
 .status-dot[data-tone="idle"] {
-  background: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .status-dot[data-tone="warn"] {
   background: var(--orange);
-  box-shadow: 0 0 0 2px rgba(233, 84, 32, 0.16);
 }
 
 .status-dot[data-tone="amber"] {
   background: var(--amber);
-  box-shadow: 0 0 0 2px rgba(232, 180, 100, 0.14);
 }
 
 /* ---------- Workspace & sidebar ----------------------------------------- */
@@ -2344,9 +2343,9 @@ button.chip:hover {
 }
 
 .memory-meta-dot {
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
+  width: 7px;
+  height: 1px;
+  border-radius: 1px;
   background: var(--faint);
 }
 
