@@ -4,9 +4,9 @@ All notable changes to Kiwibro are documented here.
 
 ## [2.0.0] — 2026-10-22
 
-The agent release: complex tool use, model teamwork and autonomous-work safeguards,
-on top of the context/memory efficiency overhaul (see Unreleased notes below, which
-ship in this version).
+The agent release: complex tool use, model teamwork, risk-graded autonomy with a
+command sandbox, and a context/memory efficiency overhaul for long sessions on small
+local models.
 
 ### Added
 
@@ -97,9 +97,7 @@ ship in this version).
 - Model entries expose `vision` + `capabilities`; vision shown in model lists.
 - Tool results are head+tail shaped before storage; fetched pages are cached (5 min).
 
-## [Unreleased]
-
-### Changed
+### Changed — context and efficiency
 
 - **Major context and efficiency overhaul of the hot path.** Token estimation is
   C-speed and now self-calibrates per model from LM Studio's reported
