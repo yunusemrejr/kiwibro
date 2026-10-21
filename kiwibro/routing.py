@@ -30,13 +30,13 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
-from . import media
-from .inference import model_profile, reasoning_payload
+from . import capabilities, media
+from .inference import NO_THINKING, model_profile
 from .llm import LMStudioError
 
 log = logging.getLogger(__name__)
 
-NEEDS = ("vision", "audio", "reasoning", "coding", "long_context", "fast", "embeddings", "tools")
+NEEDS = ("vision", "audio", "reasoning", "coding", "long_context", "fast", "embeddings", "tools", "general")
 
 _REASONING_HINTS = ("r1", "reason", "think", "deepseek-r", "qwq", "o1", "o3", "magistral")
 _CODING_HINTS = ("coder", "code", "starcoder", "codellama", "devstral")
@@ -46,33 +46,18 @@ HELPER_TTL_S = 600
 RAM_HEADROOM = 1.25  # weights + KV cache at HELPER_CONTEXT + runtime overhead
 
 
-def _annotate(model: dict[str, Any]) -> dict[str, Any]:
-    """Capability-annotated copy (delegates to capabilities when present)."""
-    try:
-        from . import capabilities as caps
-
-        return caps.infer_capabilities(model)
-    except Exception:  # pragma: no cover - capabilities is in-repo; stay robust
-        out = dict(model)
-        out.setdefault("vision", str(out.get("type") or "").lower() == "vlm")
-        out.setdefault("audio", False)
-        out.setdefault("embeddings", str(out.get("type") or "").lower() == "embeddings")
-        out.setdefault("tool_use", bool(out.get("tools")))
-        out.setdefault("chat", str(out.get("type") or "llm").lower() in ("llm", "vlm"))
-        return out
+_annotate = capabilities.infer_capabilities
 
 
-def _size_key(model: dict[str, Any]) -> tuple:
-    try:
-        from . import capabilities as caps
-
-        return caps.size_key(model)
-    except Exception:  # pragma: no cover - fallback ordering
-        return (1e9, 0.0, str(model.get("id") or ""))
+def _size_key(model: dict[str, Any]) -> tuple[float, str]:
+    """Smallest first, by the same resident-size estimate the RAM guard uses."""
+    model_id = str(model.get("id") or "")
+    return (model_profile(model_id, model).cost, model_id)
 
 
 def _context_of(model: dict[str, Any]) -> int:
-    for key in ("context", "max_context", "loaded_context_length", "max_context_length"):
+    """The window a model can be loaded with (its maximum, not today's loaded size)."""
+    for key in ("max_context", "max_context_length", "context", "loaded_context_length"):
         try:
             value = int(model.get(key) or 0)
         except (TypeError, ValueError):
@@ -127,7 +112,7 @@ def _satisfies(info: dict[str, Any], need: str) -> bool:
         return bool(info.get("tool_use") or info.get("tools"))
     if need == "long_context":
         return bool(info.get("chat")) and _context_of(info) >= _LONG_CONTEXT_MIN
-    if need in ("reasoning", "coding", "fast"):
+    if need in ("reasoning", "coding", "fast", "general"):
         return bool(info.get("chat"))  # soft needs rank, not filter
     return False
 
@@ -222,7 +207,7 @@ def _check_memory(helper: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _lease(llm: Any, helper: dict[str, Any]) -> Iterator[bool]:
+def _lease(llm: Any, helper: dict[str, Any], window: int = HELPER_CONTEXT) -> Iterator[bool]:
     """Hold ``helper`` loaded for one call; yields True when this process loaded it."""
     model_id = str(helper["id"])
     with _STATE_LOCK:
@@ -238,7 +223,7 @@ def _lease(llm: Any, helper: dict[str, Any]) -> Iterator[bool]:
                 loaded = False
                 if callable(load_model):
                     try:
-                        loaded = bool(load_model(model_id, context_length=HELPER_CONTEXT))
+                        loaded = bool(load_model(model_id, context_length=window))
                     except Exception:  # JIT loading still applies on the call itself
                         log.debug("best-effort load failed for %s", model_id, exc_info=True)
                 with _STATE_LOCK:
@@ -278,9 +263,13 @@ def run_helper(
     messages: list[dict[str, Any]],
     *,
     current_model: str | None = None,
+    model: str | None = None,
     max_tokens: int = 600,
 ) -> dict[str, Any]:
     """Run one bounded helper-model call; returns ``{"model", "text", ...}``.
+
+    ``model`` names the helper explicitly (it is still leased: loaded if needed and
+    unloaded after); otherwise the policy below picks it.
 
     Lifecycle contract: if the helper was not loaded, it is best-effort
     loaded (JIT on most LM Studio builds) and best-effort unloaded after
@@ -292,7 +281,12 @@ def run_helper(
     """
     models = _catalog(llm)
     current = next((m for m in models if m.get("id") == current_model), None)
-    if current is not None and _satisfies(_annotate(current), need) and need not in ("fast", "long_context"):
+    if model:
+        named = next((m for m in models if m.get("id") == model), None)
+        if named is None:
+            raise LMStudioError("no_model", f"Model not found in LM Studio: {model}")
+        helper = _annotate(named)
+    elif current is not None and _satisfies(_annotate(current), need) and need not in ("fast", "long_context"):
         helper = _annotate(current)  # the main model already can: no swap, no load
     else:
         helper = pick_helper(models, need, current=current_model)
@@ -301,8 +295,9 @@ def run_helper(
             "no_model", f"No installed LM Studio model provides '{need}'."
         )
     model_id = str(helper["id"])
-    with _lease(llm, helper) as temporary:
-        extra = reasoning_payload(model_profile(model_id, helper), think=False)
+    window = min(_context_of(helper), 65536) if need == "long_context" else HELPER_CONTEXT
+    with _lease(llm, helper, window) as temporary:
+        extra = dict(NO_THINKING)
         if temporary:
             extra["ttl"] = HELPER_TTL_S
         if need == "embeddings":

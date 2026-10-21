@@ -5,6 +5,7 @@
 
 import { api, IS_MOCK, consumeSSE, chatError } from "./api.js";
 import { createChatView } from "./chat.js";
+import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
 import {
@@ -133,6 +134,14 @@ const inferenceUI = createInferenceUI({
   getState: () => state,
   patchSettings: (patch) => patchSettingsAndSync(patch),
   onModelsChanged: () => refreshModels({ quiet: true }),
+});
+
+const attachmentsUI = createAttachments({
+  composer: els.composer,
+  input: els.input,
+  anchor: els.agentToggle,
+  onChange: () => updateSendEnabled(),
+  disabled: IS_MOCK,
 });
 
 /* -------------------------------------------------------------------------- */
@@ -801,7 +810,8 @@ function updateComposerState() {
 
 function updateSendEnabled() {
   // While a reply runs, sending steers it (see sendMessage) — keep Enter enabled.
-  els.sendBtn.disabled = !composerReady() || !els.input.value.trim();
+  els.sendBtn.disabled =
+    !composerReady() || attachmentsUI.busy() || !(els.input.value.trim() || attachmentsUI.count());
   els.contextRing.classList.toggle("is-idle", !state.conversationId);
 }
 
@@ -819,14 +829,15 @@ function focusComposerSoon() {
   });
 }
 
-async function sendMessage(rawText, { echo = true } = {}) {
+async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
   const text = String(rawText || "").trim();
-  if (!text) return;
+  if (!text && !attachments?.length && !attachmentsUI.count()) return;
   if (
     state.conversationId &&
     (state.streaming || backgroundStreams.has(state.conversationId))
   ) {
     // Sending while a reply runs steers it instead of queueing a new turn.
+    if (!text) return; // files wait for the next turn
     try {
       await api.steerChat(state.conversationId, text);
       els.input.value = "";
@@ -850,10 +861,15 @@ async function sendMessage(rawText, { echo = true } = {}) {
     return;
   }
 
-  if (echo) chatView.beginUser(text);
+  if (attachmentsUI.busy()) {
+    toast("Wait for the upload to finish", { tone: "error", iconName: "alert" });
+    return;
+  }
+  const files = attachments || attachmentsUI.take();
+  if (echo) chatView.beginUser(text || files.map((file) => file.name).join(", "), files);
   else chatView.beginTurn();
   state.streaming = true;
-  state.lastSend = { text };
+  state.lastSend = { text, attachments: files };
   els.input.value = "";
   autosize();
   setStreamingUI(true);
@@ -876,6 +892,7 @@ async function sendMessage(rawText, { echo = true } = {}) {
         conversation_id: state.conversationId,
         message: text,
         model: state.currentModel || undefined,
+        attachments: files.length ? files : undefined,
       },
       { signal: controller.signal },
     );
@@ -1125,10 +1142,10 @@ function stopStreaming() {
 
 function retryLastSend() {
   if (state.streaming) return;
-  const text = state.lastSend?.text;
-  if (!text) return;
+  const { text = "", attachments = [] } = state.lastSend || {};
+  if (!text && !attachments.length) return;
   chatView.prepareRetry();
-  sendMessage(text, { echo: false });
+  sendMessage(text, { echo: false, attachments });
 }
 
 async function toggleAgent() {

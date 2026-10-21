@@ -912,7 +912,7 @@ AUTO_TOOLS = (
     "read_file", "list_files", "grep_files", "write_file", "replace_in_file",
     "run_command", "run_python", "study_file", "undo_changes",
     "remember", "recall", "task_board", "doc_search", "doc_read",
-    "describe_image", "delegate", "calculate",
+    "describe_image", "delegate", "calculate", "workspace",
 )
 
 

@@ -1,0 +1,140 @@
+/* File attachments in the chat composer: the tray above the textarea, the
+   attach button in the composer bar, the chips, and the static chips shown
+   inside a sent message. Tokens come from app.css. */
+
+/* ---------- Tray and chips ------------------------------------------------- */
+
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+
+.attach-tray[hidden] {
+  display: none;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 240px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 4px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.attach-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-size {
+  flex: none;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.attach-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.attach-remove {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.attach-remove:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.attach-remove:focus-visible {
+  outline: 2px solid var(--green-line);
+  outline-offset: 1px;
+}
+
+.attach-remove .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.attach-chip[data-state="uploading"] {
+  opacity: 0.65;
+}
+
+.attach-chip[data-state="error"] {
+  border-color: var(--red);
+}
+
+/* ---------- Attach button -------------------------------------------------- */
+
+.attach-btn.icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.attach-btn.icon-btn .icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---------- Drag target --------------------------------------------------- */
+
+.composer.is-dragging {
+  border-color: var(--green-line);
+}
+
+/* ---------- Sent messages -------------------------------------------------- */
+
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.attach-list .attach-chip {
+  height: 24px;
+  padding: 0 9px;
+}
+
+/* In a sent message the files sit on their own line under the bubble. */
+.msg-user:has(> .attach-list) {
+  flex-wrap: wrap;
+}
+
+.msg-user > .attach-list {
+  flex-basis: 100%;
+}
+
+/* ---------- Motion --------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .attach-remove {
+    transition: none;
+  }
+}

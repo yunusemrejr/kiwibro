@@ -1,11 +1,12 @@
-"""Capability-aware delegation to other local LM Studio models.
+"""Capability-aware delegation to other local LM Studio models (agent-facing).
 
 The selected (main) model stays in charge of the conversation. When a task
-needs a capability it lacks — vision, say — the harness can hand a small,
-bounded side-question to the *smallest adequate* installed model that has it,
-then continue with the main model. Model picking and JIT load/unload live in
-:mod:`kiwibro.routing` when available; this module keeps a conservative
-fallback picker so delegation works either way.
+needs a capability it lacks — vision, say — a small, bounded side-question goes
+to the *smallest adequate* installed model that has it, then the main model
+continues. Choosing that model and loading/unloading it is
+:mod:`kiwibro.routing`'s job (one policy); this module turns it into tool
+results and actionable errors, and adds media helpers (``describe_image``,
+``see_attachment``).
 
 Also home to ``study_text``: deterministic map-reduce over long content —
 split into overlapping chunks, ask the helper about each, merge the findings —
@@ -14,104 +15,30 @@ so small-context models can still reason about big files.
 
 from __future__ import annotations
 
-import base64
 import logging
 import mimetypes
 import re
 from pathlib import Path
 from typing import Any
 
+from . import media, routing
+from .inference import model_profile
 from .llm import LMStudioClient, LMStudioError
+from .routing import capabilities_of, pick_helper  # noqa: F401 - the delegation API
 from .sandbox import SandboxError, Workspace
 
 log = logging.getLogger(__name__)
 
 NEEDS = ("vision", "audio", "reasoning", "coding", "long_context", "fast", "general")
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_BYTES = 8 * 1024 * 1024  # after downscaling, per image sent to a model
 STUDY_CHUNK_CHARS = 3000
 STUDY_OVERLAP_CHARS = 200
 STUDY_MAX_CHUNKS = 8
 STUDY_READ_CAP = 2_000_000  # extracted characters considered for one question
 
-_SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z])")
-_CODING_HINTS = ("coder", "code", "starcoder", "deepseek-coder", "qwen2.5-coder", "codellama")
-_REASONING_HINTS = ("deepseek-r1", "qwq", "reason", "think", "-r1", "o1")
-_AUDIO_HINTS = ("whisper", "audio", "omni")
-
 
 class DelegateError(Exception):
     """No suitable helper model, or the helper call failed (user-facing)."""
-
-
-def model_size_hint(model: dict[str, Any]) -> float:
-    """Rough parameter size in billions parsed from the model id/name (inf if unknown)."""
-    for text in (str(model.get("id") or ""), str(model.get("name") or "")):
-        match = _SIZE_RE.search(text)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:  # pragma: no cover - defensive
-                continue
-    return float("inf")
-
-
-def capabilities_of(model: dict[str, Any]) -> list[str]:
-    """Capability labels for one normalised LM Studio model entry."""
-    caps = {str(cap).lower() for cap in (model.get("capabilities") or [])}
-    labels: list[str] = []
-    if model.get("vision") or model.get("type") == "vlm" or "vision" in caps:
-        labels.append("vision")
-    ident = f"{model.get('id') or ''} {model.get('name') or ''}".lower()
-    if any(hint in ident for hint in _AUDIO_HINTS) or "audio" in caps:
-        labels.append("audio")
-    if model.get("tools"):
-        labels.append("tools")
-    if any(hint in ident for hint in _CODING_HINTS):
-        labels.append("coding")
-    if any(hint in ident for hint in _REASONING_HINTS):
-        labels.append("reasoning")
-    try:
-        if int(model.get("max_context") or model.get("context") or 0) >= 65536:
-            labels.append("long_context")
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        pass
-    return labels
-
-
-def _adequate(model: dict[str, Any], need: str) -> bool:
-    if need == "general":
-        return True
-    if need == "fast":
-        return True  # smallest wins by sort order
-    return need in capabilities_of(model)
-
-
-def pick_helper(
-    models: list[dict[str, Any]],
-    need: str,
-    *,
-    current: str | None = None,
-) -> dict[str, Any] | None:
-    """Smallest adequate model for ``need`` (loaded first, then size, then context).
-
-    The current main model is skipped for capability needs it does not meet —
-    callers check the main model themselves when they prefer it.
-    """
-    need = need if need in NEEDS else "general"
-    candidates = [model for model in models if _adequate(model, need)]
-    if not candidates:
-        return None
-
-    def sort_key(model: dict[str, Any]) -> tuple[Any, ...]:
-        loaded = 0 if model.get("state") == "loaded" else 1
-        not_current = 0 if current and model.get("id") != current else 1
-        return (loaded, not_current, model_size_hint(model), int(model.get("context") or 0))
-
-    if need == "long_context":
-        candidates.sort(key=lambda m: (0 if m.get("state") == "loaded" else 1, -int(m.get("max_context") or 0)))
-        return candidates[0]
-    candidates.sort(key=sort_key)
-    return candidates[0]
 
 
 def list_model_capabilities(llm: LMStudioClient) -> list[dict[str, Any]]:
@@ -128,20 +55,10 @@ def list_model_capabilities(llm: LMStudioClient) -> list[dict[str, Any]]:
             "state": model.get("state"),
             "context": model.get("context"),
             "capabilities": capabilities_of(model),
-            "size_hint_b": (None if model_size_hint(model) == float("inf") else model_size_hint(model)),
+            "size_hint_b": model_profile(model["id"], model).params_b,
         }
         for model in models
     ]
-
-
-def _routing_run_helper():
-    """routing.run_helper when the routing module provides it, else None."""
-    try:
-        from . import routing  # type: ignore[attr-defined]
-    except Exception:  # module not present yet — fallback picker applies
-        return None
-    helper = getattr(routing, "run_helper", None)
-    return helper if callable(helper) else None
 
 
 def run_helper(
@@ -152,68 +69,28 @@ def run_helper(
     current_model: str | None = None,
     model: str | None = None,
     max_tokens: int = 600,
-    read_timeout: int = 120,
 ) -> dict[str, Any]:
-    """Ask a helper model one bounded question; returns {model, text, usage}.
+    """Ask a helper model one bounded question → ``{model, text, usage, temporary, need}``.
 
-    Prefers the current model when it already meets the need (no swap cost);
-    otherwise picks the smallest adequate installed model. Load/unload of a
-    just-in-time helper is owned by :mod:`kiwibro.routing` when present;
-    without it, LM Studio's own just-in-time loading applies and nothing is
-    unloaded (the user's server settings govern eviction).
+    ``routing.run_helper`` keeps the main model when it already meets the need
+    and otherwise leases the smallest adequate one; ``model`` names it explicitly.
     """
     need = need if need in NEEDS else "general"
-    routed = _routing_run_helper()
-    if routed is not None and not model:
-        try:
-            result = routed(
-                llm, need, messages,
-                current_model=current_model, max_tokens=max_tokens,
-            )
-            if isinstance(result, dict) and result.get("text") is not None:
-                return {
-                    "model": result.get("model") or current_model or "",
-                    "text": str(result["text"]),
-                    "usage": result.get("usage"),
-                    "need": need,
-                }
-        except Exception:  # routing is an optimisation; fall back gracefully
-            log.warning("routing.run_helper failed; using fallback picker", exc_info=True)
-    ok, models, error = llm.models_status()
-    if not ok or not models:
-        raise DelegateError(error or "No chat models are installed in LM Studio.")
-    chosen: dict[str, Any] | None = None
-    if model:
-        chosen = next((item for item in models if item["id"] == model), None)
-        if chosen is None:
-            raise DelegateError(f"Model not found in LM Studio: {model}")
-    else:
-        current_entry = next((item for item in models if item["id"] == current_model), None)
-        if current_entry is not None and _adequate(current_entry, need):
-            chosen = current_entry
-        else:
-            chosen = pick_helper(models, need, current=current_model)
-        if chosen is None:
-            raise DelegateError(
-                f"No installed LM Studio model provides “{need}”. "
-                "Solve it another way (code execution, files, web) or tell the user "
-                f"which kind of model to install for {need}."
-            )
     try:
-        completion = llm.complete(
-            model=chosen["id"],
-            messages=messages,
+        result = routing.run_helper(
+            llm, need, messages, current_model=current_model, model=model,
             max_tokens=max(64, min(int(max_tokens or 600), 2048)),
-            temperature=0.2,
-            read_timeout=read_timeout,
-            retries=0,
         )
     except LMStudioError as exc:
-        raise DelegateError(f"Helper model {chosen['id']} failed: {exc.message}") from exc
-    text = (completion.text or "").strip()
-    if not text:
-        raise DelegateError(f"Helper model {chosen['id']} returned an empty answer.")
-    return {"model": chosen["id"], "text": text, "usage": completion.usage, "need": need}
+        if exc.kind in ("no_model", "no_memory"):
+            raise DelegateError(
+                f"{exc.message} Solve it another way (code execution, files, web) or tell "
+                f"the user which kind of model to install for {need}."
+            ) from exc
+        raise DelegateError(f"The helper model failed: {exc.message}") from exc
+    if not result.get("text"):
+        raise DelegateError(f"Helper model {result.get('model')} returned an empty answer.")
+    return {**result, "need": need}
 
 
 def image_data_url(workspace: Workspace, path: str) -> tuple[str, str]:
@@ -226,13 +103,15 @@ def image_data_url(workspace: Workspace, path: str) -> tuple[str, str]:
         raise DelegateError(f"not an image file: {workspace.public(resolved)}")
     try:
         size = resolved.stat().st_size
-        if size > MAX_IMAGE_BYTES:
-            raise DelegateError(f"image is too large ({size} bytes; limit {MAX_IMAGE_BYTES})")
+        if size > media.MAX_ATTACHMENT_BYTES:
+            raise DelegateError(f"image is too large ({size} bytes; limit {media.MAX_ATTACHMENT_BYTES})")
         payload = resolved.read_bytes()
     except OSError as exc:
         raise DelegateError(f"could not read image: {exc.strerror or exc}") from exc
-    encoded = base64.b64encode(payload).decode("ascii")
-    return f"data:{mime};base64,{encoded}", workspace.public(resolved)
+    url = media.image_data_url(payload, mime)  # downscaled: vision tokens scale with pixels
+    if len(url) > MAX_IMAGE_BYTES * 4 // 3:
+        raise DelegateError("image is too large to send to a model, even after downscaling")
+    return url, workspace.public(resolved)
 
 
 def describe_image(
@@ -259,6 +138,53 @@ def describe_image(
     ]
     result = run_helper(llm, "vision", messages, current_model=current_model, max_tokens=800)
     return {**result, "path": public, "question": prompt}
+
+
+_SEE_PROMPT = (
+    "{focus}Describe this {what} for an assistant that cannot see it: what it shows, "
+    "all readable text and numbers, and anything relevant to the request. Be factual and complete."
+)
+
+
+def see_attachment(
+    llm: LMStudioClient,
+    workspace: Workspace,
+    attachment: dict[str, Any],
+    *,
+    question: str = "",
+    current_model: str | None = None,
+) -> dict[str, Any]:
+    """What the user's attachment contains, as text → ``{"model": str | None, "text": str}``.
+
+    Images (and video keyframes) go to the main model when it can see, else to the
+    smallest installed vision model; without one — or for audio and other files —
+    the answer is deterministic facts measured by code (``model`` is then None).
+    """
+    resolved = workspace.resolve(attachment["path"], must_exist=True)
+    kind = attachment.get("kind") or media.media_kind(resolved)
+    focus = f'The user wrote: "{question.strip()[:400]}". ' if question.strip() else ""
+    try:
+        if kind == "image":
+            prompt = _SEE_PROMPT.format(focus=focus, what="image")
+            result = describe_image(llm, workspace, attachment["path"], prompt, current_model=current_model)
+            return {"model": result["model"], "text": result["text"]}
+        if kind == "video":
+            frames = media.video_frames(resolved, count=4)
+            if frames:
+                parts: list[dict[str, Any]] = [
+                    {"type": "text", "text": _SEE_PROMPT.format(
+                        focus=focus, what=f"video (these are {len(frames)} evenly spaced frames, in order)"
+                    )},
+                    *({"type": "image_url", "image_url": {"url": media.image_data_url(frame)}} for frame in frames),
+                ]
+                result = run_helper(
+                    llm, "vision", [{"role": "user", "content": parts}],
+                    current_model=current_model, max_tokens=800,
+                )
+                return {"model": result["model"], "text": result["text"]}
+    except (DelegateError, LMStudioError, SandboxError) as exc:
+        log.info("no model could look at %s (%s); using measured facts", resolved.name, exc)
+    return {"model": None, "text": media.facts_text(media.media_facts(resolved))}
 
 
 # --- study_text: map-reduce over long content -------------------------------------

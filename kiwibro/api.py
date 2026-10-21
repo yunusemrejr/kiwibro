@@ -9,7 +9,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
-from . import config, routing
+from . import config, media, routing
 from .agent import BusyError, ConversationNotFound
 from .llm import LMStudioError
 from .sandbox import SandboxError, Workspace
@@ -428,8 +428,11 @@ def chat() -> Response:
     svc = services()
     data = _json_body()
     message = data.get("message")
-    if not isinstance(message, str) or not message.strip():
+    attachments = _chat_attachments(svc, data.get("attachments"))
+    if not isinstance(message, str) or not (message.strip() or attachments):
         raise ApiError("bad_request", "message is required", 400)
+    if not message.strip():  # attachments alone: name them, like a caption
+        message = ", ".join(item["name"] for item in attachments)
     if len(message) > config.MAX_MESSAGE_CHARS:
         raise ApiError("message_too_long", "message is too long", 400)
     conversation_id = data.get("conversation_id")
@@ -441,7 +444,7 @@ def chat() -> Response:
             raise ApiError("bad_request", "model must be a non-empty string", 400)
         model = model.strip()
     try:
-        turn = svc.agent.start_chat(conversation_id or None, message, model)
+        turn = svc.agent.start_chat(conversation_id or None, message, model, attachments=attachments)
     except ConversationNotFound:
         raise ApiError("not_found", "Conversation not found.", 404) from None
     except BusyError:
@@ -451,6 +454,53 @@ def chat() -> Response:
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Connection"] = "keep-alive"
     return response
+
+
+def _workspace(svc: Any) -> Workspace:
+    return Workspace(svc.settings_provider().get("workspace") or str(config.default_workspace()))
+
+
+def _chat_attachments(svc: Any, raw: Any) -> list[dict[str, Any]]:
+    """Attachments named in a chat request, re-derived from the files (never trusted as sent)."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or len(raw) > media.MAX_ATTACHMENTS:
+        raise ApiError("bad_request", f"attachments must be a list of at most {media.MAX_ATTACHMENTS}", 400)
+    workspace = _workspace(svc)
+    result = []
+    for item in raw:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path.startswith(f"{media.ATTACHMENTS_DIR}/"):
+            raise ApiError("bad_request", "each attachment needs the path returned by /api/attachments", 400)
+        try:
+            resolved = workspace.resolve(path, must_exist=True)
+        except SandboxError as exc:
+            raise ApiError("bad_attachment", str(exc), 400) from None
+        name = item.get("name") if isinstance(item.get("name"), str) else resolved.name
+        result.append({
+            "path": workspace.public(resolved),
+            "name": name.strip()[:120] or resolved.name,
+            "kind": media.media_kind(resolved),
+            "size": resolved.stat().st_size,
+        })
+    return result
+
+
+@bp.post("/api/attachments")
+def upload_attachment() -> Response:
+    """Store one file the user attached, inside the workspace so every tool can reach it."""
+    svc = services()
+    request.max_content_length = media.MAX_ATTACHMENT_BYTES + 64 * 1024  # this route only
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        raise ApiError("bad_request", "Send the file as the multipart field 'file'.", 400)
+    try:
+        attachment = media.save_attachment(_workspace(svc).root, upload.filename, upload.read())
+    except ValueError as exc:
+        raise ApiError("bad_attachment", str(exc), 400) from None
+    except OSError as exc:
+        raise ApiError("storage", f"Could not store the file: {exc.strerror or exc}", 500) from None
+    return jsonify({"ok": True, "attachment": attachment})
 
 
 @bp.post("/api/chat/stop")

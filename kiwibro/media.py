@@ -7,6 +7,9 @@
 * ``media_facts``: deterministic, code-only analysis (dimensions, palette,
   luminance, an ASCII thumbnail, SVG text, WAV loudness, ffprobe streams) for
   when no installed model has the needed capability.
+* ``save_attachment`` / ``attachment_note``: files the user attaches live in
+  the workspace (so every tool can reach them by path), and each message
+  carries one fixed note about them that is rendered identically every turn.
 
 Optional tools are feature-detected — Pillow, ImageMagick, ffmpeg/ffprobe —
 and every function degrades to a smaller answer instead of failing.
@@ -23,7 +26,9 @@ import re
 import shutil
 import struct
 import subprocess
+import uuid
 import wave
+from datetime import date
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -36,7 +41,13 @@ TOOL_TIMEOUT_S = 30
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".opus", ".aac"}
+ATTACHMENTS_DIR = "attachments"
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENTS = 8
+NOTE_TEXT_CHARS = 1500  # per attachment: a description, not a transcript
 _DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTALL)
+_UNSAFE_NAME = re.compile(r"[^\w.-]+")
+_MAGIC = ((b"\x89PNG", ".png"), (b"\xff\xd8\xff", ".jpg"), (b"GIF8", ".gif"), (b"%PDF", ".pdf"))
 _ASCII_RAMP = " .:-=+*#%@"
 
 
@@ -211,6 +222,12 @@ def probe(path: str | Path) -> dict[str, Any] | None:
     return {key: value for key, value in facts.items() if value not in (None, "", 0)}
 
 
+def _pixels(image: Any) -> list[Any]:
+    """Pixel values, flat (Pillow ≥ 12 renamed ``getdata``)."""
+    flat = getattr(image, "get_flattened_data", None)
+    return list(flat() if callable(flat) else image.getdata())
+
+
 def _image_facts(path: Path) -> dict[str, Any]:
     Image = _pillow()  # noqa: N806
     if Image is None:
@@ -219,14 +236,14 @@ def _image_facts(path: Path) -> dict[str, Any]:
         facts: dict[str, Any] = {"format": image.format, "mode": image.mode,
                                  "width": image.width, "height": image.height}
         gray = image.convert("L")
-        sample = list(gray.resize((min(128, image.width), min(128, image.height))).getdata())
+        sample = _pixels(gray.resize((min(128, image.width), min(128, image.height))))
         mean = sum(sample) / len(sample)
         facts["luminance_mean"] = round(mean, 1)
         facts["luminance_std"] = round(math.sqrt(sum((v - mean) ** 2 for v in sample) / len(sample)), 1)
         colors = image.convert("RGB").resize((min(64, image.width), min(64, image.height))).getcolors(4096) or []
         colors.sort(reverse=True)
         facts["dominant_colors"] = [f"#{r:02x}{g:02x}{b:02x}" for _count, (r, g, b) in colors[:5]]
-        thumb = list(gray.resize((32, 12)).getdata())
+        thumb = _pixels(gray.resize((32, 12)))
         rows = [thumb[row * 32:(row + 1) * 32] for row in range(12)]
         facts["ascii_thumbnail"] = "\n".join(
             "".join(_ASCII_RAMP[min(len(_ASCII_RAMP) - 1, value * len(_ASCII_RAMP) // 256)] for value in row)
@@ -289,3 +306,70 @@ def facts_text(facts: dict[str, Any]) -> str:
     if thumbnail:
         lines.append("- ascii_thumbnail:\n" + thumbnail)
     return "\n".join(lines)
+
+
+# --- attachments ----------------------------------------------------------------------
+
+
+def _sniffed_suffix(data: bytes) -> str:
+    for magic, suffix in _MAGIC:
+        if data.startswith(magic):
+            return suffix
+    if data[:4] == b"RIFF" and data[8:12] in (b"WEBP", b"WAVE"):
+        return ".webp" if data[8:12] == b"WEBP" else ".wav"
+    return ""
+
+
+def save_attachment(root: str | Path, filename: str, data: bytes, *, day: str | None = None) -> dict[str, Any]:
+    """Store an upload as ``<root>/attachments/<day>/<id>-<name>``; returns its public record."""
+    if not data:
+        raise ValueError("The file is empty.")
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise ValueError(f"Attachments are limited to {MAX_ATTACHMENT_BYTES // 2**20} MB.")
+    original = Path(filename or "").name.strip()[:120] or "file"
+    safe = _UNSAFE_NAME.sub("-", original).strip(".-")[-80:] or "file"
+    if not Path(safe).suffix:
+        safe += _sniffed_suffix(data)
+    base = Path(root)
+    folder = base / ATTACHMENTS_DIR / (day or date.today().isoformat())
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{uuid.uuid4().hex[:8]}-{safe}"
+    with open(target, "xb") as handle:  # never overwrite
+        handle.write(data)
+    return {
+        "path": target.relative_to(base).as_posix(),
+        "name": original,
+        "kind": media_kind(target),
+        "size": len(data),
+    }
+
+
+def _size_label(size: Any) -> str:
+    try:
+        value = float(size)
+    except (TypeError, ValueError):
+        return "size unknown"
+    return f"{value / 2**20:.1f} MB" if value >= 2**20 else f"{max(1, round(value / 1024))} KB"
+
+
+def attachment_note(attachments: Any) -> str:
+    """The fixed text a message carries about its attachments ('' when it has none)."""
+    if not isinstance(attachments, list):
+        return ""
+    lines = []
+    for item in attachments:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        name = item.get("name") or Path(item["path"]).name
+        line = (
+            f"[The user attached {item.get('kind') or 'a file'} \u201c{name}\u201d, saved as "
+            f"{item['path']} ({_size_label(item.get('size'))})."
+        )
+        seen = item.get("seen") if isinstance(item.get("seen"), dict) else {}
+        text = str(seen.get("text") or "").strip()[:NOTE_TEXT_CHARS]
+        if text:
+            source = f"Description by {seen['model']}" if seen.get("model") else "Facts measured by code"
+            line += f" {source}:\n{text}"
+        lines.append(line + "]")
+    return "\n".join(lines)
+

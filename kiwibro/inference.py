@@ -249,6 +249,13 @@ def turn_reasoning(mode: str | None, message: str, *, previous: bool | None, pro
     return wanted if prompt_tokens <= SWITCH_PREFILL_TOKENS else previous
 
 
+# Utility and helper calls never think where the model allows it. Sent even when LM
+# Studio lists no reasoning switch (harmless there). Some models cannot be stopped:
+# qwen3.8-27b reasons on every request whatever the flag or a /no_think prompt says,
+# so helper calls keep enough max_tokens for reasoning plus the answer.
+NO_THINKING = {"reasoning_effort": "none"}
+
+
 def reasoning_payload(profile: ModelProfile, *, think: bool) -> dict[str, Any]:
     """LM Studio request fields for a thinking decision; empty when the model has no toggle."""
     if not profile.reasoning_toggle:

@@ -3,6 +3,7 @@
  * approvals, reasoning, chips and error rows.
  */
 
+import { attachmentChips } from "./attachments.js";
 import { renderMarkdown } from "./markdown.js";
 import {
   el,
@@ -63,6 +64,7 @@ const ASSISTANT_PHRASE = {
   doc_list: "list your documents",
   convert_document: "convert a document to another format",
   remote: "work on a remote server",
+  workspace: "switch the working folder",
   undo_changes: "undo its recent file changes",
 };
 
@@ -580,12 +582,12 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     scrollIfPinned();
   }
 
-  function startUser(text) {
+  function startUser(text, attachments = []) {
     if (empty) empty.hidden = true;
     root.classList.remove("is-empty");
     current = null;
     const bubble = el("div", { class: "bubble", text });
-    root.append(el("div", { class: "msg msg-user" }, [bubble]));
+    root.append(el("div", { class: "msg msg-user" }, [bubble, attachmentChips(attachments)]));
     pinned = true;
     scrollToBottom();
   }
@@ -678,6 +680,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         root.append(
           el("div", { class: "msg msg-user" }, [
             el("div", { class: "bubble", text: message.content || "" }),
+            attachmentChips(message.meta?.attachments),
           ]),
         );
         continue;

@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import config, prompts
+from . import config, media, prompts
 from .db import Database
 from .llm import LMStudioClient, LMStudioError
 
@@ -151,7 +151,12 @@ def to_llm_message(message: dict[str, Any], tool_cap: int = TOOL_RESULT_CAP) -> 
             if normalised:
                 result["tool_calls"] = normalised
         return result
-    return {"role": "user", "content": content}
+    # Attachments travel as one fixed note computed when the message was sent, so the
+    # message renders identically on every later turn (KV-cache prefix). It goes first:
+    # small models answer what they read last, which must be the user's own words.
+    meta = message.get("meta")
+    note = media.attachment_note(meta.get("attachments")) if isinstance(meta, dict) else ""
+    return {"role": "user", "content": f"{note}\n\n{content}" if note else content}
 
 
 def tool_cap_for_age(age_from_newest: int) -> int:

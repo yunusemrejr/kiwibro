@@ -14,7 +14,7 @@ import requests
 
 from . import capabilities as caps
 from . import config
-from .inference import model_profile, reasoning_payload
+from .inference import NO_THINKING
 
 log = logging.getLogger(__name__)
 
@@ -568,7 +568,10 @@ class LMStudioClient:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
         if extra is None:
-            extra = self._utility_extra(model)
+            # Non-streaming calls are utility work (summaries, memory, titles, helpers):
+            # they never think. Reasoning tokens cost as much as answer tokens on a
+            # laptop, and an all-reasoning answer would come back as the content.
+            extra = NO_THINKING
         payload = self._payload(
             model, messages, None, temperature, max_tokens, stream=False,
             response_format=response_format, extra=extra,
@@ -618,15 +621,6 @@ class LMStudioClient:
             content = message.get("content") or message.get("reasoning_content") or ""
             return Completion(text=str(content), usage=_usage(data.get("usage")))
         raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
-
-    def _utility_extra(self, model: str) -> dict[str, Any] | None:
-        """Non-streaming calls are utility work (summaries, memory, titles, helpers), so they
-        never think: on a laptop, reasoning tokens cost as much as answer tokens, and an
-        answer that is all reasoning would otherwise be returned as the content."""
-        info = self.model_info(model)
-        if info is None:
-            return None
-        return reasoning_payload(model_profile(model, info), think=False) or None
 
     def complete_json(
         self,

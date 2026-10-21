@@ -15,12 +15,12 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkpoints, config, directives, guard, inference, library, prompts, safety, toolcall, tools
+from . import checkpoints, config, delegate, directives, guard, inference, library, prompts, safety, toolcall, tools
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
 from .memory import MemoryEngine
-from .sandbox import Workspace
+from .sandbox import SandboxError, Workspace
 from .search import SearchEngine
 from .tools import ToolContext, ToolResult
 
@@ -220,6 +220,7 @@ class Turn:
     tool_calls_made: int = 0
     tool_rounds: int = 0
     steering_notes: list[str] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     steering_lock: threading.Lock = field(default_factory=threading.Lock)
     system_prompt: str = ""
     turn_context: str = ""
@@ -272,6 +273,8 @@ class AgentManager:
         conversation_id: str | None,
         message: str,
         model: str | None = None,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> Turn:
         if conversation_id:
             conversation = self.db.get_conversation(conversation_id)
@@ -285,7 +288,10 @@ class AgentManager:
         lock = self._lock_for(conversation_id)
         if not lock.acquire(blocking=False):
             raise BusyError(conversation_id)
-        turn = Turn(conversation_id=conversation_id, message=message, requested_model=model)
+        turn = Turn(
+            conversation_id=conversation_id, message=message, requested_model=model,
+            attachments=list(attachments or []),
+        )
         with self._locks_guard:
             self._turns[conversation_id] = turn
         thread = threading.Thread(
@@ -433,7 +439,10 @@ class AgentManager:
         conversation = self.db.get_conversation(turn.conversation_id)
         if conversation is None:
             raise ConversationNotFound(turn.conversation_id)
-        user_message = self.db.add_message(turn.conversation_id, "user", turn.message)
+        user_message = self.db.add_message(
+            turn.conversation_id, "user", turn.message,
+            meta={"attachments": turn.attachments} if turn.attachments else None,
+        )
         turn.user_message_id = user_message["id"]
         # Content-safety state: taint from injected content and secret placeholders
         # carry over between turns of the same conversation.
@@ -453,6 +462,11 @@ class AgentManager:
         self._raise_if_aborted(turn)
 
         model_info = self.llm.model_info(model)
+        if turn.attachments:
+            # meta is contractually the first SSE event: send it before looking at the
+            # files (a vision helper can take a while); real context stats follow.
+            self._emit_meta(turn, conversation, settings, model=model)
+            self._see_attachments(turn, model, user_message)
         # KV-cache rule: message 0 stays byte-identical across turns so LM Studio
         # reuses the cached prefix; the clock, retrieved memories and directives
         # ride on the newest user message (fixed for the whole turn).
@@ -463,8 +477,11 @@ class AgentManager:
             turn.conversation_id, model, system_prompt, turn_context=turn_context
         )
         # meta is contractually the first SSE event; context follows it.
-        self._emit_meta(turn, conversation, settings, model=model, prepared=prepared)
-        self._emit_context(turn, prepared)
+        if turn.attachments:
+            turn.emit("context", {**prepared.stats, "compacted": prepared.compacted or prepared.trimmed})
+        else:
+            self._emit_meta(turn, conversation, settings, model=model, prepared=prepared)
+            self._emit_context(turn, prepared)
         self._raise_if_aborted(turn)
 
         model_info = prepared.model_info or model_info or {}
@@ -764,6 +781,32 @@ class AgentManager:
                 "context": stats,
             },
         )
+
+    def _see_attachments(self, turn: Turn, model: str, user_message: dict[str, Any]) -> None:
+        """Describe the user's attachments once, before the main model runs.
+
+        Images and videos are looked at by the main model when it can see, else by
+        the smallest installed vision model (loaded for this and unloaded after);
+        audio and SVG get facts measured by code; documents keep just their path
+        for the file and document tools. Stored in the message's meta, the result
+        renders identically on every later turn.
+        """
+        workspace = Workspace(self._settings().get("workspace") or str(config.default_workspace()))
+        seen = []
+        for item in turn.attachments:
+            self._raise_if_aborted(turn)
+            if item.get("kind") in ("image", "video", "audio", "svg"):
+                turn.emit("status", {"phase": "seeing", "label": f"Looking at {item['name']}"})
+                try:
+                    item = {**item, "seen": delegate.see_attachment(
+                        self.llm, workspace, item, question=turn.message, current_model=model
+                    )}
+                except (SandboxError, OSError) as exc:  # moved or unreadable since upload
+                    log.warning("attachment %s unreadable: %s", item.get("path"), exc)
+            seen.append(item)
+        turn.attachments = seen
+        meta = {**(user_message.get("meta") or {}), "attachments": seen}
+        self.db.update_message(user_message["id"], meta=meta)
 
     def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""

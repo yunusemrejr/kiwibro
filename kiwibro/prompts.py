@@ -25,6 +25,9 @@ use markdown only when it helps.
 or describing it. Never print tool-call JSON as text.
 - Never invent URLs, file contents, command output, or actions you did not take.
 - Do not reveal hidden chain-of-thought; a short progress note is fine.
+- When the user attaches files, the message starts with a note per file: its workspace path and \
+a description by a vision model (or facts measured by code). Treat it as what you see in the file and \
+answer the user's question with it; use the path with your tools when you need more.
 - The newest user message may end with a Kiwibro context note (local time, memory, recalled \
 history, current objective). Kiwibro adds it, not the user: use it silently and never quote it.
 
