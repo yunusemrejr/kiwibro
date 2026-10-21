@@ -440,6 +440,50 @@ p {
   transform: translateY(1px);
 }
 
+.conv-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.conv-filter .icon {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.conv-filter input[type="search"] {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px 0 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #242429;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur), background var(--dur);
+}
+
+.conv-filter input[type="search"]:focus {
+  border-color: var(--line-2);
+  background: #28282e;
+}
+
+.conv-filter input[type="search"]::placeholder {
+  color: var(--faint);
+}
+
+.conv-filter input[type="search"]::-webkit-search-cancel-button {
+  cursor: pointer;
+  filter: invert(0.6);
+}
+
 .conv-scroll {
   flex: 1;
   min-height: 0;
@@ -467,6 +511,48 @@ p {
 
 .conv-row.is-active {
   background: var(--surface-2);
+}
+
+.conv-running-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9BCE6B;
+}
+
+.conv-row.is-streaming .conv-running-dot {
+  background: #9BCE6B;
+  box-shadow: 0 0 6px rgba(155, 206, 107, 0.45);
+  animation: conv-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.conv-row.is-streaming .status-dot {
+  background: #9BCE6B;
+  box-shadow: 0 0 6px rgba(155, 206, 107, 0.45);
+  animation: conv-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes conv-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+@keyframes conv-status-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: rotate(45deg) scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: rotate(45deg) scale(0.75);
+  }
 }
 
 .conv-open {

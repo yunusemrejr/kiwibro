@@ -144,6 +144,30 @@ export const api = {
     request(`/api/conversations/${encodeURIComponent(id)}`, { method: "PATCH", body: patch }),
   deleteConversation: (id) =>
     request(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  forkConversation: (id, seq) =>
+    request(`/api/conversations/${encodeURIComponent(id)}/fork`, {
+      method: "POST",
+      body: seq ? { seq } : {},
+    }),
+  compactConversation: (id) =>
+    request(`/api/conversations/${encodeURIComponent(id)}/compact`, {
+      method: "POST",
+      body: {},
+    }),
+  clearConversation: (id) =>
+    request(`/api/conversations/${encodeURIComponent(id)}/clear`, {
+      method: "POST",
+      body: {},
+    }),
+  activeTurns: () => request("/api/turns"),
+  terminals: () => request("/api/terminals"),
+  killTerminal: (id) =>
+    request(`/api/terminals/${encodeURIComponent(id)}/kill`, {
+      method: "POST",
+      body: {},
+    }),
+  tasks: (conversationId) =>
+    request(`/api/tasks${query({ conversation_id: conversationId })}`),
 
   chat(payload, { signal } = {}) {
     if (IS_MOCK) return mock.chat(payload, { signal });
@@ -157,6 +181,11 @@ export const api = {
   },
   stopChat: (conversationId) =>
     request("/api/chat/stop", { method: "POST", body: { conversation_id: conversationId } }),
+  steerChat: (conversationId, message) =>
+    request("/api/chat/steer", {
+      method: "POST",
+      body: { conversation_id: conversationId, message },
+    }),
   resolveApproval: (approvalId, decision) =>
     request(`/api/approvals/${encodeURIComponent(approvalId)}`, {
       method: "POST",

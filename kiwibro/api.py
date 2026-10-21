@@ -264,6 +264,7 @@ def get_conversation(conversation_id: str) -> Response:
     return jsonify(
         {
             "ok": True,
+            **({"page": page} if page else {}),
             "conversation": _conversation_full(conversation),
             "messages": [
                 {
@@ -332,6 +333,65 @@ def clear_conversation(conversation_id: str) -> Response:
     return jsonify({"ok": True, "conversation": _conversation_full(conversation)})
 
 
+@bp.post("/api/conversations/<conversation_id>/fork")
+def fork_conversation(conversation_id: str) -> Response:
+    svc = services()
+    conv = svc.db.get_conversation(conversation_id)
+    if conv is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    data = request.get_json(silent=True) or {}
+    max_seq = data.get("seq")
+    new_title = f"{conv['title']} (fork)"
+    new_conv = svc.db.create_conversation(
+        title=new_title,
+        model=conv.get("model") or svc.settings_provider().get("model"),
+    )
+    messages = svc.db.list_messages(conversation_id)
+    for m in messages:
+        if max_seq is not None:
+            try:
+                if int(m.get("seq", 0)) > int(max_seq):
+                    continue
+            except (ValueError, TypeError):
+                pass
+        svc.db.add_message(
+            conversation_id=new_conv["id"],
+            role=m["role"],
+            content=m.get("content", ""),
+            reasoning=m.get("reasoning", ""),
+            tool_calls=m.get("tool_calls"),
+            tool_call_id=m.get("tool_call_id"),
+            tool_name=m.get("tool_name"),
+            model=m.get("model"),
+            tokens=m.get("tokens"),
+            meta=m.get("meta"),
+        )
+    return jsonify({"ok": True, "conversation": _conversation_full(new_conv)}), 201
+
+
+@bp.post("/api/conversations/<conversation_id>/compact")
+def compact_conversation(conversation_id: str) -> Response:
+    svc = services()
+    conv = svc.db.get_conversation(conversation_id)
+    if conv is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    model = conv.get("model") or svc.settings_provider().get("model") or ""
+    ok = False
+    if hasattr(svc.context, "recover_aggressive"):
+        try:
+            ok = svc.context.recover_aggressive(conversation_id, model)
+        except Exception:
+            ok = False
+    if not ok and hasattr(svc.context, "hard_recover"):
+        try:
+            ok = svc.context.hard_recover(conversation_id)
+        except Exception:
+            ok = False
+    updated = svc.db.get_conversation(conversation_id) or conv
+    return jsonify({"ok": True, "conversation": _conversation_full(updated), "compacted": bool(ok)})
+
+
+
 # --- chat -------------------------------------------------------------------
 
 
@@ -376,6 +436,37 @@ def stop_chat() -> Response:
         raise ApiError("bad_request", "conversation_id is required", 400)
     svc.agent.stop(conversation_id)
     return jsonify({"ok": True})
+
+
+@bp.post("/api/chat/steer")
+def steer_chat() -> Response:
+    """Queue a steering note into a running turn (applied at the next round)."""
+    svc = services()
+    data = _json_body()
+    conversation_id = data.get("conversation_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise ApiError("bad_request", "conversation_id is required", 400)
+    message = data.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise ApiError("bad_request", "message is required", 400)
+    if len(message) > config.MAX_MESSAGE_CHARS:
+        raise ApiError("message_too_long", "message is too long", 400)
+    if svc.db.get_conversation(conversation_id) is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    queued = svc.agent.steer(conversation_id, message)
+    if not queued:
+        raise ApiError("not_busy", "No reply is being generated for this chat.", 409)
+    return jsonify({"ok": True, "queued": True})
+
+
+@bp.get("/api/turns")
+def get_turns() -> Response:
+    svc = services()
+    return jsonify({
+        "ok": True,
+        "active_count": svc.agent.active_turns(),
+        "conversations": list(svc.agent._turns.keys()),
+    })
 
 
 @bp.post("/api/approvals/<approval_id>")
@@ -501,6 +592,55 @@ def workspace_files() -> Response:
     except SandboxError as exc:
         raise ApiError("workspace_error", str(exc), 400) from None
     return jsonify({"ok": True, "root": str(Path(root).expanduser().resolve()), "files": files})
+
+
+# --- terminals --------------------------------------------------------------
+
+
+@bp.get("/api/terminals")
+def list_terminals() -> Response:
+    from .sandbox import TERMINALS
+
+    conv_id = request.args.get("conversation_id")
+    terms = TERMINALS.list_sessions(conversation_id=conv_id)
+    return jsonify({"ok": True, "terminals": terms})
+
+
+@bp.post("/api/terminals/<session_id>/kill")
+def kill_terminal(session_id: str) -> Response:
+    from .sandbox import SandboxError, TERMINALS
+
+    try:
+        info = TERMINALS.kill(session_id)
+    except SandboxError as exc:
+        raise ApiError("not_found", str(exc), 404) from exc
+    return jsonify({"ok": True, "terminal": info})
+
+
+# --- tasks ------------------------------------------------------------------
+
+
+@bp.get("/api/tasks")
+def list_tasks_route() -> Response:
+    from .tasks import TASK_BOARD
+
+    conv_id = request.args.get("conversation_id")
+    status = request.args.get("status")
+    tasks = TASK_BOARD.list_tasks(conversation_id=conv_id, status=status)
+    return jsonify({"ok": True, "tasks": tasks})
+
+
+@bp.post("/api/tasks")
+def modify_tasks_route() -> Response:
+    from .tasks import TASK_BOARD
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "add")
+    conv_id = data.get("conversation_id") or request.args.get("conversation_id")
+    res = TASK_BOARD.execute(action, data, conversation_id=conv_id)
+    code = 200 if res.get("ok", True) else 400
+    return jsonify(res), code
+
 
 
 # --- static shell -----------------------------------------------------------

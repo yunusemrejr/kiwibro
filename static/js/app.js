@@ -36,6 +36,7 @@ const els = {
   memoryBadge: $("#memory-badge"),
   settingsBtn: $("#settings-btn"),
   newChat: $("#new-chat"),
+  convSearch: $("#conv-search"),
   convList: $("#conv-list"),
   convEmpty: $("#conv-empty"),
   sidebarMemory: $("#sidebar-memory"),
@@ -86,6 +87,7 @@ const state = {
   models: [],
   currentModel: null,
   conversations: [],
+  convFilter: "",
   conversationId: null,
   conversation: null,
   memoriesCount: 0,
@@ -96,6 +98,9 @@ const state = {
   lastSend: null,
   drawerOpen: false,
 };
+
+const backgroundStreams = new Map();
+let currentStream = null;
 
 let renamingId = null;
 let bootRetryTimer = 0;
@@ -399,12 +404,26 @@ async function refreshModels({ quiet = false } = {}) {
 
 function renderSidebar() {
   clear(els.convList);
-  const conversations = state.conversations.filter(isVisibleConversation);
+  const q = (state.convFilter || "").trim().toLowerCase();
+  const conversations = state.conversations
+    .filter(isVisibleConversation)
+    .filter((conversation) => {
+      if (!q) return true;
+      const title = (conversation.title || "").toLowerCase();
+      const model = (conversation.model || "").toLowerCase();
+      return title.includes(q) || model.includes(q);
+    });
+  els.convEmpty.textContent = q ? "No matching chats." : "No chats yet.";
   els.convEmpty.hidden = conversations.length > 0;
 
   for (const conversation of conversations) {
+    const isStreaming =
+      backgroundStreams.has(conversation.id) ||
+      (state.streaming && state.conversationId === conversation.id) ||
+      Boolean(conversation.busy);
+
     const row = el("div", {
-      class: `conv-row${conversation.id === state.conversationId ? " is-active" : ""}`,
+      class: `conv-row${conversation.id === state.conversationId ? " is-active" : ""}${isStreaming ? " is-streaming" : ""}`,
       dataset: { id: conversation.id },
     });
 
@@ -445,6 +464,16 @@ function renderSidebar() {
       "aria-current": conversation.id === state.conversationId ? "page" : "false",
     });
     open.append(el("span", { class: "conv-title", text: conversation.title || "New chat" }));
+    if (isStreaming) {
+      open.append(
+        el("span", {
+          class: "status-dot conv-running-dot",
+          "data-tone": "loaded",
+          "aria-label": "Replying in background",
+          title: "Replying in background",
+        }),
+      );
+    }
     if (conversation.pinned) open.append(icon("pin", "conv-pin"));
     const time = el("span", { class: "conv-time", "data-ts": conversation.updated_at });
     time.textContent = relativeTime(conversation.updated_at);
@@ -497,6 +526,32 @@ function showConversationMenu(conversation, anchor, row) {
     closePopover({ restoreFocus: false });
     renamingId = conversation.id;
     renderSidebar();
+  });
+  addItem("copy", "Fork chat", async () => {
+    closePopover({ restoreFocus: false });
+    try {
+      const data = await api.forkConversation(conversation.id);
+      await refreshConversations({ silent: true });
+      const forkedId = data?.conversation?.id || data?.id;
+      if (forkedId) {
+        await openConversation(forkedId);
+      }
+      toast("Chat forked");
+    } catch (error) {
+      toast(error?.message || "Couldn't fork chat", { tone: "error" });
+    }
+  });
+  addItem("sparkles", "Compact context", async () => {
+    closePopover({ restoreFocus: false });
+    try {
+      await api.compactConversation(conversation.id);
+      if (state.conversationId === conversation.id) {
+        await openConversation(conversation.id, { silent: true });
+      }
+      toast("Context compacted");
+    } catch (error) {
+      toast(error?.message || "Couldn't compact context", { tone: "error" });
+    }
   });
   menu.append(el("div", { class: "menu-sep" }));
   addItem(
@@ -554,6 +609,10 @@ async function togglePin(conversation) {
 
 async function deleteConversation(conversation) {
   try {
+    if (backgroundStreams.has(conversation.id)) {
+      backgroundStreams.get(conversation.id)?.controller?.abort();
+      backgroundStreams.delete(conversation.id);
+    }
     await api.deleteConversation(conversation.id);
     closePopover();
     state.conversations = state.conversations.filter((entry) => entry.id !== conversation.id);
@@ -622,16 +681,35 @@ function updateConversationTitle(id, title) {
 /* Conversations                                                              */
 /* -------------------------------------------------------------------------- */
 
-async function openConversation(id, { silent = false } = {}) {
-  if (state.streaming) {
-    if (!silent) toast("Finish or stop the current reply first", { tone: "error" });
-    return false;
+function detachCurrentStream() {
+  if (!state.streaming || !currentStream) return;
+  currentStream.isForeground = false;
+  const cid = currentStream.conversationId || state.conversationId;
+  if (cid) {
+    const conv = state.conversations.find((c) => c.id === cid);
+    const title = conv?.title || state.conversation?.title || "Chat";
+    backgroundStreams.set(cid, {
+      controller: currentStream.controller,
+      title,
+      status: "running",
+      needsApproval: false,
+    });
   }
+  state.streaming = false;
+  state.controller = null;
+  setStreamingUI(false);
+  renderSidebar();
+}
+
+async function openConversation(id, { silent = false } = {}) {
   if (!id) return false;
   if (id === state.conversationId && state.conversation) {
     closeDrawer();
     focusComposerSoon();
     return true;
+  }
+  if (state.streaming) {
+    detachCurrentStream();
   }
   try {
     const data = await api.conversation(id);
@@ -642,6 +720,7 @@ async function openConversation(id, { silent = false } = {}) {
     updateContext(data.context);
     renderSidebar();
     updateComposerState();
+    setStreamingUI(backgroundStreams.has(id));
     closeDrawer();
     if (!silent) focusComposerSoon();
     return true;
@@ -671,8 +750,7 @@ function showEmptyState() {
 
 function newChat() {
   if (state.streaming) {
-    toast("Finish or stop the current reply first", { tone: "error" });
-    return;
+    detachCurrentStream();
   }
   state.conversationId = null;
   state.conversation = null;
@@ -681,6 +759,7 @@ function newChat() {
   renderSidebar();
   updateContext(null);
   updateComposerState();
+  setStreamingUI(false);
   closeDrawer();
   focusComposerSoon();
 }
@@ -710,7 +789,8 @@ function updateComposerState() {
 }
 
 function updateSendEnabled() {
-  els.sendBtn.disabled = state.streaming || !composerReady() || !els.input.value.trim();
+  // While a reply runs, sending steers it (see sendMessage) — keep Enter enabled.
+  els.sendBtn.disabled = !composerReady() || !els.input.value.trim();
   els.contextRing.classList.toggle("is-idle", !state.conversationId);
 }
 
@@ -730,7 +810,27 @@ function focusComposerSoon() {
 
 async function sendMessage(rawText, { echo = true } = {}) {
   const text = String(rawText || "").trim();
-  if (!text || state.streaming) return;
+  if (!text) return;
+  if (
+    state.conversationId &&
+    (state.streaming || backgroundStreams.has(state.conversationId))
+  ) {
+    // Sending while a reply runs steers it instead of queueing a new turn.
+    try {
+      await api.steerChat(state.conversationId, text);
+      els.input.value = "";
+      autosize();
+      toast("Steering note queued — it applies at the next step");
+    } catch (error) {
+      toast(error?.message || "Couldn't queue the steering note", { tone: "error" });
+    }
+    return;
+  }
+  if (state.streaming) return;
+  if (state.conversationId && backgroundStreams.has(state.conversationId)) {
+    toast("This chat is already replying", { tone: "error" });
+    return;
+  }
   if (!composerReady()) {
     toast(
       !state.lmstudio ? "LM Studio isn't running" : "No model is available",
@@ -752,6 +852,13 @@ async function sendMessage(rawText, { echo = true } = {}) {
   state.controller = controller;
   let sawDone = false;
 
+  const activeStream = {
+    conversationId: state.conversationId,
+    controller,
+    isForeground: true,
+  };
+  currentStream = activeStream;
+
   try {
     const response = await api.chat(
       {
@@ -764,39 +871,77 @@ async function sendMessage(rawText, { echo = true } = {}) {
     if (!response.ok) throw await chatError(response);
     await consumeSSE(response, (event, data) => {
       if (event === "done") sawDone = true;
-      handleStreamEvent(event, data);
-    });
-    if (!sawDone) chatView.finishDone({ aborted: false });
-  } catch (error) {
-    if (error?.name === "AbortError" || controller.signal.aborted) {
-      chatView.finishDone({ aborted: true });
-    } else {
-      if (error?.code === "busy") {
-        toast("This chat is already replying", { tone: "error" });
-        chatView.finishDone({ aborted: false });
+      if (activeStream.isForeground) {
+        handleStreamEvent(event, data, activeStream);
       } else {
-        chatView.showError(error?.message || "Something went wrong. Try again.", { retry: true });
+        handleBackgroundStreamEvent(activeStream, event, data);
+      }
+    });
+    if (!sawDone && activeStream.isForeground) chatView.finishDone({ aborted: false });
+  } catch (error) {
+    if (activeStream.isForeground) {
+      if (error?.name === "AbortError" || controller.signal.aborted) {
+        chatView.finishDone({ aborted: true });
+      } else {
+        if (error?.code === "busy") {
+          toast("This chat is already replying", { tone: "error" });
+          chatView.finishDone({ aborted: false });
+        } else {
+          chatView.showError(error?.message || "Something went wrong. Try again.", { retry: true });
+        }
+      }
+    } else {
+      if (error?.name !== "AbortError" && !controller.signal.aborted) {
+        const bgTitle = backgroundStreams.get(activeStream.conversationId)?.title || "Chat";
+        if (error?.code === "busy") {
+          toast(`“${bgTitle}” is already replying`, { tone: "error" });
+        } else {
+          toast(error?.message || `Error in “${bgTitle}”`, { tone: "error" });
+        }
       }
     }
   } finally {
-    state.streaming = false;
-    state.controller = null;
-    setStreamingUI(false);
-    scheduleConversationRefresh();
-    if (sawDone) {
-      announce("Reply complete");
-      // Memory extraction runs after done and may not emit an event.
-      scheduleMemoryRefresh();
+    const cid = activeStream.conversationId;
+    if (cid) {
+      backgroundStreams.delete(cid);
+    }
+    if (activeStream.isForeground) {
+      state.streaming = false;
+      state.controller = null;
+      setStreamingUI(false);
+      scheduleConversationRefresh();
+      if (sawDone) {
+        announce("Reply complete");
+        // Memory extraction runs after done and may not emit an event.
+        scheduleMemoryRefresh();
+      }
+    } else {
+      if (state.conversationId && state.conversationId === cid) {
+        api.conversation(cid).then((data) => {
+          if (state.conversationId === cid) {
+            chatView.renderConversation(data.messages, data.conversation);
+            updateContext(data.context);
+            setStreamingUI(false);
+          }
+        }).catch(() => {});
+      }
+      renderSidebar();
+      scheduleConversationRefresh();
+      if (sawDone) scheduleMemoryRefresh();
+    }
+    if (currentStream === activeStream) {
+      currentStream = null;
     }
   }
 }
 
-function handleStreamEvent(event, data) {
+function handleStreamEvent(event, data, activeStream) {
   switch (event) {
     case "meta": {
       const isNew = !state.conversationId;
       if (data.conversation_id) {
         state.conversationId = data.conversation_id;
+        if (activeStream) activeStream.conversationId = data.conversation_id;
         localStorage.setItem(STORAGE.conversation, data.conversation_id);
       }
       if (data.model) {
@@ -843,6 +988,9 @@ function handleStreamEvent(event, data) {
       updateContext(data);
       if (data.compacted) chatView.addContextChip();
       break;
+    case "steering":
+      chatView.addSteeringChip?.(data.text || "");
+      break;
     case "memory": {
       const added = Number(data.added) || 0;
       const removed = Number(data.removed) || 0;
@@ -870,20 +1018,97 @@ function handleStreamEvent(event, data) {
   }
 }
 
+function handleBackgroundStreamEvent(activeStream, event, data) {
+  let cid = activeStream.conversationId;
+  const bg = cid ? backgroundStreams.get(cid) : null;
+  const title = bg?.title || "Chat";
+
+  switch (event) {
+    case "meta":
+      if (data.conversation_id) {
+        activeStream.conversationId = data.conversation_id;
+        cid = data.conversation_id;
+        if (!backgroundStreams.has(data.conversation_id)) {
+          backgroundStreams.set(data.conversation_id, {
+            controller: activeStream.controller,
+            title: data.title || "New chat",
+            status: "running",
+            needsApproval: false,
+          });
+          renderSidebar();
+        }
+      }
+      if (data.title && cid) {
+        updateConversationTitle(cid, data.title);
+        if (bg) bg.title = data.title;
+      }
+      break;
+    case "status":
+      if (bg) bg.status = data.label || PHASE_LABELS[data.phase] || "running";
+      break;
+    case "title":
+      if (data.id && data.title) {
+        updateConversationTitle(data.id, data.title);
+        if (bg) bg.title = data.title;
+      }
+      break;
+    case "approval":
+      if (bg) bg.needsApproval = true;
+      toast(`Approval needed in “${title}”`, { tone: "info" });
+      renderSidebar();
+      break;
+    case "context":
+      break;
+    case "memory": {
+      const added = Number(data.added) || 0;
+      const removed = Number(data.removed) || 0;
+      if (added || removed || data.updated) {
+        state.memoriesCount = Math.max(0, state.memoriesCount + added - removed);
+        renderMemoryCounts();
+        memorySheet?.refreshIfOpen();
+      }
+      break;
+    }
+    case "done":
+      toast(`Reply complete in “${title}”`);
+      break;
+    case "error":
+      if (data.code === "busy") {
+        toast(`“${title}” is already replying`, { tone: "error" });
+      } else {
+        toast(data.message || `Error in “${title}”`, { tone: "error" });
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 function setStreamingUI(streaming) {
   els.sendBtn.hidden = streaming;
   els.stopBtn.hidden = !streaming;
-  els.input.placeholder = streaming ? "Kiwibro is replying…" : "Ask Kiwibro…";
+  els.input.placeholder = streaming ? "Steer this reply… (Enter applies it)" : "Ask Kiwibro…";
   updateSendEnabled();
 }
 
 function stopStreaming() {
-  if (!state.streaming) return;
-  const conversationId = state.conversationId;
-  if (conversationId) api.stopChat(conversationId).catch(() => {});
-  chatView.finishDone({ aborted: true });
-  state.controller?.abort();
-  announce("Reply stopped");
+  if (state.streaming) {
+    const conversationId = state.conversationId;
+    if (conversationId) api.stopChat(conversationId).catch(() => {});
+    chatView.finishDone({ aborted: true });
+    state.controller?.abort();
+    announce("Reply stopped");
+    return;
+  }
+  if (state.conversationId && backgroundStreams.has(state.conversationId)) {
+    const bg = backgroundStreams.get(state.conversationId);
+    api.stopChat(state.conversationId).catch(() => {});
+    bg?.controller?.abort();
+    backgroundStreams.delete(state.conversationId);
+    setStreamingUI(false);
+    renderSidebar();
+    announce("Reply stopped");
+  }
 }
 
 function retryLastSend() {
@@ -1134,6 +1359,19 @@ function initChrome() {
   els.sidebarToggle.addEventListener("click", toggleSidebar);
   els.brandHome.addEventListener("click", newChat);
   els.newChat.addEventListener("click", newChat);
+  els.convSearch?.addEventListener("input", (event) => {
+    state.convFilter = event.target.value || "";
+    renderSidebar();
+  });
+  els.convSearch?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && els.convSearch.value) {
+      event.preventDefault();
+      event.stopPropagation();
+      els.convSearch.value = "";
+      state.convFilter = "";
+      renderSidebar();
+    }
+  });
   els.memoryBtn.addEventListener("click", () => memorySheet?.open());
   els.sidebarMemory.addEventListener("click", () => memorySheet?.open());
   els.settingsBtn.addEventListener("click", () => settingsSheet?.open());
@@ -1168,6 +1406,14 @@ function initShortcuts() {
     if (mod && !event.altKey && event.key.toLowerCase() === "n") {
       event.preventDefault();
       newChat();
+      return;
+    }
+    if (mod && !event.altKey && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (!state.drawerOpen && isMobile()) setDrawer(true);
+      if (els.app.dataset.sidebar === "hidden" && !isMobile()) toggleSidebar();
+      els.convSearch?.focus();
+      els.convSearch?.select();
       return;
     }
     if (mod && !event.altKey && (event.key === "," || event.code === "Comma")) {
