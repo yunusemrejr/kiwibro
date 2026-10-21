@@ -15,34 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkpoints, config, guard, library, prompts, safety, toolcall, tools
-
-try:
-    from . import inference
-except ImportError:  # inference lane not landed yet: degrade, never break imports
-    import types as _types
-    from datetime import datetime as _datetime
-
-    class _NoOpTimer:
-        def mark_first(self) -> None: pass
-        def finish(self) -> None: pass
-        def stats(self, _completion_tokens: Any = None) -> dict[str, Any]: return {}
-
-    class _NoOpTracker:
-        def observe(self, *_args: Any, **_kw: Any) -> dict[str, Any]: return {}
-
-    inference = _types.SimpleNamespace(  # type: ignore[assignment]
-        RoundTimer=_NoOpTimer,
-        PREFIX_TRACKER=_NoOpTracker(),
-        wants_reasoning=lambda *_a, **_k: True,
-        model_profile=lambda *_a, **_k: None,
-        reasoning_payload=lambda *_a, **_k: {},
-        time_line=lambda now=None: "Local time: "
-        + (now or _datetime.now()).astimezone().strftime("%A, %d %B %Y, %H:%M %Z"),
-    )
-    logging.getLogger(__name__).warning(
-        "kiwibro.inference unavailable; reasoning control + telemetry disabled"
-    )
+from . import checkpoints, config, guard, inference, library, prompts, safety, toolcall, tools
 from .context import ContextEngine, PreparedContext, compute_budget
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
@@ -255,6 +228,7 @@ class Turn:
     system_prompt: str = ""
     turn_context: str = ""
     timer: inference.RoundTimer | None = None
+    thinking: bool | None = None
     inference: dict[str, Any] = field(default_factory=dict)
     safety: dict[str, Any] = field(default_factory=dict)  # guard/safety turn state
     stream_filter: toolcall.StreamFilter | None = None
@@ -285,6 +259,7 @@ class AgentManager:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._turns: dict[str, Turn] = {}
+        self._thinking: dict[str, bool] = {}  # conversation id -> last turn's thinking decision
         self._approvals: dict[str, Approval] = {}
         self._approvals_guard = threading.Lock()
 
@@ -501,9 +476,9 @@ class AgentManager:
         # described in message 0 and calls are parsed from the reply text.
         text_mode = bool(settings.get("agent_enabled", True)) and not model_info.get("tools", False)
         if settings.get("agent_enabled", True) and model_info.get("tools", False):
-            # Task-shaped subset (tool_profile) keeps small models effective;
-            # fixed for the whole turn so the prompt prefix stays stable.
-            tool_list = tools.tool_defs_for(settings=settings, message=turn.message)
+            # One profile-sized set, identical for every turn and conversation: the
+            # tool list renders ahead of all messages, so any change re-prefills them.
+            tool_list = tools.tool_defs_for(settings=settings)
         try:
             max_rounds = int(settings.get("max_tool_rounds") or config.MAX_TOOL_ROUNDS)
         except (TypeError, ValueError):
@@ -614,7 +589,15 @@ class AgentManager:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
         max_tokens = int(settings.get("max_output_tokens", config.DEFAULT_MAX_OUTPUT_TOKENS))
-        think = inference.wants_reasoning(settings.get("reasoning"), turn.message, round_index=round_index)
+        if turn.thinking is None:  # decided once per turn: flipping mid-turn re-prefills everything
+            turn.thinking = inference.turn_reasoning(
+                settings.get("reasoning"),
+                turn.message,
+                previous=self._thinking.get(turn.conversation_id),
+                prompt_tokens=prepared.used,
+            )
+            self._thinking[turn.conversation_id] = turn.thinking
+        think = turn.thinking
         extra = inference.reasoning_payload(inference.model_profile(model, prepared.model_info), think=think)
         attempts = 0
         while True:
@@ -622,7 +605,7 @@ class AgentManager:
             messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
             if nudge:
                 messages = [*messages, {"role": "user", "content": toolcall.EMPTY_REPLY_NUDGE}]
-            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list)
+            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
             try:
@@ -791,7 +774,7 @@ class AgentManager:
         elif model_info is not None and not model_info.get("tools"):
             tools_block = toolcall.protocol_block(_text_mode_specs(settings))
         else:
-            tools_block = prompts.TOOLS_BLOCK
+            tools_block = prompts.TOOLS_BLOCK + tools.more_tools_line(settings)
         return prompts.SYSTEM_PROMPT.format(
             model_block=model_block,
             workspace_block=workspace_block,

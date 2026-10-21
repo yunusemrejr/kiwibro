@@ -9,8 +9,9 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
-from . import config
+from . import config, routing
 from .agent import BusyError, ConversationNotFound
+from .llm import LMStudioError
 from .sandbox import SandboxError, Workspace
 
 log = logging.getLogger(__name__)
@@ -152,7 +153,10 @@ def list_models() -> Response:
         "ok": True,
         "lmstudio": ok,
         "current": _current_model(models) if ok else svc.settings_provider().get("model"),
-        "models": models if ok else [],
+        "models": [
+            {**m, "context_choices": routing.context_choices(m)} if m.get("state") == "loaded" else m
+            for m in models
+        ] if ok else [],
     }
     if error:
         payload["lmstudio_error"] = error
@@ -172,6 +176,30 @@ def select_model() -> Response:
         raise ApiError("unknown_model", f"Unknown model: {model_id}", 400)
     svc.db.set_setting("model", model_id)
     return jsonify({"ok": True, "current": model_id})
+
+
+@bp.post("/api/models/context")
+def resize_model_context() -> Response:
+    """Reload the selected loaded model with a larger context window (long chats)."""
+    svc = services()
+    data = _json_body()
+    model_id, size = data.get("id"), data.get("context_length")
+    if not isinstance(model_id, str) or isinstance(size, bool) or not isinstance(size, int):
+        raise ApiError("bad_request", "id and context_length are required", 400)
+    ok, models, error = svc.llm.models_status(force=True)
+    model = next((m for m in models if m["id"] == model_id), None) if ok else None
+    if model is None or model.get("state") != "loaded":
+        raise ApiError("unknown_model", error or f"{model_id} is not loaded in LM Studio.", 400)
+    if size not in routing.context_choices(model):
+        raise ApiError("bad_request", "That context length is not available for this model.", 400)
+    if svc.agent.active_turns():
+        raise ApiError("busy", "Wait for the current reply to finish.", 409)
+    try:
+        current = routing.reload_with_context(svc.llm, model, size)
+    except LMStudioError as exc:
+        raise ApiError(exc.kind, exc.message, 409 if exc.kind == "no_memory" else 502) from exc
+    svc.db.set_setting("model", current)
+    return jsonify({"ok": True, "current": current, "context_length": size})
 
 
 # --- conversations ----------------------------------------------------------

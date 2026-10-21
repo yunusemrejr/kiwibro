@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -902,30 +901,23 @@ _MINIMAL = (
     "web_search", "fetch_page", "read_file", "list_files",
     "write_file", "replace_in_file", "run_command", "remember",
 )
-_AUTO_FALLBACK_EXTRA = ("multi_search", "fetch_pages", "grep_files", "read_files", "glob_files")
-
-_INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "research": re.compile(
-        r"\b(search|research|news|latest|current|today|web|internet|online|compare|"
-        r"review|price|weather|who is|what is|find out|look up|sources?|cite)\b|https?://",
-        re.IGNORECASE,
-    ),
-    "coding": re.compile(
-        r"\b(code|coding|bug|fix|implement|refactor|function|class|file|files|repo|"
-        r"git|test|tests|build|compile|error|script|project|edit|patch|grep|"
-        r"terminal|command|run|install|python|javascript|debug)\b|[\w./-]+\.(py|js|ts|md|json|html|css|rs|go|c|cpp|sh)\b",
-        re.IGNORECASE,
-    ),
-    "desktop": re.compile(
-        r"\b(open|launch|show me|screenshot|screen|clipboard|copy to|paste|notify|"
-        r"notification|desktop|machine|system info|disk|cpu|battery|image|picture|photo)\b",
-        re.IGNORECASE,
-    ),
-}
+# The tool list renders into the prompt ahead of every message, so a list that
+# changes between turns forces LM Studio to re-prefill the whole conversation
+# (measured on this CPU: 0% reuse and 152 s, against 1-4 s with a stable list).
+# "auto" is therefore ONE fixed set, identical for every turn and conversation,
+# sized for 1-4B models; the rest of the catalog still runs when called by its
+# exact name (calls resolve against TOOL_SPECS) and is named in message 0.
+AUTO_TOOLS = (
+    "web_search", "web_research", "fetch_page",
+    "read_file", "list_files", "grep_files", "write_file", "replace_in_file",
+    "run_command", "run_python", "study_file", "undo_changes",
+    "remember", "recall", "task_board", "doc_search", "doc_read",
+    "describe_image", "delegate", "calculate",
+)
 
 
-def select_tool_names(profile: str | None, message: str = "") -> list[str]:
-    """Tool names to offer for a turn, ordered as in the catalog."""
+def select_tool_names(profile: str | None) -> list[str]:
+    """Tool names a profile offers, in catalog order (never depends on the message)."""
     profile = profile if profile in config.TOOL_PROFILES else config.DEFAULT_TOOL_PROFILE
     if profile == "full":
         return tool_names()
@@ -933,27 +925,34 @@ def select_tool_names(profile: str | None, message: str = "") -> list[str]:
         wanted = set(_MINIMAL)
     elif profile in _BY_CATEGORY:
         wanted = set(_CORE) | set(_BY_CATEGORY[profile])
-    else:  # auto: core + intent-matched categories (or a lean general set)
-        text = message or ""
-        matched = [cat for cat, pattern in _INTENT_PATTERNS.items() if pattern.search(text)]
-        wanted = set(_CORE)
-        if matched:
-            for category in matched:
-                wanted |= set(_BY_CATEGORY[category])
-        else:
-            wanted |= set(_AUTO_FALLBACK_EXTRA)
+    else:
+        wanted = set(AUTO_TOOLS)
     return [name for name in TOOL_SPECS if name in wanted]
+
+
+def more_tools_line(settings: dict[str, Any]) -> str:
+    """One stable prompt line naming catalog tools the profile does not list ('' if none)."""
+    offered = set(select_tool_names(settings.get("tool_profile")))
+    others = [
+        name for name in TOOL_SPECS
+        if name not in offered and permission_mode(settings, name) != "deny"
+    ]
+    if not others:
+        return ""
+    return (
+        "More tools, not listed above, run when called by exact name: "
+        + ", ".join(others) + ".\n"
+    )
 
 
 def tool_defs_for(
     profile: str | None = None,
-    message: str = "",
     settings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Tool definitions for one turn: profile subset, minus user-denied tools."""
+    """Tool definitions for a profile, minus user-denied tools (stable for a given settings)."""
     if settings is not None and profile is None:
         profile = settings.get("tool_profile")
-    names = set(select_tool_names(profile, message))
+    names = set(select_tool_names(profile))
     if settings is not None:
         names = {name for name in names if permission_mode(settings, name) != "deny"}
     return [item for item in tool_defs() if item["function"]["name"] in names]

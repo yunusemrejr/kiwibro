@@ -834,6 +834,11 @@ class LMStudioClient:
         """Best-effort explicit load; False means rely on LM Studio JIT loading."""
         return self._load_api_call("load", model, context_length)
 
+    def loaded_instance(self, model: str) -> str | None:
+        """Instance id LM Studio assigned when this client loaded ``model``."""
+        with self._lock:
+            return self._instances.get(model)
+
     def unload_model(self, model: str) -> bool:
         """Best-effort explicit unload of a model this client loaded (or a loaded instance id)."""
         return self._load_api_call("unload", model)

@@ -83,12 +83,16 @@ def shrink_image(data: bytes, max_side: int = MAX_IMAGE_SIDE) -> tuple[bytes, st
                 if max(image.size) <= max_side and image.format in ("JPEG", "PNG"):
                     return data, f"image/{image.format.lower()}"
                 image.thumbnail((max_side, max_side))
-                out = io.BytesIO()
+                png = io.BytesIO()
+                image.save(png, "PNG", optimize=True)
                 if image.mode in ("RGBA", "LA", "P"):
-                    image.save(out, "PNG", optimize=True)
-                    return out.getvalue(), "image/png"
-                image.convert("RGB").save(out, "JPEG", quality=85)
-                return out.getvalue(), "image/jpeg"
+                    return png.getvalue(), "image/png"
+                jpeg = io.BytesIO()
+                image.convert("RGB").save(jpeg, "JPEG", quality=85)
+                # Pixels set the vision-token cost; bytes only the upload. Flat graphics stay PNG.
+                if jpeg.tell() < png.tell():
+                    return jpeg.getvalue(), "image/jpeg"
+                return png.getvalue(), "image/png"
         except Exception:  # corrupt/unsupported for Pillow: try ImageMagick
             log.debug("Pillow could not shrink image", exc_info=True)
     convert = shutil.which("magick") or shutil.which("convert")

@@ -238,7 +238,7 @@ def _lease(llm: Any, helper: dict[str, Any]) -> Iterator[bool]:
                 loaded = False
                 if callable(load_model):
                     try:
-                        loaded = bool(load_model(model_id))
+                        loaded = bool(load_model(model_id, context_length=HELPER_CONTEXT))
                     except Exception:  # JIT loading still applies on the call itself
                         log.debug("best-effort load failed for %s", model_id, exc_info=True)
                 with _STATE_LOCK:
@@ -332,3 +332,37 @@ def run_helper(
             temperature=0.0, retries=0, extra=extra or None,
         )
         return {"model": model_id, "text": (completion.text or "").strip(), "temporary": temporary}
+
+
+# --- main-model context window --------------------------------------------------------
+
+CONTEXT_STEPS = (8192, 16384, 32768, 65536, 131072, 262144)
+
+
+def context_choices(model: dict[str, Any]) -> list[int]:
+    """Larger windows worth offering for a loaded model (≤ its maximum, at most three)."""
+    current = int((model.get("loaded_config") or {}).get("context_length") or model.get("context") or 0)
+    ceiling = int(model.get("max_context") or 0)
+    return [size for size in CONTEXT_STEPS if current < size <= ceiling][:3]
+
+
+def reload_with_context(llm: Any, model: dict[str, Any], context_length: int) -> str:
+    """Reload a loaded model with another context window; returns the new instance id.
+
+    LM Studio can't resize a loaded model, so this unloads and loads again. If
+    the bigger window does not fit (LM Studio's load guardrails refuse it), the
+    previous window is restored so the user is never left without a model.
+    """
+    model_id = str(model["id"])
+    key = str(model.get("key") or model_id)
+    previous = int((model.get("loaded_config") or {}).get("context_length") or model.get("context") or 0)
+    if not llm.unload_model(model_id):
+        raise LMStudioError("load", f"LM Studio could not unload {model_id}.")
+    if llm.load_model(key, context_length):
+        return llm.loaded_instance(key) or model_id
+    if previous and llm.load_model(key, previous):
+        raise LMStudioError(
+            "no_memory",
+            f"{model_id} does not fit with a {context_length // 1024}K context; kept {previous // 1024}K.",
+        )
+    raise LMStudioError("load", f"LM Studio could not load {model_id} again. Load it in LM Studio.")

@@ -67,7 +67,7 @@ class FakeLLM:
     def list_models(self, force: bool = False):
         return [dict(m) for m in self.models if m["type"] in ("llm", "vlm")]
 
-    def load_model(self, model: str) -> bool:
+    def load_model(self, model: str, context_length: int | None = None) -> bool:
         self.calls.append(("load", model))
         return True
 

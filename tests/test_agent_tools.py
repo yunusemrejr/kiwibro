@@ -50,10 +50,15 @@ def test_tool_profiles():
         if n in {"web_search", "fetch_page", "read_file", "list_files", "write_file", "replace_in_file", "run_command", "remember"}
     ]
     assert len(tools.select_tool_names("full")) == len(tools.tool_names())
-    coding = tools.select_tool_names("auto", "fix the bug in app.py and run the tests")
-    assert "grep_files" in coding and "apply_patch" in coding
-    research_names = tools.select_tool_names("auto", "research the latest news and compare sources")
-    assert "web_research" in research_names
+    # auto = one fixed set: the tool list renders before every message (KV-cache prefix)
+    auto = tools.select_tool_names("auto")
+    assert auto == [n for n in tools.tool_names() if n in tools.AUTO_TOOLS]
+    assert 12 <= len(auto) <= 20 and "web_research" in auto and "grep_files" in auto
+    settings = {"tool_profile": "auto", "permissions": {"git": "deny"}}
+    line = tools.more_tools_line(settings)
+    assert "apply_patch" in line and "git" not in line.split(":", 1)[1].replace(",", " ").split()
+    assert not any(name in line.split(":", 1)[1] for name in ("web_research,", "grep_files,"))
+    assert tools.more_tools_line({"tool_profile": "full"}) == ""
     assert len(tools.tool_defs_for("minimal")) == 8
     denied = tools.tool_defs_for("full", settings={"permissions": {"run_command": "deny"}})
     assert all(item["function"]["name"] != "run_command" for item in denied)

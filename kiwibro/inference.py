@@ -14,11 +14,13 @@ So this module owns three small, pure policies:
   (``time_line``, retrieved memories, recalled episodes, the directive ledger)
   rides on the newest user message via ``context.place_turn_context``.
   ``PrefixTracker`` measures how well that holds.
-* **Reasoning control** (``wants_reasoning`` / ``reasoning_payload``).
+* **Reasoning control** (``turn_reasoning`` → ``reasoning_payload``): one
+  decision per turn, changed between turns only while a re-prefill is cheap.
 * **Model profiles** (``model_profile``): size, family, tier and what a model
   can do, merged from LM Studio metadata and the model id.
 
-Nothing here performs I/O; ``PrefixTracker`` only keeps request digests.
+Plus per-round telemetry (``RoundTimer``). Nothing here performs I/O;
+``PrefixTracker`` only keeps request digests.
 """
 
 from __future__ import annotations
@@ -218,21 +220,33 @@ _THINK_HINTS = re.compile(
 _ARITHMETIC = re.compile(r"\d\s*[+*/^%×÷]\s*\d|\d\s+-\s+\d")
 
 
-def wants_reasoning(mode: str | None, message: str = "", *, round_index: int = 0) -> bool:
-    """Whether a chat round should think.
+# Chat templates render the thinking switch near the top of the prompt, so flipping
+# it re-prefills the whole conversation (measured on CPU: a ~91% matching prompt
+# took 90 s, the same as cold). Auto mode only changes its mind while that is cheap.
+SWITCH_PREFILL_TOKENS = 1500
 
-    ``auto`` thinks on the first round of a non-trivial request and answers
-    tool-result follow-ups directly: on a laptop each reasoning token costs as
-    much as a reply token, and follow-up rounds mostly need to act, not ponder.
-    """
+
+def wants_reasoning(mode: str | None, message: str = "") -> bool:
+    """Whether a request deserves thinking: ``on``/``off`` are absolute; ``auto`` thinks for
+    non-trivial requests (long, code, maths, analysis words) and answers small talk directly."""
     if mode == "on":
         return True
     if mode == "off":
         return False
-    if round_index > 0:
-        return False
     text = (message or "").strip()
     return len(text) >= 280 or "```" in text or bool(_THINK_HINTS.search(text) or _ARITHMETIC.search(text))
+
+
+def turn_reasoning(mode: str | None, message: str, *, previous: bool | None, prompt_tokens: int) -> bool:
+    """The thinking decision for a whole turn (every round of it uses the same one).
+
+    In ``auto`` mode a change from the conversation's previous decision is only
+    made while the prompt is short enough that the re-prefill it causes is cheap.
+    """
+    wanted = wants_reasoning(mode, message)
+    if mode in ("on", "off") or previous is None or wanted == previous:
+        return wanted
+    return wanted if prompt_tokens <= SWITCH_PREFILL_TOKENS else previous
 
 
 def reasoning_payload(profile: ModelProfile, *, think: bool) -> dict[str, Any]:
@@ -288,9 +302,11 @@ class PrefixTracker:
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        options: Mapping[str, Any] | None = None,
     ) -> dict[str, int]:
-        # Templates render the tool list into the system block, so it belongs to message 0.
-        salt = _digest({"tools": tools}) if tools else ""
+        # Templates render the tool list and switches such as reasoning into the
+        # system block, so they belong to message 0.
+        salt = _digest({"tools": tools, "options": dict(options or {})}) if tools or options else ""
         digests = [_digest(message, salt if index == 0 else "") for index, message in enumerate(messages)]
         tokens = [self._token_fn(message) for message in messages]
         with self._lock:

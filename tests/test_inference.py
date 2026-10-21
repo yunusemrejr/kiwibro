@@ -194,16 +194,34 @@ def test_wants_reasoning_auto_long_plain_message_thinks():
     assert inf.wants_reasoning("auto", "hello " * 50) is True  # 300 chars, no hint words
 
 
-def test_wants_reasoning_auto_follow_up_round_does_not_think():
-    assert inf.wants_reasoning("auto", "why does my build fail?", round_index=1) is False
+def test_turn_reasoning_auto_switches_only_while_prompt_is_cheap():
+    hard = "why does my build fail?"
+    assert inf.turn_reasoning("auto", hard, previous=None, prompt_tokens=50_000) is True
+    # a flip re-prefills the whole prompt: allowed while short, refused when long
+    assert inf.turn_reasoning("auto", hard, previous=False, prompt_tokens=800) is True
+    assert inf.turn_reasoning("auto", hard, previous=False, prompt_tokens=5_000) is False
+    assert inf.turn_reasoning("auto", "hi", previous=True, prompt_tokens=5_000) is True
+    assert inf.turn_reasoning("auto", "hi", previous=True, prompt_tokens=100) is False
 
+
+def test_turn_reasoning_explicit_modes_ignore_history():
+    assert inf.turn_reasoning("on", "hi", previous=False, prompt_tokens=10**6) is True
+    assert inf.turn_reasoning("off", "why?", previous=True, prompt_tokens=10**6) is False
+
+
+def test_prefix_tracker_options_are_folded_into_message_zero():
+    tracker = inf.PrefixTracker(token_fn=lambda m: len(m.get("content") or ""))
+    msgs = [{"role": "system", "content": "s" * 10}, {"role": "user", "content": "u" * 5}]
+    tracker.observe("m", msgs, None, {"reasoning_effort": "none"})
+    assert tracker.observe("m", msgs, None, {"reasoning_effort": "none"})["reused_tokens_est"] == 15
+    assert tracker.observe("m", msgs, None, None)["reused_tokens_est"] == 0
 
 @pytest.mark.parametrize("message", ["hi", "why does my build fail?", "x" * 400])
 def test_wants_reasoning_explicit_modes_ignore_message(message):
     assert inf.wants_reasoning("on", message) is True
-    assert inf.wants_reasoning("on", message, round_index=3) is True
+    assert inf.wants_reasoning("on", message) is True
     assert inf.wants_reasoning("off", message) is False
-    assert inf.wants_reasoning("off", message, round_index=0) is False
+    assert inf.wants_reasoning("off", message) is False
 
 
 # --- 5. reasoning_payload -----------------------------------------------------------------
