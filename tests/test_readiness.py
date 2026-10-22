@@ -195,3 +195,33 @@ def test_lm_studio_errors_surface_as_status():
 def test_signature_changes_with_the_loaded_window():
     messages = [{"role": "system", "content": "x"}]
     assert readiness.signature("m", messages, None, {}, 8192) != readiness.signature("m", messages, None, {}, 32768)
+
+
+def test_switching_models_unloads_the_one_kiwibro_loaded_before():
+    llm = FakeLLM()
+    ready = make(llm)
+    ready.request("m")
+    wait_phase(ready, "ready")
+    assert llm.unloads == []
+    llm.model.update(id="n", key="n", state="not-loaded", loaded_config={})  # the user picks another model
+    llm.resolve_model = lambda requested=None: "n"
+    ready.request("n")
+    deadline = time.monotonic() + 5
+    while not llm.unloads and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [load[0] for load in llm.loads] == ["m", "n"]
+    assert llm.unloads == ["m"]  # freed: only "n" stays resident
+
+
+def test_models_kiwibro_did_not_load_are_never_unloaded():
+    llm = FakeLLM(state="loaded")  # loaded by the user in LM Studio
+    ready = make(llm)
+    ready.request("m")
+    wait_phase(ready, "ready")
+    llm.model.update(id="n", key="n", state="not-loaded", loaded_config={})
+    ready.request("n")
+    deadline = time.monotonic() + 1
+    while len(llm.loads) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    assert llm.unloads == []

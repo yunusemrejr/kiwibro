@@ -47,11 +47,11 @@ _LEAD = re.compile(
     r"[,.!:;]?\s+)+",
     re.I,
 )
-_REQUEST = re.compile(
+REQUEST = re.compile(
     r"^(?:(?:please|pls|now|then|also|and|so|ok(?:ay)?|next)[,\s]+)*"
     r"(?:(?:can|could|would|will) you\s+|i (?:want|need|would like|'d like)(?: you)? to\s+|"
     r"let'?s\s+|help me(?: to)?\s+|try to\s+|go\s+|you should\s+)?"
-    r"(build|create|write|make|fix|find|research|add|remove|delete|update|change|implement|deploy|"
+    r"(build|create|write|make|fix|find|research|add|remove|delete|update|change|implement|deploy|tell|give|put|"
     r"analy[sz]e|summari[sz]e|explain|check|run|install|design|generate|compare|search|collect|"
     r"gather|show|list|convert|refactor|test|review|translate|draft|plan|set up|setup|configure|"
     r"investigate|look|open|read|edit|rename|move|copy|download|upload|organi[sz]e|clean|improve|"
@@ -122,7 +122,7 @@ class _MessageSource(Protocol):
     def last_message_seq(self, conversation_id: str) -> int: ...
 
 
-def _keywords(text: str) -> frozenset[str]:
+def keywords(text: str) -> frozenset[str]:
     return frozenset(w for w in re.findall(r"[a-z0-9][a-z0-9+#._-]{1,}", text.lower()) if w not in _STOPWORDS)
 
 
@@ -150,11 +150,11 @@ def apply_message(ledger: Ledger, message: str) -> None:
     turn = ledger.turns
     for clause in _clauses(message):
         core = _LEAD.sub("", clause)
-        is_request = bool(_REQUEST.match(core)) or (clause.endswith("?") and _REQUEST.search(core) is not None)
+        is_request = bool(REQUEST.match(core)) or (clause.endswith("?") and REQUEST.search(core) is not None)
         is_constraint = bool(_CONSTRAINT.search(clause)) and not clause.endswith("?")
         if not (is_request or is_constraint):
             continue
-        words = _keywords(clause)
+        words = keywords(clause)
         if _OVERRIDE.search(clause):
             hit = [d for d in ledger.active() if d.turn < turn and d.words & words]
             if not hit and is_request:  # "forget that, do X": the previous goal/requests go

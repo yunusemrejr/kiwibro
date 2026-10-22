@@ -23,7 +23,7 @@ from .extensions import ExtensionTool, schema, tool_result
 ACTIONS = ("show", "switch", "reset")
 _LISTING = 30
 # Places a conversation may never be bound to (whatever the user typed).
-_FORBIDDEN = frozenset({"root", "system", "device", "home_root", "secret", "startup", "kiwibro", "dynamic", "outside"})
+FORBIDDEN_PLACES = frozenset({"root", "system", "device", "home_root", "secret", "startup", "kiwibro", "dynamic", "outside"})
 
 
 def folder_for(db: Any, conversation_id: str | None) -> str | None:
@@ -41,7 +41,7 @@ def resolve_folder(raw: str) -> Path:
         raise ValueError("give the folder as an absolute path or ~/…, e.g. ~/Desktop/my-app")
     path = Path(text).resolve()
     kind = safety.place_of(str(path))
-    if kind in _FORBIDDEN:
+    if kind in FORBIDDEN_PLACES:
         raise ValueError(f"Kiwibro cannot work inside {path} ({safety.describe_place(kind)})")
     if not path.is_dir():
         raise ValueError(f"{path} is not an existing folder")

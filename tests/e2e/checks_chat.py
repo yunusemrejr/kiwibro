@@ -355,16 +355,16 @@ def tool_remember(env: "Any") -> str:
 def _security_write_traversal(env: "Any") -> str:
     stream = chat(env, "Escape the sandbox [[scenario:tool_write_traversal]]")
     stream.wait_for("meta", timeout=20)
-    stream.wait_for("tool_call", timeout=20)
-    approval = stream.wait_for("approval", timeout=20)
-    approve(env, approval, "allow")
+    call = stream.wait_for("tool_call", timeout=20)
+    assert_eq(call["requires_approval"], False, "a call that cannot run is never offered for approval")
     result = stream.wait_for("tool_result", timeout=20)
     finish(stream)
+    assert_eq(stream.of("approval"), [], "no approval card for a path outside the workspace")
     assert_eq(result["ok"], False, "traversal write refused")
     assert_in("outside the workspace", str(result["preview"]).lower(), "sandbox error text")
     escaped = env.app.run_dir / "pwned.txt"
     assert_true(not escaped.exists(), f"nothing written outside the workspace ({escaped})")
-    return "write_file '../../pwned.txt' refused by the sandbox"
+    return "write_file '../../pwned.txt' refused before any approval"
 
 
 def security_write_traversal(env: "Any") -> str:

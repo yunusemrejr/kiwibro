@@ -91,6 +91,7 @@ class Readiness:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._warm: OrderedDict[str, float] = OrderedDict()
+        self._loaded: set[str] = set()  # models this worker loaded (and so may unload again)
         self._status: dict[str, Any] = {"model": None, "phase": "idle", "detail": "", "context_length": None}
 
     # --- public -------------------------------------------------------------
@@ -233,6 +234,17 @@ class Readiness:
                  reuse.get("prompt_tokens_est"), elapsed_ms / 1000)
         self._set(phase="ready", detail="", context_length=context)
 
+    def _release_others(self, key: str) -> None:
+        """Unload the models this worker loaded for an earlier selection: each holds
+        gigabytes of RAM, and a CPU laptop with two 4B models resident swaps. Models the
+        user loaded in LM Studio, and helpers leased by routing, are never touched; jobs
+        only run while no reply streams, so none of these is in use."""
+        with self._lock:
+            stale, self._loaded = self._loaded - {key}, self._loaded & {key}
+        for model in stale:
+            if self.llm.unload_model(model):
+                log.info("unloaded %s: %s is the selected model now", model, key)
+
     def _info(self, model: str, *, force: bool = False) -> dict[str, Any] | None:
         try:
             models = self.llm.list_models(force=force)
@@ -256,10 +268,13 @@ class Readiness:
             return self._info(model, force=True) or info
         self._set(model=model, phase="loading", detail="Loading the model", context_length=None)
         key = str(info.get("key") or model)
+        self._release_others(key)  # first: both resident at once can make LM Studio refuse the load
         for size in load_sizes(max_context):
             if job.abort.is_set():
                 break
             if self.llm.load_model(key, size, parallel=PARALLEL_SLOTS):
+                with self._lock:
+                    self._loaded.add(key)
                 break
             if getattr(self.llm, "_load_api_supported", None) is False:
                 break  # this LM Studio has no load API: the warm-up request JIT-loads it

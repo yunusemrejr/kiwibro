@@ -1067,6 +1067,9 @@ function handleStreamEvent(event, data, activeStream) {
     case "steering":
       chatView.addSteeringChip?.(data.text || "");
       break;
+    case "plan":
+      chatView.setPlan?.(data.steps);
+      break;
     case "memory": {
       const added = Number(data.added) || 0;
       const removed = Number(data.removed) || 0;

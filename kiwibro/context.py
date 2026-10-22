@@ -522,7 +522,10 @@ class ContextEngine:
 
             while self._used(raw, model) > budget and len(history) > MIN_KEEP_MESSAGES:
                 keep = max(MIN_KEEP_MESSAGES, len(history) // 2)
-                history = self._truncate(history, keep)
+                shorter = self._truncate(history, keep)
+                if len(shorter) >= len(history):  # only the kept request is left to cut
+                    break
+                history = shorter
                 messages = build_llm_messages(
                     combine_system_prompt(system_prompt, conversation["summary"]), history
                 )
@@ -645,7 +648,10 @@ class ContextEngine:
         """
         if len(history) <= MIN_KEEP_MESSAGES:
             return []
-        candidates = history[:-MIN_KEEP_MESSAGES]
+        # Never summarise the request being worked on: a long tool turn would otherwise
+        # fold the user's own message into the summary and leave the model without it.
+        newest_user = max((i for i, m in enumerate(history) if m.get("role") == "user"), default=len(history))
+        candidates = history[: min(len(history) - MIN_KEEP_MESSAGES, newest_user)]
         # Hysteresis: compact down to ~60% of the trigger, not just under it.
         # Compaction rewrites the prompt prefix (full re-prefill on the
         # server), so it should happen rarely and buy many turns of headroom.
@@ -692,13 +698,16 @@ class ContextEngine:
         new_db = self.db.list_messages(conversation_id, after_seq=prepared.last_seq)
         if not new_db:
             return prepared
-        if any(m["seq"] <= conversation["summary_through_seq"] for m in new_db):
-            return self.prepare(conversation_id, model, system_prompt, reserve_tokens=prepared.reserve)
         appended = build_llm_messages("", new_db)
         raw = prepared.raw_sum + raw_message_sum(appended)
         used = self._used(raw, model)
-        if prepared.trigger and used > prepared.trigger:
-            return self.prepare(conversation_id, model, system_prompt, reserve_tokens=prepared.reserve)
+        if any(m["seq"] <= conversation["summary_through_seq"] for m in new_db) or (
+            prepared.trigger and used > prepared.trigger
+        ):
+            # Compaction mid-turn: the turn's note (time, memory, directives, plan) stays on.
+            return self.prepare(
+                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve
+            )
         stats = context_stats(used, prepared.budget)
         return PreparedContext(
             messages=prepared.messages + appended,
@@ -734,11 +743,15 @@ class ContextEngine:
         return result
 
     @staticmethod
-    def _truncate(history: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    def _truncate(history: list[dict[str, Any]], keep: int, *, keep_request: bool = True) -> list[dict[str, Any]]:
         kept = _clean_leading_boundary(history[-keep:])
         # Never start with an assistant tool-call message whose tool results were cut off.
         while kept and kept[0].get("role") == "assistant" and kept[0].get("tool_calls"):
             kept = _clean_leading_boundary(kept[1:])
+        newest_user = next((m for m in reversed(history) if m.get("role") == "user"), None)
+        if keep_request and newest_user is not None and not any(m is newest_user for m in kept):
+            # Keep what the user asked for (chat templates also reject a history without a user turn).
+            kept = [newest_user, *kept]
         return kept
 
     # --- summarisation & recovery -----------------------------------------
@@ -924,7 +937,8 @@ class ContextEngine:
         history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
         if len(history) <= keep:
             return False
-        kept = self._truncate(history, keep)
+        # A summary boundary cannot skip messages, so the request is not kept back here.
+        kept = self._truncate(history, keep, keep_request=False)
         if not kept:
             return False
         boundary_seq = kept[0]["seq"] - 1

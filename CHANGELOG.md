@@ -2,6 +2,70 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [2.2.0] — 2026-10-22
+
+Whole requests on small local models: "tell me about X, then search the web for Y, and
+finally write a doc at this location" is split, done step by step, checked on disk and
+finished, without asking for permission it does not need, searching in circles or
+looping on its own words.
+
+### Added
+
+- **Turn plan** (`plan.py`, no model calls). A request is split into ordered steps
+  (sequencing words, sentences, list items) and each is classified: answer, web, write,
+  run, read or other. The steps and the exact path to use ride in the per-turn note;
+  the UI shows them as a checklist that ticks off (SSE `plan`, `done.plan`). When a
+  call finishes a step, the tool result says what is next, or that every tool step is
+  done (files checked on disk) and which parts of the reply are still missing. At the
+  end, code verifies the plan (the file exists where asked and is not empty, searches
+  found something, each explained topic is in the reply); what is left becomes one
+  transient nudge (at most two), and a turn that still ends short says so in one line.
+  A plan that checks out skips the generic self-check round.
+- **Places the user names.** "Write it to ~/Desktop/notes/pi.md" or "save it on my
+  desktop" (XDG-aware) now works: that call runs confined to the named folder and is
+  graded there, so creating the file needs no approval in smart mode. A named file may
+  be written or edited; a named folder allows new files only. A model that drops the
+  folder (`pi.md`) is routed to the named file. Home itself, credentials, start-up
+  files, system folders and Kiwibro's data are never reachable this way.
+- **Research pacing.** A search that nearly repeats one from earlier in the turn is
+  refused with a pointer to its results; after three rounds of searching the model is
+  told to answer, after five (or one round after the plan's tool steps are done)
+  searching stops for the turn. Pages an earlier search of the turn already showed
+  keep their title and URL but not their snippet (less prefill per round).
+
+### Changed
+
+- **Repetition loops are cut early and the reply continues.** A block of up to three
+  lines repeated ("**The fix**" + the same bullet, seen live a dozen times in a
+  bulletin) is cut at its third copy instead of after 12 identical lines. The good
+  start is kept and continued with anti-repetition sampling (`repeat_penalty`,
+  `frequency_penalty`, that request only; the KV-cached prefix still applies) instead
+  of regenerating everything; the stored reply is what the user saw. Deliberation
+  loops are still cleared and redone.
+- **Thinking has a budget when it is time to act.** With a planned tool step open, or
+  after tool results, a request may think 6,000 characters; past that it is retried once
+  with thinking off and told the exact next step. Live, a 4B model had drafted the same
+  file in its thinking for 20 minutes without ever calling `write_file`.
+- **Switching models frees memory.** The model Kiwibro loaded for the previous
+  selection is unloaded before the new one loads; models you loaded yourself in
+  LM Studio are never touched.
+- While a planned file is still unwritten, the reply cap rises to 6,144 tokens (within
+  the window's free room), so thinking plus the whole file fit in one call.
+- A file call outside the workspace that the user did not name is refused at once,
+  without an approval card for a call that could not run.
+- Greetings and thanks run no tools.
+
+### Fixed
+
+- A write the user explicitly placed on the Desktop asked for approval and then failed
+  with "path is outside the workspace" even when approved (live: 16 minutes, no file).
+  Now: 6 minutes, file written, no prompt.
+- A tool call cut off by the reply limit (`finish_reason: length`) was repaired and run,
+  saving a truncated file; it is now refused and redone.
+- Compaction during a long tool turn could summarise the user's own request away (and
+  leave chat templates without a user turn); the request is now always kept, and a
+  mid-turn compaction keeps the turn's note (memory, directives, plan).
+
 ## [2.1.0] — 2026-10-22
 
 Smooth sessions on small local models: the model is ready before the first message,

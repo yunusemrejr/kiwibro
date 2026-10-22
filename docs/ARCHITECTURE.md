@@ -5,7 +5,7 @@ Kiwibro is a local-first AI agent for Linux: a **Python Flask** backend serving 
 **LM Studio** on `127.0.0.1:1234` (OpenAI-compatible API). No cloud, no accounts,
 no external CDNs, no bundled JS frameworks.
 
-Version 1.1.0 · MIT · Python 3.10+ · Flask 3
+Version 2.2.0 · MIT · Python 3.10+ · Flask 3
 
 ---
 
@@ -261,7 +261,10 @@ default); a background request in between did not evict a chat's warm prefix.
   starts mid-job waits for it when the prefix is its own (status *Getting the model
   ready*) and cancels it otherwise: `prefill` shuts the socket down, because LM Studio
   sends nothing until the first token. Chats estimated above 24k tokens are not
-  prefilled ahead. The header's model dot pulses amber while a job runs
+  prefilled ahead. **Switching models** unloads the model Kiwibro loaded for the
+  previous selection before loading the new one (two resident 4B models made this
+  laptop swap); models the user loaded in LM Studio and helper leases are never
+  touched. The header's model dot pulses amber while a job runs
   (`GET /api/models/ready`).
 - **LM Link.** Models on linked devices appear in the local server's lists like local
   ones (no device field; a key present on two devices is listed twice in
@@ -347,7 +350,10 @@ Automatic compaction (`ContextEngine.prepare`):
    tokens). Repeat up to 3 passes if needed.
 2. If still over: drop old tool results first, then hard-trim oldest messages, and
    set a `trimmed` flag. The user sees only a subtle "context compacted" chip.
-3. Keep the newest user message and the last assistant reply always.
+3. Keep the newest user message and the last assistant reply always. Compaction never
+   summarises the request being worked on (a long tool turn would otherwise fold the
+   user's own message into the summary), hard-trimming keeps it, and a mid-turn
+   compaction (`extend` past the trigger) keeps the turn's note.
 4. On LM Studio context-limit HTTP 400: summarise half of the remaining history and
    retry; after 2 failures truncate to system prompt + last 6 messages and retry.
 
@@ -556,6 +562,60 @@ following instructions after compaction and topic switches; course changes
 work (3+ write/exec actions, smart/autonomous) the model gets one transient
 checklist from the ledger to verify its work before finishing.
 
+Doing a whole request (`plan.py`): "tell me what X is, then search the web for Y,
+and finally write a doc at ~/Desktop/notes/y.md" is split by code into ordered steps
+(sequencing words, sentences, list items; what the user says before the first
+instruction is context) and each step is classified: *answer*, *web*, *write*, *run*,
+*read* or *other* (a constraint code cannot check). A write or read step gets its
+target from the message: a path, a place ("on my desktop", from `user-dirs.dirs`) plus
+a file name, or a place alone. No model call is involved.
+
+- **Steps in view.** With several steps, or a place outside the workspace, the steps
+  and the exact path to use ride in the per-turn note. The UI shows them as a
+  checklist (SSE `plan`), ticked off as they finish.
+- **Places the user named.** A file tool whose path points at a file the user named
+  in this message runs in a workspace rooted at that file's folder, so the call is
+  confined and graded there (a new file is *low*: no approval in smart mode). A named
+  file may be written or edited; a named folder ("on my desktop") allows reading and
+  new files only, never its existing files. A model that drops the folder
+  (`raspberry.md`) is routed to the named file. Home itself, credentials, start-up
+  files, system folders and Kiwibro's data are never targets. A path outside the
+  workspace that the user did not name is refused at once, without an approval card
+  for a call that could not run.
+- **Progress on the tool result.** When a call completes a step (a search that found
+  something, a write to the target), one line is appended to that round's last tool
+  result: what is next, or that every tool step is done with the files checked on
+  disk and only the parts of the reply not yet given. It is stored, so the next
+  request's prefix matches what LM Studio has cached.
+- **Verified finish.** When the model stops, code checks the plan: the target file
+  exists and is not (almost) empty, web steps searched, each explain-step's topic
+  appears in the reply. What is left becomes one transient nudge (at most two per
+  turn); a plan that checks out ends the turn without the generic self-check round,
+  which only runs for steps code cannot check. A turn that still ends with open steps
+  says so in one honest line.
+- **Research pacing.** A search nearly repeating one made earlier in the turn (Jaccard
+  ≥ 0.6 on its words) is refused with a pointer to the results above. After three
+  rounds of searching the result says to answer; after five, or one round after the
+  plan's tool steps are done, searches are refused. Seen live: a 4B model searched
+  six rounds of near-identical queries ("let me get the details, then produce the
+  bulletin") for 30 minutes and never wrote the bulletin. A page that an earlier search
+  of the turn already showed keeps its title and URL but not its snippet
+  (`research.drop_seen_snippets`): every 500 prompt tokens cost ~15 s of prefill here.
+- **Whole files in one call.** While a planned file is unwritten the reply cap rises
+  to 6,144 tokens (within the window's free room), so thinking plus the file fit. A
+  call cut off by the cap (`finish_reason: length`) is refused instead of run, since
+  repaired JSON would save a truncated file.
+- **Thinking budget.** A request that should act (a planned tool step is open, or tool
+  results are in) may stream 6,000 characters of reasoning before it does; past that it
+  is cut and retried once with thinking off and `prompts.ACT_NOW` naming the next step.
+  Later rounds think again. Seen live: `spark-x2.6-4b` drafted the same file in its
+  thinking for 20 minutes (29,500 characters, the call written out inside the
+  reasoning) and never called `write_file`. Good rounds measured 150–3,500 characters.
+  Switching thinking off re-prefills the prompt once for this model (47 s for a 1.6k-token
+  prompt; a `/no_think` soft switch is ignored), still far cheaper than an unbounded think.
+- **Greetings need no tools.** For "hi" or "thanks" tool calls are refused with a
+  one-line reason (small models otherwise read files or the task board to say hello).
+
 Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
 
 - **Grading.** `safety.classify_command` reads a shell command the way bash does:
@@ -593,12 +653,19 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   round limit. Refusing keeps the tool list, and so the KV-cached prefix, intact.
 - **Degenerate output.** `inference.is_degenerate` watches the streamed tail of
   content and reasoning (near content-free filler, a unit repeated end to end, the
-  same sentence line after line), and every 250 characters `inference.is_looping`
+  same sentence line after line, and `loop_start`: a block of up to three lines
+  repeated, as in "**The fix**" + the same bullet a dozen times, which it cuts at the
+  third copy; markdown markers and case are ignored, fenced code is skipped, lists,
+  FAQs and tables never match), and every 250 characters `inference.is_looping`
   checks for circling deliberation (≥0.15 five-word-phrase recurrence with ≥4 hedges
   per 100 words; code blocks ignored). The agent raises out of the stream (closing it
-  stops LM Studio generating), rewrites the visible text to the meaningful prefix
-  and retries once with `prompts.DEGENERATE_NUDGE`; a second collapse ends the round
-  with `DEGENERATE_GAVE_UP`. Nothing degenerate is stored.
+  stops LM Studio generating). A reply that repeated itself keeps its good start (up
+  to the block's first copy) and is *continued*: the start goes back as an assistant
+  message with `prompts.DEGENERATE_CONTINUE` and anti-repetition sampling
+  (`repeat_penalty` 1.15, `frequency_penalty` 0.3) for that request only; the stored
+  reply is the start plus the continuation, as the user saw it. A circling reply is
+  cleared and redone with `prompts.DEGENERATE_NUDGE`. A second collapse ends the round
+  with what is good (or `DEGENERATE_GAVE_UP`). Nothing degenerate is stored.
 - **Paths.** Every file-tool path is resolved and must stay inside the workspace;
   a conversation can bind its own folder (`workspaces.py`, schema v3), and the
   model may switch folders on its own only to a folder the user's message names.

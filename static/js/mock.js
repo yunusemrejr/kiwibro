@@ -1008,6 +1008,17 @@ Ask me to *find something online*, *edit a file*, or *run a command* — I'll as
 
   async _toolFlow({ turn, send, wait, signal }) {
     const conversation = turn.conversation;
+    // Mirrors plan.TurnPlan.statuses() for "search…, summarise…, then save a note".
+    const steps = [
+      { n: 1, text: "look up the latest kiwi conservation news", kind: "web", done: false },
+      { n: 2, text: "summarise it in a few lines", kind: "answer", done: false },
+      { n: 3, text: "save a short note in the workspace", kind: "write", done: false, target: "kiwi-notes.md" },
+    ];
+    const plan = (...done) => {
+      for (const n of done) steps[n - 1].done = true;
+      send("plan", { steps: steps.map((step) => ({ ...step })) });
+    };
+    plan();
     send("status", { phase: "thinking", label: "Thinking" });
     await wait(360);
     const reasoning =
@@ -1036,6 +1047,7 @@ Ask me to *find something online*, *edit a file*, or *run a command* — I'll as
       duration_ms: 842,
       preview: SEED_NEWS.map((item) => `${item.title} — ${item.url}`).join("\n"),
     });
+    plan(1);
     this._addMessage(conversation, {
       role: "assistant",
       content: "",
@@ -1142,6 +1154,7 @@ I'll save these three points for you.`;
       duration_ms: 96,
       preview: "Wrote kiwi-notes.md (312 bytes)",
     });
+    plan(3);
     this._addMessage(conversation, {
       role: "tool",
       content: "Wrote kiwi-notes.md (312 bytes)",
@@ -1154,6 +1167,7 @@ I'll save these three points for you.`;
       "Saved to `kiwi-notes.md` in your workspace. Want me to draft a short update for the team too?";
     await this._streamText(turn, send, wait, "delta", finale, { size: 5, delay: 22 });
     this._addMessage(conversation, { role: "assistant", content: finale, model: turn.model });
+    plan(2);
 
     send("context", { used: 5840, budget: 30720, percent: 19, compacted: false });
     this.memories.unshift({

@@ -15,7 +15,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkpoints, config, delegate, directives, guard, inference, library, prompts, safety, toolcall, tools, workspaces
+from . import (
+    checkpoints, config, delegate, directives, guard, inference, library, plan, prompts, research, safety, toolcall, tools,
+    workspaces,
+)
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
     estimate_tokens,
@@ -34,6 +37,8 @@ log = logging.getLogger(__name__)
 # a smaller set is sent), and one user message at most this much (else it is paged).
 TOOLS_SHARE_MAX = 0.35
 USER_MESSAGE_SHARE = 0.4
+# Reply cap while a planned document is still unwritten (thinking + the whole file in one call).
+WRITE_ROUND_MAX_TOKENS = 6144
 
 
 class BusyError(Exception):
@@ -253,6 +258,15 @@ class Turn:
     reserve: int = 0  # prompt tokens the tool schemas take (kept out of the message budget)
     reviewed: bool = False  # the one end-of-turn self-check has been offered
     pending_review: str = ""  # checklist nudge for the next round (transient)
+    plan: plan.TurnPlan | None = None  # the request's steps, when it has several or names a place
+    reply_text: str = ""  # everything the model said this turn (the plan checks answers against it)
+    truncated_calls: bool = False  # this round's tool calls were cut off by max_tokens
+    searches: list[tuple[frozenset[str], str]] = field(default_factory=list)  # (terms, query) this turn
+    search_rounds: int = 0  # rounds that ran a web search
+    plan_done_at: int | None = None  # search_rounds when every planned tool step was done
+    seen_urls: set[str] = field(default_factory=set)  # search results already shown this turn
+    think_chars: int = 0  # reasoning streamed by the current request
+    think_budget: int = 0  # reasoning allowed before acting (0: no limit for this request)
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -516,6 +530,7 @@ class AgentManager:
         tool_list = self._tool_list(model, settings, model_info)
         turn.reserve = estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) if tool_list else 0
         self._page_long_message(turn, user_message, model)
+        turn.plan = self._plan_for(turn, settings)
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
@@ -527,6 +542,8 @@ class AgentManager:
         else:
             self._emit_meta(turn, conversation, settings, model=model, prepared=prepared)
             self._emit_context(turn, prepared)
+        if turn.plan is not None:  # after meta, which is always the first event
+            turn.emit("plan", {"steps": turn.plan.statuses()})
         self._raise_if_aborted(turn)
 
         if self.readiness is not None:
@@ -601,17 +618,33 @@ class AgentManager:
                 turn.last_message_id = assistant_message["id"]
             turn.partial_text = ""
             turn.partial_reasoning = ""
+            if result.content:
+                turn.reply_text += "\n" + result.content
             if not result.tool_calls:
-                turn.pending_review = self._review_nudge(turn, settings) if round_index < max_rounds - 1 else ""
+                last_round = round_index >= max_rounds - 1
+                if last_round:
+                    turn.pending_review = ""
+                elif turn.plan is not None:
+                    # Checked in code (files on disk, searches made, topics answered); the generic
+                    # self-check round only runs for steps code cannot check.
+                    turn.pending_review = turn.plan.followup(turn.reply_text) or (
+                        "" if turn.plan.checkable else self._review_nudge(turn, settings)
+                    )
+                else:
+                    turn.pending_review = self._review_nudge(turn, settings)
                 if not turn.pending_review:
+                    self._close_plan(turn, model)
                     break
-                turn.emit("status", {"phase": "thinking", "label": "Checking the work"})
+                turn.emit("status", {"phase": "thinking", "label": "Finishing the request" if turn.plan else "Checking the work"})
                 continue
             turn.tool_rounds = round_index + 1
+            turn.truncated_calls = result.finish_reason == "length"
             self._handle_tool_calls(turn, result.tool_calls, settings)
             self._raise_if_aborted(turn)
             if round_index == max_rounds - 1:
                 note = "I reached the tool-use limit for this turn, so I stopped here."
+                left = turn.plan.summary_line(turn.reply_text) if turn.plan is not None else ""
+                note = f"{note} {left}" if left else note
                 note_message = self.db.add_message(
                     turn.conversation_id, "assistant", note, model=model, meta={"truncated": True}
                 )
@@ -641,8 +674,36 @@ class AgentManager:
                     "duration_ms": int((time.monotonic() - turn.started_at) * 1000),
                 },
                 "inference": turn.inference or None,
+                **({"plan": turn.plan.statuses()} if turn.plan is not None else {}),
             },
         )
+
+    def _plan_for(self, turn: Turn, settings: dict[str, Any]) -> plan.TurnPlan | None:
+        """The request's step plan (None for chat, plain questions or when tools are off)."""
+        if not settings.get("agent_enabled", True):
+            return None
+        try:
+            built = plan.build(turn.message, self._workspace(turn.conversation_id).root)
+        except Exception:  # the plan is guidance; it must never break a turn
+            log.warning("plan failed", exc_info=True)
+            return None
+        if built is not None:
+            log.info("turn %s plan: %s", turn.conversation_id, [(s.kind, s.short) for s in built.steps])
+        return built
+
+    def _close_plan(self, turn: Turn, model: str) -> None:
+        """An honest closing line when the model stopped with steps still open."""
+        if turn.plan is None:
+            return
+        turn.plan.settle(turn.reply_text)
+        turn.emit("plan", {"steps": turn.plan.statuses()})
+        left = turn.plan.summary_line(turn.reply_text)
+        if not left:
+            return
+        log.info("turn %s ended with open steps: %s", turn.conversation_id, left)
+        note_message = self.db.add_message(turn.conversation_id, "assistant", left, model=model, meta={"plan_open": True})
+        turn.last_message_id = note_message["id"]
+        turn.emit("delta", {"text": "\n\n" + left})
 
     def _review_nudge(self, turn: Turn, settings: dict[str, Any]) -> str:
         """One end-of-turn self-check against the directive ledger, after real work.
@@ -674,7 +735,7 @@ class AgentManager:
     ) -> ChatResult:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
-        max_tokens = int(settings.get("max_output_tokens", config.DEFAULT_MAX_OUTPUT_TOKENS))
+        max_tokens = self._max_tokens(turn, prepared, settings)
         if turn.thinking is None:  # decided once per turn: flipping mid-turn re-prefills everything
             turn.thinking = inference.turn_reasoning(
                 settings.get("reasoning"),
@@ -686,12 +747,30 @@ class AgentManager:
         think = turn.thinking
         extra = inference.reasoning_payload(inference.model_profile(model, prepared.model_info), think=think)
         attempts = 0
+        collapsed = False  # the reply collapsed once; this request recovers it
+        kept = ""  # the good start of a reply that began repeating itself (continued, not redone)
+        overthought = False  # thought past the budget without acting; retried with thinking off
+        must_act = round_index > 0 or (turn.plan is not None and bool(turn.plan.remaining()))
         while True:
             self._raise_if_aborted(turn)
             messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
             if nudge:  # transient: steers this one request, never stored
                 messages = [*messages, {"role": "user", "content": nudge}]
-            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)
+            request_extra = extra
+            if collapsed:  # continue the good start without repeating it (also transient)
+                recovery = ([{"role": "assistant", "content": kept}, {"role": "user", "content": prompts.DEGENERATE_CONTINUE}]
+                            if kept else [{"role": "user", "content": prompts.DEGENERATE_NUDGE}])
+                messages = [*messages, *recovery]
+                request_extra = {**extra, **inference.ANTI_REPEAT}
+            if overthought:  # act without thinking this once (also transient)
+                messages = [*messages, {"role": "user", "content": prompts.ACT_NOW.format(step=self._next_step(turn))}]
+                request_extra = {**request_extra, **inference.reasoning_payload(
+                    inference.model_profile(model, prepared.model_info), think=False)}
+            no_thinking = request_extra.get("reasoning_effort") == "none"
+            turn.think_chars, turn.think_budget = 0, (
+                inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
+            )
+            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)  # sampling is not prompt
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked = "", 0
@@ -706,26 +785,41 @@ class AgentManager:
                     on_reasoning=self._reasoning_callback(turn),
                     on_rewrite=self._rewrite_callback(turn),
                     abort=turn.abort,
-                    extra=extra or None,
+                    extra=request_extra or None,
                 )
                 turn.timer.finish()
                 self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
                 self._rescue_tool_calls(turn, result, settings)
+                if kept:  # the stored reply is what the user saw: the good start, then the rest
+                    result.content = f"{kept}\n\n{result.content.lstrip()}" if result.content.strip() else kept
                 return result
-            except inference.DegenerateOutput:
-                # Cut off (closing the stream stops LM Studio generating), clean the visible
-                # text and retry once with a corrective nudge on the same cached prefix.
+            except inference.Overthinking:
                 turn.timer.finish()
-                clean = inference.trim_degenerate(turn.partial_text)
-                turn.partial_text = clean
-                turn.emit("rewrite", {"text": clean, "reasoning": ""})
-                log.info("turn %s round %s: output degenerated; cut off", turn.conversation_id, round_index)
-                if nudge == prompts.DEGENERATE_NUDGE:  # retried once already: end the round honestly
+                log.info("turn %s round %s: thought %s chars without acting; acting with thinking off",
+                         turn.conversation_id, round_index, turn.think_chars)
+                if overthought:  # thinking could not be switched off: end the round, the plan follows up
+                    return ChatResult(content=turn.partial_text, finish_reason="overthinking")
+                overthought = True
+                turn.emit("status", {"phase": "thinking", "label": "Acting on it"})
+            except inference.DegenerateOutput as collapse:
+                # Cut off (closing the stream stops LM Studio generating). A reply that began
+                # well and then repeated itself keeps its start and is continued with
+                # anti-repetition sampling; a circling one is cleared and redone. Both reuse
+                # the cached prefix. A second collapse ends the round with what is good.
+                turn.timer.finish()
+                clean = "" if collapse.circling else inference.trim_degenerate(turn.partial_text)
+                log.info("turn %s round %s: output %s; cut off", turn.conversation_id, round_index,
+                         "circled" if collapse.circling else "repeated itself")
+                if collapsed:
+                    turn.partial_text = clean
+                    turn.emit("rewrite", {"text": clean, "reasoning": ""})
                     if not clean:
                         turn.partial_text = prompts.DEGENERATE_GAVE_UP
                         turn.emit("delta", {"text": prompts.DEGENERATE_GAVE_UP})
                     return ChatResult(content=turn.partial_text, finish_reason="degenerate")
-                nudge = prompts.DEGENERATE_NUDGE
+                collapsed, kept = True, clean
+                turn.partial_text = f"{clean}\n\n" if clean else ""
+                turn.emit("rewrite", {"text": turn.partial_text, "reasoning": ""})
             except ContextLimitError:
                 attempts += 1
                 if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
@@ -743,6 +837,17 @@ class AgentManager:
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
                 turn.partial_reasoning = ""
+
+    @staticmethod
+    def _max_tokens(turn: Turn, prepared: PreparedContext, settings: dict[str, Any]) -> int:
+        """The reply cap for one request. While a document still has to be written, the
+        cap is raised (within the window's free room) so thinking plus the file's text fit
+        in one tool call; a call cut off mid-content cannot run and costs a whole round."""
+        cap = int(settings.get("max_output_tokens", config.DEFAULT_MAX_OUTPUT_TOKENS))
+        if turn.plan is None or not any(step.kind == "write" for step in turn.plan.remaining()):
+            return cap
+        room = prepared.context_length - prepared.used - turn.reserve - 256
+        return max(cap, min(WRITE_ROUND_MAX_TOKENS, room))
 
     @staticmethod
     def _note_round(
@@ -822,7 +927,7 @@ class AgentManager:
         if turn.loop_checked >= 250:  # the phrase-recurrence check is costlier: run it in steps
             turn.loop_checked = 0
             if inference.is_looping(turn.stream_tail):
-                raise inference.DegenerateOutput()
+                raise inference.DegenerateOutput(circling=True)
 
     def _reasoning_callback(self, turn: Turn) -> Callable[[str], None]:
         def on_reasoning(text: str) -> None:
@@ -831,6 +936,9 @@ class AgentManager:
             if turn.timer is not None:
                 turn.timer.mark_first()
             self._guard_stream(turn, text)  # thinking loops burn the budget too
+            turn.think_chars += len(text)
+            if turn.think_budget and turn.think_chars > turn.think_budget and not turn.partial_text.strip():
+                raise inference.Overthinking()
             turn.partial_reasoning += text
             turn.emit("reasoning", {"text": text})
 
@@ -993,7 +1101,8 @@ class AgentManager:
             # working window on small-context models.
             max_tokens=self.context.memory_cap_for(turn.model) if turn.model else 800,
         )
-        blocks = [inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id)]
+        plan_note = turn.plan.note() if turn.plan is not None else ""
+        blocks = [inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id), plan_note]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
 
@@ -1073,18 +1182,22 @@ class AgentManager:
         a turn is refused (loop guard) instead of re-executed.
         """
         prepared_calls: list[dict[str, Any]] = []
-        for call in calls:
+        for index, call in enumerate(calls):
             self._raise_if_aborted(turn)
-            prepared_calls.append(self._prepare_tool_call(turn, call, settings))
+            # max_tokens can only cut off the last call of a reply.
+            cut_off = turn.truncated_calls and index == len(calls) - 1
+            prepared_calls.append(self._prepare_tool_call(turn, call, settings, cut_off=cut_off))
             self._raise_if_aborted(turn)
         runnable = [item for item in prepared_calls if item["result"] is None]
+        searched = any(item["name"] in plan.SEARCH_TOOLS for item in runnable)
+        turn.search_rounds += searched
         outcomes: dict[str, tuple[ToolResult, int]] = {}
 
         def run_one(item: dict[str, Any]) -> tuple[str, ToolResult, int]:
             started = time.monotonic()
             name, args = item["name"], item["args"]
             context = ToolContext(
-                workspace=self._workspace(turn.conversation_id),
+                workspace=item["workspace"] or self._workspace(turn.conversation_id),
                 memory=self.memory,
                 search=self.search,
                 conversation_id=turn.conversation_id,
@@ -1117,6 +1230,7 @@ class AgentManager:
             call_id, result, duration = run_one(item)
             outcomes[call_id] = (result, duration)
             self._raise_if_aborted(turn)
+        finished: list[tuple[dict[str, Any], ToolResult, int]] = []
         for item in prepared_calls:
             if item["result"] is not None:
                 result, duration = item["result"], 0
@@ -1125,25 +1239,61 @@ class AgentManager:
             turn.tool_calls_made += 1
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
+            if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
+                result = replace(result, content=f"{result.content}\n[Location: {item['location']}]")
+            if item["name"] in ("web_search", "multi_search") and result.ok:
+                result = replace(result, content=research.drop_seen_snippets(result.content, turn.seen_urls))
             turn.failure_streak = 0 if result.ok else turn.failure_streak + 1
             if turn.failure_streak == FAILURE_COACH_AT:
                 result = replace(result, content=f"{result.content}\n{prompts.FAILURE_COACH.format(count=FAILURE_COACH_AT)}")
+            finished.append((item, result, duration))
+        # What is next rides on the round's last result: stored with it, so the next
+        # request's prefix matches what the server already has cached.
+        progress = self._advance_plan(turn, finished)
+        if searched and turn.search_rounds == plan.SEARCH_ROUNDS_SOFT:
+            progress = "\n".join(filter(None, (progress, prompts.SEARCH_ENOUGH.format(count=turn.search_rounds))))
+        for position, (item, result, duration) in enumerate(finished):
+            if progress and position == len(finished) - 1:
+                result = replace(result, content=f"{result.content}\n{progress}")
             self._record_tool_result(turn, item["id"], item["name"], result, duration)
 
+    def _advance_plan(self, turn: Turn, finished: list[tuple[dict[str, Any], ToolResult, int]]) -> str:
+        """Tick off the plan steps this round completed; the progress line ('' if none)."""
+        if turn.plan is None:
+            return ""
+        advanced = False
+        for item, result, _duration in finished:
+            ok = result.ok and (result.meta or {}).get("count") != 0  # a search that found nothing
+            written = None
+            if ok and item["name"] in plan.WRITE_TOOLS:
+                written = plan.written_path(item["name"], item["args"], item["workspace"] or self._workspace(turn.conversation_id))
+            advanced = turn.plan.observe(item["name"], item["args"], ok, written) or advanced
+        if not advanced:
+            return ""
+        if not turn.plan.remaining() and turn.plan_done_at is None:
+            turn.plan_done_at = turn.search_rounds
+        turn.emit("plan", {"steps": turn.plan.statuses()})
+        return turn.plan.progress_line(turn.reply_text)
+
     def _prepare_tool_call(
-        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]
+        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False
     ) -> dict[str, Any]:
         """Rescue, validate, safety-check and approve one call (no execution)."""
         rescued = toolcall.prepare_call(call, tools.TOOL_SPECS)
         name = rescued.name
         item: dict[str, Any] = {
             "id": rescued.id, "name": name, "args": rescued.args, "notes": rescued.notes,
-            "result": None, "decision": None, "approved": False,
+            "result": None, "decision": None, "approved": False, "workspace": None, "location": "",
         }
 
         def refuse(content: str, preview: str) -> dict[str, Any]:
             item["result"] = ToolResult(ok=False, content=content, preview=preview)
             return item
+
+        def refuse_shown(content: str, preview: str, risk: str) -> dict[str, Any]:  # refused before approval
+            turn.emit("tool_call", {"id": item["id"], "name": name, "args": item["args"], "risk": risk,
+                                    "requires_approval": False})
+            return refuse(content, preview)
 
         if turn.failure_streak >= FAILURE_PAUSE_AT:  # stop a guessing loop; make the model answer
             return refuse(prompts.TOOLS_PAUSED, "Tools paused after repeated failures")
@@ -1153,27 +1303,42 @@ class AgentManager:
                 raise ValueError(rescued.error or f"unknown tool: {name}")
             item["args"] = tools.validate_args(name, rescued.args)
         except ValueError as exc:
-            turn.emit(
-                "tool_call",
-                {"id": item["id"], "name": name, "args": item["args"], "risk": "read", "requires_approval": False},
-            )
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
-            return refuse(message, message.splitlines()[0])
+            return refuse_shown(message, message.splitlines()[0], "read")
+        if cut_off and spec.risk in ("write", "exec"):  # repaired JSON would save a truncated file
+            return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
+        pacing = self._pacing_refusal(turn, name, item["args"])
+        if pacing:
+            return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
+        workspace, state = self._workspace(turn.conversation_id), turn.safety
+        route = turn.plan.route(name, item["args"], workspace) if turn.plan is not None else None
+        if route is not None:  # a file or folder the user named outside the workspace
+            workspace, item["args"], item["location"] = route.workspace, route.args, route.shown
+            turn.safety.setdefault("counters", {"writes": 0, "deletes": 0})  # shared by the copy below
+            state = {**turn.safety, "workspace": str(workspace.root)}
+        elif name in plan.ROUTED_TOOLS and isinstance(item["args"].get("path"), str):
+            try:  # outside the workspace and not named by the user: refuse now, never ask for a call that cannot run
+                workspace.resolve(item["args"]["path"])
+            except SandboxError as exc:
+                return refuse_shown(f"Error: {exc}. {prompts.OUTSIDE_HINT}", str(exc), spec.risk)
+        item["workspace"] = workspace
         decision = safety.decide(
-            self._settings(), name, item["args"], workspace=self._workspace(turn.conversation_id), turn_state=turn.safety, risk=spec.risk
+            self._settings(), name, item["args"], workspace=workspace, turn_state=state, risk=spec.risk
         )
         requires = decision.mode == "ask"
         allowed_here = requires and name in self._chat_allowed.get(turn.conversation_id, ())
         if allowed_here:
             requires = False
             decision = replace(decision, mode="auto", reasons=(*decision.reasons, "allowed for this chat"))
+        # The user sees where a routed call really goes, not its folder-relative path.
+        shown_args = {**item["args"], "path": item["location"]} if item["location"] else item["args"]
         turn.emit(
             "tool_call",
             {
                 "id": item["id"],
                 "name": name,
-                "args": item["args"],
+                "args": shown_args,
                 "risk": spec.risk,
                 "requires_approval": requires,
                 **decision.payload(),
@@ -1193,12 +1358,41 @@ class AgentManager:
                 "Duplicate tool call stopped",
             )
         if requires:
-            if not self._request_approval(turn, name, spec.risk, item["args"], decision.payload()):
+            if not self._request_approval(turn, name, spec.risk, shown_args, decision.payload()):
                 return refuse("The user denied permission for this tool call. Do not retry it.", "Denied by user")
             item["approved"] = True
         elif allowed_here:
             item["approved"] = True  # the user's in-chat approval covers it (runs as an approved call)
         return item
+
+    @staticmethod
+    def _next_step(turn: Turn) -> str:
+        """The plan's next open step as an instruction, for the act-now nudge."""
+        left = turn.plan.remaining() if turn.plan is not None else []
+        if left:
+            return f"{left[0].index}. {left[0].short} → {left[0].hint()}."
+        return "make the tool call you need, or answer the user directly."
+
+    @staticmethod
+    def _pacing_refusal(turn: Turn, name: str, args: dict[str, Any]) -> str:
+        """Why a call should not run: a greeting needs no tools, and searching has a budget
+        (near-repeats refused; after the plan's tool steps, one more round). '' to run it."""
+        if plan.is_small_talk(turn.message):
+            return prompts.SMALL_TALK_NO_TOOLS
+        if name not in plan.SEARCH_TOOLS:
+            return ""
+        limit = plan.SEARCH_ROUNDS_MAX
+        if turn.plan_done_at is not None:
+            limit = min(limit, turn.plan_done_at + plan.SEARCH_ROUNDS_AFTER_PLAN)
+        if turn.search_rounds >= limit:
+            return prompts.SEARCH_SPENT
+        terms = plan.search_terms(name, args)
+        earlier = plan.repeated(terms, turn.searches)
+        if earlier is not None:
+            return prompts.SEARCH_REPEATED.format(query=json.dumps(earlier[:120], ensure_ascii=False))
+        query = " | ".join(map(str, args.get("queries") or [])) if name == "multi_search" else str(args.get("query") or "")
+        turn.searches.append((terms, query))
+        return ""
 
     def _folder(self, conversation_id: str | None = None) -> str:
         """The conversation's own folder when it has one, else the Settings workspace."""

@@ -638,3 +638,20 @@ and ping `kiwibro-85` for the push.
 
 - Peer Muse sessions on this workspace were notified on 2026-10-22 and
   asked to register their scope above.
+
+## `kiwibro-9d` — 2.2.0 whole requests (DONE 2026-10-22)
+
+User goal: "tell me about X, then search the web for Y, and finally write a doc at this
+location" must be split, done, verified and stopped — fast, autonomous, light. New
+`kiwibro/plan.py` (deterministic step plan; no model calls) wired into `agent.py`.
+Contracts changed: SSE `plan {steps:[{n,text,kind,done,target?}]}` (after `meta`) and
+`done.plan`; `directives.REQUEST`/`directives.keywords` and
+`workspaces.FORBIDDEN_PLACES` are now public (plan reuses them); `inference.loop_start`,
+`inference.ANTI_REPEAT`, `DegenerateOutput(circling=…)`; `research.drop_seen_snippets`.
+Behaviour: user-named paths outside the workspace are routed (confined to that folder;
+named folder = new files only); unnamed outside paths fail before any approval card;
+search pacing (near-repeat refusal, 3/5-round budget); repetition loops cut at the 3rd
+copy and *continued*; compaction never drops the current request; readiness unloads
+the model it loaded for a previous selection. Suite: 766+ passed (only the known
+`example.com` DNS test fails here). Live (`spark-x2.6-4b`, Think on): the Desktop-doc
+request went from 968 s + failed write to 362 s with the file written and no prompt.

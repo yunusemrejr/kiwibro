@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.

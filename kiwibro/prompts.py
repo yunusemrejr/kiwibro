@@ -55,10 +55,37 @@ DEGENERATE_NUDGE = (
     "reasonable reading of the request and act on it now. If a tool is needed, call it (paths are "
     "relative to the workspace, e.g. `a.txt`); otherwise give a short, direct answer."
 )
+ACT_NOW = "You have thought about this long enough. Act now, without more deliberation: {step}"
+DEGENERATE_CONTINUE = (
+    "Your reply above started repeating itself and was cut off there. Continue it from exactly where it "
+    "stops: do not repeat anything already written, add only what is still missing, and finish it."
+)
 DEGENERATE_GAVE_UP = (
     "I got stuck repeating myself and stopped this reply. Please rephrase or try again; a larger "
     "or less compressed model may also help."
 )
+OUTSIDE_HINT = (
+    "Only a file or folder the user names in their message can be used outside the workspace; "
+    "otherwise use a path inside it."
+)
+CUT_OFF_CALL = (
+    "Error: this call was cut off by the reply length limit before its arguments were complete, so it "
+    "did not run (a truncated file would have been saved). Make the call again with shorter content: "
+    "keep the file concise, or write the first part now and add the rest with a second call."
+)
+SEARCH_REPEATED = (
+    "Not searched: this turn already searched for almost the same thing ({query}). Use those results "
+    "(they are above), search for something clearly different, or answer now."
+)
+SEARCH_ENOUGH = (
+    "[Kiwibro: that is {count} rounds of searching. You most likely have enough: stop searching and "
+    "give the answer from these results; say what is still unknown.]"
+)
+SEARCH_SPENT = (
+    "Not searched: searching is over for this turn. Answer the user now from the results above and "
+    "say what is still unknown."
+)
+SMALL_TALK_NO_TOOLS = "Not run: this message needs no tools. Just reply to the user in a sentence or two."
 TOOLS_PAUSED = (
     "Tool use is paused for the rest of this turn after repeated failures. Answer the user now: say "
     "briefly what you tried, what went wrong and what you need from them."

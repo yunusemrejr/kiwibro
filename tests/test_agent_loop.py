@@ -118,3 +118,33 @@ def test_circling_reply_is_cut_and_retried(env: Env) -> None:
     chat_events(env, "Create a.txt containing kiwi. Make sure it ends with a newline.")
     assert len(env.fake.stream_calls) == 3
     assert (env.workspace / "a.txt").read_text() == "kiwi\n"
+
+
+def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatch) -> None:
+    """The slop loop seen live ("**The fix**" + the same bullet, a dozen times): cut at the third
+    copy, keep the good start and one copy, continue with anti-repetition sampling."""
+    from kiwibro import prompts
+
+    good = "**PHP2Shell bulletin**\n\n- Two critical PHP flaws: CVE-2026-109618 and CVE-2026-109619.\n\n"
+    loop = "**The fix**\n\n- The fix is to update PHP; the original ones are not the same shape.\n\n" * 12
+    calls: list[dict] = []
+
+    def stream_chat(**kwargs):
+        calls.append(kwargs)
+        text = good + loop if len(calls) == 1 else "Patch to PHP 8.5.12 or later today."
+        for start in range(0, len(text), 9):  # streamed in small pieces, as LM Studio does
+            kwargs["on_delta"](text[start:start + 9])
+        return ChatResult(content=text)
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", stream_chat)
+    events, _raw = chat_events(env, "Summarize the PHP2Shell news as a bulletin.")
+    assert len(calls) == 2
+    kept = calls[1]["messages"][-2]
+    assert kept["role"] == "assistant" and kept["content"].startswith("**PHP2Shell bulletin**")
+    assert kept["content"].count("**The fix**") == 1
+    assert calls[1]["messages"][-1]["content"] == prompts.DEGENERATE_CONTINUE
+    assert calls[1]["extra"]["repeat_penalty"] > 1  # anti-repetition sampling, this request only
+    stored = [m for m in env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"]) if m["role"] == "assistant"]
+    assert stored[-1]["content"] == kept["content"] + "\n\nPatch to PHP 8.5.12 or later today."
+    rewrites = [payload["text"] for event, payload in events if event == "rewrite"]
+    assert rewrites == [kept["content"] + "\n\n"]  # the UI drops the loop, keeps the start

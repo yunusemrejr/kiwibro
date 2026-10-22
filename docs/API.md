@@ -159,8 +159,9 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `tool_result` | `{id, name, ok, duration_ms, preview}` | after execution; `preview` ≤ 400 chars |
 | `context` | `{used, budget, percent, compacted}` | after context work |
 | `memory` | `{added, updated, removed}` | optional; extraction is asynchronous after `done`, so the UI refreshes counts from `/api/bootstrap` or `/api/memories` |
+| `plan` | `{steps: [{n, text, kind: "answer"\|"web"\|"write"\|"run"\|"read"\|"other", done, target?}]}` | a request with several steps, or naming a place outside the workspace: after `meta`, then whenever a step finishes, and at the end |
 | `title` | `{id, title}` | auto-title updated |
-| `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null, stats, inference:{ttft_ms, tokens_per_s, prompt_tokens_est, reused_tokens_est, reuse_percent, thinking}\|null}` | end |
+| `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null, stats, inference:{ttft_ms, tokens_per_s, prompt_tokens_est, reused_tokens_est, reuse_percent, thinking}\|null, plan?}` | end (`plan`: the final step statuses, when the turn had a plan) |
 | `error` | `{message, code, recoverable}` | end/failure |
 
 Tool-call loop happens inside this one stream: after each tool result the model is

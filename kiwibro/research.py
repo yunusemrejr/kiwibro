@@ -10,6 +10,7 @@ tasks instead of one search/fetch per round.
 from __future__ import annotations
 
 import logging
+import re
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -108,6 +109,28 @@ def format_search_results(results: list[dict[str, str]]) -> str:
             lines.append(result["snippet"])
         lines.append("")
     return "\n".join(lines).strip()
+
+
+_RESULT_HEAD = re.compile(r"^(?:\d+\.|\[\d+\]) ")
+
+
+def drop_seen_snippets(content: str, seen: set[str]) -> str:
+    """Search output with the snippets of pages already shown this turn left out.
+
+    Different queries keep returning the same pages; each repeat re-sends its snippet,
+    and on a CPU every 500 prompt tokens cost ~15 s of prefill. The title and URL stay
+    (they are what gets cited); ``seen`` collects the URLs shown so far."""
+    blocks = content.split("\n\n")
+    for index, block in enumerate(blocks):
+        lines = block.split("\n")
+        if len(lines) < 2 or not _RESULT_HEAD.match(lines[0]) or not lines[1].startswith(("http://", "https://")):
+            continue
+        if lines[1] in seen:
+            if len(lines) > 2:
+                blocks[index] = f"{lines[0]}\n{lines[1]}\n(already shown above)"
+        else:
+            seen.add(lines[1])
+    return "\n\n".join(blocks)
 
 
 def format_evidence(pages: list[dict[str, Any]]) -> str:

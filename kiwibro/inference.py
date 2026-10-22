@@ -357,13 +357,90 @@ _DEGENERATE_WINDOW = 300
 
 
 class DegenerateOutput(Exception):
-    """Raised from a stream callback when the reply has collapsed into repetition."""
+    """Raised from a stream callback when the reply has collapsed into repetition.
+
+    ``circling`` marks a deliberation loop (nothing worth keeping); otherwise the reply
+    started well and then repeated itself, and its good start is kept and continued."""
+
+    def __init__(self, circling: bool = False) -> None:
+        super().__init__("circling" if circling else "repeating")
+        self.circling = circling
+
+
+class Overthinking(Exception):
+    """Raised from a stream callback when a reply that should act keeps thinking instead."""
+
+
+# Reasoning a request may stream before it acts, when acting is what is left (a planned
+# tool step, or a round after tool results). Good rounds measured live think 150-3,500
+# characters; a 4B model once drafted the same file in its thinking for 20 minutes
+# (29,500 characters) and never made the call. Past the budget the request is retried
+# with thinking off: one re-prefill (the switch renders at the top of the template:
+# measured 47 s for a 1.6k-token prompt) instead of an unbounded think.
+THINK_BUDGET_CHARS = 6000
+
+
+# Anti-repetition sampling for the one request that continues a collapsed reply (LM Studio
+# honours both; sampling does not touch the prompt, so the KV-cached prefix still applies).
+ANTI_REPEAT = {"repeat_penalty": 1.15, "frequency_penalty": 0.3}
+LOOP_MAX_BLOCK = 3  # lines in the repeating unit ("**The fix**" + its bullet is two)
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+_LINE_MARKER = re.compile(r"^(?:[#>*\-+•]+|\d{1,3}[.)])\s*")
+
+
+def _line_key(line: str) -> str:
+    """A line as a loop sees it: markdown markers, emphasis, case and end punctuation ignored."""
+    text = _LINE_MARKER.sub("", re.sub(r"[*_`]+", "", line.strip().lower()))
+    return " ".join(text.split()).rstrip(" .;:,!")
+
+
+def loop_start(text: str, *, repeats: int = 3) -> int | None:
+    """Offset in ``text`` where it began repeating a block of up to three lines, keeping
+    the block's first copy; None when it does not end in such a loop.
+
+    Small models collapse into "**The fix**\\n- The fix is to update PHP…" over and over,
+    sometimes with small wording changes, which exact-period checks miss. The tail counts
+    as a loop when its last lines use at most three distinct lines, at least six of them,
+    one at least ``repeats`` times. Lists, FAQs and code (fenced blocks are skipped) never
+    fit: their lines differ. Trimming text already known to have collapsed uses
+    ``repeats=2`` (the stream it was detected on ran one chunk ahead of it)."""
+    lines: list[tuple[int, str]] = []
+    offset, fenced = 0, False
+    complete = text[: text.rfind("\n") + 1]  # a line still streaming is not a line yet
+    for raw in complete.splitlines(keepends=True):
+        if _FENCE.match(raw):
+            fenced = not fenced
+        elif not fenced and sum(ch.isalnum() for ch in raw) >= 3:
+            lines.append((offset, _line_key(raw)))
+        offset += len(raw)
+    distinct: set[str] = set()
+    start = len(lines)
+    for index in range(len(lines) - 1, -1, -1):
+        key = lines[index][1]
+        if key not in distinct and len(distinct) == LOOP_MAX_BLOCK:
+            break
+        distinct.add(key)
+        start = index
+    tail = [key for _offset, key in lines[start:]]
+    if len(tail) < 2 * repeats or max(tail.count(key) for key in distinct) < repeats:
+        return None
+    if sum(ch.isalnum() for key in distinct for ch in key) < 12:  # "ok"/"}" noise, not a loop
+        return None
+    seen: set[str] = set()
+    for line_offset, key in lines[start:]:
+        if key in seen:
+            return line_offset
+        seen.add(key)
+    return None
 
 
 def is_degenerate(tail: str) -> bool:
-    """True when the streamed tail is near content-free, one unit repeated end to end, or
-    the same sentence line after line. Thresholds need many repetitions, so ordinary
-    prose and code (even nested closing braces) never trip it."""
+    """True when the streamed tail is near content-free, one unit repeated end to end, the
+    same sentence line after line, or a short block of lines repeated (:func:`loop_start`).
+    Thresholds need several repetitions, so ordinary prose and code (even nested closing
+    braces) never trip it."""
+    if loop_start(tail[-3000:]) is not None:
+        return True
     window = tail[-_DEGENERATE_WINDOW:]
     if len(window) < _DEGENERATE_WINDOW:
         return False
@@ -406,7 +483,11 @@ def is_looping(tail: str) -> bool:
 
 
 def trim_degenerate(text: str) -> str:
-    """The reply without its collapsed tail (trailing filler or repeated paragraphs)."""
+    """The reply without its collapsed tail (trailing filler or repeated paragraphs); a
+    repeated block of lines keeps only its first copy."""
+    start = loop_start(text, repeats=2)
+    if start is not None:
+        text = text[:start]
     paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
     while paragraphs and (
         sum(ch.isalnum() for ch in paragraphs[-1]) < 0.3 * len(paragraphs[-1].strip())

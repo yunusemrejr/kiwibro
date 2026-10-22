@@ -889,6 +889,24 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       announce("Kiwibro needs approval to continue");
       scrollIfPinned();
     },
+    setPlan(steps) {
+      // The steps of a multi-step request, ticked off as Kiwibro finishes them.
+      if (!Array.isArray(steps) || steps.length < 2) return;
+      const turn = ensureTurn();
+      if (!turn.plan) {
+        turn.plan = el("ol", { class: "plan", "aria-label": "Steps of this request" });
+        turn.flow.prepend(turn.plan);
+      }
+      turn.plan.replaceChildren(
+        ...steps.map((step) =>
+          el("li", { class: step.done ? "plan-step is-done" : "plan-step" }, [
+            icon(step.done ? "check" : "chevron-right", "plan-icon"),
+            el("span", { text: step.text || "" }),
+          ]),
+        ),
+      );
+      scrollIfPinned();
+    },
     addSteeringChip(text) {
       const turn = ensureTurn();
       const chip = el("span", {
