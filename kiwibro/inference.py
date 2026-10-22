@@ -379,6 +379,32 @@ def is_degenerate(tail: str) -> bool:
     return len(lines) >= 12 and len(set(lines[-12:])) == 1
 
 
+_HEDGES = re.compile(
+    r"\b(?:no|wait|hmm+|actually|maybe|perhaps|confus\w*|ambiguous|re-?read|reconsider|i think|"
+    r"let me think|i'?m stuck|or not)\b|\?",
+    re.I,
+)
+
+
+def is_looping(tail: str) -> bool:
+    """True when a reply circles: the same phrases keep coming back while it hedges.
+
+    Catches deliberation loops that never repeat verbatim ("so the content is 'kiwi\\n'?
+    No…", seen live on a 4B model for 7,600 characters). Calibrated on real output: such
+    loops reach ≥0.15 five-word-phrase recurrence at 5–8 hedges per 100 words, while
+    documentation scores ≈0 recurrence and ≤3 hedges, and templated lists have no hedges.
+    Code blocks are ignored (code repeats legitimately)."""
+    text = re.sub(r"```.*?```", " ", tail[-3000:], flags=re.S)
+    words = re.findall(r"\w+", text.lower())
+    if len(words) < 300:
+        return False
+    half = len(words) // 2
+    earlier = {tuple(words[i : i + 5]) for i in range(half - 4)}
+    recent = [tuple(words[i : i + 5]) for i in range(half, len(words) - 4)]
+    recurrence = sum(shingle in earlier for shingle in recent) / max(1, len(recent))
+    return recurrence >= 0.15 and 100 * len(_HEDGES.findall(text)) / len(words) >= 4.0
+
+
 def trim_degenerate(text: str) -> str:
     """The reply without its collapsed tail (trailing filler or repeated paragraphs)."""
     paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]

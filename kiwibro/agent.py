@@ -227,6 +227,7 @@ class Turn:
     tool_calls_made: int = 0
     failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
+    loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
     steering_notes: list[str] = field(default_factory=list)
     attachments: list[dict[str, Any]] = field(default_factory=list)
@@ -661,7 +662,7 @@ class AgentManager:
             reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
-            turn.stream_tail = ""
+            turn.stream_tail, turn.loop_checked = "", 0
             try:
                 result = self.llm.stream_chat(
                     model=model,
@@ -758,9 +759,7 @@ class AgentManager:
                 raise TurnAborted()
             if turn.timer is not None:
                 turn.timer.mark_first()
-            turn.stream_tail = (turn.stream_tail + text)[-2000:]
-            if inference.is_degenerate(turn.stream_tail):
-                raise inference.DegenerateOutput()
+            self._guard_stream(turn, text)
             # Tool-call markup is held back so users never see raw call syntax.
             visible = turn.stream_filter.feed(text) if turn.stream_filter is not None else text
             if visible:
@@ -780,15 +779,25 @@ class AgentManager:
 
         return on_rewrite
 
+    @staticmethod
+    def _guard_stream(turn: Turn, text: str) -> None:
+        """Raise DegenerateOutput when the reply collapses into repetition or circles."""
+        turn.stream_tail = (turn.stream_tail + text)[-3000:]
+        turn.loop_checked += len(text)
+        if inference.is_degenerate(turn.stream_tail):
+            raise inference.DegenerateOutput()
+        if turn.loop_checked >= 250:  # the phrase-recurrence check is costlier: run it in steps
+            turn.loop_checked = 0
+            if inference.is_looping(turn.stream_tail):
+                raise inference.DegenerateOutput()
+
     def _reasoning_callback(self, turn: Turn) -> Callable[[str], None]:
         def on_reasoning(text: str) -> None:
             if turn.abort.is_set():
                 raise TurnAborted()
             if turn.timer is not None:
                 turn.timer.mark_first()
-            turn.stream_tail = (turn.stream_tail + text)[-2000:]
-            if inference.is_degenerate(turn.stream_tail):  # thinking loops burn the budget too
-                raise inference.DegenerateOutput()
+            self._guard_stream(turn, text)  # thinking loops burn the budget too
             turn.partial_reasoning += text
             turn.emit("reasoning", {"text": text})
 

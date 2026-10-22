@@ -48,9 +48,9 @@ FAILURE_COACH = (
     "user with what you know so far.]"
 )
 DEGENERATE_NUDGE = (
-    "Your last reply started repeating itself and was cut off. Do not plan or explain in prose. "
-    "If a tool is needed, call it now (paths are relative to the workspace, e.g. `a.txt`); otherwise "
-    "give a short, direct answer."
+    "Your last reply was going in circles and was cut off. Do not deliberate: take the most "
+    "reasonable reading of the request and act on it now. If a tool is needed, call it (paths are "
+    "relative to the workspace, e.g. `a.txt`); otherwise give a short, direct answer."
 )
 DEGENERATE_GAVE_UP = (
     "I got stuck repeating myself and stopped this reply. Please rephrase or try again; a larger "

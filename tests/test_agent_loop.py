@@ -71,7 +71,7 @@ def test_degenerate_reply_is_cut_and_retried_once(env: Env) -> None:
     events, _raw = chat_events(env, "Create a.txt containing kiwi.")
     calls = env.fake.stream_calls
     assert len(calls) == 3
-    assert calls[1]["messages"][-1]["content"].startswith("Your last reply started repeating itself")
+    assert calls[1]["messages"][-1]["content"].startswith("Your last reply was going in circles")
     assert (env.workspace / "a.txt").read_text() == "kiwi\n"
     rewrites = [payload for event, payload in events if event == "rewrite"]
     assert rewrites and "..." not in rewrites[0]["text"]
@@ -87,3 +87,34 @@ def test_degenerating_twice_ends_the_round_honestly(env: Env) -> None:
     assert events[-1][0] == "done"
     text = "".join(payload.get("text", "") for event, payload in events if event == "delta")
     assert "I got stuck repeating myself" in text
+
+
+def test_deliberation_loop_detector() -> None:
+    from pathlib import Path
+
+    circling = " ".join(
+        "So the content should be kiwi with a newline? No, wait. Let me re-read the request. "
+        f"Maybe the file already ends with a newline? Actually that is confusing. Attempt {i}."
+        for i in range(40)
+    )
+    assert inference.is_looping(circling)
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    assert not inference.is_looping(readme[:3000])
+    steps = "".join(f"Step {i}: create part{i}.txt with the heading Part {i} and a summary.\n" for i in range(40))
+    assert not inference.is_looping(steps)
+
+
+def test_circling_reply_is_cut_and_retried(env: Env) -> None:
+    circling = " ".join(
+        "So the content should be kiwi with a newline? No, wait. Let me re-read the request. "
+        f"Maybe the file already ends with a newline? Actually that is confusing. Attempt {i}."
+        for i in range(40)
+    )
+    env.fake.stream_script = [
+        ChatResult(content=circling),
+        tool_call_result("write_file", {"path": "a.txt", "content": "kiwi\n"}),
+        ChatResult(content="Created a.txt."),
+    ]
+    chat_events(env, "Create a.txt containing kiwi. Make sure it ends with a newline.")
+    assert len(env.fake.stream_calls) == 3
+    assert (env.workspace / "a.txt").read_text() == "kiwi\n"
