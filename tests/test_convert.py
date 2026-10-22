@@ -183,11 +183,25 @@ def test_pdf_only_converts_to_txt(tmp_path):
         _convert(_ctx(ws), "a.pdf", "docx")
 
 
-def test_unsupported_source_lists_what_is_possible(tmp_path):
+def test_unsupported_source_lists_what_is_possible(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "photo.jpg").write_bytes(b"\xff\xd8\xff")
-    with pytest.raises(ValueError, match="No converter on this computer reads .jpg"):
+    # A machine with pandoc only, whatever this one has (GitHub's runner has no converters).
+    monkeypatch.setattr(convert, "_find", lambda name: "/usr/bin/pandoc" if name == "pandoc" else None)
+    monkeypatch.setattr(convert, "_soffice", lambda: None)
+    with pytest.raises(ValueError, match="No converter on this computer reads .jpg") as caught:
+        _convert(_ctx(ws), "photo.jpg", "pdf")
+    assert ".md" in str(caught.value)  # and it lists what can be converted
+
+
+def test_no_converters_at_all_is_said_plainly(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "photo.jpg").write_bytes(b"\xff\xd8\xff")
+    monkeypatch.setattr(convert, "_find", lambda name: None)
+    monkeypatch.setattr(convert, "_soffice", lambda: None)
+    with pytest.raises(ValueError, match="No document converters are installed"):
         _convert(_ctx(ws), "photo.jpg", "pdf")
 
 
