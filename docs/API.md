@@ -17,8 +17,21 @@ port). No auth. `Cache-Control: no-store` on API responses.
 {"ok": true, "version": "1.1.0", "started_at": 1761000000, "lmstudio": true,
  "lmstudio_url": "http://127.0.0.1:1234", "model": "qwen3.8-2b"}
 ```
-`started_at` is the server process start (Unix seconds); the desktop launcher uses it
-to restart a stale server when the repository has changed since it was launched.
+`/health` also carries the runtime fields of `/api/version` below; `started_at` is when
+the current server image started (Unix seconds, renewed by a self-update).
+
+### `GET /api/version`
+Cheap poll (never calls LM Studio): which code this process serves.
+```json
+{"ok": true, "version": "2.2.0", "started_at": 1761000000, "pid": 4242, "busy": false,
+ "code_version": "a8a52b7b0cad72fd", "update_pending": false, "update_blocked": false}
+```
+`code_version` is the content fingerprint of the served source (`kiwibro/selfupdate.py`;
+`null` when not started through `app.py`). `update_pending`: the code on disk differs;
+the server restarts onto it once `busy` (a reply or memory extraction running) is false.
+`update_blocked`: the new code failed to compile/import, so the server stays on the
+current version. Open windows reload when `code_version` changes; the launcher replaces
+a stale idle server.
 
 ### `GET /api/bootstrap`
 Aggregate for first paint.

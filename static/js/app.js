@@ -177,7 +177,9 @@ async function boot() {
     renderAll();
     watchReadiness(); // bootstrap queued a load + warm-up of the selected model
     await restoreConversation();
+    restoreReloadDraft();
     focusComposerSoon();
+    if (data.health?.code_version) codeVersion = data.health.code_version;
   } catch (error) {
     state.booted = false;
     state.unreachable = true;
@@ -1379,6 +1381,48 @@ async function reconnect() {
   }
 }
 
+/* Self-update: the server re-executes itself on new code once it is idle (and the
+   launcher restarts a stale one). Reload onto it, keeping an unsent draft. */
+const RELOAD_DRAFT_KEY = "kiwibro.reloadDraft";
+let codeVersion = null;
+
+async function checkForUpdate() {
+  if (IS_MOCK || document.hidden || !state.booted) return;
+  let info;
+  try {
+    info = await api.version();
+  } catch {
+    return; // restarting or offline: the next poll sees the new version
+  }
+  const next = info?.code_version;
+  if (!next) return;
+  if (!codeVersion) {
+    codeVersion = next;
+    return;
+  }
+  if (next === codeVersion || state.streaming) return;
+  try {
+    if (els.input.value.trim()) sessionStorage.setItem(RELOAD_DRAFT_KEY, els.input.value);
+  } catch {
+    /* storage blocked: reload anyway */
+  }
+  window.location.reload();
+}
+
+function restoreReloadDraft() {
+  let draft = null;
+  try {
+    draft = sessionStorage.getItem(RELOAD_DRAFT_KEY);
+    sessionStorage.removeItem(RELOAD_DRAFT_KEY);
+  } catch {
+    return;
+  }
+  if (!draft || els.input.value) return;
+  els.input.value = draft;
+  autosize();
+  updateSendEnabled();
+}
+
 async function maybeCheckHealth() {
   if (!state.booted || state.unreachable || state.streaming) return;
   if (Date.now() - healthCheckAt < 15_000) return;
@@ -1494,8 +1538,12 @@ function initChrome() {
   });
   window.addEventListener("focus", maybeCheckHealth);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) maybeCheckHealth();
+    if (!document.hidden) {
+      maybeCheckHealth();
+      checkForUpdate();
+    }
   });
+  window.setInterval(checkForUpdate, 10_000);
 
   window.setInterval(() => updateRelativeTimes(), 30_000);
   updateRelativeTimes();

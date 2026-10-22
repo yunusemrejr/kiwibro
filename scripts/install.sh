@@ -19,7 +19,12 @@ for size in 64 128 256 512; do
   fi
 done
 
+# `kiwibro`, `kiwibro --restart`, `kiwibro --quit` from a terminal.
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$ROOT/scripts/kiwibro.sh" "$HOME/.local/bin/kiwibro"
+
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$ICON_ROOT" >/dev/null 2>&1 || true
 
-echo "Kiwibro installed. Open it from your app grid (search “Kiwibro”)."
+echo "Kiwibro installed. Open it from your app grid (search “Kiwibro”) or run \`kiwibro\`."
+echo "Right-click its icon for Restart / Quit. It shows as \"kiwibro\" in system monitors."

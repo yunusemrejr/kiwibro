@@ -10,3 +10,12 @@ Categories=Utility;Network;
 Keywords=ai;assistant;chat;llm;local;agent;
 StartupNotify=true
 StartupWMClass=Kiwibro
+Actions=restart;quit;
+
+[Desktop Action restart]
+Name=Restart Kiwibro
+Exec=@ROOT@/scripts/kiwibro.sh --restart
+
+[Desktop Action quit]
+Name=Quit Kiwibro
+Exec=@ROOT@/scripts/kiwibro.sh --quit

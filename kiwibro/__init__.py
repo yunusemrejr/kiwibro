@@ -156,6 +156,10 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
                 response.headers["Cache-Control"] = "no-store"
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
+        elif request.path == "/" or request.path.startswith("/static/"):
+            # Revalidate every load (cheap 304s on loopback): without this, the browser's
+            # heuristic cache can keep serving old JS/CSS after an update.
+            response.headers["Cache-Control"] = "no-cache"
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         return response
 

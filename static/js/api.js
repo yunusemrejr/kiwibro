@@ -134,6 +134,7 @@ export async function consumeSSE(response, onEvent) {
 export const api = {
   bootstrap: () => request("/api/bootstrap"),
   health: () => request("/health"),
+  version: () => request("/api/version"),
 
   models: () => request("/api/models"),
   modelReady: () => request("/api/models/ready"),

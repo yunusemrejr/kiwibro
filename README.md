@@ -118,9 +118,18 @@ Kiwibro appears in your application grid with its kiwi icon. Launching it starts
 local server (if needed) and opens a Chrome app window — a browser GUI that looks and
 feels like a native Ubuntu application. No root required.
 
-The launcher notices when the repository has changed since the server started (for
-example after `git pull`) and restarts the local server automatically, so launching
-Kiwibro always runs the current code.
+**Always the newest code.** Closing the window leaves the local server running, so it
+updates itself: when the code on disk changes (for example after `git pull`) and no
+reply is running, the server restarts onto the new version within ~20 s and any open
+window reloads (an unsent draft is kept). Code that does not import is never switched
+to; the server keeps the working version and says so. Launching Kiwibro also replaces a
+stale idle server before the window opens.
+
+**Visible and stoppable.** The server runs in its own systemd user scope
+(`app-kiwibro.scope`) as a process named `kiwibro`, so Resources / System Monitor /
+`top` show it as Kiwibro with its icon; ending it there stops everything it started.
+Right-click the app icon for **Restart Kiwibro** and **Quit Kiwibro** (server and
+window), or use `kiwibro --restart` / `kiwibro --quit` in a terminal.
 
 ## Using it
 

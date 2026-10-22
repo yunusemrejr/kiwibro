@@ -2,6 +2,33 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Self-updating server** (`selfupdate.py`). The server keeps a content fingerprint of
+  the code it serves (`code_version` in `/health` and the new cheap `GET /api/version`).
+  A watcher notices changes on disk, waits for them to settle (15 s), checks that the
+  new code compiles and imports, and re-executes the server in place once no reply or
+  memory extraction is running. Broken code is never switched to (`update_blocked`).
+  Open windows poll `/api/version` and reload onto the new code, keeping an unsent
+  draft. The launcher compares the fingerprint too and replaces a stale idle server
+  before opening the window.
+- **Kiwibro in system monitors.** The launcher runs the server in its own systemd user
+  scope, `app-kiwibro.scope`, through an interpreter link named `kiwibro`, so the process
+  is called `kiwibro` and Resources associates it with the Kiwibro app and icon; ending
+  it there (or `systemctl --user stop app-kiwibro.scope`) stops all of it. Started by
+  hand, the server still renames itself (`prctl`).
+- **Restart / Quit** actions on the app icon and `kiwibro [--restart | --quit | --server]`
+  on the command line (`install.sh` links it into `~/.local/bin`).
+
+### Fixed
+
+- A server re-executing itself could not bind its port again: Werkzeug leaves the
+  listening socket inheritable. Inherited descriptors are closed before `execv`.
+- The page and static assets are always revalidated (`Cache-Control: no-cache`), so an
+  update is never hidden behind the browser's heuristic cache.
+
 ## [2.2.0] — 2026-10-22
 
 Whole requests on small local models: "tell me about X, then search the web for Y, and

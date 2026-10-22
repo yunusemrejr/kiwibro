@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,29 @@ def _current_model(models: list[dict[str, Any]] | None) -> str | None:
 # --- health & bootstrap -----------------------------------------------------
 
 
+def _runtime_status(svc: Any) -> dict[str, Any]:
+    """Which code this process runs, and whether it may be restarted (launcher + UI)."""
+    agent = svc.agent
+    status: dict[str, Any] = {
+        "version": config.VERSION,
+        "started_at": config.STARTED_AT,
+        "pid": os.getpid(),
+        "busy": agent.active_turns() > 0 or bool(getattr(agent, "_extracting", None)),
+        "code_version": None,
+        "update_pending": False,
+    }
+    updater = current_app.extensions.get("kiwibro_updater")
+    if updater is not None:
+        status.update(updater.status())
+    return status
+
+
+@bp.get("/api/version")
+def version() -> Response:
+    """Cheap poll (no LM Studio call): open windows reload when ``code_version`` changes."""
+    return jsonify({"ok": True, **_runtime_status(services())})
+
+
 @bp.get("/health")
 def health() -> Response:
     svc = services()
@@ -134,8 +158,7 @@ def health() -> Response:
     ok, models, error = svc.llm.models_status()
     payload: dict[str, Any] = {
         "ok": True,
-        "version": config.VERSION,
-        "started_at": config.STARTED_AT,
+        **_runtime_status(svc),
         "lmstudio": ok,
         "lmstudio_url": settings.get("lmstudio_url"),
         "model": _current_model(models) if ok else settings.get("model"),
@@ -153,7 +176,7 @@ def bootstrap() -> Response:
     payload: dict[str, Any] = {
         "health": {
             "ok": True,
-            "version": config.VERSION,
+            **_runtime_status(svc),
             "lmstudio": ok,
             "lmstudio_url": settings.get("lmstudio_url"),
         },
