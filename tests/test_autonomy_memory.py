@@ -324,3 +324,34 @@ def test_forget_never_takes_a_merely_similar_sentence(env: Env):
     assert env.svc.memory.forget("User likes tea") == (None, "missing")
     assert env.svc.db.get_memory(jazz["id"]) is not None
     assert env.svc.memory.find_target("jazz")["id"] == jazz["id"]
+
+
+def test_measured_4b_batch_keeps_the_newest_fact_and_the_bundled_one(env: Env):
+    """spark-x2.6-4b returned these two adds for "I'm Yunus. I live in Istanbul and I mostly
+    write Python." followed by "Quick update: I moved to Ankara last week."; the first
+    version of the newer-fact rule kept the bundle and dropped Ankara."""
+    conversation = env.svc.db.create_conversation(title="x", model="fake-1")
+    first = env.svc.db.add_message(conversation["id"], "user", "Hi! I'm Yunus. I live in Istanbul and I mostly write Python.")
+    second = env.svc.db.add_message(conversation["id"], "user", "Quick update: I moved to Ankara last week.")
+    window = [first, second]
+    transcript = "\n".join(m["content"] for m in window)
+    env.svc.memory._apply_ops(
+        [{"op": "add", "content": "User is Yunus, lives in Istanbul and mostly writes Python."},
+         {"op": "add", "content": "User moved to Ankara last week."}],
+        transcript, conversation_id=conversation["id"], window=window,
+    )
+    contents = sorted(m["content"] for m in env.svc.db.list_memories())
+    assert "User moved to Ankara last week." in contents  # the newest fact is never dropped
+    assert any("Yunus" in c and "Python" in c for c in contents)  # bundled facts are not lost
+
+
+def test_an_older_single_fact_loses_to_a_later_one_in_the_same_batch(env: Env):
+    conversation = env.svc.db.create_conversation(title="x", model="fake-1")
+    first = env.svc.db.add_message(conversation["id"], "user", "I live in Istanbul.")
+    second = env.svc.db.add_message(conversation["id"], "user", "Actually I moved to Ankara.")
+    window = [first, second]
+    env.svc.memory._apply_ops(
+        [{"op": "add", "content": "User lives in Istanbul"}, {"op": "add", "content": "User moved to Ankara"}],
+        "\n".join(m["content"] for m in window), conversation_id=conversation["id"], window=window,
+    )
+    assert [m["content"] for m in env.svc.db.list_memories()] == ["User moved to Ankara"]

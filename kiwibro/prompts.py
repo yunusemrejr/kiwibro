@@ -163,7 +163,10 @@ Return JSON: {{"ops": [ ... ]}} with at most 5 operations. Operation forms:
 {{"op":"delete","id":"mem_..."}}
 Rules:
 - content must be 3-300 characters, self-contained (write "User prefers dark themes", not "prefers it").
-- One fact per operation: a message stating a name, a job and a pet is three separate adds.
+- One fact per operation: a message stating a name, a job and a pet is three separate adds \
+("User's name is Ana", "User works as a nurse", "User has a cat named Pamuk"), never one combined add.
+- If a fact changed later in the conversation ("I moved to Ankara" after "I live in Istanbul"), \
+add only the newest version.
 - Do not add something already covered by an existing memory; update it instead (only ids listed above).
 - Use update only when the conversation changes or corrects that same memory (a new city replaces \
 the old one); a new fact about something else is an add.

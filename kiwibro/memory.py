@@ -33,6 +33,7 @@ EXTRACT_WINDOW_MESSAGES = 12
 EXTRACT_MAX_ATTEMPTS = 2
 EXTRACT_LINE_CHARS = 1200
 TARGET_MIN_SCORE = 0.5  # share of a reference's key words a memory must contain to be "the one"
+SINGLE_FACT_TERMS = 4  # more key words than this: a fact that bundles several (kept whole)
 # Facts about the assistant are not memories about the user (small models save "Kiwibro is…").
 _ABOUT_ASSISTANT_RE = re.compile(r"^(?:kiwibro|the assistant|assistant|you are|you're|this ai)\b", re.IGNORECASE)
 
@@ -235,21 +236,41 @@ _CONCEPTS = {
 }
 
 
-def _superseded(content: str, window: list[dict[str, Any]], existing: list[dict[str, Any]]) -> bool:
-    """A learned fact is older news when a related memory changed after the message that
-    stated it (measured: extraction of "I live in Istanbul" finished after the next turn
-    saved "User moved to Ankara", and stored both)."""
-    stated = next(
+def _stated_at(content: str, window: list[dict[str, Any]]) -> str | None:
+    """When the user last said this: the newest window message that grounds it."""
+    return next(
         (m.get("created_at") for m in reversed(window)
          if m.get("role") == "user" and grounded(content, str(m.get("content") or ""))),
         None,
     )
+
+
+def _superseded(
+    content: str, stated: str | None, existing: list[dict[str, Any]], *,
+    batch: list[tuple[str, str | None]], fresh: set[str],
+) -> bool:
+    """A learned fact is older news when something said later changed it.
+
+    * a related memory that existed before this extraction changed after the message
+      that stated the fact (measured: extraction of "I live in Istanbul" finished after
+      the next turn saved "User moved to Ankara", and stored both);
+    * a related fact in this same batch was stated later ("I live in Istanbul" … "I moved
+      to Ankara") — unless this one also carries other facts, which would be lost
+      (measured: a 4B model wrote "User is Yunus, lives in Istanbul and writes Python").
+    Memories this batch just created (``fresh``) are never "newer": they are its own facts.
+    """
     if not stated:
         return False
-    return any(
-        (memory.get("updated_at") or "") > stated and related(memory["content"], content)
-        and not is_similar(memory["content"], content)
+    if any(
+        memory["id"] not in fresh and (memory.get("updated_at") or "") > stated
+        and related(memory["content"], content) and not is_similar(memory["content"], content)
         for memory in existing
+    ):
+        return True
+    single = len({w for w in _folded_words(content) if len(w) > 2 and w not in _FRAMING_WORDS}) <= SINGLE_FACT_TERMS
+    return single and any(
+        later and later > stated and related(other, content) and not is_similar(other, content)
+        for other, later in batch
     )
 
 
@@ -829,6 +850,13 @@ class MemoryEngine:
         counts = {"added": 0, "updated": 0, "removed": 0}
         added_ids: list[str] = []
         existing = self.db.all_memories()
+        fresh: set[str] = set()  # memories this batch created or rewrote
+        # What this batch says, and when the user said it (for "a later statement wins").
+        batch = [
+            (text, _stated_at(text, window) if window else None)
+            for text in (str(op.get("content") or "").strip() for op in ops)
+            if text
+        ]
         for op in ops:
             target = self.db.get_memory(op["id"]) if op["op"] == "update" and op.get("id") else None
             if op["op"] == "update" and (
@@ -848,8 +876,9 @@ class MemoryEngine:
                         continue
                     if self.about_assistant(content):
                         continue
-                    if window and _superseded(content, window, existing):
-                        log.info("memory extraction skipped a fact a newer memory changed: %s", content[:80])
+                    stated = _stated_at(content, window) if window else None
+                    if _superseded(content, stated, existing, batch=batch, fresh=fresh):
+                        log.info("memory extraction skipped a fact something newer changed: %s", content[:80])
                         continue
                     kind = lenient_kind(op.get("kind"))
                     duplicate = self.find_similar(content, existing)
@@ -861,6 +890,7 @@ class MemoryEngine:
                             normalized=normalize(replacement),
                             kind=kind or duplicate["kind"],
                         )
+                        fresh.add(duplicate["id"])
                         counts["updated"] += 1
                     else:
                         created = self.db.create_memory(
@@ -869,6 +899,7 @@ class MemoryEngine:
                         )
                         existing.append(created)
                         added_ids.append(created["id"])
+                        fresh.add(created["id"])
                         counts["added"] += 1
                 elif op["op"] == "update":
                     memory_id = op.get("id")
@@ -887,6 +918,7 @@ class MemoryEngine:
                         normalized=normalize(content),
                         kind=kind,
                     )
+                    fresh.add(memory_id)
                     counts["updated"] += 1
                 elif op["op"] == "delete":
                     memory_id = op.get("id")
