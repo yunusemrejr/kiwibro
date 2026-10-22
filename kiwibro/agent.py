@@ -169,6 +169,13 @@ class Approval:
     decision: str | None = None
 
 
+# Small models can loop on failing tool calls (e.g. guessing absolute paths) until the
+# round limit: coach them after a few failures in a row, then refuse further calls so
+# they answer. Refusing (not removing the tools) keeps the KV-cached prefix intact.
+FAILURE_COACH_AT = 3
+FAILURE_PAUSE_AT = 6
+
+
 def _directives_note(db: Database, conversation_id: str) -> str:
     """The directive ledger's per-turn note ('' when it would add nothing)."""
     try:
@@ -218,6 +225,7 @@ class Turn:
     done_sent: bool = False
     tool_signatures: dict[str, int] = field(default_factory=dict)
     tool_calls_made: int = 0
+    failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
     tool_rounds: int = 0
     steering_notes: list[str] = field(default_factory=list)
     attachments: list[dict[str, Any]] = field(default_factory=list)
@@ -962,6 +970,9 @@ class AgentManager:
             turn.tool_calls_made += 1
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
+            turn.failure_streak = 0 if result.ok else turn.failure_streak + 1
+            if turn.failure_streak == FAILURE_COACH_AT:
+                result = replace(result, content=f"{result.content}\n{prompts.FAILURE_COACH.format(count=FAILURE_COACH_AT)}")
             self._record_tool_result(turn, item["id"], item["name"], result, duration)
 
     def _prepare_tool_call(
@@ -979,6 +990,8 @@ class AgentManager:
             item["result"] = ToolResult(ok=False, content=content, preview=preview)
             return item
 
+        if turn.failure_streak >= FAILURE_PAUSE_AT:  # stop a guessing loop; make the model answer
+            return refuse(prompts.TOOLS_PAUSED, "Tools paused after repeated failures")
         spec = tools.TOOL_SPECS.get(name)
         try:
             if rescued.error or spec is None:

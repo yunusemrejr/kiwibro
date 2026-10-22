@@ -175,7 +175,7 @@ class Workspace:
         except OSError as exc:
             raise SandboxError("path could not be resolved") from exc
         if resolved != root and not resolved.is_relative_to(root):
-            raise SandboxError("path is outside the workspace")
+            raise SandboxError("path is outside the workspace; use a path relative to it, like '.' or 'src/app.py'")
         if must_exist and not resolved.exists():
             raise SandboxError(f"path does not exist: {self.public(resolved)}")
         return resolved

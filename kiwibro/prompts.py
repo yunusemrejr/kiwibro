@@ -38,8 +38,18 @@ MEMORY_BLOCK = "\n## Memory\nDurable things you know about the user (use when re
 
 MODEL_BLOCK = "\n## Current model\nYou are answering as the local LM Studio model `{model}` (no cloud).\n"
 WORKSPACE_BLOCK = (
-    "\n## Workspace\nYour file and command tools are limited to `{workspace}`; "
-    "relative paths start there.\n"
+    "\n## Workspace\nYour file and command tools work inside the folder `{workspace}`. "
+    "Use paths relative to it: `.` is its top level, e.g. `src/app.py`. Paths outside it are refused.\n"
+)
+# Tool-failure loop breakers (agent.py): small models otherwise keep guessing until the round limit.
+FAILURE_COACH = (
+    "[Kiwibro: the last {count} tool calls failed. Stop and change approach: read the error messages, "
+    "use paths relative to the workspace (`.` is its top level), try a different tool, or answer the "
+    "user with what you know so far.]"
+)
+TOOLS_PAUSED = (
+    "Tool use is paused for the rest of this turn after repeated failures. Answer the user now: say "
+    "briefly what you tried, what went wrong and what you need from them."
 )
 TOOLS_BLOCK = """
 ## Agent tools
