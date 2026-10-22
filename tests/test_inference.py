@@ -461,3 +461,58 @@ def test_agent_turn_emits_rewrite_and_stores_the_clean_answer(env, monkeypatch):
     conversation_id = events[0][1]["conversation_id"]
     reply = [m for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"][-1]
     assert reply["content"] == "Hello!" and reply["reasoning"] == "The user wants a greeting."
+
+
+# --- measured speeds size background-call timeouts -------------------------------
+
+
+def test_speed_book_budgets_fit_the_machine() -> None:
+    book = inf.SpeedBook()
+    slow = book.budget_s("m", prompt_tokens=2500, max_tokens=400)
+    assert slow == 180.0  # unmeasured: pessimistic CPU defaults, capped
+    book.note("m", new_tokens=2000, ttft_ms=1000, tokens_per_s=50.0)  # a fast GPU round
+    fast = book.budget_s("m", prompt_tokens=2500, max_tokens=400)
+    assert 8.0 < fast < 20.0
+    assert book.budget_s("m", prompt_tokens=10, max_tokens=10) == 8.0  # floor
+    book.note("m", new_tokens=10, ttft_ms=5000, tokens_per_s=None)  # too few tokens to measure prefill
+    assert book.budget_s("m", prompt_tokens=2500, max_tokens=400) == fast
+
+
+def test_memory_extraction_gets_a_speed_sized_budget(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def spy(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return {"ops": []}
+
+    monkeypatch.setattr(env.svc.llm, "complete_json", spy)
+    monkeypatch.setattr(inf, "SPEEDS", inf.SpeedBook())  # unmeasured model: CPU-sized budget
+    conversation = env.svc.db.create_conversation()
+    env.svc.db.add_message(conversation["id"], "user", "I live in Ankara and I prefer short answers.")
+    env.svc.db.add_message(conversation["id"], "assistant", "Noted!")
+    env.svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    assert seen["read_timeout"] > 8  # the old fixed 8 s never finished on a laptop CPU
+    assert env.svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 2
+
+
+def test_one_memory_extraction_per_conversation_at_a_time(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    release, calls = threading.Event(), []
+
+    def slow_extract(conversation_id: str, model: str) -> dict[str, int]:
+        calls.append(conversation_id)
+        release.wait(5)
+        return {"added": 0, "updated": 0, "removed": 0}
+
+    monkeypatch.setattr(env.svc.memory, "extract_and_apply", slow_extract)
+    agent = env.svc.agent
+    agent._start_memory_extraction("c1", "fake-1")
+    agent._start_memory_extraction("c1", "fake-1")  # still running: skipped
+    agent._start_memory_extraction("c2", "fake-1")  # other chats are independent
+    release.set()
+    for _ in range(100):
+        if not agent._extracting:
+            break
+        threading.Event().wait(0.02)
+    assert sorted(calls) == ["c1", "c2"] and not agent._extracting

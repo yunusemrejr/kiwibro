@@ -44,7 +44,10 @@ Nothing is ever deleted by compaction. Compaction only changes what is
 
 - **Extraction watermark**: `extracted_through_seq` advances only after a
   successful extraction response, so a timed-out small model retries next
-  turn instead of silently skipping facts. The extractor sees the oldest
+  turn instead of silently skipping facts. The extraction timeout is sized
+  from the model's measured prefill/decode speed (`inference.SPEEDS`, 8 s
+  floor, 180 s ceiling) so a CPU-only laptop actually finishes it, and only
+  one extraction per conversation runs at a time. The extractor sees the oldest
   pending window and only *relevant* existing memories (pinned + search +
   recent, char-capped) — small, accurate utility prompts.
 - **Dedupe**: FTS-prefiltered candidates compared on stored normalised text

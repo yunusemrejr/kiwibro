@@ -269,6 +269,8 @@ class AgentManager:
         self._thinking: dict[str, bool] = {}  # conversation id -> last turn's thinking decision
         self._approvals: dict[str, Approval] = {}
         self._approvals_guard = threading.Lock()
+        self._extracting: set[str] = set()  # conversations with a memory extraction running
+        self._extracting_guard = threading.Lock()
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -704,6 +706,13 @@ class AgentManager:
                 turn.inference["ttft_ms"] = timing["ttft_ms"]
         if "tokens_per_s" in timing:
             turn.inference["tokens_per_s"] = timing["tokens_per_s"]
+        if turn.model:  # measured speeds size background-call timeouts (memory extraction)
+            inference.SPEEDS.note(
+                turn.model,
+                new_tokens=int(reuse.get("prompt_tokens_est", 0)) - int(reuse.get("reused_tokens_est", 0)),
+                ttft_ms=timing.get("ttft_ms"),
+                tokens_per_s=timing.get("tokens_per_s"),
+            )
         log.info(
             "turn %s round %s: think=%s reuse=%s%% ttft=%sms %s tok/s",
             turn.conversation_id, round_index, think, reuse.get("reuse_percent"),
@@ -1186,6 +1195,10 @@ class AgentManager:
     def _start_memory_extraction(self, conversation_id: str, model: str | None) -> None:
         if not model:
             return
+        with self._extracting_guard:  # one at a time per chat: the running one advances the watermark
+            if conversation_id in self._extracting:
+                return
+            self._extracting.add(conversation_id)
         thread = threading.Thread(
             target=self._memory_extraction_worker,
             args=(conversation_id, model),
@@ -1200,3 +1213,6 @@ class AgentManager:
             log.info("memory extraction for %s: %s", conversation_id, counts)
         except Exception:  # never fail anything because of memory extraction
             log.warning("memory extraction worker failed", exc_info=True)
+        finally:
+            with self._extracting_guard:
+                self._extracting.discard(conversation_id)

@@ -96,6 +96,8 @@ local models.
 ### Changed
 
 - Tool rounds per reply are configurable (`max_tool_rounds`, default 16).
+- Memory extraction timeouts follow measured model speed (a fixed 8 s never finished on a
+  CPU-only laptop, so memories were silently never saved); one extraction per chat at a time.
 - One permission table: extension tools carry their own defaults
   (`config.permission_defaults()`); Settings validates enum settings from one table.
 - Model entries expose `vision` + `capabilities`; vision shown in model lists.

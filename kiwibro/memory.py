@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import config, prompts
+from . import config, inference, prompts
 from .context import estimate_tokens
 from .db import Database
 from .llm import LMStudioClient, LMStudioError, parse_json_loose
@@ -22,6 +22,7 @@ MAX_OPS_PER_TURN = 3
 MIN_CONTENT = 3
 MAX_CONTENT = 300
 EXTRACT_TRANSCRIPT_CHARS = 9000
+EXTRACT_MAX_TOKENS = 400
 EXTRACT_EXISTING_CHARS = 4000
 EXTRACT_EXISTING_LIMIT = 32
 EXTRACT_WINDOW_MESSAGES = 12
@@ -443,7 +444,7 @@ class MemoryEngine:
             log.warning("could not advance extraction watermark", exc_info=True)
 
     def extract_and_apply(self, conversation_id: str, model: str | None) -> dict[str, int]:
-        """Synchronous post-turn extraction. Never raises, bounded by the 12s cap."""
+        """Synchronous post-turn extraction. Never raises; bounded by a speed-sized budget."""
         counts = {"added": 0, "updated": 0, "removed": 0}
         settings = self._settings()
         if not settings.get("memory_enabled", True) or not model:
@@ -478,18 +479,26 @@ class MemoryEngine:
         messages = self._extraction_messages(conversation_id, window=window)
         if not messages:
             return None
+        # Sized from this model's measured speeds: a fixed short timeout means a CPU-only
+        # machine never finishes an extraction (the watermark then retries forever).
+        budget = inference.SPEEDS.budget_s(
+            model,
+            prompt_tokens=sum(estimate_tokens(str(m.get("content") or "")) for m in messages),
+            max_tokens=EXTRACT_MAX_TOKENS,
+            floor=config.MEMORY_EXTRACTION_TIMEOUT_S,
+        )
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kiwibro-mem")
         try:
             future = executor.submit(
                 self.llm.complete_json,
                 model=model,
                 messages=messages,
-                max_tokens=400,
+                max_tokens=EXTRACT_MAX_TOKENS,
                 temperature=0.0,
-                read_timeout=int(config.MEMORY_EXTRACTION_TIMEOUT_S),
+                read_timeout=int(budget),
                 retries=0,
             )
-            return future.result(timeout=config.MEMORY_EXTRACTION_TIMEOUT_S + 1.0)
+            return future.result(timeout=budget + 1.0)
         except TimeoutError:
             log.info("memory extraction timed out")
             return None

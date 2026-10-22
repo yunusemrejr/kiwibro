@@ -346,6 +346,48 @@ class PrefixTracker:
                 self._recent.pop(model, None)
 
 
+class SpeedBook:
+    """Measured prefill and decode speed per model (moving average of streamed rounds).
+
+    Background calls need timeouts that fit the machine: a fixed 8 s is plenty on
+    a GPU and hopeless on a laptop CPU (~30 tok/s prefill, 4–8 tok/s decode), where
+    memory extraction then silently never finishes. Until a model has been
+    measured, pessimistic CPU defaults apply.
+    """
+
+    DEFAULT_PREFILL_TPS = 30.0
+    DEFAULT_DECODE_TPS = 4.0
+    _ALPHA = 0.3
+
+    def __init__(self) -> None:
+        self._prefill: dict[str, float] = {}
+        self._decode: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def note(self, model: str, *, new_tokens: int, ttft_ms: int | None, tokens_per_s: float | None) -> None:
+        """Fold one round in: `new_tokens` were prefilled (not served from cache) before the first token."""
+        with self._lock:
+            if ttft_ms and new_tokens >= 50:
+                self._update(self._prefill, model, new_tokens / max(ttft_ms / 1000.0, 0.05))
+            if tokens_per_s:
+                self._update(self._decode, model, float(tokens_per_s))
+
+    def _update(self, book: dict[str, float], model: str, value: float) -> None:
+        book[model] = value if model not in book else (1 - self._ALPHA) * book[model] + self._ALPHA * value
+
+    def budget_s(self, model: str, *, prompt_tokens: int, max_tokens: int,
+                 floor: float = 8.0, ceiling: float = 180.0) -> float:
+        """Seconds a fresh (uncached) request of this size may reasonably take, with headroom."""
+        with self._lock:
+            prefill = self._prefill.get(model, self.DEFAULT_PREFILL_TPS)
+            decode = self._decode.get(model, self.DEFAULT_DECODE_TPS)
+        estimate = prompt_tokens / prefill + max_tokens / decode
+        return max(floor, min(ceiling, 1.25 * estimate + 2.0))
+
+
+SPEEDS = SpeedBook()
+
+
 PREFIX_TRACKER = PrefixTracker()
 
 
