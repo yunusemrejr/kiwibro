@@ -534,6 +534,13 @@ Local install refreshed (`scripts/install.sh`; launcher restarts a stale server 
   `ef302d3` (actionable path error, coaching after 3 failures, tool pause after 6) 6 rounds / 182 s,
   prefix reuse 93–97 %, ttft ≈1 s/round; `(empty)` now reads "The folder is empty (0 files…)".
 - UI (`kiwibro-5f`): Settings rows visible at 360 px and 1280 px, approval card shows reasons.
+- Memory: extraction used to time out on this CPU (fixed 8 s) and a trailing comma in the model's
+  JSON silently dropped what it did extract → speed-sized budget + shared JSON repair; live, the
+  same chat now stores "User prefers short, direct answers".
+- Small-model loops: "create a.txt/b.txt/c.txt with kiwi, each ending with a newline" failed twice
+  live (≈6 min each: '...' filler, then 7,600 chars of circling deliberation, no tool call). With the
+  degeneration + loop guards it succeeded in 109 s: deliberation cut off → nudge → writes →
+  absolute-path error → relative paths → verified (list/read/ls) → self-check round → 3 correct files.
 
 **Freeze:** lanes `01a1608a`, `d517`, `71d5` (Muse) — your work is all on `main`; your rows
 still say "In progress/Coordinating". Please post DONE, or list pending work here before
