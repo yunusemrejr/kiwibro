@@ -534,6 +534,12 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   coaching line; after 6 the agent refuses further calls this turn
   (`prompts.TOOLS_PAUSED`) so the model answers instead of guessing until the
   round limit. Refusing keeps the tool list, and so the KV-cached prefix, intact.
+- **Degenerate output.** `inference.is_degenerate` watches the streamed tail of
+  content and reasoning (near content-free filler, a unit repeated end to end, the
+  same sentence line after line). The agent raises out of the stream (closing it
+  stops LM Studio generating), rewrites the visible text to the meaningful prefix
+  and retries once with `prompts.DEGENERATE_NUDGE`; a second collapse ends the round
+  with `DEGENERATE_GAVE_UP`. Nothing degenerate is stored.
 - **Paths.** Every file-tool path is resolved and must stay inside the workspace;
   a conversation can bind its own folder (`workspaces.py`, schema v3), and the
   model may switch folders on its own only to a folder the user's message names.
