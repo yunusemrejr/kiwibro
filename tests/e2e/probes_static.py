@@ -8,11 +8,8 @@ independent positive assertion; no network access is required.
 
 from __future__ import annotations
 
-import json
-import socket
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -27,7 +24,7 @@ from kiwibro import context as context_engine  # noqa: E402
 from kiwibro import db as db_module  # noqa: E402
 from kiwibro import llm as llm_module  # noqa: E402
 from kiwibro import memory as memory_engine  # noqa: E402
-from kiwibro import sandbox, search, tools  # noqa: E402
+from kiwibro import sandbox, search  # noqa: E402
 from kiwibro.agent import derive_title, validate_llm_title  # noqa: E402
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from harness import SSEChat, assert_eq, assert_in, assert_true

@@ -7,12 +7,10 @@ points the app at a closed port to exercise the LM-offline contract; phase
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
 from harness import (
-    AppServer,
     assert_eq,
     assert_in,
     assert_true,

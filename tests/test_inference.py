@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from kiwibro import inference as inf
-from tests.test_backend import env  # noqa: F401 - shared app fixture
 
 # --- fixtures: real LM Studio /api/v1/models shapes and a Kiwibro-normalised record -------
 
@@ -445,7 +444,7 @@ def test_literal_tags_inside_an_answer_are_left_alone(monkeypatch):
     assert result.content == text and not result.leaked_reasoning and rewrites == []
 
 
-def test_agent_turn_emits_rewrite_and_stores_the_clean_answer(env, monkeypatch):  # noqa: F811
+def test_agent_turn_emits_rewrite_and_stores_the_clean_answer(env, monkeypatch):
     from kiwibro.llm import ChatResult
     from tests.test_backend import chat_events
 

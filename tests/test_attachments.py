@@ -11,7 +11,6 @@ import pytest
 
 from kiwibro import media
 from kiwibro.context import to_llm_message
-from tests.test_backend import chat_events, env  # noqa: F401 - shared app fixture
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
@@ -54,13 +53,13 @@ def test_attachment_note_is_fixed_text():
     assert to_llm_message(message)["content"] == f"{note}\n\nlook"
 
 
-def _upload(env, name: str, data: bytes):  # noqa: F811
+def _upload(env, name: str, data: bytes):
     return env.client.post(
         "/api/attachments", data={"file": (io.BytesIO(data), name)}, content_type="multipart/form-data"
     )
 
 
-def test_upload_route_stores_in_workspace_and_rejects_bad_requests(env):  # noqa: F811
+def test_upload_route_stores_in_workspace_and_rejects_bad_requests(env):
     response = _upload(env, "shot.png", PNG)
     assert response.status_code == 200, response.get_json()
     attachment = response.get_json()["attachment"]
@@ -69,7 +68,7 @@ def test_upload_route_stores_in_workspace_and_rejects_bad_requests(env):  # noqa
     assert _upload(env, "empty.txt", b"").status_code == 400
 
 
-def test_chat_accepts_only_uploaded_attachments(env):  # noqa: F811
+def test_chat_accepts_only_uploaded_attachments(env):
     outside = env.workspace / "notes.txt"
     outside.write_text("hi")
     for bad in ([{"path": "notes.txt"}], [{"path": "attachments/../../x"}], "nope",
@@ -78,7 +77,7 @@ def test_chat_accepts_only_uploaded_attachments(env):  # noqa: F811
         assert response.status_code == 400, bad
 
 
-def test_turn_describes_image_with_code_when_no_model_can_see(env):  # noqa: F811
+def test_turn_describes_image_with_code_when_no_model_can_see(env):
     pytest.importorskip("PIL")
     from PIL import Image
 

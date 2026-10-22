@@ -75,12 +75,12 @@ def test_switch_is_auto_only_when_the_user_named_the_folder(home: Path) -> None:
 
 # --- agent integration ----------------------------------------------------------
 
-from test_backend import Env, chat_events, env, tool_call_result  # noqa: E402,F401  (shared app fixture)
+from test_backend import Env, chat_events, tool_call_result  # noqa: E402
 
 from kiwibro.llm import ChatResult  # noqa: E402
 
 
-def test_agent_works_in_the_conversation_folder(env: Env, tmp_path: Path) -> None:  # noqa: F811
+def test_agent_works_in_the_conversation_folder(env: Env, tmp_path: Path) -> None:
     folder = tmp_path / "proj"
     folder.mkdir()
     conversation_id = env.svc.db.create_conversation()["id"]
@@ -92,7 +92,7 @@ def test_agent_works_in_the_conversation_folder(env: Env, tmp_path: Path) -> Non
     assert str(folder) in env.fake.stream_calls[0]["messages"][0]["content"]  # message 0 names it
 
 
-def test_user_asked_switch_then_work_there(env: Env, home: Path) -> None:  # noqa: F811
+def test_user_asked_switch_then_work_there(env: Env, home: Path) -> None:
     target = home / "Desktop" / "kiwi-site"
     env.fake.stream_script = [
         tool_call_result("workspace", {"action": "switch", "path": str(target)}),

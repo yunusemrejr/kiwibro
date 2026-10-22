@@ -16,7 +16,6 @@ completely offline (no LM Studio, no internet).
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 import time
 from pathlib import Path

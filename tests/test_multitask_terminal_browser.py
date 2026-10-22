@@ -4,17 +4,15 @@ Workspace tools, TerminalManager/TERMINALS, TaskBoard, BrowserEngine, and additi
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from kiwibro import create_app
-from kiwibro.browser import BROWSER, BrowserEngine, html_to_markdown, inspect_page, render_headless
-from kiwibro.sandbox import TERMINALS, SandboxError, TerminalManager, Workspace
+from kiwibro.browser import BrowserEngine, html_to_markdown, inspect_page, render_headless
+from kiwibro.sandbox import SandboxError, TerminalManager, Workspace
 from kiwibro.search import SearchError
-from kiwibro.tasks import TASK_BOARD, TaskBoard
+from kiwibro.tasks import TaskBoard
 
 
 # ============================================================================
@@ -170,8 +168,8 @@ def test_terminal_kill(workspace: Workspace):
 
 def test_terminal_list_and_kill_all(workspace: Workspace):
     tm = TerminalManager()
-    i1 = tm.start_background(workspace, "sleep 10", conversation_id="conv_terms", wait_ms=50)
-    i2 = tm.start_background(workspace, "sleep 10", conversation_id="conv_terms", wait_ms=50)
+    tm.start_background(workspace, "sleep 10", conversation_id="conv_terms", wait_ms=50)
+    tm.start_background(workspace, "sleep 10", conversation_id="conv_terms", wait_ms=50)
     listed = tm.list_sessions(conversation_id="conv_terms", workspace=workspace)
     assert len(listed) >= 2
     killed = tm.kill_all(conversation_id="conv_terms")

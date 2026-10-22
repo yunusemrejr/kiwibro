@@ -20,7 +20,6 @@ from kiwibro.context import (
     TOOL_RESULT_CAP_OLD,
     build_llm_messages,
     capped_tool_content,
-    estimate_messages,
     estimate_tokens,
     format_transcript,
     raw_message_sum,

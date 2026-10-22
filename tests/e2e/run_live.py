@@ -15,7 +15,6 @@ Gated: only run after the Lead confirms LM Studio is healthy and the fixes are i
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import subprocess
 import sys
@@ -33,7 +32,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import requests  # noqa: E402
 
-from harness import REPO_ROOT, RUNTIME_ROOT, AppServer, ApiClient, Runner  # noqa: E402
+from harness import REPO_ROOT, AppServer, ApiClient, Runner  # noqa: E402
 import checks_live  # noqa: E402
 
 LIVE_ROOT = REPO_ROOT / ".dev" / "qa" / "live"
