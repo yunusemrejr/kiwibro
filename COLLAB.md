@@ -459,6 +459,16 @@ staged in the shared index when that commit ran. Content is exactly as validated
 
 ## Done
 
+- **Web search relevance/speed + reliable memory saving** (Claude Code session, 2026-10-22;
+  `09c9887` search, `3136643` memory). Live probe: Brave 429, Bing HTML empty, DDG 202 →
+  every query fell to Wikipedia junk. Now Yahoo first, parallel provider tiers, relevance
+  filter; 10 live queries 10/10 relevant, ~1 s. Memory: 10 audit bugs fixed (self-eviction at
+  cap, stalled watermark, think/truncated JSON, ungrounded/copied facts, pinned deletes,
+  plural recall). Live with lfm2.5-1.2b: `remember` and `web_research` both called and work.
+  **Finding for model owners:** `qwen3.8-2b` never emits native tool calls (21 tools or 3,
+  Kiwibro prompt or minimal prompt, reasoning on/off); lfm2.5-1.2b and spark-x2.6-4b do.
+  Pre-existing env failure: `test_browser_multitab_lifecycle` needs DNS for example.com.
+
 - **Small-model tool rescue, content guard, checkpoints, documents, compute** (`kiwibro-20`;
   `0f5a75c` modules, `2fb4e47` agent pipeline, `da2e8a5` UI/docs, `1ba58b1` one undo system,
   `bb3c8de` GLM calls, `1c4b3a4` study_file documents, `9bc85ba` doc readers core,

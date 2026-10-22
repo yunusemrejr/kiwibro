@@ -128,6 +128,23 @@ local models.
   fewer SSE frames. Context preparation on the benchmark conversation dropped
   from ~13 ms to ~3 ms.
 
+### Fixed — web search and memory
+
+- **Web search returns relevant results, fast.** Brave (429), Bing HTML (empty) and
+  DuckDuckGo (bot wall) were all failing, so every query fell through to Wikipedia
+  and returned off-topic pages. A Yahoo provider now leads; providers run in
+  parallel tiers that stop once they have enough hits; results must contain enough
+  of the query's content words (stricter for Wikipedia/Bing RSS), and an empty
+  result tells the model how to rephrase instead of handing it junk. Keep-alive
+  sessions, lxml parsing and parallel snippet enrichment cut latency: 10 live
+  queries were 10/10 relevant at ~1 s each.
+- **Memory saving is reliable.** New memories no longer evict themselves at the cap;
+  merges keep their kind; a non-JSON or timed-out extraction no longer stalls the
+  watermark; reasoning blocks and truncated JSON are never parsed as facts;
+  extracted facts must be grounded in the conversation (small models copied prompt
+  examples); pinned memories are safe from extraction; recall matches
+  singular/plural; the agent prompt says when to call `remember`.
+
 ## [1.1.0] — 2026-10-21
 
 Identity and polish update.
