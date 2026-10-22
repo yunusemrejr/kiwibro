@@ -74,9 +74,9 @@ const TOOL_PROFILES = [
 
 // How much a reply may do without asking (safety.decide on the server).
 const AUTONOMY_MODES = [
-  ["smart", "Smart — ask only for risky steps"],
-  ["supervised", "Supervised — follow the permission list"],
-  ["autonomous", "Autonomous — never wait, refuse risky steps"],
+  ["smart", "Smart (asks for risky steps)"],
+  ["supervised", "Supervised (asks per tool)"],
+  ["autonomous", "Autonomous (never waits)"],
 ];
 const SANDBOX_MODES = [
   ["auto", "On"],
