@@ -168,6 +168,8 @@ class Workspace:
         if "\x00" in raw:
             raise SandboxError("path contains invalid characters")
         candidate = Path(raw)
+        if raw == "~" or raw.startswith("~/"):  # models copy the "~/Kiwibro" form from the prompt
+            candidate = candidate.expanduser()
         if not candidate.is_absolute():
             candidate = root / candidate
         try:

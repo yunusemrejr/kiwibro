@@ -896,7 +896,7 @@ class AgentManager:
         user_block = prompts.USER_BLOCK.format(name=name) if name else ""
         model_block = prompts.MODEL_BLOCK.format(model=model) if model else ""
         workspace = str(settings.get("workspace") or "").strip()
-        workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=workspace) if workspace else ""
+        workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=config.display_path(workspace)) if workspace else ""
         if not settings.get("agent_enabled", True):
             tools_block = prompts.TOOLS_DISABLED_BLOCK
         elif model_info is not None and not model_info.get("tools"):

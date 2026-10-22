@@ -104,3 +104,16 @@ def test_user_asked_switch_then_work_there(env: Env, home: Path) -> None:
     assert (target / "index.html").read_text() == "<h1>kiwi</h1>"
     conversation = env.svc.db.list_conversations()[0]
     assert env.client.get(f"/api/conversations/{conversation['id']}").get_json()["conversation"]["workspace"] == str(target)
+
+
+def test_tilde_paths_stay_inside_the_workspace(home: Path) -> None:
+    from kiwibro import config
+    from kiwibro.sandbox import SandboxError
+
+    root = home / "Desktop" / "kiwi-site"
+    workspace = Workspace(root)
+    assert workspace.resolve("~/Desktop/kiwi-site/src") == root / "src"
+    with pytest.raises(SandboxError):
+        workspace.resolve("~/.ssh/id_rsa")
+    assert config.display_path(str(root)) == "~/Desktop/kiwi-site"
+    assert config.display_path("/srv/app") == "/srv/app"

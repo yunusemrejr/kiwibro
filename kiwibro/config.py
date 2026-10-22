@@ -138,6 +138,12 @@ def database_path(directory: Path | None = None) -> Path:
     return base / "kiwibro.db"
 
 
+def display_path(path: str) -> str:
+    """A path the way people (and small models) read it best: `~/Kiwibro`, not /home/user/Kiwibro."""
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
 def default_workspace() -> Path:
     return Path.home() / "Kiwibro"
 
