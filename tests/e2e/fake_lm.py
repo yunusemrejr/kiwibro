@@ -305,7 +305,7 @@ class _Handler(BaseHTTPRequestHandler):
                         {
                             "op": "add",
                             "kind": "preference",
-                            "content": "Bevorzugt knappe Antworten auf Deutsch — Grüße 🥝",
+                            "content": "Prefers brief German answers — Grüße 🥝",
                         }
                     ]
                 },

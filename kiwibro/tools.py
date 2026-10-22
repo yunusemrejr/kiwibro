@@ -1249,9 +1249,9 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
             "limit": _as_int(args.get("limit"), "limit", 6, 1, 12),
         }
     if name == "remember":
-        kind = args.get("kind") or "fact"
-        if kind not in config.MEMORY_KINDS:
-            raise ValueError("kind is not a valid memory kind")
+        kind = str(args.get("kind") or "").strip().lower() or None
+        if kind is not None and kind not in config.MEMORY_KINDS:
+            kind = "fact"  # small models invent kinds ("habit"); the fact itself still matters
         return {"content": _as_str(args.get("content"), "content"), "kind": kind}
     raise ValueError(f"unknown tool: {name}")
 

@@ -10,7 +10,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from . import config
 
@@ -195,8 +195,18 @@ def fts_query(query: str) -> str | None:
     for token in tokens:
         if token not in seen:
             seen.append(token)
-    quoted = ['"' + token.replace('"', '""') + '"' for token in seen[:12]]
+    quoted = [_fts_term(token) for token in seen[:12]]
     return " OR ".join(quoted)
+
+
+def _fts_term(token: str) -> str:
+    """A quoted FTS5 term; words of 4+ letters also match as a prefix of their singular
+    stem, so "theme" finds "themes" and "themes" finds "theme"."""
+    if len(token) < 4:
+        return '"' + token.replace('"', '""') + '"'
+    lowered = token.lower()
+    stem = token[:-1] if lowered.endswith("s") and not lowered.endswith("ss") else token
+    return '"' + stem.replace('"', '""') + '"*'
 
 
 class Database:
@@ -944,7 +954,10 @@ class Database:
                 conn.execute("ROLLBACK")
                 raise
 
-    def prune_memories(self, cap: int = config.MEMORY_CAP) -> int:
+    def prune_memories(self, cap: int = config.MEMORY_CAP, keep: Iterable[str] = ()) -> int:
+        """Delete the least valuable unpinned memories down to ``cap``; ``keep`` ids
+        (just saved) are never chosen, or a new memory would evict itself at the cap."""
+        keep = list(keep)
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -953,11 +966,12 @@ class Database:
                 if excess <= 0:
                     conn.execute("COMMIT")
                     return 0
+                exclude = f" AND id NOT IN ({','.join('?' * len(keep))})" if keep else ""
                 rows = conn.execute(
-                    "SELECT id FROM memories WHERE pinned = 0 "
+                    "SELECT id FROM memories WHERE pinned = 0" + exclude + " "
                     "ORDER BY confidence ASC, use_count ASC, "
                     "COALESCE(last_used_at, updated_at) ASC LIMIT ?",
-                    (excess,),
+                    (*keep, excess),
                 ).fetchall()
                 ids = [row["id"] for row in rows]
                 for mid in ids:

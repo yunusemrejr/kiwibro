@@ -241,7 +241,7 @@ def database_units(env: Any = None) -> str:
         assert_eq(database.search_memories("light")[0]["id"], memory["id"], "FTS updated on edit")
         assert_eq(database.search_memories("dark"), [], "stale FTS row removed")
         assert_eq(database.search_memories("!!! ??? ---"), [], "hostile FTS query is safe")
-        assert_eq(db_module.fts_query("dark themes"), '"dark" OR "themes"', "FTS query quoting")
+        assert_eq(db_module.fts_query("dark themes"), '"dark"* OR "theme"*', "FTS query quoting")
         assert_true(database.delete_conversation(conversation["id"]), "conversation deleted")
         assert_eq(database.list_messages(conversation["id"]), [], "cascade removed messages")
         assert_eq(database.delete_all_memories(), 1, "forget all count")

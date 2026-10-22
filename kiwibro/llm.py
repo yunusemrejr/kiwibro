@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -67,6 +68,7 @@ class ChatResult:
 class Completion:
     text: str = ""
     usage: dict[str, int] | None = None
+    finish_reason: str | None = None
 
 
 def _int(value: Any) -> int | None:
@@ -200,6 +202,20 @@ def parse_json_loose(text: str) -> Any:
     from .toolcall import repair_json  # stdlib-only module; imported lazily to keep llm.py a leaf
 
     return repair_json(text) if text else None
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """Drop <think> blocks (and an unclosed trailing one) so a JSON example the model
+    considered while thinking is never parsed as its answer."""
+    text = _THINK_RE.sub("", text or "")
+    head, sep, tail = text.partition("</think>")
+    if sep:  # template opened the block for us; only the closer is in the text
+        text = tail
+    opened = text.lower().find("<think>")
+    return text[:opened] if opened >= 0 else text
 
 
 class LMStudioClient:
@@ -626,7 +642,11 @@ class LMStudioClient:
                 raise LMStudioError("bad_response", "LM Studio returned an empty response.")
             message = choices[0].get("message") or {}
             content = message.get("content") or message.get("reasoning_content") or ""
-            return Completion(text=str(content), usage=_usage(data.get("usage")))
+            return Completion(
+                text=str(content),
+                usage=_usage(data.get("usage")),
+                finish_reason=str(choices[0].get("finish_reason") or "") or None,
+            )
         raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
 
     def complete_json(
@@ -655,7 +675,16 @@ class LMStudioClient:
         except LMStudioError as exc:
             log.debug("complete_json failed: %s", exc.message)
             return None
-        return parse_json_loose(completion.text)
+        text = strip_reasoning(completion.text)
+        if completion.finish_reason == "length":
+            # Cut off by max_tokens: a leniently repaired tail ("User lives in Berl")
+            # would be stored as fact, so only fully closed JSON is trusted.
+            try:
+                return json.loads(text.strip().removeprefix("```json").strip("`").strip())
+            except ValueError:
+                log.debug("complete_json: truncated JSON reply ignored")
+                return None
+        return parse_json_loose(text)
 
     # --- capability catalog, vision, embeddings, load control -------------
     # Serving primitives consumed by the routing layers. Selection policy

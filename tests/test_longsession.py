@@ -479,3 +479,168 @@ def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
         "updated": 0,
         "removed": 0,
     }
+
+
+# --- saving memories reliably -------------------------------------------------
+
+
+def test_new_memory_survives_pruning_at_the_cap(env, monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import config
+
+    svc, _fake = env
+    monkeypatch.setattr(config, "MEMORY_CAP", 5)
+    ids = [svc.memory.remember(f"User owns a {animal} named Bob{n}")["id"]
+           for n, animal in enumerate(["cat", "dog", "fish", "horse", "parrot"])]
+    svc.db.mark_memories_used(ids)  # every old memory now outranks a fresh one
+    saved = svc.memory.remember("User adopted the zebra sanctuary schedule")
+    assert svc.db.get_memory(saved["id"]) is not None
+    assert svc.db.count_memories() == 5
+
+
+def test_merge_without_kind_keeps_the_existing_kind(env):
+    svc, _fake = env
+    svc.memory.remember("Sam leads the Atlas project", "person")
+    merged = svc.memory.remember("Sam leads the Atlas project team")
+    assert merged["kind"] == "person"
+    assert merged["content"] == "Sam leads the Atlas project team"
+
+
+def test_remember_tool_accepts_an_invented_kind():
+    from kiwibro import tools
+
+    assert tools.validate_args("remember", {"content": "User walks daily", "kind": "habit"})["kind"] == "fact"
+    assert tools.validate_args("remember", {"content": "User walks daily", "kind": "Person"})["kind"] == "person"
+    assert tools.validate_args("remember", {"content": "User walks daily"})["kind"] is None
+
+
+def test_unparseable_extraction_does_not_block_later_messages(env, monkeypatch: pytest.MonkeyPatch):
+    svc, fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "I just moved to Lisbon for work")
+    svc.db.add_message(conversation["id"], "assistant", "Congrats!")
+    fake.memory_ops = None  # what complete_json returns for "Nothing worth saving."
+    svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 0  # one retry
+    svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    first_window = svc.db.last_message_seq(conversation["id"])
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == first_window
+
+    svc.db.add_message(conversation["id"], "user", "My sister Ana lives in Porto")
+    fake.memory_ops = {"ops": [{"op": "add", "kind": "person", "content": "User's sister Ana lives in Porto"}]}
+    assert svc.memory.extract_and_apply(conversation["id"], "fake-1")["added"] == 1
+
+
+def test_extraction_window_fits_the_transcript(env, monkeypatch: pytest.MonkeyPatch):
+    svc, fake = env
+    conversation = svc.db.create_conversation()
+    for n in range(8):
+        svc.db.add_message(conversation["id"], "user", f"MARKER_{n} " + "x" * 1200)
+    sent: list[str] = []
+
+    def capture(**kwargs):
+        sent.append(kwargs["messages"][-1]["content"])
+        return {"ops": []}
+
+    monkeypatch.setattr(svc.llm, "complete_json", capture)
+    svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    through = svc.db.get_conversation(conversation["id"])["extracted_through_seq"]
+    included = [n for n in range(8) if f"MARKER_{n} " in sent[0]]
+    assert included == list(range(len(included))) and included  # oldest first, nothing skipped
+    seqs = [m["seq"] for m in svc.db.list_messages(conversation["id"])]
+    assert through == seqs[len(included) - 1]  # watermark stops at the last message sent
+
+
+def test_extraction_ops_are_normalised_not_dropped(env):
+    svc, _fake = env
+    counts = svc.memory._apply_ops([
+        {"op": "add", "kind": "habit", "content": "User runs every morning"},
+        {"op": "add", "content": "User collects vintage fountain pens " + "and inks " * 40},
+    ])
+    assert counts["added"] == 2
+    kinds = {m["content"][:20]: m["kind"] for m in svc.db.all_memories()}
+    assert kinds["User runs every morn"] == "fact"
+    assert all(len(m["content"]) <= 300 for m in svc.db.all_memories())
+
+
+def test_parse_ops_accepts_content_aliases():
+    from kiwibro.memory import parse_ops
+
+    assert parse_ops('{"ops":[{"op":"add","memory":"User likes tea"}]}') == [
+        {"op": "add", "content": "User likes tea"}
+    ]
+
+
+def test_extraction_never_deletes_a_pinned_memory(env):
+    svc, _fake = env
+    memory = svc.memory.remember("User is allergic to peanuts")
+    svc.db.update_memory(memory["id"], pinned=True)
+    assert svc.memory._apply_ops([{"op": "delete", "id": memory["id"]}])["removed"] == 0
+    assert svc.db.get_memory(memory["id"]) is not None
+
+
+def test_recall_matches_singular_and_plural(env):
+    svc, _fake = env
+    svc.memory.remember("User prefers dark themes", "preference")
+    assert svc.db.search_memories("theme")
+    svc.memory.remember("User has one cat", "fact")
+    assert any("cat" in m["content"] for m in svc.db.search_memories("cats"))
+
+
+def test_complete_json_ignores_reasoning_and_truncated_replies(monkeypatch: pytest.MonkeyPatch):
+    from kiwibro.llm import LMStudioClient
+
+    client = LMStudioClient(lambda: {})
+    reply = Completion("")
+    monkeypatch.setattr(client, "complete", lambda **kwargs: reply)
+
+    def ask(text: str, finish: str | None = "stop") -> Any:
+        reply.text, reply.finish_reason = text, finish
+        return client.complete_json(model="m", messages=[])
+
+    thinking = '<think>Format is {"op":"add","content":"User likes tea"}, or [a memory]?</think>'
+    answer = '{"ops":[{"op":"add","content":"User lives in Berlin"}]}'
+    assert ask(thinking + answer) == {"ops": [{"op": "add", "content": "User lives in Berlin"}]}
+    assert ask('Should I add [a memory]?</think>' + answer)["ops"][0]["content"] == "User lives in Berlin"
+    assert ask('<think>still thinking {"ops": [1]}') is None
+    assert ask('{"ops":[{"op":"add","content":"User lives in Berl', "length") is None
+    assert ask(answer, "length") == {"ops": [{"op": "add", "content": "User lives in Berlin"}]}
+
+
+def test_extraction_only_saves_facts_grounded_in_the_conversation(env):
+    from kiwibro.memory import grounded
+
+    transcript = "Hi! I'm Deniz, a backend developer in Izmir. My cat is called Pamuk."
+    assert grounded("User's name is Deniz", transcript)
+    assert grounded("User has a cat named Pamuk", transcript)
+    assert not grounded("User prefers dark themes", transcript)  # copied prompt example
+    assert not grounded("User is Ana, a nurse in Porto", transcript)
+
+    svc, _fake = env
+    counts = svc.memory._apply_ops(
+        [
+            {"op": "add", "kind": "fact", "content": "User works as a backend developer in Izmir"},
+            {"op": "add", "kind": "preference", "content": "User prefers dark themes"},
+            {"op": "add", "kind": "person", "content": "Pamuk"},
+            # an "update" of an id that does not exist is a new fact
+            {"op": "update", "id": "mem_123", "kind": "fact", "content": "User has a cat named Pamuk"},
+        ],
+        transcript,
+    )
+    assert counts["added"] == 2
+    assert sorted(m["content"] for m in svc.db.all_memories()) == [
+        "User has a cat named Pamuk",
+        "User works as a backend developer in Izmir",
+    ]
+
+
+def test_model_written_first_person_memories_name_the_user(env):
+    from kiwibro.memory import third_person
+
+    assert third_person("I always use Neovim") == "User said: I always use Neovim"
+    assert third_person("My cat is Pamuk") == "User said: My cat is Pamuk"
+    assert third_person("Israel trip planned") == "Israel trip planned"
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    saved = svc.memory.remember("I always use Neovim", source_conversation_id=conversation["id"])
+    assert saved["content"] == "User said: I always use Neovim"
+    assert svc.memory.remember("I like tea")["content"] == "I like tea"  # typed by the user in the UI

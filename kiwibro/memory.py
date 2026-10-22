@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
@@ -18,7 +19,7 @@ log = logging.getLogger(__name__)
 DEDUPE_SEQ_RATIO = 0.86
 DEDUPE_JACCARD = 0.72
 MEMORY_PROMPT_TOKEN_CAP = 800
-MAX_OPS_PER_TURN = 3
+MAX_OPS_PER_TURN = 5
 MIN_CONTENT = 3
 MAX_CONTENT = 300
 EXTRACT_TRANSCRIPT_CHARS = 9000
@@ -26,6 +27,10 @@ EXTRACT_MAX_TOKENS = 400
 EXTRACT_EXISTING_CHARS = 4000
 EXTRACT_EXISTING_LIMIT = 32
 EXTRACT_WINDOW_MESSAGES = 12
+# A window whose extraction fails this many times in a row (timeout, error, non-JSON
+# reply) is skipped, so one bad window cannot block every later message forever.
+EXTRACT_MAX_ATTEMPTS = 2
+EXTRACT_LINE_CHARS = 1200
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -98,11 +103,28 @@ def validate_content(text: Any) -> str:
     return content
 
 
+_FIRST_PERSON_RE = re.compile(r"^(i|i'm|i've|i'd|i'll|my|me|we|our)\b", re.IGNORECASE)
+
+
+def third_person(content: str) -> str:
+    """Model-written memories sometimes quote the user ("I use Neovim"); later prompts
+    would read that "I" as the assistant, so attribute it explicitly."""
+    return f"User said: {content}" if _FIRST_PERSON_RE.match(content) else content
+
+
 def validate_kind(kind: Any) -> str:
     value = str(kind or "fact").strip().lower()
     if value not in config.MEMORY_KINDS:
         raise ValueError(f"unknown memory kind: {kind}")
     return value
+
+
+def lenient_kind(kind: Any) -> str | None:
+    """A model-written kind: None when absent, "fact" when it is not a known kind."""
+    if not kind:
+        return None
+    value = str(kind).strip().lower()
+    return value if value in config.MEMORY_KINDS else "fact"
 
 
 def parse_ops(raw: Any) -> list[dict[str, Any]]:
@@ -127,12 +149,57 @@ def parse_ops(raw: Any) -> list[dict[str, Any]]:
         entry: dict[str, Any] = {"op": op}
         if item.get("id"):
             entry["id"] = str(item["id"]).strip()
-        if item.get("content") is not None:
-            entry["content"] = item["content"]
+        content = next(
+            (item[key] for key in ("content", "memory", "text", "fact") if item.get(key) is not None), None
+        )
+        if content is not None:
+            entry["content"] = content
         if item.get("kind") is not None:
             entry["kind"] = item["kind"]
         ops.append(entry)
     return ops
+
+
+# Framing words a memory adds around the fact itself ("User prefers …", "User's name is …").
+_FRAMING_WORDS = frozenset(
+    """user users the and for with from that this has have had is are was his her their its
+    name named called prefers prefer likes like dislikes loves hates wants uses works lives
+    lived living currently also very really strongly""".split()
+)
+
+
+def _folded_words(text: str) -> set[str]:
+    """Lower-cased words with accents removed ("İzmir'de" -> {"izmir", "de"})."""
+    decomposed = unicodedata.normalize("NFKD", (text or "").casefold())
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return _tokens(normalize(plain))
+
+
+def grounded(content: str, transcript: str) -> bool:
+    """True when the conversation mentions enough of a memory's key words.
+
+    Small models copy the prompt's examples or invent facts ("User prefers dark themes"
+    from a chat about cats); a fact the conversation never mentions is not saved.
+    Words match on their first five letters ("developer"/"development"), and a third
+    of the key words is enough, so a memory written in English about a Turkish chat
+    still passes on its names, places and numbers.
+    """
+    terms = {word for word in _folded_words(content) if len(word) > 2 and word not in _FRAMING_WORDS}
+    if not terms:
+        return True
+    seen = {word[:5] for word in _folded_words(transcript)}
+    hits = sum(1 for term in terms if term[:5] in seen)
+    return hits * 3 >= len(terms)
+
+
+def _transcript_cost(message: dict[str, Any]) -> int:
+    """Characters the extraction transcript spends on a message (0 when it is skipped)."""
+    if message.get("role") not in ("user", "assistant"):
+        return 0
+    content = (message.get("content") or "").strip()
+    if not content:
+        return 0
+    return len("Assistant: ") + min(len(content), EXTRACT_LINE_CHARS) + 1
 
 
 class MemoryEngine:
@@ -145,6 +212,7 @@ class MemoryEngine:
         self.db = db
         self.llm = llm
         self._settings = settings_provider
+        self._failed_windows: dict[str, tuple[int, int]] = {}  # conversation -> (through_seq, failures)
 
     # --- retrieval ---------------------------------------------------------
 
@@ -347,13 +415,20 @@ class MemoryEngine:
     def remember(
         self,
         content: Any,
-        kind: Any = "fact",
+        kind: Any = None,
         *,
         source_conversation_id: str | None = None,
     ) -> dict[str, Any]:
-        """Insert a memory, merging into a near-duplicate when one exists."""
+        """Insert a memory, merging into a near-duplicate when one exists.
+
+        Without an explicit ``kind`` a merge keeps the existing memory's kind. Memories
+        saved from a conversation (the remember tool) are model-written, so first-person
+        wording is attributed to the user.
+        """
         cleaned = validate_content(content)
-        kind_name = validate_kind(kind)
+        if source_conversation_id is not None:
+            cleaned = validate_content(third_person(cleaned))
+        kind_name = validate_kind(kind) if kind else None
         match = self.find_similar(cleaned)
         if match:
             if len(cleaned) > len(match["content"]):
@@ -361,17 +436,17 @@ class MemoryEngine:
                     match["id"],
                     content=cleaned,
                     normalized=normalize(cleaned),
-                    kind=kind_name,
+                    kind=kind_name or match["kind"],
                 )
                 return updated or match
             return self.db.update_memory(match["id"]) or match
         memory = self.db.create_memory(
-            kind_name,
+            kind_name or "fact",
             cleaned,
             normalize(cleaned),
             source_conversation_id=source_conversation_id,
         )
-        self.db.prune_memories(config.MEMORY_CAP)
+        self.db.prune_memories(config.MEMORY_CAP, keep=[memory["id"]])
         return memory
 
     def update(
@@ -427,11 +502,15 @@ class MemoryEngine:
         window: list[dict[str, Any]] = []
         spent = 0
         for message in pending:
+            # Charge exactly what the transcript builder spends on this message, and stop
+            # *before* the budget is exceeded: the builder drops whatever does not fit,
+            # and a dropped message would be skipped for good once the watermark advances.
+            cost = _transcript_cost(message)
+            if window and spent + cost > EXTRACT_TRANSCRIPT_CHARS:
+                break
             window.append(message)
-            # Match the transcript builder's per-message cap so nothing in
-            # the window is dropped there while the watermark advances.
-            spent += min(len(message.get("content") or ""), 1200)
-            if len(window) >= EXTRACT_WINDOW_MESSAGES or spent >= EXTRACT_TRANSCRIPT_CHARS:
+            spent += cost
+            if len(window) >= EXTRACT_WINDOW_MESSAGES:
                 break
         through = window[-1]["seq"] if window else watermark
         return window, through
@@ -466,12 +545,22 @@ class MemoryEngine:
                 return counts
             raw = self._bounded_extract(conversation_id, model, window=window)
             if raw is None:
-                return counts  # watermark unchanged: retried next turn
+                last_seq, failures = self._failed_windows.get(conversation_id, (through_seq, 0))
+                failures = failures + 1 if last_seq == through_seq else 1
+                if failures < EXTRACT_MAX_ATTEMPTS:
+                    self._failed_windows[conversation_id] = (through_seq, failures)
+                    return counts  # watermark unchanged: retried next turn
+                log.info("memory extraction skipped a window after %d failed attempts", failures)
+                self._failed_windows.pop(conversation_id, None)
+                self._advance_watermark(conversation_id, through_seq)
+                return counts
+            self._failed_windows.pop(conversation_id, None)
             self._advance_watermark(conversation_id, through_seq)
             ops = parse_ops(raw)[:MAX_OPS_PER_TURN]
             if not ops:
                 return counts
-            return self._apply_ops(ops)
+            transcript = "\n".join(str(message.get("content") or "") for message in window)
+            return self._apply_ops(ops, transcript)
         except Exception:  # extraction must never fail the turn
             log.warning("memory extraction failed for %s", conversation_id, exc_info=True)
             return counts
@@ -551,7 +640,7 @@ class MemoryEngine:
             content = (message.get("content") or "").strip()
             if not content:
                 continue
-            line = f"{'User' if role == 'user' else 'Assistant'}: {content[:1200]}"
+            line = f"{'User' if role == 'user' else 'Assistant'}: {content[:EXTRACT_LINE_CHARS]}"
             if len(line) > budget and lines:
                 break
             lines.append(line)
@@ -580,16 +669,25 @@ class MemoryEngine:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _apply_ops(self, ops: list[dict[str, Any]]) -> dict[str, int]:
+    def _apply_ops(self, ops: list[dict[str, Any]], transcript: str | None = None) -> dict[str, int]:
+        """Apply extraction ops; with ``transcript``, new facts must be grounded in it."""
         counts = {"added": 0, "updated": 0, "removed": 0}
+        added_ids: list[str] = []
         existing = self.db.all_memories()
         for op in ops:
+            if op["op"] == "update" and not (op.get("id") and self.db.get_memory(op["id"])):
+                # Small models "update" invented ids (mem_123) when nothing exists yet;
+                # the content is still a new fact.
+                op = {**op, "op": "add"}
             try:
                 if op["op"] == "add":
-                    content = clean_content(op.get("content"))
-                    if not (MIN_CONTENT <= len(content) <= MAX_CONTENT):
+                    content = validate_content(third_person(clean_content(op.get("content"))))
+                    if len(content.split()) < 2:
+                        continue  # a bare name ("Pamuk") is not a self-contained fact
+                    if transcript is not None and not grounded(content, transcript):
+                        log.info("memory extraction dropped an ungrounded fact: %s", content[:80])
                         continue
-                    kind = validate_kind(op.get("kind"))
+                    kind = lenient_kind(op.get("kind"))
                     duplicate = self.find_similar(content, existing)
                     if duplicate:
                         replacement = content if len(content) > len(duplicate["content"]) else duplicate["content"]
@@ -597,22 +695,21 @@ class MemoryEngine:
                             duplicate["id"],
                             content=replacement,
                             normalized=normalize(replacement),
-                            kind=kind,
+                            kind=kind or duplicate["kind"],
                         )
                         counts["updated"] += 1
                     else:
-                        created = self.db.create_memory(kind, content, normalize(content))
+                        created = self.db.create_memory(kind or "fact", content, normalize(content))
                         existing.append(created)
+                        added_ids.append(created["id"])
                         counts["added"] += 1
                 elif op["op"] == "update":
                     memory_id = op.get("id")
                     memory = self.db.get_memory(memory_id) if memory_id else None
                     if not memory:
                         continue
-                    content = clean_content(op.get("content")) or memory["content"]
-                    if not (MIN_CONTENT <= len(content) <= MAX_CONTENT):
-                        continue
-                    kind = validate_kind(op.get("kind") or memory["kind"])
+                    content = validate_content(op.get("content") or memory["content"])
+                    kind = lenient_kind(op.get("kind")) or memory["kind"]
                     self.db.update_memory(
                         memory_id,
                         content=content,
@@ -622,12 +719,15 @@ class MemoryEngine:
                     counts["updated"] += 1
                 elif op["op"] == "delete":
                     memory_id = op.get("id")
-                    if memory_id and self.db.delete_memory(memory_id):
+                    memory = self.db.get_memory(memory_id) if memory_id else None
+                    if memory is None or memory.get("pinned"):
+                        continue  # pinned memories are the user's; only the user removes them
+                    if self.db.delete_memory(memory_id):
                         existing = [m for m in existing if m["id"] != memory_id]
                         counts["removed"] += 1
             except (ValueError, KeyError):
                 continue
         excess = self.db.count_memories() - config.MEMORY_CAP
         if excess > 0:
-            counts["removed"] += self.db.prune_memories(config.MEMORY_CAP)
+            counts["removed"] += self.db.prune_memories(config.MEMORY_CAP, keep=added_ids)
         return counts

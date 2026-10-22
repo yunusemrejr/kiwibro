@@ -387,9 +387,9 @@ def test_normalize_model_metadata():
 
 
 def test_fts_query_is_sanitised():
-    assert fts_query("kiwi bird") == '"kiwi" OR "bird"'
+    assert fts_query("kiwi bird") == '"kiwi"* OR "bird"*'
     assert fts_query("") is None
-    assert fts_query('quote" and *') == '"quote" OR "and"'
+    assert fts_query('quote" and *') == '"quote"* OR "and"'
 
 
 def test_parse_json_loose_variants():
@@ -542,21 +542,28 @@ def test_memory_parse_ops_robustness():
     assert parse_ops({"ops": [{"op": "explode"}, {"op": "add", "content": "ok"}]}) == [{"op": "add", "content": "ok"}]
 
 
-def test_memory_extraction_applies_max_three_ops(env: Env):
+def test_memory_extraction_applies_max_five_ops(env: Env):
     env.fake.memory_ops = {
         "ops": [
             {"op": "add", "kind": "preference", "content": "User prefers dark themes"},
             {"op": "add", "kind": "fact", "content": "User lives in Istanbul"},
             {"op": "add", "kind": "project", "content": "User is building Kiwibro"},
             {"op": "add", "kind": "person", "content": "User's friend is Ada"},
+            {"op": "add", "kind": "fact", "content": "User owns a cat named Pamuk"},
+            {"op": "add", "kind": "fact", "content": "User drives a red bicycle"},
         ]
     }
     conversation = env.svc.db.create_conversation()
-    env.svc.db.add_message(conversation["id"], "user", "I prefer dark themes and live in Istanbul")
+    env.svc.db.add_message(
+        conversation["id"],
+        "user",
+        "I prefer dark themes, live in Istanbul, am building Kiwibro with my friend Ada, "
+        "have a cat named Pamuk and ride a red bicycle",
+    )
     env.svc.db.add_message(conversation["id"], "assistant", "Noted.")
     counts = env.svc.memory.extract_and_apply(conversation["id"], "fake-1")
-    assert counts == {"added": 3, "updated": 0, "removed": 0}
-    assert env.svc.db.count_memories() == 3
+    assert counts == {"added": 5, "updated": 0, "removed": 0}
+    assert env.svc.db.count_memories() == 5
 
 
 def test_memory_dedupes_near_duplicate_on_extraction(env: Env):

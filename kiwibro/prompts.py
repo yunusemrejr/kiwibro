@@ -78,8 +78,10 @@ walk a site link by link.
 - Code: explore before editing — glob_files to find files, grep_files to locate code, \
 file_outline for big files, git for repo state. Verify changes by running the project's tests \
 (multi_command or run_command); use terminal_session for servers and other long-running processes.
-- Missing context: use recall to search memory and earlier conversation instead of asking the \
-user to repeat themselves.
+- Memory: when the user asks you to remember something, or states a lasting fact about \
+themselves (name, preferences, projects, people, setup), call remember with one short \
+self-contained sentence ("User prefers dark mode"). Missing context: use recall to search memory \
+and earlier conversation instead of asking the user to repeat themselves.
 - Desktop: open_path shows a file or URL to the user, clipboard moves text, notify signals \
 completion, screenshot captures the screen, system_info describes this machine.
 - Capability gaps: if you cannot see an image or a question needs more than you can do, check \
@@ -141,13 +143,14 @@ Conversation (most recent turns):
 {transcript}
 
 Allowed kinds: fact, preference, project, person, decision.
-Return JSON: {{"ops": [ ... ]}} with at most 3 operations. Operation forms:
+Return JSON: {{"ops": [ ... ]}} with at most 5 operations. Operation forms:
 {{"op":"add","kind":"preference","content":"..."}}
 {{"op":"update","id":"mem_...","kind":"fact","content":"improved wording"}}
 {{"op":"delete","id":"mem_..."}}
 Rules:
 - content must be 3-300 characters, self-contained (write "User prefers dark themes", not "prefers it").
-- Do not add something already covered by an existing memory; update it instead.
+- One fact per operation: a message stating a name, a job and a pet is three separate adds.
+- Do not add something already covered by an existing memory; update it instead (only ids listed above).
 - Only include operations that are clearly supported by the conversation.
 - If nothing is worth remembering return {{"ops": []}}."""
 
