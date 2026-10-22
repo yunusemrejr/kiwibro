@@ -396,6 +396,12 @@ def test_parse_json_loose_variants():
     assert parse_json_loose('```json\n{"ops": []}\n```') == {"ops": []}
     assert parse_json_loose('Sure! {"a": 1} trailing') == {"a": 1}
     assert parse_json_loose("no json here") is None
+    # Seen live from a 4B model: a trailing comma used to make the parser fall back to the
+    # inner object, so the extracted memory was silently dropped.
+    assert parse_json_loose('{"ops": [{"op": "add", "kind": "preference", "content": "User prefers short answers"},]}') == {
+        "ops": [{"op": "add", "kind": "preference", "content": "User prefers short answers"}]
+    }
+    assert parse_json_loose("{'ops': []}") == {"ops": []}
     assert parse_json_loose('[{"op": "add"}]') == [{"op": "add"}]
 
 

@@ -109,7 +109,10 @@ def parse_ops(raw: Any) -> list[dict[str, Any]]:
     """Parse extraction output defensively into a list of operation dicts."""
     payload = parse_json_loose(raw) if isinstance(raw, str) else raw
     if isinstance(payload, dict):
-        payload = payload.get("ops") or payload.get("operations") or payload.get("memories")
+        # A bare operation (some models drop the {"ops": [...]} wrapper) still counts.
+        payload = [payload] if "op" in payload else (
+            payload.get("ops") or payload.get("operations") or payload.get("memories")
+        )
         if isinstance(payload, dict):
             payload = [payload]
     if not isinstance(payload, list):

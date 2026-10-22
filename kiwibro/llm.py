@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -195,27 +194,12 @@ def classify_http_error(status: int, body: str) -> LMStudioError:
 
 
 def parse_json_loose(text: str) -> Any:
-    """Extract the first JSON object/array from model text, tolerating fences and prose."""
-    if not text:
-        return None
-    cleaned = text.strip()
-    fence = re.search(r"```(?:json)?\s*(.+?)```", cleaned, re.DOTALL | re.IGNORECASE)
-    if fence:
-        cleaned = fence.group(1).strip()
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(cleaned):
-        if char not in "[{":
-            continue
-        try:
-            value, _end = decoder.raw_decode(cleaned[index:])
-        except ValueError:
-            continue
-        if isinstance(value, (dict, list)):
-            return value
-    try:
-        return json.loads(cleaned)
-    except ValueError:
-        return None
+    """The first JSON object/array in model text, repaired the way small models need
+    (fences, prose, trailing commas, single quotes, Python literals). One repair
+    implementation for the whole app: toolcall.repair_json."""
+    from .toolcall import repair_json  # stdlib-only module; imported lazily to keep llm.py a leaf
+
+    return repair_json(text) if text else None
 
 
 class LMStudioClient:

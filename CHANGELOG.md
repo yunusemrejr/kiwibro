@@ -96,6 +96,9 @@ local models.
 ### Changed
 
 - Tool rounds per reply are configurable (`max_tool_rounds`, default 16).
+- Model-written JSON everywhere (memory extraction, titles, utility calls) is repaired by the
+  same parser as tool calls: a trailing comma from a 4B model used to drop the extracted
+  memory silently (live: "User prefers short, direct answers" now saved).
 - Memory extraction timeouts follow measured model speed (a fixed 8 s never finished on a
   CPU-only laptop, so memories were silently never saved); one extraction per chat at a time.
 - One permission table: extension tools carry their own defaults
