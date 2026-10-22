@@ -1347,7 +1347,8 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name == "list_files":
         entries = ctx.workspace.list_files(args.get("path") or ".")
         if not entries:
-            return ToolResult(ok=True, content="(empty)", preview="(empty)", meta={"count": 0})
+            # Spelled out: tiny models read a bare "(empty)" as "try again", not "0 files".
+            return ToolResult(ok=True, content="The folder is empty (0 files, 0 folders).", preview="Empty folder", meta={"count": 0})
         content = "\n".join(f"{entry['type']}\t{entry['path']}\t{entry['size']}" for entry in entries)
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"count": len(entries)})
     if name == "glob_files":
