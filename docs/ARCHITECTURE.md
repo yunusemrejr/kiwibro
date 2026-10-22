@@ -536,7 +536,9 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   round limit. Refusing keeps the tool list, and so the KV-cached prefix, intact.
 - **Degenerate output.** `inference.is_degenerate` watches the streamed tail of
   content and reasoning (near content-free filler, a unit repeated end to end, the
-  same sentence line after line). The agent raises out of the stream (closing it
+  same sentence line after line), and every 250 characters `inference.is_looping`
+  checks for circling deliberation (≥0.15 five-word-phrase recurrence with ≥4 hedges
+  per 100 words; code blocks ignored). The agent raises out of the stream (closing it
   stops LM Studio generating), rewrites the visible text to the meaningful prefix
   and retries once with `prompts.DEGENERATE_NUDGE`; a second collapse ends the round
   with `DEGENERATE_GAVE_UP`. Nothing degenerate is stored.

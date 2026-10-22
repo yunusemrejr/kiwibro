@@ -97,7 +97,8 @@ local models.
 
 - Tool rounds per reply are configurable (`max_tool_rounds`, default 16).
 - Replies that collapse into filler or repetition loops (seen live on a 2-bit 4B model: ~6
-  minutes of '...' per turn) are cut off as they stream, cleaned from the screen and retried
+  minutes of '...' per turn) or circle in deliberation without acting ("so the content is
+  kiwi\n? No…" for 7,600 characters) are cut off as they stream, cleaned from the screen and retried
   once with a corrective nudge on the same cached prompt; a second collapse ends the round
   with an honest note.
 - Model-written JSON everywhere (memory extraction, titles, utility calls) is repaired by the
