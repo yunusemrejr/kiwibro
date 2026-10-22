@@ -74,8 +74,9 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "remember": "auto",
 }
 
-# Per-turn ceiling on write/exec-class tool executions: small models get a
-# hard stop instead of an unbounded edit/run spree in one autonomous turn.
+# File changes per turn before safety.decide escalates each further one a level
+# (and again at every multiple): a runaway edit spree gets stopped (ask / deny in
+# autonomous mode) while a legitimate big job, like scaffolding a project, finishes.
 MAX_WRITES_PER_TURN = 30
 
 @functools.lru_cache(maxsize=1)
