@@ -226,6 +226,7 @@ class Turn:
     tool_signatures: dict[str, int] = field(default_factory=dict)
     tool_calls_made: int = 0
     failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
+    stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     tool_rounds: int = 0
     steering_notes: list[str] = field(default_factory=list)
     attachments: list[dict[str, Any]] = field(default_factory=list)
@@ -660,6 +661,7 @@ class AgentManager:
             reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
+            turn.stream_tail = ""
             try:
                 result = self.llm.stream_chat(
                     model=model,
@@ -677,6 +679,20 @@ class AgentManager:
                 self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
                 self._rescue_tool_calls(turn, result, settings)
                 return result
+            except inference.DegenerateOutput:
+                # Cut off (closing the stream stops LM Studio generating), clean the visible
+                # text and retry once with a corrective nudge on the same cached prefix.
+                turn.timer.finish()
+                clean = inference.trim_degenerate(turn.partial_text)
+                turn.partial_text = clean
+                turn.emit("rewrite", {"text": clean, "reasoning": ""})
+                log.info("turn %s round %s: output degenerated; cut off", turn.conversation_id, round_index)
+                if nudge == prompts.DEGENERATE_NUDGE:  # retried once already: end the round honestly
+                    if not clean:
+                        turn.partial_text = prompts.DEGENERATE_GAVE_UP
+                        turn.emit("delta", {"text": prompts.DEGENERATE_GAVE_UP})
+                    return ChatResult(content=turn.partial_text, finish_reason="degenerate")
+                nudge = prompts.DEGENERATE_NUDGE
             except ContextLimitError:
                 attempts += 1
                 if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
@@ -742,6 +758,9 @@ class AgentManager:
                 raise TurnAborted()
             if turn.timer is not None:
                 turn.timer.mark_first()
+            turn.stream_tail = (turn.stream_tail + text)[-2000:]
+            if inference.is_degenerate(turn.stream_tail):
+                raise inference.DegenerateOutput()
             # Tool-call markup is held back so users never see raw call syntax.
             visible = turn.stream_filter.feed(text) if turn.stream_filter is not None else text
             if visible:
@@ -767,6 +786,9 @@ class AgentManager:
                 raise TurnAborted()
             if turn.timer is not None:
                 turn.timer.mark_first()
+            turn.stream_tail = (turn.stream_tail + text)[-2000:]
+            if inference.is_degenerate(turn.stream_tail):  # thinking loops burn the budget too
+                raise inference.DegenerateOutput()
             turn.partial_reasoning += text
             turn.emit("reasoning", {"text": text})
 

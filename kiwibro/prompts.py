@@ -47,6 +47,15 @@ FAILURE_COACH = (
     "use paths relative to the workspace (`.` is its top level), try a different tool, or answer the "
     "user with what you know so far.]"
 )
+DEGENERATE_NUDGE = (
+    "Your last reply started repeating itself and was cut off. Do not plan or explain in prose. "
+    "If a tool is needed, call it now (paths are relative to the workspace, e.g. `a.txt`); otherwise "
+    "give a short, direct answer."
+)
+DEGENERATE_GAVE_UP = (
+    "I got stuck repeating myself and stopped this reply. Please rephrase or try again; a larger "
+    "or less compressed model may also help."
+)
 TOOLS_PAUSED = (
     "Tool use is paused for the rest of this turn after repeated failures. Answer the user now: say "
     "briefly what you tried, what went wrong and what you need from them."

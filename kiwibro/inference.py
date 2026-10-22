@@ -346,6 +346,51 @@ class PrefixTracker:
                 self._recent.pop(model, None)
 
 
+# --- degeneration guard -----------------------------------------------------------
+#
+# Heavily quantized small models sometimes collapse mid-reply into filler or a loop
+# ("...", blank lines, the same phrase over and over) and burn the whole output budget:
+# minutes of a laptop CPU for nothing. The agent watches the streamed tail with
+# `is_degenerate`, cuts the stream off and retries once with a corrective nudge.
+
+_DEGENERATE_WINDOW = 300
+
+
+class DegenerateOutput(Exception):
+    """Raised from a stream callback when the reply has collapsed into repetition."""
+
+
+def is_degenerate(tail: str) -> bool:
+    """True when the streamed tail is near content-free, one unit repeated end to end, or
+    the same sentence line after line. Thresholds need many repetitions, so ordinary
+    prose and code (even nested closing braces) never trip it."""
+    window = tail[-_DEGENERATE_WINDOW:]
+    if len(window) < _DEGENERATE_WINDOW:
+        return False
+    if sum(ch.isalnum() for ch in window) < 0.04 * len(window):
+        return True
+    long = tail[-2 * _DEGENERATE_WINDOW:]
+    for period in range(1, 151 if len(long) == 2 * _DEGENERATE_WINDOW else 41):
+        source = window if period <= 40 else long  # longer units must repeat 4+ times
+        unit = source[-period:]
+        if unit.strip() and (unit * (len(source) // period + 1))[-len(source):] == source:
+            return True
+    lines = [line.strip() for line in tail[-3000:].splitlines() if sum(ch.isalnum() for ch in line) >= 3]
+    return len(lines) >= 12 and len(set(lines[-12:])) == 1
+
+
+def trim_degenerate(text: str) -> str:
+    """The reply without its collapsed tail (trailing filler or repeated paragraphs)."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    while paragraphs and (
+        sum(ch.isalnum() for ch in paragraphs[-1]) < 0.3 * len(paragraphs[-1].strip())
+        or (len(paragraphs) > 1 and paragraphs[-1].strip() == paragraphs[-2].strip())
+        or is_degenerate(paragraphs[-1])
+    ):
+        paragraphs.pop()
+    return "\n\n".join(p.strip() for p in paragraphs)
+
+
 class SpeedBook:
     """Measured prefill and decode speed per model (moving average of streamed rounds).
 
