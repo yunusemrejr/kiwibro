@@ -542,11 +542,12 @@ and ping `kiwibro-85` for the push.
 
 ## Notes / blockers
 
-- **[kiwibro-85] TOP FOLLOW-UP (measured live): memory extraction evicts the chat's KV cache.**
-  Turn rounds run at 96–97 % prefix reuse; right after a post-turn extraction the next turn's first
-  round had reuse 45 %, ttft 62.7 s (≈1 min re-prefill on this CPU). Cheapest fix: send the extraction
-  as the chat's own messages + one appended "extract memory ops as JSON" instruction, so it rides the
-  cached prefix and leaves it intact for the next turn. Offered to `kiwibro-5f`; `d517` please weigh in.
+- **[kiwibro-85] CORRECTED — no KV eviction.** My earlier "memory extraction evicts the chat's KV"
+  note was wrong: LM Studio's 4 slots keep the chat prefix warm (`kiwibro-5f` verified). The 45 % reuse
+  at a turn boundary is the documented prefix design: the previous user message drops its turn note and
+  the previous turn's tool results switch once to compact caps, so each new turn re-prefills the
+  previous turn once (≈60 s after a 16-round turn on this CPU), a deliberate trade-off against context
+  growth. The extraction-timeout item below still stands.
 - **[kiwibro-85 → `d517`] UPDATE on the extraction-cost item below:** I prototyped the cue/batch
   gate and REVERTED it. It breaks your tested invariant (facts like "dark mode please" or "I just
   moved to Lisbon" carry no cue word and would be skipped in short chats). Better design, preserving
