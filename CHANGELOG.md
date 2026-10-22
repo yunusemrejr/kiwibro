@@ -2,6 +2,74 @@
 
 All notable changes to Kiwibro are documented here.
 
+## [2.1.0] — 2026-10-22
+
+Smooth sessions on small local models: the model is ready before the first message,
+permissions stay out of the way, memory edits itself correctly, replies render what
+they show, and the model's own window size stops mattering.
+
+### Added
+
+- **Model readiness** (`readiness.py`). Opening Kiwibro, selecting a model, opening a
+  chat or changing a prompt-shaping setting loads the model explicitly (32K window,
+  4 parallel slots; 16K/8K when LM Studio refuses; a loaded window under 16K is
+  enlarged while idle) and prefills the exact leading messages + tools of the next
+  request. Measured with `lfm2.5-1.2b`: the first request takes 6 s instead of 47 s;
+  through Kiwibro a new chat's first token came after 7.3 s with 97 % prefix reuse. A
+  reply that starts mid-warm-up waits for it on the same prefix and cancels it
+  otherwise. `GET /api/models/ready`; the header dot pulses amber while it runs;
+  `KIWIBRO_WARMUP=0` turns it off.
+- **LM Link and remote servers.** Models from linked devices are listed, loaded and
+  warmed like local ones. Settings → LM Studio can point at another server and store
+  an API token (`Authorization: Bearer`, write-only; `KIWIBRO_LMSTUDIO_TOKEN`).
+- **Rich replies.** Highlighted code (escape-first tokenizer, ~15 languages), coloured
+  diffs, `csv`/`tsv` blocks as tables, and live previews of `html`/`svg` blocks with
+  Preview/Code tabs. HTML runs in an opaque-origin iframe whose CSP blocks all network
+  access; refresh tags are stripped, links are inert, and scripts wait for *Run scripts*.
+- **Memory the model can edit.** `remember` gains `action: update | forget` (and `old`)
+  so "I moved to Ankara" replaces "lives in Istanbul" and "forget that" works. Every
+  memory records its origin (`you` / `chat` / `learned`, schema v4) and the chat it came
+  from; the Memory sheet labels and links it. A toast says when something new was
+  remembered (checked with growing gaps, since extraction can take a minute on CPU).
+- **Messages longer than the window** (up to 400,000 characters) are stored in the
+  document library; the model reads the start, the end and a handle to page through the
+  rest. The chat keeps the full text.
+
+### Changed
+
+- **Permissions: Automatic or Manual.** Automatic (default; `autonomy: smart`, or
+  *refuse risky steps* = `autonomous`) lets the risk policy decide every step and hides
+  the per-tool list; Manual (`supervised`) shows the Auto/Ask/Deny list, which now
+  applies only there. In Automatic mode the approval card's second button is *Allow in
+  this chat* (in-memory, per conversation); in Manual it is *Always* as before. The
+  system prompt describes the active mode.
+- **Memory extraction waits for quiet.** It runs one chat at a time once no reply has
+  streamed for 20 s (`KIWIBRO_MEMORY_IDLE_S`) and no warm-up runs; a reply starting
+  cancels it mid-request and it is re-queued, so nothing is skipped (LM Studio stops a
+  cancelled request at its next 2048-token batch, so quiet time matters more than the
+  cancel). The `remember` tool still saves what you state during the turn. Measured: an
+  extraction beside the next reply slowed its first token from 2.8 s to 8.4 s, and stored
+  "lives in Istanbul" after that reply had saved "moved to Ankara". A learned fact that a
+  newer, related memory already changed is no longer added.
+- **Context budget counts the tool schemas** (~3.5k tokens for the auto set), so
+  compaction starts before the window overflows; a window too small for the auto set
+  gets the minimal set instead.
+- The system prompt tells the model what the chat renders (tables, csv, html/svg).
+
+### Fixed
+
+- Small models stored facts about the assistant ("Kiwibro is a local AI agent…") and
+  facts nobody stated: `remember` and extraction now refuse both, and saves must be
+  grounded in what the user said.
+- Extraction "updates" of an unrelated memory overwrote it (measured live with
+  `lfm2.5-1.2b`); such an update is now an add, and updates must be grounded too.
+  `remember(action="update")` with the old and new fact swapped is put right.
+- Memories the user added are never deleted by extraction or evicted at the cap.
+- **Stop works during prefill.** LM Studio sends nothing until the first token (75 s for a
+  6k-token prompt on this CPU), so the stop flag was only seen then; a watcher now shuts
+  the socket down (Kiwibro returns at once; LM Studio drops the request at its next
+  2048-token batch).
+
 ## [2.0.0] — 2026-10-22
 
 The agent release: complex tool use, model teamwork, risk-graded autonomy with a

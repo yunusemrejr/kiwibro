@@ -48,6 +48,7 @@ kiwibro/
 │   │   # model & inference
 │   ├── llm.py              # LM Studio client: discovery, streaming, JSON helpers
 │   ├── inference.py        # KV-stable prompt layout, thinking control, telemetry
+│   ├── readiness.py        # load the selected model + prefill its prompt ahead of time
 │   ├── capabilities.py     # model capability inference, smallest-capable pick
 │   ├── routing.py          # temporary helper models (load → use → unload)
 │   ├── media.py            # image/audio/video handling, no-model fallbacks
@@ -246,6 +247,27 @@ default); a background request in between did not evict a chat's warm prefix.
   `qwen3.8-27b` loaded, answered, unloaded in 33 s. Images are downscaled to ≤1024 px
   first (`media.image_data_url`); videos become keyframes (`media.video_frames`); with no
   capable model, `media.media_facts` gives deterministic code-derived facts.
+- **Model readiness** (`readiness.py`). Opening Kiwibro, picking a model, opening a chat
+  or changing a prompt-shaping setting queues one background job. **Load:** a model that
+  is not loaded is loaded explicitly with a 32K window and 4 parallel slots (16K, then 8K
+  when LM Studio's memory guardrails refuse; no load API → JIT), and a loaded model
+  below 16K is reloaded larger while no reply runs. A JIT load uses the model's own
+  defaults, which can be a single slot where every background call evicts the chat's
+  cache. **Warm:** `AgentManager.warm_prefix` renders exactly the next request's leading
+  messages and tools (a chat's history as if a new message followed it, tool results
+  already compact) and `LMStudioClient.prefill` sends them with `max_tokens: 1`. Measured
+  (`lfm2.5-1.2b`, 4.7k-token prefix): first request 47 s cold vs 6 s warm; through
+  Kiwibro a new chat's first token came after 7.3 s with 97 % prefix reuse. A turn that
+  starts mid-job waits for it when the prefix is its own (status *Getting the model
+  ready*) and cancels it otherwise: `prefill` shuts the socket down, because LM Studio
+  sends nothing until the first token. Chats estimated above 24k tokens are not
+  prefilled ahead. The header's model dot pulses amber while a job runs
+  (`GET /api/models/ready`).
+- **LM Link.** Models on linked devices appear in the local server's lists like local
+  ones (no device field; a key present on two devices is listed twice in
+  `/api/v1/models`, and the first entry's metadata is kept). They are selected, loaded and
+  warmed through the same endpoints. Settings can point Kiwibro at another LM Studio
+  server and hold an API token for servers with authentication on.
 - **Bigger windows for long chats.** `POST /api/models/context {id, context_length}`
   reloads a loaded model with a larger context (`/api/models` lists `context_choices`);
   if LM Studio refuses for lack of memory the previous window is restored.
@@ -259,6 +281,11 @@ default); a background request in between did not evict a chat's warm prefix.
   KV-stable and the user's question is what a small model reads last. Live: a test image
   sent to `spark-x2.6-4b` was described by `qwen3.8-27b` ("green triangle … ORDER 7781")
   and answered correctly.
+- **Stop during prefill.** LM Studio sends response headers at once and nothing else until
+  the first token. With an abort flag, `stream_chat` (and `prefill`, and `complete(abort=…)`,
+  which streams) starts a watcher that shuts the socket down when the flag is set: Kiwibro
+  returns at once and LM Studio drops the request at its next 2048-token batch (measured:
+  a 75 s prefill stopped ~25 s after the abort).
 - **Leaked reasoning.** With thinking off some small models think anyway and close a
   `</think>` LM Studio never saw opened. `LMStudioClient` moves that text into the
   reasoning channel mid-stream and the agent sends an SSE `rewrite` so the UI replaces it.
@@ -282,9 +309,22 @@ Budget per request:
 ```
 models = fetch model metadata
 context = loaded_context_length if state == loaded else min(max_context_length, 32768)
-budget  = context - reserve(output) - 512
+budget  = context - reserve(output) - 512 - tool_schema_tokens
 reserve(output) = min(settings.max_output_tokens, max(512, context // 8))
 ```
+
+The tool schemas render outside the messages (~3.5k tokens for the auto set), so
+`prepare(..., reserve_tokens=…)` keeps them out of the message budget and compaction
+starts before the window overflows. When the auto set would take more than 35 % of the
+budget (a small window that cannot be enlarged), the minimal set is sent instead
+(`AgentManager._tool_list`); other tools still run when called by name.
+
+**Messages longer than the window.** A user message over ~40 % of the budget is stored
+in the document library (`library.stash_text`); the user message's meta gets a fixed
+`prompt_text` (head + tail + the handle to `doc_read`/`doc_search` the rest) that
+`to_llm_message` sends instead, so the prompt stays KV-stable. The transcript, the
+episodic index and memory extraction keep the full text. Messages up to 400,000
+characters are accepted.
 
 History sent: system prompt + retrieval memory block + messages with
 `seq > conversation.summary_through_seq` + newest user message. Tool transcripts are
@@ -321,11 +361,19 @@ work and on `meta`, rendered as a minimal ring/bar near the composer.
 Durable, global (not per conversation), SQLite-backed.
 
 Schema: `memories(id, kind, content, normalized, tags, source_conversation_id,
-confidence, pinned, created_at, updated_at, last_used_at)` with FTS5 index.
-Kinds: `fact`, `preference`, `project`, `person`, `decision`.
+confidence, pinned, created_at, updated_at, last_used_at, use_count, origin)` with FTS5
+index. Kinds: `fact`, `preference`, `project`, `person`, `decision`. `origin` (schema v4):
+`you` (added or edited in the Memory sheet), `chat` (the `remember` tool), `learned`
+(background extraction); NULL for older rows. The sheet labels each memory with its origin
+and links back to the chat it came from.
 
 - **Extraction**: after each completed assistant turn (after `done` is emitted), if
-  enabled, a background daemon worker asks the selected model for strict JSON operations
+  enabled, the chat is queued for one background worker. It runs once no reply has
+  streamed for `MEMORY_IDLE_S` (20 s) and no warm-up runs, one chat at a time, and a reply
+  starting cancels it mid-request (the chat is re-queued; the watermark is untouched).
+  On a CPU-only laptop an extraction beside the next reply slowed its first token from
+  2.8 s to 8.4 s and stored a fact that reply had just changed. The worker asks the
+  selected model for strict JSON operations
   (`{"ops":[{"op":"add|update|delete","id?":"...","kind":"...","content":"..."}]}`)
   given the last few turns plus a compact list of existing memories (top ~40).
   Validate: content 3–300 chars, kind whitelist, no duplicates, max 3 ops applied
@@ -336,7 +384,16 @@ Kinds: `fact`, `preference`, `project`, `person`, `decision`.
 - **Retrieval for prompt**: pinned memories first, then FTS5 matches for the newest
   user text, then most recently used; render compact bullets under
   `## Memory` capped at ~800 tokens. Mark retrieved memories' `last_used_at`.
-- **Explicit remember tool**: `remember(content, kind)` writes immediately.
+- **Explicit remember tool**: `remember(content, kind, action, old)` writes immediately.
+  `action: save` (default) adds or merges; `update` replaces the memory `old` refers to
+  (words from it or its id; ≥ 50 % of its key words must match) — "I moved to Ankara"
+  rewrites "lives in Istanbul" instead of adding a contradiction; `forget` deletes the
+  memory the content refers to (pinned memories are kept and the model is told so).
+  Saves and updates must be grounded in what the user said in the chat
+  (`memory.grounded`), and facts about the assistant itself are refused — small models
+  otherwise store "Kiwibro is a local AI agent…".
+- **The user's memories are protected**: extraction never deletes a `you` or pinned
+  memory, and pruning at the cap never evicts them.
 - **Titles**: conversation titles are derived deterministically from the first user
   message (fast, no extra model round-trip); a model-written title is accepted only
   when it validates, so `done` never waits on it.
@@ -572,7 +629,8 @@ messages(id TEXT PK, conversation_id TEXT FK ON DELETE CASCADE, seq INTEGER,
   UNIQUE(conversation_id, seq))
 memories(id TEXT PK, kind TEXT, content TEXT, normalized TEXT, tags TEXT,
   source_conversation_id TEXT, confidence REAL DEFAULT 1, pinned INTEGER DEFAULT 0,
-  created_at TEXT, updated_at TEXT, last_used_at TEXT)
+  created_at TEXT, updated_at TEXT, last_used_at TEXT,
+  use_count INTEGER DEFAULT 0 /* v2 */, origin TEXT /* v4: you | chat | learned */)
 permissions(tool TEXT PK, mode TEXT)         -- auto | ask | deny
 settings(key TEXT PK, value TEXT)            -- JSON values
 usage(id INTEGER PK AUTOINCREMENT, conversation_id TEXT, model TEXT,
@@ -610,11 +668,24 @@ Design language:
   collapsible rows with icons and status dots, reasoning collapsed by default.
 - Approval card inline in the transcript: tool icon + name, one-line summary,
   expandable details (command / file path + preview), risk badge, buttons
-  `Allow`, `Always`, `Deny`. Keyboard: `a`/`d` maybe; Esc cancels approval.
-- Sheets: memory sheet (search, kind chips, rows with pin/delete, add field),
-  settings sheet (LM Studio status + model list, workspace path, permissions
-  toggles, data location, "forget all"). Model popover with state dots, context
-  size and tool-capable marker; selecting swaps instantly (toast).
+  `Allow`, `Always` (Manual mode) or `Allow in this chat` (automatic modes), `Deny`.
+- Sheets: memory sheet (search, kind chips, rows with pin/edit/delete and an origin
+  label — *Added by you*, *Saved in a chat*, *Learned* — that links to its chat, add
+  field), settings sheet (LM Studio status, model list, server address and API token,
+  permissions, behaviour, workspace path, data location, "forget all"). Permissions is
+  one Automatic/Manual switch: Automatic shows only what to do with risky steps (ask
+  me / refuse them); the per-tool Auto/Ask/Deny list appears in Manual only. Model
+  popover with state dots, context size and tool-capable marker; selecting swaps
+  instantly (toast) and the header dot pulses amber while the model loads and warms.
+- Rich replies (`markdown.js` + `richblocks.js`): code is highlighted by a small
+  escape-first tokenizer; `diff` blocks colour added/removed lines; `csv`/`tsv` blocks
+  render as tables with the source folded below; complete `html` and `svg` blocks
+  render as live previews (final render only, never while streaming) with Preview/Code
+  tabs. SVG goes through an `<img>` data URI; HTML through an iframe with an opaque
+  origin and a CSP that blocks every network request, with refresh tags removed and
+  link clicks inert. Scripts stay paused until the user presses *Run scripts*: a page
+  can still navigate its own frame, and a prompt-injected page could ask the model for
+  one that carries chat text out in a URL.
 - Streaming: `fetch` POST to `/api/chat`, read `response.body` via
   `ReadableStream` + `TextDecoder`, parse SSE blocks (`event:`/`data:`), render
   deltas through a markdown renderer that is safe (escape HTML first; no remote

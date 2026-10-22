@@ -32,10 +32,13 @@ Aggregate for first paint.
   "current_model": "qwen3.8-2b",
   "conversations": [{"id": "...", "title": "...", "updated_at": "...", "message_count": 4, "model": "..."}],
   "memories_count": 12,
-  "workspace": "/home/you/Kiwibro"
+  "workspace": "/home/you/Kiwibro",
+  "readiness": {"model": "qwen3.8-2b", "phase": "warming", "detail": "Getting ready", "context_length": 32768}
 }
 ```
-If LM Studio is offline: `health.lmstudio=false`, `models=[]`, still 200.
+If LM Studio is offline: `health.lmstudio=false`, `models=[]`, still 200. With LM Studio
+reachable, bootstrap also queues the selected model's load + warm-up (see
+`GET /api/models/ready`); the response never waits for it.
 
 ---
 
@@ -56,6 +59,18 @@ Additive fields from LM Studio's `/api/v1/models` when available: `key`, `displa
 (`context_length`, `parallel`, `flash_attention`) plus `context_choices` (larger windows
 the model supports, at most three).
 
+### `GET /api/models/ready`
+`{"ok": true, "readiness": {"model", "phase", "detail", "context_length"}}`. `phase` is
+`idle | loading | warming | ready | error`. Opening Kiwibro, selecting a model, opening a
+chat and changing a prompt-shaping setting queue a background job: the model is loaded
+explicitly with a working window (32K, or 16K/8K when LM Studio's guardrails refuse; a
+loaded model below 16K is reloaded larger while no reply runs) and the exact leading
+messages + tools of the next request are prefilled with `max_tokens: 1`, so the first
+reply only processes the new message. A reply that starts during the job waits for it
+(status `Getting the model ready`) when it is the same prefix, and cancels it otherwise.
+`/api/bootstrap`, `/api/models` and `/api/models/select` include the same `readiness`
+object. Disabled with `KIWIBRO_WARMUP=0` (the e2e harness does this).
+
 ### `POST /api/models/context`
 Body `{"id": "spark-x2.6-4b", "context_length": 65536}` (one of the model's
 `context_choices`). Reloads the loaded model with that window (LM Studio cannot resize
@@ -65,8 +80,10 @@ loaded again; `409 busy` while a reply runs.
 
 ### `POST /api/models/select`
 Body `{"id": "qwen3.8-2b"}`. Persists the model in settings; does **not** touch
-conversations or memories. Response `{"ok": true, "current": "..."}`. 400 if model
-unknown. Selection applies to new turns in any chat.
+conversations or memories. Response `{"ok": true, "current": "...", "readiness": {...}}`
+(the load + warm-up runs in the background). 400 if model unknown. Selection applies to
+new turns in any chat. Models shared over LM Link come through the local server's list
+like local ones and are selected, loaded and warmed the same way.
 
 ---
 
@@ -123,7 +140,10 @@ Body:
 - Response `200 text/event-stream`, headers: `Cache-Control: no-cache`,
   `X-Accel-Buffering: no`, `Connection: keep-alive`. Heartbeat comment `: ping`
   every 15 s while idle (e.g. waiting on approval).
-- Validation: message non-empty, ≤ 32000 chars → 400.
+- Validation: message non-empty, ≤ 400,000 chars → 400. A message longer than about 40 %
+  of the model's window is stored in the document library; the model reads its start,
+  its end and the handle to read the rest (`doc_read` / `doc_search`). The transcript
+  keeps the full text.
 
 SSE frames use `event: <type>\ndata: <json>\n\n`.
 
@@ -135,7 +155,7 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `reasoning` | `{text}` | streaming reasoning fragment |
 | `rewrite` | `{text, reasoning}` | the model wrote reasoning as plain text ending in `</think>`: replace the reply text so far with `text` and show `reasoning` as reasoning |
 | `tool_call` | `{id, name, args, risk, requires_approval}` | before approval/execution |
-| `approval` | `{approval_id, tool, args, summary, risk, timeout_s}` | user action needed |
+| `approval` | `{approval_id, tool, args, summary, risk, timeout_s, always_scope: "tool"\|"chat", level, reasons}` | user action needed |
 | `tool_result` | `{id, name, ok, duration_ms, preview}` | after execution; `preview` ≤ 400 chars |
 | `context` | `{used, budget, percent, compacted}` | after context work |
 | `memory` | `{added, updated, removed}` | optional; extraction is asynchronous after `done`, so the UI refreshes counts from `/api/bootstrap` or `/api/memories` |
@@ -166,8 +186,11 @@ reply is running, `404` for unknown conversations.
 
 ### `POST /api/approvals/<approval_id>`
 Body `{"decision": "allow" | "always" | "deny"}` → `{"ok": true, "decision": "..."}`.
-`always` sets that tool's permission mode to `auto`. 404 if unknown/expired.
-When resolving, the blocked SSE stream resumes.
+`always` follows the approval's `always_scope`: in Manual mode (`autonomy: supervised`,
+scope `tool`) it sets that tool's permission to `auto`; in the automatic modes (scope
+`chat`) it allows that tool's risky steps for the rest of the conversation (kept in
+memory; critical steps stay refused). 404 if unknown/expired. When resolving, the
+blocked SSE stream resumes.
 
 ---
 
@@ -176,16 +199,24 @@ When resolving, the blocked SSE stream resumes.
 ### `GET /api/memories?q=&kind=`
 ```json
 {"ok": true, "memories": [{"id":"mem_...","kind":"preference","content":"Prefers dark themes",
- "pinned": false, "confidence": 1.0, "created_at":"...","updated_at":"...","last_used_at":null}],
+ "pinned": false, "confidence": 1.0, "origin": "you", "source_conversation_id": null,
+ "created_at":"...","updated_at":"...","last_used_at":null}],
  "total": 12}
 ```
 Order: pinned, then updated_at desc. `q` = FTS search, `kind` filter optional.
+`origin`: `you` (added or edited in the Memory sheet), `chat` (saved by the model's
+`remember` tool in `source_conversation_id`), `learned` (background extraction from
+`source_conversation_id`), or `null` for memories saved by versions before 2.1. The
+model never deletes a `you` or pinned memory, and pruning at the 400-memory cap never
+evicts them.
 
 ### `POST /api/memories`
-Body `{"content": "...", "kind": "fact"}` → `{"ok": true, "memory": {...}}`.
+Body `{"content": "...", "kind": "fact"}` → `{"ok": true, "memory": {...}}` (origin `you`;
+adding a near-duplicate of a learned memory merges into it and makes it yours).
 
 ### `PATCH /api/memories/<id>`
-Body any of `{"content", "kind", "pinned"}` → `{"ok": true, "memory": {...}}`.
+Body any of `{"content", "kind", "pinned"}` → `{"ok": true, "memory": {...}}`. Editing the
+content makes the memory the user's (origin `you`).
 
 ### `DELETE /api/memories/<id>` → `{"ok": true}`
 
@@ -198,7 +229,8 @@ Body any of `{"content", "kind", "pinned"}` → `{"ok": true, "memory": {...}}`.
 ### `GET /api/settings`
 ```json
 {"ok": true, "settings": {
-  "model": null, "lmstudio_url": "http://127.0.0.1:1234", "agent_enabled": true,
+  "model": null, "lmstudio_url": "http://127.0.0.1:1234", "lmstudio_token_set": false,
+  "agent_enabled": true,
   "memory_enabled": true, "max_output_tokens": 2048, "temperature": 0.6,
   "workspace": "/home/you/Kiwibro", "user_name": "",
   "tool_profile": "auto", "reasoning": "auto", "max_tool_rounds": 16,
@@ -213,9 +245,15 @@ tool_profile in {auto, full, minimal, coding, research, desktop}, reasoning in
 strict, off}, remote_hosts a list of ≤32 ssh aliases or `user@host`, max_tool_rounds
 1–32, workspace must be creatable inside `$HOME` (no root paths), lmstudio_url
 http(s), permissions modes in {auto, ask, deny} for any known tool (built-in or
-extension). Returns merged settings. Changing workspace does not move files; a
-conversation bound to its own folder (`conversation.workspace`, set by the
-`workspace` tool) keeps using that folder.
+extension), lmstudio_token a single token ≤ 512 chars (`""` removes it). Returns merged
+settings. Changing workspace does not move files; a conversation bound to its own
+folder (`conversation.workspace`, set by the `workspace` tool) keeps using that folder.
+
+`lmstudio_token` is write-only: it is sent as `Authorization: Bearer …` to an LM Studio
+server with authentication on (`KIWIBRO_LMSTUDIO_TOKEN` works too) and is never
+returned; responses carry `lmstudio_token_set` instead. Per-tool `permissions` apply in
+Manual mode (`autonomy: supervised`) only; `smart` and `autonomous` use each tool's
+default and the risk policy decides each call.
 
 ### `GET /api/workspace`
 `{"ok": true, "root": "/home/you/Kiwibro", "files": [{"path":"notes.md","type":"file","size":123,"modified":"..."}]}`

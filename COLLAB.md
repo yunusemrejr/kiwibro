@@ -459,6 +459,27 @@ staged in the shared index when that commit ran. Content is exactly as validated
 
 ## Done
 
+- **2.1.0 — readiness, automatic permissions, model-edited memory, rich replies, window-proof
+  context** (Claude Code session `kiwibro-ce`, 2026-10-22). New `readiness.py`: explicit load
+  (32K, 4 slots; ladder 16K/8K) + KV prefill of `AgentManager.warm_prefix` on open / model
+  select / chat open / prefix-setting change; a turn waits for its own prefix, cancels others
+  (`LMStudioClient.prefill` shuts the socket — LM Studio is silent until the first token).
+  Live (`lfm2.5-1.2b`): first request 47 s cold → 6 s warm; new chat first token 7.3 s, 97 %
+  reuse. **Contract changes:** per-tool `permissions` apply in `supervised` only (Settings shows
+  them only in Manual); approval SSE gains `always_scope` (`tool`|`chat`), `always` in automatic
+  modes = per-chat allowance; memories gain `origin` (schema **v4**) + `source_conversation_id` in
+  the API; `remember` gains `action`/`old`; context budget subtracts tool-schema tokens
+  (`prepare(reserve_tokens=)`); user messages ≤ 400k chars, paged via `meta.prompt_text`;
+  settings `lmstudio_token` (write-only, `lmstudio_token_set`); `GET /api/models/ready`;
+  `KIWIBRO_WARMUP=0` (e2e harness sets it). Measured live: LM Link models carry no device field
+  (a key on two devices is listed twice in v1); `parallel` is honoured by `/api/v1/models/load`
+  though undocumented; slots share one KV pool. Small-model fixes from a live run: extraction
+  "update" of an unrelated memory → add, swapped `old`/`content` → swapped back. Memory extraction
+  is now one queued background worker that runs only while idle (`MEMORY_IDLE_S`=20 s, no warm-up) and
+  is cancelled + re-queued when a reply starts; `extract_and_apply(..., abort=)` /
+  `complete(abort=)` stream so the abort can close the socket mid-prefill (also fixes Stop during
+  prefill). Fakes: `complete_json` takes `**kwargs`; the e2e fake LM streams utility answers.
+
 - **Web search relevance/speed + reliable memory saving** (Claude Code session, 2026-10-22;
   `09c9887` search, `3136643` memory). Live probe: Brave 429, Bing HTML empty, DDG 202 →
   every query fell to Wikipedia junk. Now Yahoo first, parallel provider tiers, relevance

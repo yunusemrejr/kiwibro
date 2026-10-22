@@ -47,7 +47,9 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   turn instead of silently skipping facts. The extraction timeout is sized
   from the model's measured prefill/decode speed (`inference.SPEEDS`, 8 s
   floor, 180 s ceiling) so a CPU-only laptop actually finishes it, and only
-  one extraction per conversation runs at a time. The extractor sees the oldest
+  one extraction runs at a time, only while no reply streams (≥ 20 s of quiet) and
+  no warm-up runs; a reply starting cancels it and re-queues the chat. The extractor
+  sees the oldest
   pending window and only *relevant* existing memories (pinned + search +
   recent, char-capped) — small, accurate utility prompts.
 - **Dedupe**: FTS-prefiltered candidates compared on stored normalised text
@@ -57,6 +59,18 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   injection and the `recall` tool — one behaviour, two surfaces.
 - Memories carry `use_count`; pruning evicts unused low-confidence entries
   first. Everything is user-editable/deletable; model swaps never touch it.
+- **Origins** (schema v4): `you` (Memory sheet, or edited there), `chat` (the
+  `remember` tool), `learned` (extraction), with the source conversation. The
+  user's memories are never deleted by extraction or evicted by pruning.
+- **The model edits memory, carefully.** `remember` saves, `update`s (`old` names
+  the outdated memory; ≥ 50 % of its key words must match) or `forget`s. A save or
+  update must be grounded in what the user said, and facts about the assistant are
+  refused. Measured small-model mistakes are corrected rather than stored: an
+  extraction "update" of an unrelated memory becomes an add (`memory.related`), and
+  a `remember` update whose old/new facts are swapped is turned around (the newest
+  user message carries the new fact). A learned fact is skipped when a related memory
+  about the same subject changed after the message that stated it (`_superseded`:
+  "moved to Ankara" saved by a later turn beats "lives in Istanbul" from an earlier one).
 
 ## Capability routing (`kiwibro/routing.py`)
 
@@ -81,6 +95,12 @@ in `kiwibro/llm.py` — routing is only ranking + lifecycle.
   degrades to summary-only, never to a failed turn.
 - Extraction failures retry; memory writes dedupe; helpers never unload
   the main model.
+- Model-written memories are grounded in the user's words; an update only
+  rewrites a related memory; `you` and pinned memories are never removed by
+  the model or by pruning.
+- A user message longer than ~40 % of the budget reaches the model as a fixed
+  excerpt + library handle (`meta.prompt_text`), so it never overflows the
+  window and still renders identically on every later turn.
 
 ## Long sessions in the API
 
