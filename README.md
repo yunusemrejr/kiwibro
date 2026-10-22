@@ -53,12 +53,12 @@ permission, inside its own workspace.
 | **Models** | Live list from LM Studio with size, loaded vs. maximum context window, tool, vision and reasoning support. Click the context ring to reload a model with a larger window for long chats. |
 | **Context** | Automatic rolling summarisation with a quiet context meter. |
 | **Memory** | Global, deduped, FTS-searchable. Pin, edit, delete, forget all. |
-| **Agent tools (35)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), codebase (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python`/`run_javascript`, desktop (`system_info`, `open_path`, `clipboard`, `notify`, `screenshot`), model delegation (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`. |
+| **Agent tools (45)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), codebase (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python`/`run_javascript`, desktop (`system_info`, `open_path`, `clipboard`, `notify`, `screenshot`), model delegation (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`, plus extension tools: documents, `convert_document`, `calculate`, `analyze_table`, `undo_changes`, `remote` and `workspace`. |
 | **Small-model tool calls** | Built for 1–4B models: broken JSON, misspelled tool or argument names and out-of-range values are repaired against the schema; calls written as text (Hermes, Qwen, Llama, Mistral, DeepSeek, ReAct, JSON…) are recovered and never shown raw; errors explain the exact valid usage. Models without native tool support use a text tool protocol. |
 | **Documents** | `doc_search` / `doc_read` / `doc_add` / `doc_list` over a local full-text index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text, code, CSV and JSON — workspace documents are indexed automatically. Very long tool output is stored there and read in pages instead of being cut off. `convert_document` turns Markdown/HTML/Word/ODT/EPUB/Office files into PDF, Word, HTML, text and more with the converters you have installed (pandoc, WeasyPrint, LibreOffice, pdftotext). |
 | **Offline compute** | `calculate` for exact math, unit conversion and date arithmetic; `analyze_table` for CSV/JSON profiling, filters and group-by — no model arithmetic. |
 | **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first; `undo_changes` puts it back. |
-| **Tool profiles** | Auto offers one fixed set of 20 tools sized for 1–4B models (the rest run when called by name); full/minimal/coding/research/desktop are explicit choices. Independent read/search calls run in parallel. |
+| **Tool profiles** | Auto offers one fixed core set (about 20 tools) sized for 1–4B models (the rest run when called by name); full/minimal/coding/research/desktop are explicit choices. Independent read/search calls run in parallel. |
 | **Fast local inference** | The prompt prefix stays byte-stable so LM Studio reuses its KV cache: on a laptop CPU a 4k-token prompt goes from 124 s to 1.3 s. A *Think* control (auto/on/off) spends reasoning tokens only where they help; background work never thinks. Each reply shows time to first token, tokens/s and the cached share. |
 | **Model teamwork** | When the main model lacks a capability (e.g. vision), Kiwibro loads the smallest installed model that has it, if it fits in free memory, asks it, unloads it and continues on the main model. With no capable model it falls back to code-based media analysis. |
 | **Attachments** | Attach, paste or drop images, audio, video and documents. Images and video frames are described by a vision model before your model answers; audio and other media get measured facts; every file lands in the workspace for the agent's tools. |
@@ -218,7 +218,7 @@ Kiwibro's contract is tested at three levels, all runnable on your machine:
 
 ```bash
 python3 -m pytest -q              # 180+ unit/API/security tests (offline, fake LM)
-python3 tests/e2e/run_e2e.py      # 54 deterministic end-to-end checks (real app + fake LM)
+python3 tests/e2e/run_e2e.py      # 55 deterministic end-to-end checks (real app + fake LM)
 node tests/e2e/browser/run_browser.mjs --mode mock   # browser rig (needs playwright-core + Chrome)
 ```
 

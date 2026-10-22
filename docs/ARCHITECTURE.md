@@ -221,7 +221,7 @@ default); a background request in between did not evict a chat's warm prefix.
   user message. Tool results decay by user-turn age so old messages never re-render.
   Live through Kiwibro: a new chat's first token came after 2.4 s instead of 17.3 s.
 - **Stable tool list.** Chat templates render the tool schemas ahead of all messages, so
-  `auto` is one fixed set (`tools.AUTO_TOOLS`, 20 tools sized for 1–4B models), never
+  `auto` is one fixed set (`tools.AUTO_TOOLS`, about 20 tools sized for 1–4B models), never
   re-selected per message. Other catalog tools run when called by exact name.
 - **Reasoning control** (setting `reasoning`: `auto`/`on`/`off`). LM Studio honours
   `reasoning_effort: "none"` for models whose `/api/v1/models` entry lists a reasoning

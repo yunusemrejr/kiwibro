@@ -10,7 +10,7 @@ local models.
 
 ### Added
 
-- **27 new tools (35 total).** Parallel web research (`multi_search`, `fetch_pages`,
+- **27 new built-in tools (35 built-in, 45 with extension tools).** Parallel web research (`multi_search`, `fetch_pages`,
   `web_research` with numbered evidence, `browse_page`, multi-tab `browser`);
   codebase management (`grep_files`, `glob_files`, `read_files`, `file_outline`,
   atomic `apply_patch` with diff, `file_manage`, read-only `git`,
