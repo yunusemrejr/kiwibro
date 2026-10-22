@@ -2582,6 +2582,28 @@ button.chip:hover {
   font-size: 11.5px;
 }
 
+/* Settings controls: same look as the sheet's other fields, never hidden on mobile. */
+.setting-select,
+.setting-input {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.setting-select {
+  max-width: 200px;
+}
+
+.setting-input {
+  width: 200px;
+  min-width: 0;
+}
+
 .sheet-foot {
   display: flex;
   align-items: center;

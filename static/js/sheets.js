@@ -778,7 +778,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     // One select row per enum setting; a failed save puts the old value back.
     const choiceRow = (key, name, description, choices) => {
       const current = data.settings[key] || choices[0][0];
-      const select = el("select", { class: "memory-add-kind", "aria-label": name });
+      const select = el("select", { class: "setting-select", "aria-label": name });
       for (const [value, label] of choices) {
         const option = el("option", { value, text: label });
         if (value === current) option.selected = true;
@@ -821,6 +821,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     // Servers the `remote` tool may use without asking (plus your ~/.ssh/config hosts).
     const hostsText = () => (data.settings.remote_hosts || []).join(", ");
     const hostsInput = el("input", {
+      class: "setting-input",
       type: "text",
       value: hostsText(),
       placeholder: "prod, deploy@10.0.0.5",
@@ -847,6 +848,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
       ]),
     );
     const roundsInput = el("input", {
+      class: "setting-input",
       type: "number",
       min: "1",
       max: "32",
