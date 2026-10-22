@@ -205,9 +205,9 @@ def test_missing_weasyprint_is_named_for_pdf(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "notes.md").write_text("# Notes\n", encoding="utf-8")
-    real = convert._find
-    monkeypatch.setattr(convert, "_find", lambda name: None if name == "weasyprint" else real(name))
-    with pytest.raises(ValueError, match="needs weasyprint"):
+    # Only weasyprint is missing, whatever this machine has (GitHub's runner has no pandoc).
+    monkeypatch.setattr(convert, "_find", lambda name: None if name == "weasyprint" else f"/usr/bin/{name}")
+    with pytest.raises(ValueError, match="needs weasyprint,"):
         _convert(_ctx(ws), "notes.md", "pdf")
 
 
