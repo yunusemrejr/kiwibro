@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.
@@ -27,9 +27,13 @@ MAX_PARALLEL_TOOLS = 6
 APPROVAL_TIMEOUT_S = 120.0
 HEARTBEAT_S = 15.0
 MEMORY_EXTRACTION_TIMEOUT_S = 8.0  # floor; the real budget follows measured speed (inference.SPEEDS)
+# Background memory extraction waits until no reply has streamed for this long. Cancelling
+# it frees the CPU only at LM Studio's next 2048-token batch (~20 s on a laptop CPU), so it
+# starts in real pauses rather than between quick replies (the remember tool saves at once).
+MEMORY_IDLE_S = float(os.environ.get("KIWIBRO_MEMORY_IDLE_S", "20"))
 MEMORY_CAP = 400
 
-MAX_MESSAGE_CHARS = 32000
+MAX_MESSAGE_CHARS = 400_000  # longer than the window is fine: the agent pages it into the library
 MAX_FILE_READ_BYTES = 200 * 1024
 MAX_FILE_WRITE_BYTES = 256 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 6000
@@ -155,6 +159,7 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
     return {
         "model": None,
         "lmstudio_url": url,
+        "lmstudio_token": "",
         "agent_enabled": True,
         "memory_enabled": True,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
@@ -240,6 +245,11 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             cleaned["workspace"] = validate_workspace(value)
         elif key == "lmstudio_url":
             cleaned["lmstudio_url"] = validate_lmstudio_url(value)
+        elif key == "lmstudio_token":
+            # API token for an LM Studio server with authentication on (another machine's).
+            if not isinstance(value, str) or len(value) > 512 or any(c.isspace() for c in value.strip()):
+                raise ValueError("lmstudio_token must be a single token of at most 512 characters")
+            cleaned["lmstudio_token"] = value.strip()
         elif key == "model":
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError("model must be a non-empty string or null")

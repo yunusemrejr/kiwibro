@@ -333,7 +333,8 @@ def tool_errors(env: "Any") -> str:
 
 def tool_remember(env: "Any") -> str:
     env.client.delete("/api/memories")
-    stream = chat(env, "Remember something [[scenario:tool_remember]]")
+    # The fact must be in the user's words: the tool refuses memories nobody stated.
+    stream = chat(env, "Remember: the QA kiwi is named Pip and likes concise answers [[scenario:tool_remember]]")
     stream.wait_for("meta", timeout=20)
     call = stream.wait_for("tool_call", timeout=20)
     assert_eq(call["name"], "remember", "remember tool")

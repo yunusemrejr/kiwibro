@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -18,6 +19,7 @@ from .context import ContextEngine
 from .db import Database
 from .llm import LMStudioClient
 from .memory import MemoryEngine
+from .readiness import Readiness
 from .search import SearchEngine
 
 log = logging.getLogger(__name__)
@@ -118,6 +120,15 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     memory = MemoryEngine(db, llm, settings_provider)
     search = SearchEngine()
     agent = AgentManager(db, llm, context, memory, search, settings_provider)
+    # Load + KV warm-up of the selected model ahead of the first message. Off in tests:
+    # scripted fakes would answer the warm-up request instead of the turn.
+    warmup = app.config.get("KIWIBRO_WARMUP")
+    if warmup is None:
+        warmup = not app.config.get("TESTING") and os.environ.get("KIWIBRO_WARMUP", "1") != "0"
+    agent.readiness = Readiness(
+        llm, agent.warm_prefix, busy_fn=agent.active_turns, on_job=agent._cancel_memory_extraction,
+        enabled=bool(warmup),
+    )
     services = Services(
         db=db,
         llm=llm,

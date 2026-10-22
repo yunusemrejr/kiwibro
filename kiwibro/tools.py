@@ -281,10 +281,19 @@ _SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="remember",
-        description="Store a durable fact about the user in long-term memory.",
+        description=(
+            "Long-term memory about the user: save a fact they told you, update one that changed "
+            "(old = words of the outdated memory), or forget one they ask you to forget."
+        ),
         parameters=_schema(
             {
-                "content": _str("Self-contained fact (3-300 chars)"),
+                "content": _str("The fact, self-contained, e.g. 'User prefers Python' (forget: words of the memory)"),
+                "action": {
+                    "type": "string",
+                    "enum": ["save", "update", "forget"],
+                    "description": "save (default), update or forget",
+                },
+                "old": _str("update only: words of the outdated memory, e.g. 'lives in Istanbul'"),
                 "kind": {
                     "type": "string",
                     "enum": list(config.MEMORY_KINDS),
@@ -296,7 +305,8 @@ _SPECS: tuple[ToolSpec, ...] = (
         risk="read",
         phase="tool",
         label="Saving a memory",
-        summary=lambda args: f"Remember: {str(args.get('content', ''))[:80]}",
+        summary=lambda args: f"{_MEMORY_VERBS.get(str(args.get('action') or 'save'), 'Remember')}: "
+        f"{str(args.get('content', ''))[:80]}",
     ),
     # --- coding / codebase --------------------------------------------------------
     ToolSpec(
@@ -1252,7 +1262,18 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
         kind = str(args.get("kind") or "").strip().lower() or None
         if kind is not None and kind not in config.MEMORY_KINDS:
             kind = "fact"  # small models invent kinds ("habit"); the fact itself still matters
-        return {"content": _as_str(args.get("content"), "content"), "kind": kind}
+        action = str(args.get("action") or "save").strip().lower()
+        action = {"add": "save", "store": "save", "edit": "update", "change": "update", "replace": "update",
+                  "delete": "forget", "remove": "forget"}.get(action, action)
+        if action not in ("save", "update", "forget"):
+            action = "save"
+        old = args.get("old")
+        return {
+            "content": _as_str(args.get("content"), "content"),
+            "kind": kind,
+            "action": action,
+            "old": str(old).strip()[:300] if isinstance(old, str) and old.strip() else None,
+        }
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -1537,9 +1558,7 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name == "recall":
         return _execute_recall(args, ctx)
     if name == "remember":
-        memory = ctx.memory.remember(args["content"], args["kind"], source_conversation_id=ctx.conversation_id)
-        message = f"Remembered: {memory['content']}"
-        return ToolResult(ok=True, content=message, preview=message, meta={"memory_id": memory["id"]})
+        return _execute_remember(args, ctx)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -1657,6 +1676,60 @@ def _execute_terminal(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         f"cwd: {info['cwd']}\n$ {info['command']}\n{info.get('output') or '(no output)'}"
     )
     return ToolResult(ok=True, content=shape_content(content), preview=_preview(content), meta=info)
+
+
+_MEMORY_VERBS = {"save": "Remember", "update": "Update memory", "forget": "Forget"}
+_UNGROUNDED = (
+    "Not saved: a memory must be something the user said about themselves, their work or their "
+    "preferences in this conversation — not a fact about Kiwibro, the tools or the web."
+)
+
+
+def _user_words(ctx: ToolContext, limit: int = 24, *, latest: bool = False) -> str:
+    """What the user said recently in this chat (or only their newest message): memories
+    the model writes must be grounded in it."""
+    try:
+        messages = ctx.memory.db.list_messages(ctx.conversation_id)[-limit:]
+    except Exception:  # an unreadable history must not block saving
+        return ""
+    said = [str(m.get("content") or "") for m in messages if m.get("role") == "user"]
+    if latest:
+        return said[-1] if said else ""
+    return "\n".join(said)
+
+
+def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    from .memory import grounded  # local: memory imports this package's db/llm layers
+
+    action, content = args.get("action") or "save", args["content"]
+    said = _user_words(ctx)
+    if action == "forget":
+        memory, outcome = ctx.memory.forget(content)
+        if outcome == "missing":
+            message = f"No saved memory matches “{content[:80]}”."
+            return ToolResult(ok=False, content=message, preview="Nothing to forget")
+        if outcome == "pinned":
+            message = f"Kept (pinned by the user; they can unpin it in Memory): {memory['content']}"
+            return ToolResult(ok=False, content=message, preview="Pinned memory kept")
+        message = f"Forgot: {memory['content']}"
+        return ToolResult(ok=True, content=message, preview=message, meta={"memory_id": memory["id"]})
+    old = args.get("old")
+    if action == "update":
+        latest = _user_words(ctx, latest=True)
+        if old and latest and grounded(old, latest) and not grounded(content, latest):
+            # The newest message carries the new fact; small models swap the two (measured).
+            content, old = old, content
+    if ctx.memory.about_assistant(content) or (said and not grounded(content, said)):
+        return ToolResult(ok=False, content=_UNGROUNDED, preview="Not saved")
+    if action == "update":
+        memory, replaced = ctx.memory.revise(
+            old, content, args.get("kind"), source_conversation_id=ctx.conversation_id
+        )
+        message = f"{'Updated memory' if replaced else 'Remembered'}: {memory['content']}"
+    else:
+        memory = ctx.memory.remember(content, args.get("kind"), source_conversation_id=ctx.conversation_id)
+        message = f"Remembered: {memory['content']}"
+    return ToolResult(ok=True, content=message, preview=message, meta={"memory_id": memory["id"]})
 
 
 def _execute_recall(args: dict[str, Any], ctx: ToolContext) -> ToolResult:

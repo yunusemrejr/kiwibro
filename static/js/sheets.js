@@ -72,12 +72,27 @@ const TOOL_PROFILES = [
   ["desktop", "Desktop"],
 ];
 
-// How much a reply may do without asking (safety.decide on the server).
-const AUTONOMY_MODES = [
-  ["smart", "Smart (asks for risky steps)"],
-  ["supervised", "Supervised (asks per tool)"],
-  ["autonomous", "Autonomous (never waits)"],
+// Permissions: Automatic (smart / autonomous: the server's risk policy decides every
+// step) or Manual (supervised: the per-tool choices below decide). See safety.decide.
+const PERMISSION_STYLES = [
+  ["automatic", "Automatic"],
+  ["manual", "Manual"],
 ];
+const RISKY_STEPS = [
+  ["smart", "Ask me first"],
+  ["autonomous", "Refuse them"],
+];
+const TOOL_PERMISSIONS = [
+  ["auto", "Auto"],
+  ["ask", "Ask"],
+  ["deny", "Deny"],
+];
+// Where a memory came from (server: memories.origin).
+const ORIGIN_LABELS = {
+  you: "Added by you",
+  chat: "Saved in a chat",
+  learned: "Learned",
+};
 const SANDBOX_MODES = [
   ["auto", "On"],
   ["strict", "On, no network"],
@@ -112,7 +127,7 @@ function emptyState(iconName, title, detail) {
 /* Memory                                                                     */
 /* ========================================================================== */
 
-export function createMemorySheet({ dialog, api, onChange }) {
+export function createMemorySheet({ dialog, api, onChange, onOpenConversation }) {
   const countEl = dialog.querySelector("#memory-count");
   const searchEl = dialog.querySelector("#memory-search");
   const kindsEl = dialog.querySelector("#memory-kinds");
@@ -208,6 +223,19 @@ export function createMemorySheet({ dialog, api, onChange }) {
     const time = el("span", { class: "memory-time", "data-ts": stamp });
     time.textContent = relativeTime(stamp);
     time.title = absoluteTime(stamp);
+    const originLabel = ORIGIN_LABELS[memory.origin];
+    let origin = null;
+    if (originLabel && memory.source_conversation_id && onOpenConversation) {
+      origin = el("button", {
+        class: "memory-origin is-link",
+        type: "button",
+        title: "Open the chat this came from",
+        text: originLabel,
+      });
+      origin.addEventListener("click", () => onOpenConversation(memory.source_conversation_id));
+    } else if (originLabel) {
+      origin = el("span", { class: "memory-origin", text: originLabel });
+    }
     const meta = el("div", { class: "memory-meta" }, [
       el("span", { class: "memory-kind", text: memory.kind || "fact" }),
       memory.pinned
@@ -215,6 +243,8 @@ export function createMemorySheet({ dialog, api, onChange }) {
         : null,
       el("span", { class: "memory-meta-dot" }),
       time,
+      origin ? el("span", { class: "memory-meta-dot" }) : null,
+      origin,
     ]);
     const main = el("div", { class: "memory-main" }, [
       el("div", { class: "memory-content", text: memory.content }),
@@ -444,6 +474,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
   let forgetTimer = 0;
   let forgetArmed = false;
   let opening = false;
+  let lastAutomatic = "smart"; // restored when switching back from Manual
 
   function resetForget() {
     window.clearTimeout(forgetTimer);
@@ -556,21 +587,21 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     ]);
   }
 
-  function segmented(tool, mode, onChoose) {
+  function segmented(label, options, mode, onChoose) {
     const group = el("div", {
       class: "segmented",
       role: "radiogroup",
-      "aria-label": `${toolLabel(tool)} permission`,
+      "aria-label": label,
     });
     const buttons = [];
-    for (const value of ["auto", "ask", "deny"]) {
+    for (const [value, text] of options) {
       const button = el("button", {
         class: "segment",
         type: "button",
         role: "radio",
         "data-mode": value,
         "aria-checked": String(mode === value),
-        text: titleCase(value),
+        text,
       });
       button.addEventListener("click", () => {
         if (button.getAttribute("aria-checked") === "true") return;
@@ -593,6 +624,62 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
       next.click();
     });
     return group;
+  }
+
+  // LM Studio's address (LM Link models already come through this computer's server) and
+  // an API token for servers with authentication on. The token is write-only here.
+  function serverRows() {
+    const urlInput = el("input", {
+      class: "setting-input",
+      type: "text",
+      value: data.settings.lmstudio_url || "",
+      "aria-label": "LM Studio server address",
+      spellcheck: "false",
+      autocomplete: "off",
+    });
+    urlInput.addEventListener("change", async () => {
+      const previous = data.settings.lmstudio_url || "";
+      const value = urlInput.value.trim();
+      if (!value || value === previous) {
+        urlInput.value = previous;
+        return;
+      }
+      if (await patch({ lmstudio_url: value }, () => (urlInput.value = previous))) await load();
+    });
+    const tokenSet = Boolean(data.settings.lmstudio_token_set);
+    const tokenInput = el("input", {
+      class: "setting-input",
+      type: "password",
+      placeholder: tokenSet ? "Saved · type to replace" : "Not needed on this computer",
+      "aria-label": "LM Studio API token",
+      autocomplete: "off",
+    });
+    tokenInput.addEventListener("change", async () => {
+      const value = tokenInput.value.trim();
+      if (!value) return;
+      tokenInput.value = "";
+      if (await patch({ lmstudio_token: value })) await load();
+    });
+    const tokenControls = [tokenInput];
+    if (tokenSet) {
+      const remove = el("button", { class: "text-btn", type: "button", text: "Remove" });
+      remove.addEventListener("click", async () => {
+        if (await patch({ lmstudio_token: "" })) await load();
+      });
+      tokenControls.push(remove);
+    }
+    const row = (name, description, controls) =>
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: name }),
+          el("div", { class: "setting-desc", text: description }),
+        ]),
+        ...controls,
+      ]);
+    return el("div", {}, [
+      row("Server", "Models linked with LM Link appear here through this computer's LM Studio.", [urlInput]),
+      row("API token", "Only for an LM Studio server that requires authentication.", tokenControls),
+    ]);
   }
 
   function workspaceSection() {
@@ -661,7 +748,12 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
   }
 
   function render() {
+    // A re-render (e.g. switching Automatic/Manual) keeps the reader where they were.
+    const scrollTop = body.scrollTop;
     clear(body);
+    window.requestAnimationFrame(() => {
+      body.scrollTop = scrollTop;
+    });
 
     if (data.loading && !data.settings) {
       body.append(el("div", { class: "list-empty" }, [el("span", { class: "spinner" })]));
@@ -718,63 +810,9 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         el("div", { class: "model-empty", text: data.lmstudio ? "No chat models are available in LM Studio." : "Models will appear here once LM Studio is reachable." }),
       );
     }
+    lmSection.append(serverRows());
     body.append(lmSection);
 
-    /* --- Permissions --- */
-    const permissions = data.settings.permissions || {};
-    const permSection = group("Permissions");
-    const keys = [
-      ...PERMISSION_ORDER.filter((key) => key in permissions),
-      ...Object.keys(permissions).filter((key) => !PERMISSION_ORDER.includes(key)),
-    ];
-    for (const key of keys) {
-      const row = el("div", { class: "setting-row" }, [
-        el("div", { class: "setting-text" }, [
-          el("div", { class: "setting-name", text: toolLabel(key) }),
-        ]),
-        segmented(key, permissions[key] || "ask", async (mode, previous) => {
-          const next = { ...permissions, [key]: mode };
-          permissions[key] = mode;
-          const ok = await actions
-            .patchSettings({ permissions: next })
-            .catch((error) => {
-              permissions[key] = previous;
-              render();
-              toast(error?.message || "Couldn't change permission", { tone: "error" });
-              return null;
-            });
-          if (ok) data.settings = ok;
-        }),
-      ]);
-      permSection.append(row);
-    }
-    body.append(permSection);
-
-    /* --- Behaviour --- */
-    const behaviour = group("Behaviour");
-    behaviour.append(
-      switchRow({
-        name: "Agent mode",
-        description: "Let Kiwibro use tools and act on your machine.",
-        checked: data.settings.agent_enabled,
-        onChange: async (next, control) => {
-          const ok = await patch({ agent_enabled: next }, () => {
-            control.setAttribute("aria-checked", String(!next));
-          });
-          void ok;
-        },
-      }),
-      switchRow({
-        name: "Automatic memory",
-        description: "Extract durable facts after each reply.",
-        checked: data.settings.memory_enabled,
-        onChange: async (next, control) => {
-          await patch({ memory_enabled: next }, () => {
-            control.setAttribute("aria-checked", String(!next));
-          });
-        },
-      }),
-    );
     // One select row per enum setting; a failed save puts the old value back.
     const choiceRow = (key, name, description, choices) => {
       const current = data.settings[key] || choices[0][0];
@@ -798,13 +836,96 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         select,
       ]);
     };
+
+    /* --- Permissions --- */
+    // Automatic: the risk policy decides each step and the per-tool list stays out of the
+    // way. Manual: the per-tool choices decide, and only then are they shown.
+    const permSection = group("Permissions");
+    const autonomy = data.settings.autonomy || "smart";
+    const manual = autonomy === "supervised";
+    permSection.append(
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: "Tool use" }),
+          el("div", {
+            class: "setting-desc",
+            text: manual
+              ? "You decide, tool by tool, what runs on its own and what asks first."
+              : "Safe and undoable work runs on its own. Dangerous commands are always refused.",
+          }),
+        ]),
+        segmented("Permission style", PERMISSION_STYLES, manual ? "manual" : "automatic", async (value) => {
+          if (value === "manual") lastAutomatic = autonomy;
+          await patch({ autonomy: value === "manual" ? "supervised" : lastAutomatic });
+          render();
+        }),
+      ]),
+    );
+    if (!manual) {
+      permSection.append(
+        choiceRow(
+          "autonomy",
+          "Risky steps",
+          "Writing outside the workspace, publishing (git push), stopping other programs.",
+          RISKY_STEPS,
+        ),
+      );
+    } else {
+      const permissions = data.settings.permissions || {};
+      const keys = [
+        ...PERMISSION_ORDER.filter((key) => key in permissions),
+        ...Object.keys(permissions).filter((key) => !PERMISSION_ORDER.includes(key)),
+      ];
+      for (const key of keys) {
+        const row = el("div", { class: "setting-row" }, [
+          el("div", { class: "setting-text" }, [
+            el("div", { class: "setting-name", text: toolLabel(key) }),
+          ]),
+          segmented(`${toolLabel(key)} permission`, TOOL_PERMISSIONS, permissions[key] || "ask", async (mode, previous) => {
+            const next = { ...permissions, [key]: mode };
+            permissions[key] = mode;
+            const ok = await actions
+              .patchSettings({ permissions: next })
+              .catch((error) => {
+                permissions[key] = previous;
+                render();
+                toast(error?.message || "Couldn't change permission", { tone: "error" });
+                return null;
+              });
+            if (ok) data.settings = ok;
+          }),
+        ]);
+        permSection.append(row);
+      }
+    }
+    body.append(permSection);
+
+    /* --- Behaviour --- */
+    const behaviour = group("Behaviour");
     behaviour.append(
-      choiceRow(
-        "autonomy",
-        "Autonomy",
-        "Smart runs safe and undoable steps on its own and asks before risky ones; dangerous commands are always refused.",
-        AUTONOMY_MODES,
-      ),
+      switchRow({
+        name: "Agent mode",
+        description: "Let Kiwibro use tools and act on your machine.",
+        checked: data.settings.agent_enabled,
+        onChange: async (next, control) => {
+          const ok = await patch({ agent_enabled: next }, () => {
+            control.setAttribute("aria-checked", String(!next));
+          });
+          void ok;
+        },
+      }),
+      switchRow({
+        name: "Automatic memory",
+        description: "Learn lasting facts from your chats; you can edit or remove any of them.",
+        checked: data.settings.memory_enabled,
+        onChange: async (next, control) => {
+          await patch({ memory_enabled: next }, () => {
+            control.setAttribute("aria-checked", String(!next));
+          });
+        },
+      }),
+    );
+    behaviour.append(
       choiceRow(
         "sandbox",
         "Command sandbox",

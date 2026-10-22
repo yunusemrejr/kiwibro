@@ -35,6 +35,29 @@ def error_body(code: str, message: str) -> dict[str, Any]:
     return {"error": {"code": code, "message": message}}
 
 
+# Settings that change the prompt prefix (message 0 or the tool list): a change re-warms.
+PREFIX_SETTINGS = frozenset({
+    "user_name", "workspace", "agent_enabled", "tool_profile", "reasoning", "lmstudio_url", "lmstudio_token",
+    "autonomy",
+})
+
+
+def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Settings for the browser: the LM Studio API token is never sent back, only whether one is set."""
+    view = dict(settings)
+    view["lmstudio_token_set"] = bool(str(view.pop("lmstudio_token", "") or "").strip())
+    return view
+
+
+def _prepare_model(svc: Any, model: str | None = None, *, conversation_id: str | None = None) -> dict[str, Any]:
+    """Load + warm the model in the background (never blocks the request)."""
+    try:
+        return svc.agent.readiness.request(model, conversation_id)
+    except Exception:  # readiness is an optimisation; requests never fail over it
+        log.warning("could not queue model readiness", exc_info=True)
+        return svc.agent.readiness.status()
+
+
 def _json_body() -> dict[str, Any]:
     max_length = current_app.config.get("MAX_CONTENT_LENGTH")
     length = request.content_length
@@ -85,6 +108,9 @@ def _memory_view(memory: dict[str, Any]) -> dict[str, Any]:
         "content": memory["content"],
         "pinned": memory["pinned"],
         "confidence": memory["confidence"],
+        # you | chat | learned (None: saved by an older version); the chat it came from.
+        "origin": memory.get("origin"),
+        "source_conversation_id": memory.get("source_conversation_id"),
         "created_at": memory["created_at"],
         "updated_at": memory["updated_at"],
         "last_used_at": memory["last_used_at"],
@@ -131,9 +157,10 @@ def bootstrap() -> Response:
             "lmstudio": ok,
             "lmstudio_url": settings.get("lmstudio_url"),
         },
-        "settings": settings,
+        "settings": public_settings(settings),
         "models": models if ok else [],
         "current_model": _current_model(models) if ok else settings.get("model"),
+        "readiness": _prepare_model(svc) if ok and models else svc.agent.readiness.status(),
         "conversations": [_conversation_list_item(c) for c in svc.db.list_conversations()],
         "memories_count": svc.db.count_memories(),
         "workspace": settings.get("workspace"),
@@ -158,10 +185,17 @@ def list_models() -> Response:
             {**m, "context_choices": routing.context_choices(m)} if m.get("state") == "loaded" else m
             for m in models
         ] if ok else [],
+        "readiness": svc.agent.readiness.status(),
     }
     if error:
         payload["lmstudio_error"] = error
     return jsonify(payload)
+
+
+@bp.get("/api/models/ready")
+def model_readiness() -> Response:
+    """Loading / warm-up state of the selected model (the header polls it while busy)."""
+    return jsonify({"ok": True, "readiness": services().agent.readiness.status()})
 
 
 @bp.post("/api/models/select")
@@ -176,7 +210,7 @@ def select_model() -> Response:
     if ok and model_id not in {model["id"] for model in models}:
         raise ApiError("unknown_model", f"Unknown model: {model_id}", 400)
     svc.db.set_setting("model", model_id)
-    return jsonify({"ok": True, "current": model_id})
+    return jsonify({"ok": True, "current": model_id, "readiness": _prepare_model(svc, model_id)})
 
 
 @bp.post("/api/models/context")
@@ -200,7 +234,8 @@ def resize_model_context() -> Response:
     except LMStudioError as exc:
         raise ApiError(exc.kind, exc.message, 409 if exc.kind == "no_memory" else 502) from exc
     svc.db.set_setting("model", current)
-    return jsonify({"ok": True, "current": current, "context_length": size})
+    svc.agent.readiness.invalidate()
+    return jsonify({"ok": True, "current": current, "context_length": size, "readiness": _prepare_model(svc, current)})
 
 
 # --- conversations ----------------------------------------------------------
@@ -282,6 +317,8 @@ def get_conversation(conversation_id: str) -> Response:
             "oldest_seq": messages[0]["seq"] if messages else None,
         }
         estimate_messages = None  # estimate from the summary window, not the page
+    if before_seq is None and not svc.agent.is_busy(conversation_id):
+        _prepare_model(svc, conversation_id=conversation_id)  # the next turn re-reads this history
     model = conversation.get("model") or svc.settings_provider().get("model")
     context = (
         svc.context.estimate_conversation(
@@ -633,7 +670,7 @@ def get_settings() -> Response:
     return jsonify(
         {
             "ok": True,
-            "settings": svc.settings_provider(),
+            "settings": public_settings(svc.settings_provider()),
             "data_dir": str(svc.data_dir),
         }
     )
@@ -656,7 +693,12 @@ def patch_settings() -> Response:
             Path(cleaned["workspace"]).mkdir(parents=True, exist_ok=True)
         except OSError:  # validation already created it
             pass
-    return jsonify({"ok": True, "settings": svc.settings_provider()})
+    if any(current.get(key) != cleaned[key] for key in cleaned if key in PREFIX_SETTINGS):
+        if "lmstudio_url" in cleaned or "lmstudio_token" in cleaned:
+            svc.llm.clear_cache()
+        svc.agent.readiness.invalidate()
+        _prepare_model(svc)
+    return jsonify({"ok": True, "settings": public_settings(svc.settings_provider())})
 
 
 # --- workspace --------------------------------------------------------------

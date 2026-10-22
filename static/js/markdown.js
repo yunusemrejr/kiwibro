@@ -5,6 +5,12 @@
  * placed in the output. The only markup in the result is generated here, from a
  * fixed whitelist of tags/attributes. Links are restricted to http(s) and open
  * in a new, isolated tab. Raw HTML and remote images are never rendered.
+ *
+ * Code blocks are highlighted from escaped slices only, diff lines get classes,
+ * and csv/tsv fences become tables. Live HTML and SVG previews are not made here:
+ * richblocks.js adds them after a final render, as a sandboxed iframe (scripts
+ * only, opaque origin, CSP that blocks all network access) or as an <img> data
+ * URI for SVG, which cannot run script.
  */
 
 const ESCAPES = {
@@ -88,21 +94,377 @@ function renderInline(source, depth = 0) {
   return out;
 }
 
-function codeBlock(code, language) {
-  const lang = language ? language.slice(0, 24) : "";
-  const label = lang ? escapeHtml(lang) : "code";
+const HIGHLIGHT_LIMIT = 20000;
+const CSV_ROW_LIMIT = 200;
+
+// Shared rule pieces. Sources use only non-capturing groups, because the
+// combined per-language regex relies on group N+1 being rule N.
+const DQ_STRING = /"(?:\\.|[^"\\\n])*"/;
+const SQ_STRING = /'(?:\\.|[^'\\\n])*'/;
+const BT_STRING = /`(?:\\[\s\S]|[^`\\])*`/;
+const C_LINE = /\/\/[^\n]*/;
+const C_BLOCK = /\/\*[\s\S]*?(?:\*\/|$)/;
+const HASH_LINE = /#[^\n]*/;
+const NUMBER = /\b(?:0[xX][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/;
+const CALL = /\b[A-Za-z_]\w*(?=\s*\()/;
+const TYPE_NAME = /\b[A-Z]\w*\b/;
+const OPERATOR = /=>|===|!==|==|!=|<=|>=|&&|\|\||\?\?|\.\.\.|->|::/;
+const words = (list) => new RegExp(`\\b(?:${list.trim().split(/\s+/).join("|")})\\b`);
+
+// Token classes: k keyword, s string, c comment, n number, f function or
+// attribute, t type or tag, p operator. Language names map to one entry.
+const HIGHLIGHTERS = new Map();
+
+function defineLanguage(names, rules, flags = "g") {
+  const pattern = new RegExp(rules.map(([, source]) => `(${source.source})`).join("|"), flags);
+  const entry = { classes: rules.map(([cls]) => cls), pattern };
+  for (const name of names) HIGHLIGHTERS.set(name, entry);
+}
+
+const JS_WORDS = words(`
+  async await break case catch class const continue default delete do else enum export
+  extends false finally for from function if implements import in instanceof interface
+  let new null of private protected public readonly return static super switch this throw
+  true try type typeof undefined var void while yield`);
+const GO_WORDS = words(`
+  break case chan const continue default defer else fallthrough for func go goto if import
+  interface map package range return select struct switch type var true false nil`);
+const GO_TYPES = words(`
+  any bool byte complex64 complex128 error float32 float64 int int8 int16 int32 int64 rune
+  string uint uint8 uint16 uint32 uint64 uintptr`);
+const RUST_WORDS = words(`
+  as async await break const continue crate dyn else enum extern false fn for if impl in let
+  loop match mod move mut pub ref return self Self static struct super trait true type unsafe
+  use where while`);
+const JAVA_WORDS = words(`
+  abstract assert boolean break byte case catch char class const continue default do double
+  else enum extends false final finally float for goto if implements import instanceof int
+  interface long native new null package private protected public return short static strictfp
+  super switch synchronized this throw throws transient true try var void volatile while yield`);
+const C_WORDS = words(`
+  auto bool break case char class const constexpr continue default delete do double else enum
+  explicit extern false float for friend goto if inline int long mutable namespace new nullptr
+  noexcept operator private protected public register return short signed sizeof static struct
+  switch template this throw true try typedef typename union unsigned using virtual void
+  volatile while`);
+const SQL_WORDS = words(`
+  select from where and or not null is in as on join left right inner outer full group by
+  order having limit offset insert into values update set delete create table drop alter index
+  primary key foreign references distinct union all case when then else end with returning
+  exists between like true false default`);
+const PY_WORDS = words(`
+  and as assert async await break class continue def del elif else except False finally for
+  from global if import in is lambda None nonlocal not or pass raise return True try while
+  with yield`);
+const SH_WORDS = words(`
+  if then else elif fi for while until do done case esac in function return local export`);
+const SH_BUILTINS = words("echo cd source printf read set unset alias test exit");
+
+defineLanguage(["js", "javascript", "jsx", "ts", "typescript", "tsx"], [
+  ["c", C_BLOCK],
+  ["c", C_LINE],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["s", BT_STRING],
+  ["k", JS_WORDS],
+  ["n", NUMBER],
+  ["f", CALL],
+  ["t", TYPE_NAME],
+  ["p", OPERATOR],
+]);
+defineLanguage(["json"], [
+  ["f", /"(?:\\.|[^"\\\n])*"(?=\s*:)/],
+  ["s", DQ_STRING],
+  ["k", /\b(?:true|false|null)\b/],
+  ["n", NUMBER],
+]);
+defineLanguage(["python", "py"], [
+  ["c", HASH_LINE],
+  ["s", /"""[\s\S]*?(?:"""|$)|'''[\s\S]*?(?:'''|$)/],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", PY_WORDS],
+  ["n", NUMBER],
+  ["f", CALL],
+  ["p", OPERATOR],
+]);
+defineLanguage(["bash", "sh", "shell", "zsh", "console"], [
+  ["c", HASH_LINE],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", SH_WORDS],
+  ["f", SH_BUILTINS],
+]);
+defineLanguage(
+  ["html", "xml", "svg"],
+  [
+    ["c", /<!--[\s\S]*?(?:-->|$)/],
+    ["k", /<!doctype\b/],
+    ["s", DQ_STRING],
+    ["s", SQ_STRING],
+    ["t", /<\/?[a-z][\w:-]*/],
+    ["f", /(?<=\s)[\w:-]+(?=\s*=)/],
+  ],
+  "gi",
+);
+defineLanguage(["css"], [
+  ["c", C_BLOCK],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", /@[\w-]+/],
+  ["n", /#[\da-fA-F]{3,8}\b|\b\d+(?:\.\d+)?(?:%|[a-zA-Z]+)?/],
+  ["f", /[\w-]+(?=\s*:)/],
+]);
+defineLanguage(
+  ["sql"],
+  [
+    ["c", /--[^\n]*/],
+    ["c", C_BLOCK],
+    ["s", SQ_STRING],
+    ["s", DQ_STRING],
+    ["k", SQL_WORDS],
+    ["n", NUMBER],
+    ["f", CALL],
+    ["p", OPERATOR],
+  ],
+  "gi",
+);
+defineLanguage(["go"], [
+  ["c", C_LINE],
+  ["c", C_BLOCK],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["s", BT_STRING],
+  ["k", GO_WORDS],
+  ["t", GO_TYPES],
+  ["n", NUMBER],
+  ["f", CALL],
+  ["t", TYPE_NAME],
+]);
+defineLanguage(["rust", "rs"], [
+  ["c", C_LINE],
+  ["c", C_BLOCK],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", RUST_WORDS],
+  ["n", NUMBER],
+  ["f", /\b[a-z_]\w*!(?!=)/],
+  ["f", CALL],
+  ["t", TYPE_NAME],
+  ["p", OPERATOR],
+]);
+defineLanguage(["java"], [
+  ["c", C_LINE],
+  ["c", C_BLOCK],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", JAVA_WORDS],
+  ["n", NUMBER],
+  ["f", CALL],
+  ["t", TYPE_NAME],
+  ["p", OPERATOR],
+]);
+defineLanguage(["c", "cpp", "c++", "h", "hpp", "cc", "cxx"], [
+  ["c", C_LINE],
+  ["c", C_BLOCK],
+  ["k", /#\s*(?:include|define|ifdef|ifndef|if|elif|else|endif|pragma|undef)\b/],
+  ["s", DQ_STRING],
+  ["s", SQ_STRING],
+  ["k", C_WORDS],
+  ["n", NUMBER],
+  ["f", CALL],
+  ["t", TYPE_NAME],
+  ["p", OPERATOR],
+]);
+defineLanguage(
+  ["yaml", "yml"],
+  [
+    ["c", HASH_LINE],
+    ["s", DQ_STRING],
+    ["s", SQ_STRING],
+    ["f", /^[ \t]*(?:-[ \t]+)?[\w.-]+(?=[ \t]*:(?:[ \t]|$))/],
+    ["k", /\b(?:true|false|null|yes|no|on|off)\b/],
+    ["n", NUMBER],
+  ],
+  "gm",
+);
+defineLanguage(
+  ["toml", "ini"],
+  [
+    ["c", /[#;][^\n]*/],
+    ["t", /^[ \t]*\[\[?[^\]\n]+\]\]?/],
+    ["s", DQ_STRING],
+    ["s", SQ_STRING],
+    ["f", /^[ \t]*[\w.-]+(?=[ \t]*=)/],
+    ["k", /\b(?:true|false)\b/],
+    ["n", NUMBER],
+  ],
+  "gm",
+);
+
+/** Scans with the language's combined regex; only matched slices get spans. */
+function tokenize(code, entry) {
+  const { classes, pattern } = entry;
+  let out = "";
+  let last = 0;
+  let match;
+  pattern.lastIndex = 0;
+  while ((match = pattern.exec(code)) !== null) {
+    if (!match[0]) {
+      pattern.lastIndex += 1;
+      continue;
+    }
+    const index = classes.findIndex((_, k) => match[k + 1] !== undefined);
+    const text = escapeHtml(match[0]);
+    out += escapeHtml(code.slice(last, match.index));
+    out += index < 0 ? text : `<span class="tok-${classes[index]}">${text}</span>`;
+    last = pattern.lastIndex;
+  }
+  return out + escapeHtml(code.slice(last));
+}
+
+function diffClass(line) {
+  if (/^(?:diff |index |--- |\+\+\+ )/.test(line)) return "line-meta";
+  if (line.startsWith("@@")) return "line-hunk";
+  if (line.startsWith("+")) return "line-add";
+  if (line.startsWith("-")) return "line-del";
+  return "";
+}
+
+function diffHtml(code) {
+  return code
+    .split("\n")
+    .map((line) => {
+      const cls = diffClass(line);
+      const text = escapeHtml(line);
+      return cls ? `<span class="${cls}">${text}</span>` : text;
+    })
+    .join("\n");
+}
+
+/** Escaped, token-wrapped code for one fence. Unknown languages stay plain. */
+function highlight(code, name) {
+  const key = name.toLowerCase();
+  if (code.length > HIGHLIGHT_LIMIT) return escapeHtml(code);
+  if (key === "diff" || key === "patch") return diffHtml(code);
+  const entry = HIGHLIGHTERS.get(key);
+  return entry ? tokenize(code, entry) : escapeHtml(code);
+}
+
+function codeHead(label) {
   return (
-    '<div class="code-block">' +
     '<div class="code-head">' +
     `<span class="code-lang">${label}</span>` +
     '<button type="button" class="code-copy" aria-label="Copy code" title="Copy code">' +
     '<svg class="icon" aria-hidden="true"><use href="#i-copy"></use></svg>' +
     "<span>Copy</span>" +
     "</button>" +
-    "</div>" +
-    `<pre><code>${escapeHtml(code)}</code></pre>` +
     "</div>"
   );
+}
+
+function codeBlock(code, language) {
+  const name = language ? language.slice(0, 24) : "";
+  const label = name ? escapeHtml(name) : "code";
+  const dataLang = name ? ` data-lang="${escapeHtml(name.toLowerCase())}"` : "";
+  return (
+    `<div class="code-block"${dataLang}>` +
+    codeHead(label) +
+    `<pre><code>${highlight(code, name)}</code></pre>` +
+    "</div>"
+  );
+}
+
+/**
+ * Splits delimited text into rows of cells. Quotes group a field, and a doubled
+ * quote inside one is a literal quote. Blank rows are dropped.
+ */
+function parseDelimited(text, delimiter) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let k = 0; k < text.length; k += 1) {
+    const char = text[k];
+    if (quoted) {
+      if (char !== '"') {
+        cell += char;
+      } else if (text[k + 1] === '"') {
+        cell += '"';
+        k += 1;
+      } else {
+        quoted = false;
+      }
+    } else if (char === '"' && cell === "") {
+      quoted = true;
+    } else if (char === delimiter) {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows.filter((cells) => cells.some((value) => value.trim() !== ""));
+}
+
+/** A csv or tsv fence as a table, with the raw source in a collapsed <details>. */
+function csvBlock(code, key) {
+  const rows = parseDelimited(code, key === "tsv" ? "\t" : ",");
+  if (!rows.length) return null;
+  const [header, ...body] = rows;
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const cells = (tag, row) =>
+    Array.from({ length: width }, (_, k) => `<${tag}>${escapeHtml(row[k] ?? "")}</${tag}>`).join("");
+  const shown = body.slice(0, CSV_ROW_LIMIT);
+  const extra = body.length - shown.length;
+  const rowsHtml = shown.map((row) => `<tr>${cells("td", row)}</tr>`).join("");
+  const note =
+    extra > 0 ? `<div class="csv-note">${extra} more ${extra === 1 ? "row" : "rows"} not shown</div>` : "";
+  return (
+    `<div class="code-block csv-block" data-lang="${key}">` +
+    codeHead(key) +
+    '<div class="table-wrap"><table>' +
+    `<thead><tr>${cells("th", header)}</tr></thead>` +
+    `<tbody>${rowsHtml}</tbody>` +
+    "</table></div>" +
+    note +
+    '<details class="csv-source"><summary>Source</summary>' +
+    `<pre><code>${escapeHtml(code)}</code></pre>` +
+    "</details>" +
+    "</div>"
+  );
+}
+
+function isJson(text) {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Language for a fence with no name: only obvious HTML, SVG and JSON. */
+function guessLanguage(code) {
+  const head = code.trimStart().slice(0, 16).toLowerCase();
+  if (head.startsWith("<!doctype html") || head.startsWith("<html")) return "html";
+  if (head.startsWith("<svg")) return "svg";
+  if (/^[[{]/.test(head) && code.length <= HIGHLIGHT_LIMIT && isJson(code)) return "json";
+  return "";
+}
+
+function fencedBlock(code, language) {
+  const name = language || guessLanguage(code);
+  const key = name.toLowerCase();
+  if (key === "csv" || key === "tsv") return csvBlock(code, key) ?? codeBlock(code, name);
+  return codeBlock(code, name);
 }
 
 const FENCE = /^(```+|~~~+)\s*([\w+#.-]*)\s*$/;
@@ -328,7 +690,7 @@ export function renderMarkdown(source) {
         body.push(candidate);
         i += 1;
       }
-      html.push(codeBlock(body.join("\n"), language));
+      html.push(fencedBlock(body.join("\n"), language));
       continue;
     }
 

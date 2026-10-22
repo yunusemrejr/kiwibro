@@ -16,6 +16,7 @@ import {
   clear,
   openPopover,
   closePopover,
+  closeSheet,
   popoverIsOpen,
   wireDialog,
   toast,
@@ -93,6 +94,7 @@ const state = {
   conversationId: null,
   conversation: null,
   memoriesCount: 0,
+  readiness: null,
   workspace: "",
   dataDir: "",
   streaming: false,
@@ -163,6 +165,7 @@ function applyBootstrap(data) {
   state.workspace = data.workspace || state.settings?.workspace || "";
   state.lmstudio = Boolean(state.health?.lmstudio);
   state.unreachable = false;
+  applyReadiness(data.readiness);
 }
 
 async function boot() {
@@ -172,6 +175,7 @@ async function boot() {
     state.booted = true;
     applyBootstrap(data);
     renderAll();
+    watchReadiness(); // bootstrap queued a load + warm-up of the selected model
     await restoreConversation();
     focusComposerSoon();
   } catch (error) {
@@ -249,6 +253,12 @@ function renderHeaderModel() {
     name = state.currentModel;
     tone = "loaded";
     title = `${state.currentModel} — switch model`;
+    const ready = state.readiness;
+    if (ready && ready.model === state.currentModel && READINESS_BUSY.has(ready.phase)) {
+      // Loading or prefilling the prompt ahead of the first message (server: readiness.py).
+      tone = "preparing";
+      title = `${ready.detail || "Getting ready"} — ${state.currentModel}`;
+    }
   }
 
   els.modelPillName.textContent = name;
@@ -383,6 +393,38 @@ function toggleModelPopover() {
   });
 }
 
+/* Model readiness: the server loads the selected model and prefills its prompt in the
+   background; the header dot pulses until that is done so the first reply is fast. */
+const READINESS_BUSY = new Set(["loading", "warming"]);
+let readinessTimer = 0;
+let readinessWatchUntil = 0; // after a trigger the job may not have started yet
+
+function applyReadiness(readiness) {
+  if (!readiness || typeof readiness !== "object") return;
+  state.readiness = readiness;
+  window.clearTimeout(readinessTimer);
+  if (READINESS_BUSY.has(readiness.phase)) readinessTimer = window.setTimeout(pollReadiness, 1500);
+  else if (Date.now() < readinessWatchUntil) readinessTimer = window.setTimeout(pollReadiness, 500);
+}
+
+function watchReadiness() {
+  readinessWatchUntil = Date.now() + 2500;
+  window.clearTimeout(readinessTimer);
+  readinessTimer = window.setTimeout(pollReadiness, 300);
+}
+
+async function pollReadiness() {
+  if (!state.booted || state.unreachable) return;
+  try {
+    const data = await api.modelReady();
+    const before = state.readiness?.phase;
+    applyReadiness(data.readiness);
+    if (before !== state.readiness?.phase) renderHeaderModel();
+  } catch {
+    /* readiness is a nicety; the next action retries */
+  }
+}
+
 async function selectModel(id) {
   if (!id) return true;
   if (id === state.currentModel) {
@@ -393,6 +435,8 @@ async function selectModel(id) {
     const result = await api.selectModel(id);
     state.currentModel = result.current || id;
     if (state.settings) state.settings.model = state.currentModel;
+    applyReadiness(result.readiness);
+    watchReadiness();
     renderHeaderModel();
     toast(`Using ${state.currentModel}`, { iconName: "sparkles" });
     announce(`Model switched to ${state.currentModel}`);
@@ -741,6 +785,7 @@ async function openConversation(id, { silent = false } = {}) {
     renderSidebar();
     updateComposerState();
     setStreamingUI(backgroundStreams.has(id));
+    watchReadiness(); // opening a chat prefills its history on the server
     closeDrawer();
     if (!silent) focusComposerSoon();
     return true;
@@ -1176,6 +1221,7 @@ async function patchSettingsAndSync(patch) {
   if (next.workspace) state.workspace = next.workspace;
   applySettingsUI();
   updateComposerState();
+  watchReadiness(); // prompt-shaping settings re-warm the model
   return next;
 }
 
@@ -1196,21 +1242,35 @@ async function forgetAllMemories() {
   return result?.deleted;
 }
 
-function scheduleMemoryRefresh(delay = 4200) {
+// Memory is learned in the background once the chat has been quiet for ~20 s, and on a
+// laptop CPU that can take a minute, so look again with growing gaps until it changes.
+const MEMORY_CHECKS_MS = [4200, 25000, 50000, 90000, 150000];
+
+function scheduleMemoryRefresh(delay = MEMORY_CHECKS_MS[0]) {
   window.clearTimeout(memoryRefreshTimer);
-  memoryRefreshTimer = window.setTimeout(refreshMemoryCount, delay);
+  const later = MEMORY_CHECKS_MS.filter((ms) => ms > delay);
+  memoryRefreshTimer = window.setTimeout(async () => {
+    const changed = await refreshMemoryCount({ announce: true });
+    if (!changed && later.length) scheduleMemoryRefresh(later[0]);
+  }, delay);
 }
 
-async function refreshMemoryCount() {
-  if (!state.booted || state.unreachable || state.streaming) return;
+async function refreshMemoryCount({ announce = false } = {}) {
+  if (!state.booted || state.unreachable || state.streaming) return false;
   try {
     const count = await api.memoryCount();
-    if (!Number.isFinite(count) || count === state.memoriesCount) return;
+    if (!Number.isFinite(count) || count === state.memoriesCount) return false;
+    const gained = count - state.memoriesCount;
     state.memoriesCount = count;
     renderMemoryCounts();
     memorySheet?.refreshIfOpen();
+    if (announce && gained > 0) {
+      toast(gained === 1 ? "Remembered something new" : `Remembered ${gained} new things`, { iconName: "sparkles" });
+    }
+    return true;
   } catch {
     /* memory extraction is best-effort; stay quiet */
+    return false;
   }
 }
 
@@ -1345,6 +1405,10 @@ function initSheets() {
   memorySheet = createMemorySheet({
     dialog: els.memorySheet,
     api,
+    onOpenConversation: async (id) => {
+      closeSheet(els.memorySheet);
+      if (!(await openConversation(id))) toast("That chat no longer exists", { tone: "error" });
+    },
     onChange: (count) => {
       if (!Number.isFinite(count) || state.unreachable) return;
       state.memoriesCount = count;

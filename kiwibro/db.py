@@ -160,9 +160,19 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
 
 
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """Schema v4: where a memory came from — ``you`` (added or edited in the Memory
+    sheet), ``chat`` (saved by the model when asked in a conversation) or ``learned``
+    (background extraction). NULL for memories from older versions."""
+    if not any(row["name"] == "origin" for row in conn.execute("PRAGMA table_info(memories)")):
+        conn.execute("ALTER TABLE memories ADD COLUMN origin TEXT")
+
+
 # A migration is either a SQL script or a callable taking the connection
 # (for steps that must inspect the live schema, e.g. guarded ALTERs).
-_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3)]
+_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4)]
+
+MEMORY_ORIGINS = ("you", "chat", "learned")
 
 
 def _est_tokens(text: str | None) -> int:
@@ -732,6 +742,7 @@ class Database:
             "confidence": float(row["confidence"]),
             "pinned": bool(row["pinned"]),
             "use_count": int(row["use_count"]) if "use_count" in keys and row["use_count"] is not None else 0,
+            "origin": row["origin"] if "origin" in keys else None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_used_at": row["last_used_at"],
@@ -758,15 +769,17 @@ class Database:
         source_conversation_id: str | None = None,
         confidence: float = 1.0,
         pinned: bool = False,
+        origin: str | None = None,
     ) -> dict[str, Any]:
         now = config.now_iso()
         mid = _new_id("mem")
+        origin = origin if origin in MEMORY_ORIGINS else None
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute(
                     "INSERT INTO memories(id, kind, content, normalized, tags, source_conversation_id, "
-                    "confidence, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "confidence, pinned, created_at, updated_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         mid,
                         kind,
@@ -778,6 +791,7 @@ class Database:
                         1 if pinned else 0,
                         now,
                         now,
+                        origin,
                     ),
                 )
                 self._fts_insert(conn, mid, content, normalized)
@@ -877,7 +891,7 @@ class Database:
         return [self._memory(row) for row in rows]
 
     def update_memory(self, memory_id: str, **fields: Any) -> dict[str, Any] | None:
-        allowed = {"kind", "content", "normalized", "tags", "confidence", "pinned"}
+        allowed = {"kind", "content", "normalized", "tags", "confidence", "pinned", "origin"}
         sets: list[str] = []
         values: list[Any] = []
         content_changed = False
@@ -968,7 +982,8 @@ class Database:
                     return 0
                 exclude = f" AND id NOT IN ({','.join('?' * len(keep))})" if keep else ""
                 rows = conn.execute(
-                    "SELECT id FROM memories WHERE pinned = 0" + exclude + " "
+                    # The user's own memories are never evicted to make room for learned ones.
+                    "SELECT id FROM memories WHERE pinned = 0 AND COALESCE(origin, '') <> 'you'" + exclude + " "
                     "ORDER BY confidence ASC, use_count ASC, "
                     "COALESCE(last_used_at, updated_at) ASC LIMIT ?",
                     (*keep, excess),

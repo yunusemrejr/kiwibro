@@ -243,7 +243,10 @@ def _settings(autonomy: str, **permissions: str) -> dict:
         ("autonomous", "ask", "rm -rf src", "deny"),
         ("smart", "auto", "rm -rf ~", "deny"),
         ("supervised", "auto", "rm -rf ~", "deny"),
-        ("smart", "deny", "ls", "deny"),
+        ("supervised", "deny", "ls", "deny"),
+        # Per-tool choices are Manual mode's: the automatic modes use each tool's default.
+        ("smart", "deny", "ls", "auto"),
+        ("autonomous", "deny", "ls", "auto"),
     ],
 )
 def test_policy_matrix(ws: Path, fake_sandbox: None, autonomy: str, permission: str, command: str, mode: str) -> None:

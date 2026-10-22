@@ -7,10 +7,12 @@ points the app at a closed port to exercise the LM-offline contract; phase
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
 from harness import (
+    REPO_ROOT,
     assert_eq,
     assert_in,
     assert_true,
@@ -18,6 +20,10 @@ from harness import (
     expect_error,
     expect_status,
 )
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from kiwibro import config  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +37,7 @@ def health_offline(env: "Any") -> str:
     data = response.data or {}
     assert_eq(data.get("ok"), True, "health.ok")
     assert_eq(data.get("lmstudio"), False, "health.lmstudio offline")
-    assert_eq(data.get("version"), "2.0.0", "health.version")
+    assert_eq(data.get("version"), config.VERSION, "health.version")
     assert_true(data.get("lmstudio_error"), "health.lmstudio_error present")
     assert_eq(response.headers.get("cache-control"), "no-store", "health cache-control")
     return "lmstudio=false with calm error message"
@@ -440,7 +446,7 @@ def chat_validation(env: "Any") -> str:
     client = env.client
     expect_error(client.post("/api/chat", {}), 400, "bad_request", "missing message")
     expect_error(client.post("/api/chat", {"message": "   "}), 400, "bad_request", "blank message")
-    expect_error(client.post("/api/chat", {"message": "x" * 32001}), 400, "message_too_long", "huge message")
+    expect_error(client.post("/api/chat", {"message": "x" * 400_001}), 400, "message_too_long", "huge message")
     expect_error(
         client.post("/api/chat", {"message": "hi", "conversation_id": "c_missing"}),
         404,

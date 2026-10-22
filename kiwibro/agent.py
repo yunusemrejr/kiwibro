@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import checkpoints, config, delegate, directives, guard, inference, library, prompts, safety, toolcall, tools, workspaces
-from .context import ContextEngine, PreparedContext, compute_budget
+from .context import (
+    COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
+    estimate_tokens,
+)
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
 from .memory import MemoryEngine
@@ -25,6 +28,12 @@ from .search import SearchEngine
 from .tools import ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
+
+
+# Shares of the message budget: the tool schemas may take at most this much of it (else
+# a smaller set is sent), and one user message at most this much (else it is paged).
+TOOLS_SHARE_MAX = 0.35
+USER_MESSAGE_SHARE = 0.4
 
 
 class BusyError(Exception):
@@ -241,6 +250,7 @@ class Turn:
     stream_filter: toolcall.StreamFilter | None = None
     page_limit: int = 8000  # tool outputs longer than this are paged into the library
     nudged: bool = False
+    reserve: int = 0  # prompt tokens the tool schemas take (kept out of the message budget)
     reviewed: bool = False  # the one end-of-turn self-check has been offered
     pending_review: str = ""  # checklist nudge for the next round (transient)
 
@@ -271,8 +281,19 @@ class AgentManager:
         self._thinking: dict[str, bool] = {}  # conversation id -> last turn's thinking decision
         self._approvals: dict[str, Approval] = {}
         self._approvals_guard = threading.Lock()
-        self._extracting: set[str] = set()  # conversations with a memory extraction running
+        # Background memory extraction: queued per conversation, run one at a time once no
+        # reply has streamed for memory_idle_s, cancelled (and re-queued) when one starts.
+        self._extracting: dict[str, threading.Event] = {}  # running: conversation -> cancel
+        self._memory_queue: dict[str, str] = {}  # waiting: conversation -> model
         self._extracting_guard = threading.Lock()
+        self._memory_wake = threading.Event()
+        self._memory_worker: threading.Thread | None = None
+        self._turn_activity_at = time.monotonic()
+        self.memory_idle_s = config.MEMORY_IDLE_S
+        self.readiness: Any = None  # readiness.Readiness, wired by create_app (load + KV warm-up)
+        # "Allow in this chat" (automatic modes): tools whose risky steps the user approved for
+        # the rest of a conversation. In memory only: a restart asks again.
+        self._chat_allowed: dict[str, set[str]] = {}
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -300,6 +321,8 @@ class AgentManager:
         lock = self._lock_for(conversation_id)
         if not lock.acquire(blocking=False):
             raise BusyError(conversation_id)
+        self._turn_activity_at = time.monotonic()
+        self._cancel_memory_extraction()  # a live reply gets the whole CPU
         turn = Turn(
             conversation_id=conversation_id, message=message, requested_model=model,
             attachments=list(attachments or []),
@@ -442,6 +465,7 @@ class AgentManager:
                 pass
         # Lock objects are intentionally kept in memory (one per conversation ever
         # used). Dropping and recreating them could let two turns race on a chat.
+        self._turn_activity_at = time.monotonic()
         turn.finished = True
         turn.done_sent = True
         turn.queue.put(None)
@@ -486,10 +510,16 @@ class AgentManager:
         system_prompt = self._system_prompt(
             {**settings, "workspace": self._folder(turn.conversation_id)}, model=model, model_info=model_info
         )
+        # One profile-sized set, identical for every turn and conversation: the tool list
+        # renders ahead of all messages, so any change re-prefills them. Its tokens are
+        # reserved in the budget so compaction starts before the window overflows.
+        tool_list = self._tool_list(model, settings, model_info)
+        turn.reserve = estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) if tool_list else 0
+        self._page_long_message(turn, user_message, model)
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
-            turn.conversation_id, model, system_prompt, turn_context=turn_context
+            turn.conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=turn.reserve
         )
         # meta is contractually the first SSE event; context follows it.
         if turn.attachments:
@@ -499,16 +529,18 @@ class AgentManager:
             self._emit_context(turn, prepared)
         self._raise_if_aborted(turn)
 
-        model_info = prepared.model_info or model_info or {}
+        if self.readiness is not None:
+            # A background warm-up of this very prefix is cheaper to wait for than to repeat.
+            self.readiness.before_turn(
+                model, turn.conversation_id, abort=turn.abort,
+                on_wait=lambda: turn.emit("status", {"phase": "thinking", "label": "Getting the model ready"}),
+            )
+            self._raise_if_aborted(turn)
+        model_info = model_info or {}
         turn.page_limit = library.page_limit(prepared.budget)
-        tool_list: list[dict[str, Any]] | None = None
         # Models without native tool calling use the text protocol: tools are
         # described in message 0 and calls are parsed from the reply text.
         text_mode = bool(settings.get("agent_enabled", True)) and not model_info.get("tools", False)
-        if settings.get("agent_enabled", True) and model_info.get("tools", False):
-            # One profile-sized set, identical for every turn and conversation: the
-            # tool list renders ahead of all messages, so any change re-prefills them.
-            tool_list = tools.tool_defs_for(settings=settings)
         try:
             max_rounds = int(settings.get("max_tool_rounds") or config.MAX_TOOL_ROUNDS)
         except (TypeError, ValueError):
@@ -705,7 +737,8 @@ class AgentManager:
                 if turn.abort.is_set():
                     raise TurnAborted()
                 prepared = self.context.prepare(
-                    turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
+                    turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context,
+                    reserve_tokens=turn.reserve,
                 )
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
@@ -871,6 +904,86 @@ class AgentManager:
         meta = {**(user_message.get("meta") or {}), "attachments": seen}
         self.db.update_message(user_message["id"], meta=meta)
 
+    def warm_prefix(
+        self, model: str, conversation_id: str | None = None
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None, dict[str, Any]] | None:
+        """The leading messages, tools and server knobs of the next request to ``model``,
+        rendered exactly as that turn will render them (readiness prefills them).
+
+        Without a chat this is message 0 plus the tools, which every new chat shares. A
+        chat's history is rendered as if a new user message followed it (older tool
+        results already compact). None when the next turn compacts first anyway or the
+        chat is too long to prefill ahead of time."""
+        from . import readiness  # local: readiness imports routing, which imports this package's tools
+
+        settings = self._settings()
+        model_info = self.llm.model_info(model)
+        system_prompt = self._system_prompt(
+            {**settings, "workspace": self._folder(conversation_id)}, model=model, model_info=model_info
+        )
+        summary, history = "", []
+        if conversation_id:
+            conversation = self.db.get_conversation(conversation_id)
+            if conversation is None:
+                return None
+            summary = conversation["summary"]
+            history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
+        messages = build_llm_messages(
+            combine_system_prompt(system_prompt, summary), [*history, {"role": "user", "content": "…"}]
+        )
+        if history:
+            _ctx, budget, _info = self.context.budget_for(model)
+            used = self.context.used_tokens(messages, model)
+            if used > int(budget * COMPACT_TRIGGER) or used > readiness.WARM_HISTORY_TOKENS:
+                return None
+        info = model_info or {}
+        tool_list = self._tool_list(model, settings, model_info)
+        if settings.get("agent_enabled", True) and not info.get("tools", False):
+            messages = toolcall.to_text_protocol(messages)
+        previous = self._thinking.get(conversation_id) if conversation_id else None
+        think = previous if previous is not None else inference.wants_reasoning(settings.get("reasoning"), "")
+        extra = inference.reasoning_payload(inference.model_profile(model, info), think=think)
+        return messages, tool_list, extra
+
+    def _tool_list(
+        self, model: str, settings: dict[str, Any], model_info: dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Native tool definitions for this model, sized to its window.
+
+        The auto set is ~3.5k tokens. In a window where it would crowd out the
+        conversation (a model that cannot be reloaded larger), the minimal set is
+        sent instead; others still run when called by name."""
+        info = model_info or {}
+        if not settings.get("agent_enabled", True) or not info.get("tools", False):
+            return None
+        _ctx, budget, _info = self.context.budget_for(model)
+        room = int(budget * TOOLS_SHARE_MAX)
+        tool_list = tools.tool_defs_for(settings=settings)
+        if estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) <= room:
+            return tool_list
+        small = tools.tool_defs_for("minimal", settings=settings)
+        log.info("model %s: window too small for the full tool set; using the minimal set", model)
+        return small if estimate_tokens(json.dumps(small, ensure_ascii=False)) <= room else None
+
+    def _page_long_message(self, turn: Turn, user_message: dict[str, Any], model: str) -> None:
+        """A message too long for the model's window goes into the document library; the
+        model reads its start, its end and how to read the rest (the chat shows it whole)."""
+        _ctx, budget, _info = self.context.budget_for(model)
+        limit = max(4000, int((budget - turn.reserve) * USER_MESSAGE_SHARE * 3.6))
+        text = turn.message
+        if len(text) <= limit:
+            return
+        try:
+            stored = self._library().stash_text(text, title=derive_title(text) or "Long message", source="chat")
+        except Exception:  # paging is an optimisation; the full message still goes out
+            log.warning("could not store a long message", exc_info=True)
+            return
+        current = self.db.get_message(user_message["id"]) or user_message  # attachments may have added meta
+        meta = {**(current.get("meta") or {}), "prompt_text": library.excerpt(text, stored, limit),
+                "paged": {"handle": stored["handle"], "chars": len(text)}}
+        self.db.update_message(user_message["id"], meta=meta)
+        log.info("turn %s: %s-char message stored as %s", turn.conversation_id, len(text), stored["handle"])
+
     def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
         memory_block, _memories = self.memory.build_block(
@@ -902,7 +1015,9 @@ class AgentManager:
         elif model_info is not None and not model_info.get("tools"):
             tools_block = toolcall.protocol_block(_text_mode_specs(settings))
         else:
-            tools_block = prompts.TOOLS_BLOCK + tools.more_tools_line(settings)
+            manual = settings.get("autonomy", config.DEFAULT_AUTONOMY) == "supervised"
+            permissions_line = prompts.PERMISSIONS_MANUAL if manual else prompts.PERMISSIONS_AUTOMATIC
+            tools_block = prompts.TOOLS_BLOCK.replace("{permissions_line}", permissions_line) + tools.more_tools_line(settings)
         return prompts.SYSTEM_PROMPT.format(
             model_block=model_block,
             workspace_block=workspace_block,
@@ -1049,6 +1164,10 @@ class AgentManager:
             self._settings(), name, item["args"], workspace=self._workspace(turn.conversation_id), turn_state=turn.safety, risk=spec.risk
         )
         requires = decision.mode == "ask"
+        allowed_here = requires and name in self._chat_allowed.get(turn.conversation_id, ())
+        if allowed_here:
+            requires = False
+            decision = replace(decision, mode="auto", reasons=(*decision.reasons, "allowed for this chat"))
         turn.emit(
             "tool_call",
             {
@@ -1077,6 +1196,8 @@ class AgentManager:
             if not self._request_approval(turn, name, spec.risk, item["args"], decision.payload()):
                 return refuse("The user denied permission for this tool call. Do not retry it.", "Denied by user")
             item["approved"] = True
+        elif allowed_here:
+            item["approved"] = True  # the user's in-chat approval covers it (runs as an approved call)
         return item
 
     def _folder(self, conversation_id: str | None = None) -> str:
@@ -1130,6 +1251,7 @@ class AgentManager:
         with self._approvals_guard:
             self._approvals[approval_id] = approval
         turn.approval_ids.append(approval_id)
+        manual = self._settings().get("autonomy", config.DEFAULT_AUTONOMY) == "supervised"
         turn.emit(
             "approval",
             {
@@ -1139,6 +1261,9 @@ class AgentManager:
                 "summary": tools.summary_for(name, args),
                 "risk": risk,
                 "timeout_s": int(config.APPROVAL_TIMEOUT_S),
+                # What "always" means: Manual mode sets the tool's permission to auto; the
+                # automatic modes allow this tool's risky steps for the rest of the chat.
+                "always_scope": "tool" if manual else "chat",
                 **(safety_info or {}),
             },
         )
@@ -1154,10 +1279,13 @@ class AgentManager:
         with self._approvals_guard:
             self._approvals.pop(approval_id, None)
         if decision == "always":
-            try:
-                self.db.set_permission(name, "auto")
-            except ValueError:  # pragma: no cover - defensive
-                log.warning("could not persist always permission for %s", name)
+            if manual:
+                try:
+                    self.db.set_permission(name, "auto")
+                except ValueError:  # pragma: no cover - defensive
+                    log.warning("could not persist always permission for %s", name)
+            else:
+                self._chat_allowed.setdefault(turn.conversation_id, set()).add(name)
         return decision in ("allow", "always")
 
     # --- finish paths ------------------------------------------------------
@@ -1224,26 +1352,61 @@ class AgentManager:
             turn.emit("title", {"id": turn.conversation_id, "title": title})
 
     def _start_memory_extraction(self, conversation_id: str, model: str | None) -> None:
+        """Queue memory extraction for this chat. It runs in the background once no reply
+        has streamed for ``memory_idle_s``: on a CPU-only machine an extraction running
+        beside the next reply slowed its first token from 2.8 s to 8.4 s (measured), and
+        could store a fact that reply had just changed."""
         if not model:
             return
-        with self._extracting_guard:  # one at a time per chat: the running one advances the watermark
-            if conversation_id in self._extracting:
-                return
-            self._extracting.add(conversation_id)
-        thread = threading.Thread(
-            target=self._memory_extraction_worker,
-            args=(conversation_id, model),
-            name=f"kiwibro-memory-{conversation_id}",
-            daemon=True,
-        )
-        thread.start()
+        with self._extracting_guard:
+            self._memory_queue[conversation_id] = model
+            if self._memory_worker is None or not self._memory_worker.is_alive():
+                self._memory_worker = threading.Thread(
+                    target=self._memory_loop, name="kiwibro-memory", daemon=True
+                )
+                self._memory_worker.start()
+        self._memory_wake.set()
 
-    def _memory_extraction_worker(self, conversation_id: str, model: str) -> None:
+    def _cancel_memory_extraction(self) -> None:
+        with self._extracting_guard:
+            for cancel in self._extracting.values():
+                cancel.set()
+
+    def _wait_until_idle(self) -> None:
+        """Until no reply streams, none did for ``memory_idle_s`` and no warm-up runs."""
+        while True:
+            quiet = time.monotonic() - self._turn_activity_at
+            warming = self.readiness is not None and self.readiness.status().get("phase") in ("loading", "warming")
+            busy = bool(self.active_turns()) or warming
+            if not busy and quiet >= self.memory_idle_s:
+                return
+            time.sleep(0.25 if busy else max(0.05, min(0.5, self.memory_idle_s - quiet)))
+
+    def _memory_loop(self) -> None:
+        while True:
+            self._memory_wake.wait(30.0)
+            self._memory_wake.clear()
+            while True:
+                self._wait_until_idle()
+                with self._extracting_guard:
+                    if not self._memory_queue:
+                        break
+                    conversation_id = next(iter(self._memory_queue))
+                    model = self._memory_queue.pop(conversation_id)
+                    cancel = self._extracting[conversation_id] = threading.Event()
+                self._memory_extraction_worker(conversation_id, model, cancel)
+
+    def _memory_extraction_worker(self, conversation_id: str, model: str, cancel: threading.Event) -> None:
         try:
-            counts = self.memory.extract_and_apply(conversation_id, model)
-            log.info("memory extraction for %s: %s", conversation_id, counts)
+            counts = self.memory.extract_and_apply(conversation_id, model, abort=cancel)
+            if counts.get("cancelled"):
+                with self._extracting_guard:  # a reply started: try again once it is over
+                    self._memory_queue.setdefault(conversation_id, model)
+                log.info("memory extraction for %s paused for a reply", conversation_id)
+            else:
+                log.info("memory extraction for %s: %s", conversation_id, counts)
         except Exception:  # never fail anything because of memory extraction
             log.warning("memory extraction worker failed", exc_info=True)
         finally:
             with self._extracting_guard:
-                self._extracting.discard(conversation_id)
+                self._extracting.pop(conversation_id, None)

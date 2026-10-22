@@ -377,6 +377,12 @@ p {
   background: var(--amber);
 }
 
+/* The selected model is loading or prefilling its prompt (readiness.py). */
+.status-dot[data-tone="preparing"] {
+  background: var(--amber);
+  animation: conv-status-pulse 1.4s ease-in-out infinite;
+}
+
 /* ---------- Workspace & sidebar ----------------------------------------- */
 .workspace {
   position: relative;
@@ -3317,4 +3323,191 @@ button.chip:hover {
 
 .memory-time {
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Rich blocks: syntax tokens, diffs, CSV tables, live previews --
+   Classes from markdown.js (tok-*, line-*, csv-*) and richblocks.js (code-tab,
+   rich-*). Existing tokens only; no gradients, glows or new accent colours. */
+
+/* Syntax tokens inside a code block. */
+.code-block .tok-k { color: var(--orange-soft); }
+.code-block .tok-s { color: var(--green); }
+.code-block .tok-c { color: var(--faint); }
+.code-block .tok-n { color: var(--red); }
+.code-block .tok-f { color: var(--text); }
+.code-block .tok-t { color: var(--amber); }
+.code-block .tok-p { color: var(--muted); }
+
+/* Diff lines: each changed line fills the block width. */
+.code-block .line-add,
+.code-block .line-del,
+.code-block .line-hunk,
+.code-block .line-meta {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.code-block .line-add {
+  color: var(--green);
+  background: var(--green-dim);
+}
+
+.code-block .line-del {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 13%, transparent);
+}
+
+.code-block .line-hunk { color: var(--amber); }
+.code-block .line-meta { color: var(--muted); }
+
+/* CSV and TSV: a table with the raw source folded underneath. */
+.md .csv-block .table-wrap {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.md .csv-block table {
+  font-size: 12.5px;
+}
+
+.md .csv-note {
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.md .csv-source summary {
+  padding: 6px 13px;
+  color: var(--faint);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.md .csv-source summary:hover,
+.md .csv-source[open] summary {
+  color: var(--text-2);
+}
+
+.md .csv-source pre {
+  border-top: 1px solid var(--line);
+}
+
+/* Preview tabs in the code head, placed right after the language label. */
+.code-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 auto 0 10px;
+}
+
+.code-tab,
+.rich-expand,
+.rich-run {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 11px;
+  transition: background var(--dur), color var(--dur);
+}
+
+.code-tab:hover,
+.rich-expand:hover,
+.rich-run:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+}
+
+.code-tab[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+
+/* Preview panels. The [hidden] rule keeps display: flex from overriding hidden. */
+.rich-preview {
+  padding: 14px;
+  background: var(--bg-code);
+}
+
+.rich-preview[hidden],
+.code-block pre[hidden] {
+  display: none;
+}
+
+.rich-svg {
+  display: flex;
+  justify-content: center;
+}
+
+.rich-image {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  width: auto;
+  height: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: #fff; /* Model-written SVGs assume a white page, like the HTML frame. */
+}
+
+.rich-frame {
+  display: block;
+  width: 100%;
+  height: 360px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff; /* Most model-written pages assume a white canvas. */
+}
+
+.rich-frame.is-expanded {
+  height: 720px;
+}
+
+.rich-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.rich-note {
+  margin-right: auto;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.rich-run {
+  color: var(--green);
+}
+
+.rich-run:disabled {
+  color: var(--faint);
+}
+
+/* ---------- Memory origin -----------------------------------------------
+   "Added by you" / "Saved in a chat" / "Learned"; a link back to the chat when known. */
+.memory-origin {
+  color: var(--faint);
+}
+
+.memory-origin.is-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line-2);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.memory-origin.is-link:hover {
+  color: var(--text-2);
+  text-decoration-color: currentColor;
 }

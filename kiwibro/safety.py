@@ -2092,9 +2092,15 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
 
 
 def permission(settings: dict[str, Any], name: str) -> str:
-    """The user's per-tool permission (the single lookup; tools.permission_mode delegates here)."""
-    mode = (settings.get("permissions") or {}).get(name)
-    return mode if mode in config.PERMISSION_MODES else config.permission_defaults().get(name, "ask")
+    """The per-tool permission in force (the single lookup; tools.permission_mode delegates here).
+
+    The user's per-tool choices are Manual mode (``supervised``): Settings shows them only
+    there. In the automatic modes every tool has its default and the risk policy decides."""
+    if settings.get("autonomy") == "supervised":
+        mode = (settings.get("permissions") or {}).get(name)
+        if mode in config.PERMISSION_MODES:
+            return mode
+    return config.permission_defaults().get(name, "ask")
 
 
 def _remote_host_known(host: str, settings: dict[str, Any]) -> bool:

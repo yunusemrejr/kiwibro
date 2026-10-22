@@ -5,6 +5,7 @@
 
 import { attachmentChips } from "./attachments.js";
 import { renderMarkdown } from "./markdown.js";
+import { enhanceRendered, handleRichClick } from "./richblocks.js";
 import {
   el,
   icon,
@@ -226,13 +227,17 @@ function buildApprovalCard(approval, resolve) {
   });
 
   const allow = el("button", { class: "btn btn-primary", type: "button", text: "Allow" });
+  // Automatic mode: "always" lasts for this chat; Manual mode: it sets the tool to Auto.
+  const chatScope = approval.always_scope === "chat";
   const always = el(
     "button",
     {
       class: "btn btn-ghost",
       type: "button",
-      title: `Always allow ${toolLabel(tool).toLowerCase()} without asking`,
-      text: "Always",
+      title: chatScope
+        ? `Allow ${toolLabel(tool).toLowerCase()} for the rest of this chat`
+        : `Always allow ${toolLabel(tool).toLowerCase()} without asking`,
+      text: chatScope ? "Allow in this chat" : "Always",
     },
   );
   const deny = el("button", { class: "btn btn-deny", type: "button", text: "Deny" });
@@ -282,7 +287,11 @@ function buildApprovalCard(approval, resolve) {
     const approved = decision !== "deny";
     const label =
       note ||
-      (decision === "allow" ? "Allowed" : decision === "always" ? "Always allowed" : "Denied");
+      (decision === "allow"
+        ? "Allowed"
+        : decision === "always"
+          ? chatScope ? "Allowed in this chat" : "Always allowed"
+          : "Denied");
     card.append(
       el("div", { class: "approval-resolved" }, [
         icon(approved ? "check" : "ban"),
@@ -456,6 +465,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     }
     if (!turn.segment) return;
     renderSegment(turn, false);
+    enhanceRendered(turn.segment.element);
   }
 
   function closeSegment(turn) {
@@ -709,6 +719,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (message.content) {
         const md = el("div", { class: "md" });
         md.innerHTML = renderMarkdown(message.content);
+        enhanceRendered(md);
         flow.append(md);
       }
 
@@ -767,6 +778,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
   );
 
   root.addEventListener("click", async (event) => {
+    if (handleRichClick(event)) return;
     const button = event.target instanceof Element ? event.target.closest(".code-copy") : null;
     if (!button) return;
     const code = button.closest(".code-block")?.querySelector("pre code");

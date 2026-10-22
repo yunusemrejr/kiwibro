@@ -45,7 +45,7 @@ class FakeLLM:
         self.complete_calls.append(messages)
         return Completion(self.summary_text)
 
-    def complete_json(self, *, model, messages, max_tokens=900, temperature=0.0, read_timeout=300, retries=1):
+    def complete_json(self, *, model, messages, max_tokens=900, temperature=0.0, read_timeout=300, retries=1, **_kw):
         return self.memory_ops
 
 

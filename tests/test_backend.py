@@ -100,6 +100,7 @@ class FakeLLM:
         temperature: float = 0.0,
         read_timeout: int = 300,
         retries: int = 1,
+        **_kwargs: Any,
     ) -> Any:
         return self.memory_ops
 
@@ -185,6 +186,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     )
     svc = app.extensions["kiwibro"]
     fake = FakeLLM()
+    svc.agent.memory_idle_s = 0.0  # extraction right after a turn (production waits ~3 s of quiet)
     monkeypatch.setattr(svc.llm, "list_models", fake.list_models)
     monkeypatch.setattr(svc.llm, "stream_chat", fake.stream_chat)
     monkeypatch.setattr(svc.llm, "complete", fake.complete)
@@ -1206,7 +1208,9 @@ def test_models_api_and_selection(env: Env):
     assert payload["current"] == "fake-1"
 
     selected = env.client.post("/api/models/select", json={"id": "other"})
-    assert selected.get_json() == {"ok": True, "current": "other"}
+    body = selected.get_json()
+    assert (body["ok"], body["current"]) == (True, "other")
+    assert body["readiness"]["phase"] == "idle"  # warm-up is off under TESTING
     assert env.svc.settings_provider()["model"] == "other"
     unknown = env.client.post("/api/models/select", json={"id": "ghost"})
     assert unknown.status_code == 400
@@ -1227,7 +1231,10 @@ def test_memories_api_crud(env: Env):
         "created_at",
         "updated_at",
         "last_used_at",
+        "origin",
+        "source_conversation_id",
     }
+    assert memory["origin"] == "you"  # added in the Memory sheet
     listed = env.client.get("/api/memories?q=dark").get_json()
     assert listed["total"] == 1 and listed["memories"][0]["id"] == memory["id"]
 
@@ -1387,7 +1394,7 @@ def test_sse_chat_headers(env: Env):
 
 def test_chat_validation_errors(env: Env):
     assert env.client.post("/api/chat", json={"message": ""}).status_code == 400
-    assert env.client.post("/api/chat", json={"message": "x" * 32001}).status_code == 400
+    assert env.client.post("/api/chat", json={"message": "x" * (config.MAX_MESSAGE_CHARS + 1)}).status_code == 400
     missing = env.client.post("/api/chat", json={"message": "hi", "conversation_id": "c_missing"})
     assert missing.status_code == 404
     assert missing.get_json()["error"]["code"] == "not_found"
@@ -1499,7 +1506,8 @@ def test_chat_critical_command_is_denied_without_asking(env: Env):
 
 
 def test_chat_denied_tool_is_not_executed(env: Env):
-    env.settings_patch({"permissions": {"write_file": "deny"}})
+    # Per-tool permissions are Manual mode's (the automatic modes use the defaults).
+    env.settings_patch({"autonomy": "supervised", "permissions": {"write_file": "deny"}})
     env.fake.stream_script = [
         tool_call_result("write_file", {"path": "denied.txt", "content": "nope"}),
         ChatResult(content="I could not write the file."),

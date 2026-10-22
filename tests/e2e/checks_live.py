@@ -12,10 +12,15 @@ only for the open-prompt checks; the rest continue so the report is complete.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from typing import Any
 
-from harness import SSEChat, assert_eq, assert_in, assert_true, expect_status
+from harness import REPO_ROOT, SSEChat, assert_eq, assert_in, assert_true, expect_status
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from kiwibro import config  # noqa: E402
 
 from checks_chat import chat, conversation, finish, poll, _last_user  # noqa: F401
 
@@ -95,7 +100,7 @@ def live_health(env: Any) -> str:
     data = health.data
     assert_eq(data["lmstudio"], True, "LM Studio reachable")
     assert_eq(data["ok"], True, "health ok")
-    assert_eq(data["version"], "2.0.0", "version")
+    assert_eq(data["version"], config.VERSION, "version")
     models = env.client.get("/api/models?refresh=1")
     expect_status(models, 200, "GET /api/models")
     payload = models.data

@@ -54,14 +54,17 @@ def test_tool_profiles():
     auto = tools.select_tool_names("auto")
     assert auto == [n for n in tools.tool_names() if n in tools.AUTO_TOOLS]
     assert 12 <= len(auto) <= 22 and "web_research" in auto and "grep_files" in auto
-    settings = {"tool_profile": "auto", "permissions": {"git": "deny"}}
+    settings = {"tool_profile": "auto", "autonomy": "supervised", "permissions": {"git": "deny"}}
     line = tools.more_tools_line(settings)
     assert "apply_patch" in line and "git" not in line.split(":", 1)[1].replace(",", " ").split()
     assert not any(name in line.split(":", 1)[1] for name in ("web_research,", "grep_files,"))
     assert tools.more_tools_line({"tool_profile": "full"}) == ""
     assert len(tools.tool_defs_for("minimal")) == 8
-    denied = tools.tool_defs_for("full", settings={"permissions": {"run_command": "deny"}})
+    denied = tools.tool_defs_for("full", settings={"autonomy": "supervised", "permissions": {"run_command": "deny"}})
     assert all(item["function"]["name"] != "run_command" for item in denied)
+    # Automatic modes ignore the per-tool toggles (they are Manual mode's).
+    automatic = tools.tool_defs_for("full", settings={"autonomy": "smart", "permissions": {"run_command": "deny"}})
+    assert any(item["function"]["name"] == "run_command" for item in automatic)
 
 
 def test_validation_rejects_bad_args():

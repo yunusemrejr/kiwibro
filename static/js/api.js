@@ -136,6 +136,7 @@ export const api = {
   health: () => request("/health"),
 
   models: () => request("/api/models"),
+  modelReady: () => request("/api/models/ready"),
   selectModel: (id) => request("/api/models/select", { method: "POST", body: { id } }),
   resizeContext: (id, contextLength) =>
     request("/api/models/context", { method: "POST", body: { id, context_length: contextLength } }),

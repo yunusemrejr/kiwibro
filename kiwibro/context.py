@@ -156,6 +156,10 @@ def to_llm_message(message: dict[str, Any], tool_cap: int = TOOL_RESULT_CAP) -> 
     # small models answer what they read last, which must be the user's own words.
     meta = message.get("meta")
     note = media.attachment_note(meta.get("attachments")) if isinstance(meta, dict) else ""
+    if isinstance(meta, dict) and isinstance(meta.get("prompt_text"), str):
+        # Too long for the model's window: its start, its end and where the rest is stored
+        # (fixed when the message was sent; the chat itself shows the full text).
+        content = meta["prompt_text"]
     return {"role": "user", "content": f"{note}\n\n{content}" if note else content}
 
 
@@ -357,6 +361,7 @@ class PreparedContext:
     recalled: int = 0
     anchored: bool = False
     turn_context: str = ""
+    reserve: int = 0  # tokens kept free for what renders outside the messages (tool schemas)
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -393,6 +398,10 @@ class ContextEngine:
 
     def _used(self, raw: int, model: str) -> int:
         return math.ceil(raw * SAFETY_FACTOR * self.calibration_factor(model))
+
+    def used_tokens(self, messages: list[dict[str, Any]], model: str) -> int:
+        """Calibrated prompt-token estimate for LLM messages (what the budget is measured in)."""
+        return self._used(raw_message_sum(messages), model)
 
     # --- sizing ------------------------------------------------------------
 
@@ -446,6 +455,7 @@ class ContextEngine:
         *,
         allow_compaction: bool = True,
         turn_context: str = "",
+        reserve_tokens: int = 0,
     ) -> PreparedContext:
         """Build the prompt for one turn.
 
@@ -453,7 +463,9 @@ class ContextEngine:
         directives, …); it is merged with this engine's recalled excerpts
         and task anchor and appended to the newest user message only, so
         the stable prefix (system + older turns) stays byte-identical
-        between turns for KV-cache reuse.
+        between turns for KV-cache reuse. ``reserve_tokens`` is what the
+        request spends outside the messages (the tool schemas: ~3.5k tokens
+        for the auto set), so compaction starts before the window overflows.
         """
         settings = self._settings()
         conversation = self.db.get_conversation(conversation_id)
@@ -461,6 +473,7 @@ class ContextEngine:
             raise ValueError(f"unknown conversation {conversation_id}")
         ctx_len, model_info = self.inventory(model)
         budget = compute_budget(ctx_len, int(settings.get("max_output_tokens") or config.DEFAULT_MAX_OUTPUT_TOKENS))
+        budget = max(512, budget - max(0, int(reserve_tokens)))
         trigger = int(budget * COMPACT_TRIGGER)
         history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
         messages = build_llm_messages(
@@ -551,6 +564,7 @@ class ContextEngine:
             recalled=recalled,
             anchored=anchored,
             turn_context="\n\n".join(note_parts),
+            reserve=max(0, int(reserve_tokens)),
         )
 
     def _recall_note(
@@ -672,17 +686,19 @@ class ContextEngine:
             # A *changed* turn note belongs to a full prepare (it rewrites the
             # newest user message). The same note re-passed each tool round —
             # the agent's pattern — must stay incremental.
-            return self.prepare(conversation_id, model, system_prompt, turn_context=turn_context)
+            return self.prepare(
+                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve
+            )
         new_db = self.db.list_messages(conversation_id, after_seq=prepared.last_seq)
         if not new_db:
             return prepared
         if any(m["seq"] <= conversation["summary_through_seq"] for m in new_db):
-            return self.prepare(conversation_id, model, system_prompt)
+            return self.prepare(conversation_id, model, system_prompt, reserve_tokens=prepared.reserve)
         appended = build_llm_messages("", new_db)
         raw = prepared.raw_sum + raw_message_sum(appended)
         used = self._used(raw, model)
         if prepared.trigger and used > prepared.trigger:
-            return self.prepare(conversation_id, model, system_prompt)
+            return self.prepare(conversation_id, model, system_prompt, reserve_tokens=prepared.reserve)
         stats = context_stats(used, prepared.budget)
         return PreparedContext(
             messages=prepared.messages + appended,
@@ -700,6 +716,7 @@ class ContextEngine:
             recalled=prepared.recalled,
             anchored=prepared.anchored,
             turn_context=prepared.turn_context,
+            reserve=prepared.reserve,
         )
 
     @staticmethod

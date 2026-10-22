@@ -495,12 +495,23 @@ def test_memory_extraction_gets_a_speed_sized_budget(env, monkeypatch: pytest.Mo
     assert env.svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 2
 
 
-def test_one_memory_extraction_per_conversation_at_a_time(env, monkeypatch: pytest.MonkeyPatch) -> None:
+def _drain(agent, rounds: int = 250) -> None:
     import threading
 
-    release, calls = threading.Event(), []
+    for _ in range(rounds):
+        with agent._extracting_guard:
+            if not agent._extracting and not agent._memory_queue:
+                return
+        threading.Event().wait(0.02)
 
-    def slow_extract(conversation_id: str, model: str) -> dict[str, int]:
+
+def test_memory_extractions_queue_and_run_one_at_a_time(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    release, calls, running = threading.Event(), [], []
+
+    def slow_extract(conversation_id: str, model: str, *, abort=None) -> dict[str, int]:
+        running.append(len(env.svc.agent._extracting))
         calls.append(conversation_id)
         release.wait(5)
         return {"added": 0, "updated": 0, "removed": 0}
@@ -508,11 +519,31 @@ def test_one_memory_extraction_per_conversation_at_a_time(env, monkeypatch: pyte
     monkeypatch.setattr(env.svc.memory, "extract_and_apply", slow_extract)
     agent = env.svc.agent
     agent._start_memory_extraction("c1", "fake-1")
-    agent._start_memory_extraction("c1", "fake-1")  # still running: skipped
-    agent._start_memory_extraction("c2", "fake-1")  # other chats are independent
+    agent._start_memory_extraction("c1", "fake-1")  # already queued: one run covers both turns
+    agent._start_memory_extraction("c2", "fake-1")
     release.set()
-    for _ in range(100):
-        if not agent._extracting:
-            break
-        threading.Event().wait(0.02)
-    assert sorted(calls) == ["c1", "c2"] and not agent._extracting
+    _drain(agent)
+    assert calls == ["c1", "c2"] and set(running) == {1} and not agent._extracting
+
+
+def test_a_reply_starting_cancels_extraction_and_it_runs_again_later(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    started, calls = threading.Event(), []
+
+    def cancellable(conversation_id: str, model: str, *, abort=None) -> dict[str, int]:
+        calls.append(conversation_id)
+        if len(calls) == 1:
+            started.set()
+            abort.wait(5)
+            return {"added": 0, "updated": 0, "removed": 0, "cancelled": 1}
+        return {"added": 1, "updated": 0, "removed": 0}
+
+    monkeypatch.setattr(env.svc.memory, "extract_and_apply", cancellable)
+    agent = env.svc.agent
+    agent._start_memory_extraction("c1", "fake-1")
+    assert started.wait(5)
+    chat_events_like_a_new_turn = agent._cancel_memory_extraction  # what start_chat does first
+    chat_events_like_a_new_turn()
+    _drain(agent)
+    assert calls == ["c1", "c1"]

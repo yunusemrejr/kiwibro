@@ -281,6 +281,26 @@ class _Handler(BaseHTTPRequestHandler):
     # -- non-streaming -----------------------------------------------------
 
     def _non_stream(self, payload: dict[str, Any], scenario: str) -> None:
+        content = self._utility_text(payload) or "Fake completion text."
+        body = {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": payload.get("model") or "fake",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 21, "completion_tokens": 9, "total_tokens": 30},
+        }
+        self._json(200, body)
+
+    @staticmethod
+    def _utility_text(payload: dict[str, Any]) -> str | None:
+        """The answer to a title / memory / summary prompt (streamed or not), else None."""
         messages = payload.get("messages") or []
         system = ""
         for message in messages:
@@ -291,7 +311,7 @@ class _Handler(BaseHTTPRequestHandler):
         for message in messages:
             if message.get("role") == "user":
                 user_text += str(message.get("content") or "")
-        content = "Fake completion text."
+        content = None
         lowered = system.lower()
         if "write chat titles" in lowered or "name conversations" in lowered:
             if "[[scenario:title_echo]]" in user_text:
@@ -313,25 +333,20 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif "rolling summary" in lowered:
             content = "Summary: the user talked about kiwis, files and the fake model."
-        body = {
-            "id": "chatcmpl-fake",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": payload.get("model") or "fake",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 21, "completion_tokens": 9, "total_tokens": 30},
-        }
-        self._json(200, body)
+        return content
 
     # -- streaming ---------------------------------------------------------
 
     def _stream(self, payload: dict[str, Any], scenario: str) -> None:
+        utility = self._utility_text(payload)
+        if utility is not None:  # Kiwibro streams cancellable utility calls (memory extraction)
+            self._sse_start()
+            for part in _chunk(utility, 12):
+                if not self._sse({"choices": [{"index": 0, "delta": {"content": part}}]}):
+                    return
+            self._sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+            self._sse_done()
+            return
         self.fake.record_scenario_request(scenario, payload)
         model = payload.get("model") or "fake"
 

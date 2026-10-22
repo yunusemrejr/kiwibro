@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -218,6 +220,17 @@ def strip_reasoning(text: str) -> str:
     return text[:opened] if opened >= 0 else text
 
 
+def _socket_of(response: requests.Response) -> socket.socket | None:
+    """The socket under a streaming response. urllib3 2.x detaches it from the connection
+    while the body streams; it sits under the http.client response's file object then."""
+    raw = response.raw
+    sock = getattr(getattr(raw, "_connection", None), "sock", None)
+    if sock is None:
+        reader = getattr(getattr(raw, "_fp", None), "fp", None)  # BufferedReader over SocketIO
+        sock = getattr(getattr(reader, "raw", None), "_sock", None)
+    return sock if isinstance(sock, socket.socket) else None
+
+
 class LMStudioClient:
     """Small, synchronous LM Studio client shared by all request threads."""
 
@@ -241,6 +254,15 @@ class LMStudioClient:
     def base_url(self) -> str:
         url = self._settings().get("lmstudio_url") or config.DEFAULT_LMSTUDIO_URL
         return str(url).rstrip("/")
+
+    def _headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Request headers; a server with authentication on (e.g. another machine's
+        LM Studio) gets the API token from Settings or ``KIWIBRO_LMSTUDIO_TOKEN``."""
+        headers = {"User-Agent": USER_AGENT, **(extra or {})}
+        token = str(self._settings().get("lmstudio_token") or os.environ.get("KIWIBRO_LMSTUDIO_TOKEN") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     def clear_cache(self) -> None:
         with self._lock:
@@ -266,7 +288,7 @@ class LMStudioClient:
         base = self.base_url()
         try:
             response = requests.get(
-                f"{base}/api/v0/models", timeout=(CONNECT_TIMEOUT, 15), headers={"User-Agent": USER_AGENT}
+                f"{base}/api/v0/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers()
             )
         except requests.ConnectionError as exc:
             raise LMStudioError("connection", self._connection_message(base)) from exc
@@ -287,7 +309,7 @@ class LMStudioClient:
         # Older LM Studio builds: fall back to the OpenAI-style list.
         try:
             fallback = requests.get(
-                f"{base}/v1/models", timeout=(CONNECT_TIMEOUT, 15), headers={"User-Agent": USER_AGENT}
+                f"{base}/v1/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers()
             )
         except requests.RequestException as exc:
             raise LMStudioError("connection", self._connection_message(base)) from exc
@@ -416,14 +438,23 @@ class LMStudioClient:
             )
             result = ChatResult()
             tool_acc: dict[int, dict[str, Any]] = {}
+            finished = threading.Event()
             try:
                 with requests.post(
                     url,
                     json=payload,
                     stream=True,
                     timeout=(CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
-                    headers={"Accept": "text/event-stream", "User-Agent": USER_AGENT},
+                    headers=self._headers({"Accept": "text/event-stream"}),
                 ) as response:
+                    if abort is not None:
+                        # Stop must work during prefill too, when LM Studio sends nothing for
+                        # minutes: closing the socket makes it drop the request at its next
+                        # batch (measured: a 75 s prefill stopped ~20 s after the abort).
+                        threading.Thread(
+                            target=self._close_on_abort, args=(response, abort, finished),
+                            name="kiwibro-stream-watch", daemon=True,
+                        ).start()
                     if response.status_code != 200:
                         body = self._read_body(response)
                         raise classify_http_error(response.status_code, body)
@@ -455,12 +486,16 @@ class LMStudioClient:
                         self._consume_chunk(chunk, result, tool_acc, on_delta, on_reasoning, on_rewrite)
                     if abort is not None and abort.is_set():
                         raise TurnAborted()
-            except requests.ConnectionError as exc:
-                raise LMStudioError("connection", self._connection_message(base)) from exc
-            except requests.Timeout as exc:
-                raise LMStudioError("timeout", "LM Studio stopped responding. Try again.") from exc
             except requests.RequestException as exc:
+                if abort is not None and abort.is_set():
+                    raise TurnAborted() from exc  # our own watcher closed the connection
+                if isinstance(exc, requests.ConnectionError):
+                    raise LMStudioError("connection", self._connection_message(base)) from exc
+                if isinstance(exc, requests.Timeout):
+                    raise LMStudioError("timeout", "LM Studio stopped responding. Try again.") from exc
                 raise LMStudioError("stream", "The connection to LM Studio was interrupted.") from exc
+            finally:
+                finished.set()
             result.tool_calls = self._finish_tool_calls(tool_acc)
             return result
 
@@ -473,6 +508,62 @@ class LMStudioClient:
             result = attempt(False)
             result.tools_disabled = True
             return result
+
+    def prefill(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        extra: Mapping[str, Any] | None = None,
+        abort: threading.Event | None = None,
+    ) -> None:
+        """Process a prompt and stop at its first token (KV-cache warm-up).
+
+        LM Studio sends nothing while it prefills, so an abort flag checked per stream
+        line would wait minutes; a watcher shuts the socket down instead, which ends
+        the request mid-prefill."""
+        base = self.base_url()
+        payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
+        finished = threading.Event()
+        try:
+            with requests.post(
+                f"{base}/v1/chat/completions", json=payload, stream=True,
+                timeout=(CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+                headers=self._headers({"Accept": "text/event-stream"}),
+            ) as response:
+                if abort is not None:
+                    threading.Thread(
+                        target=self._close_on_abort, args=(response, abort, finished),
+                        name="kiwibro-prefill-watch", daemon=True,
+                    ).start()
+                if response.status_code != 200:
+                    raise classify_http_error(response.status_code, self._read_body(response))
+                for raw_line in response.iter_lines(decode_unicode=False):
+                    if raw_line and raw_line.startswith(b"data:"):
+                        break  # the first token: the whole prompt is in the cache now
+        except requests.RequestException as exc:
+            if abort is not None and abort.is_set():
+                raise TurnAborted() from exc
+            raise LMStudioError("connection", self._connection_message(base)) from exc
+        finally:
+            finished.set()
+        if abort is not None and abort.is_set():
+            raise TurnAborted()
+
+    @staticmethod
+    def _close_on_abort(response: requests.Response, abort: threading.Event, finished: threading.Event) -> None:
+        """Shut the socket down once ``abort`` is set: the reading thread wakes with EOF or an
+        error and closes the response itself (closing it from here races its read)."""
+        while not finished.wait(0.2):
+            if abort.is_set():
+                sock = _socket_of(response)
+                if sock is not None:  # unknown layout: the abort is seen at the next line instead
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                return
 
     @staticmethod
     def _read_body(response: requests.Response) -> str:
@@ -587,6 +678,7 @@ class LMStudioClient:
         retries: int = 1,
         response_format: dict[str, Any] | None = None,
         extra: Mapping[str, Any] | None = None,
+        abort: threading.Event | None = None,
     ) -> Completion:
         base = self.base_url()
         url = f"{base}/v1/chat/completions"
@@ -595,6 +687,17 @@ class LMStudioClient:
             # they never think. Reasoning tokens cost as much as answer tokens on a
             # laptop, and an all-reasoning answer would come back as the content.
             extra = NO_THINKING
+        if abort is not None and response_format is None:
+            # Cancellable background work (memory extraction) streams, so an abort can
+            # close the connection mid-prefill; raises TurnAborted when it does.
+            streamed = self.stream_chat(
+                model=model, messages=messages, temperature=temperature, max_tokens=max_tokens,
+                abort=abort, extra=extra,
+            )
+            return Completion(
+                text=streamed.content or streamed.reasoning or "", usage=streamed.usage,
+                finish_reason=streamed.finish_reason,
+            )
         payload = self._payload(
             model, messages, None, temperature, max_tokens, stream=False,
             response_format=response_format, extra=extra,
@@ -606,7 +709,7 @@ class LMStudioClient:
                     url,
                     json=payload,
                     timeout=(CONNECT_TIMEOUT, read_timeout),
-                    headers={"User-Agent": USER_AGENT},
+                    headers=self._headers(),
                 )
             except requests.ConnectionError as exc:
                 last_error = LMStudioError("connection", self._connection_message(base))
@@ -660,7 +763,9 @@ class LMStudioClient:
         retries: int = 1,
         response_format: dict[str, Any] | None = None,
         extra: Mapping[str, Any] | None = None,
+        abort: threading.Event | None = None,
     ) -> Any:
+        """JSON from a utility call, or None. With ``abort``, TurnAborted propagates."""
         try:
             completion = self.complete(
                 model=model,
@@ -671,6 +776,7 @@ class LMStudioClient:
                 retries=retries,
                 response_format=response_format,
                 extra=extra,
+                **({"abort": abort} if abort is not None else {}),
             )
         except LMStudioError as exc:
             log.debug("complete_json failed: %s", exc.message)
@@ -695,7 +801,7 @@ class LMStudioClient:
         try:
             response = requests.get(
                 f"{self.base_url()}/api/v1/models", timeout=(CONNECT_TIMEOUT, 5),
-                headers={"User-Agent": USER_AGENT},
+                headers=self._headers(),
             )
             payload = response.json() if response.status_code == 200 else None
         except Exception:  # metadata is optional: never fail the model list over it
@@ -709,7 +815,7 @@ class LMStudioClient:
             try:
                 response = requests.get(
                     f"{base}{path}", timeout=(CONNECT_TIMEOUT, 15),
-                    headers={"User-Agent": USER_AGENT},
+                    headers=self._headers(),
                 )
             except requests.RequestException as exc:
                 raise LMStudioError("connection", self._connection_message(base)) from exc
@@ -792,7 +898,7 @@ class LMStudioClient:
                 f"{base}/v1/embeddings",
                 json={"model": model, "input": texts},
                 timeout=(CONNECT_TIMEOUT, read_timeout),
-                headers={"User-Agent": USER_AGENT},
+                headers=self._headers(),
             )
         except requests.ConnectionError as exc:
             raise LMStudioError("connection", self._connection_message(base)) from exc
@@ -813,7 +919,9 @@ class LMStudioClient:
         )
         return [[float(v) for v in d.get("embedding") or []] for d in ordered]
 
-    def _load_api_call(self, action: str, model: str, context_length: int | None = None) -> bool:
+    def _load_api_call(
+        self, action: str, model: str, context_length: int | None = None, parallel: int | None = None
+    ) -> bool:
         """LM Studio's v1 load control: ``POST /api/v1/models/load|unload``.
 
         ``load`` takes ``{"model", "context_length"?}`` and answers
@@ -827,6 +935,8 @@ class LMStudioClient:
             body: dict[str, Any] = {"model": model}
             if context_length:
                 body["context_length"] = int(context_length)
+            if parallel:
+                body["parallel"] = int(parallel)  # honoured by LM Studio 0.4 though undocumented
         else:
             with self._lock:
                 body = {"instance_id": self._instances.get(model, model)}
@@ -835,7 +945,7 @@ class LMStudioClient:
                 f"{self.base_url()}/api/v1/models/{action}",
                 json=body,
                 timeout=(CONNECT_TIMEOUT, 180),
-                headers={"User-Agent": USER_AGENT},
+                headers=self._headers(),
             )
         except requests.RequestException:
             return False
@@ -860,9 +970,9 @@ class LMStudioClient:
         self.clear_cache()
         return True
 
-    def load_model(self, model: str, context_length: int | None = None) -> bool:
+    def load_model(self, model: str, context_length: int | None = None, parallel: int | None = None) -> bool:
         """Best-effort explicit load; False means rely on LM Studio JIT loading."""
-        return self._load_api_call("load", model, context_length)
+        return self._load_api_call("load", model, context_length, parallel)
 
     def loaded_instance(self, model: str) -> str | None:
         """Instance id LM Studio assigned when this client loaded ``model``."""

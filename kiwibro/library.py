@@ -1521,6 +1521,13 @@ def page_output(library: Library, name: str, result: Any, limit_chars: int) -> A
     except Exception:  # paging is an optimisation; the inline output still works
         log.warning("could not stash long %s output", name, exc_info=True)
         return result
+    meta = dict(getattr(result, "meta", None) or {})
+    meta["paged"] = {"handle": stored["handle"], "chunks": stored["chunks"], "chars": len(content)}
+    return replace(result, content=excerpt(content, stored, limit_chars), meta=meta)
+
+
+def excerpt(content: str, stored: dict[str, Any], limit_chars: int) -> str:
+    """Head + tail of a stored long text with how to read the rest (``stored``: stash_text's result)."""
     head = content[: int(limit_chars * 0.6)]
     tail = content[-int(limit_chars * 0.25) :]
     if "\n" in head[-300:]:
@@ -1533,9 +1540,7 @@ def page_output(library: Library, name: str, result: Any, limit_chars: int) -> A
         f"({stored['chunks']} chunks). Continue reading: doc_read(document=\"{handle}\", "
         f"chunk={len(head) // MAX_CHARS + 1}) · search inside: doc_search(query=\"...\", document=\"{handle}\")] …\n"
     )
-    meta = dict(getattr(result, "meta", None) or {})
-    meta["paged"] = {"handle": handle, "chunks": stored["chunks"], "chars": len(content)}
-    return replace(result, content=head + hint + tail, meta=meta)
+    return head + hint + tail
 
 
 # --- tools -------------------------------------------------------------------------

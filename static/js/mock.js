@@ -565,6 +565,10 @@ export class MockBackend {
       return { ok: true, lmstudio: this.lmstudio, current: this.currentModel, models: clone(this.models) };
     }
 
+    if (route === "/api/models/ready" && verb === "GET") {
+      return { ok: true, readiness: { model: this.currentModel, phase: "ready", detail: "", context_length: null } };
+    }
+
     if (route === "/api/models/select" && verb === "POST") {
       const model = this.models.find((entry) => entry.id === body?.id);
       if (!model) throw new MockApiError(400, "unknown_model", "That model isn't available.");

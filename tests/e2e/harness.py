@@ -135,6 +135,9 @@ class AppServer:
                 "KIWIBRO_WORKSPACE": str(self.workspace),
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # Scripted fake-LM answers must go to turns, not to background warm-ups.
+                "KIWIBRO_WARMUP": "0",
+                "KIWIBRO_MEMORY_IDLE_S": "0.5",  # the extraction check polls for 12 s
             }
         )
         if self.lmstudio_url:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
@@ -12,7 +13,7 @@ from typing import Any, Callable
 from . import config, inference, prompts
 from .context import estimate_tokens
 from .db import Database
-from .llm import LMStudioClient, LMStudioError, parse_json_loose
+from .llm import LMStudioClient, LMStudioError, TurnAborted, parse_json_loose
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,9 @@ EXTRACT_WINDOW_MESSAGES = 12
 # reply) is skipped, so one bad window cannot block every later message forever.
 EXTRACT_MAX_ATTEMPTS = 2
 EXTRACT_LINE_CHARS = 1200
+TARGET_MIN_SCORE = 0.5  # share of a reference's key words a memory must contain to be "the one"
+# Facts about the assistant are not memories about the user (small models save "Kiwibro is…").
+_ABOUT_ASSISTANT_RE = re.compile(r"^(?:kiwibro|the assistant|assistant|you are|you're|this ai)\b", re.IGNORECASE)
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -190,6 +194,71 @@ def grounded(content: str, transcript: str) -> bool:
     seen = {word[:5] for word in _folded_words(transcript)}
     hits = sum(1 for term in terms if term[:5] in seen)
     return hits * 3 >= len(terms)
+
+
+def related(a: str, b: str) -> bool:
+    """Whether two statements are about the same thing of the same subject: the user
+    themself ("User lives in Istanbul" / "User moved to Ankara") or the same person or
+    thing of theirs ("User's sister …"). They must share a content word or a concept
+    (where someone lives, what they work at), or read alike."""
+    if _subject(a) != _subject(b):
+        return False
+
+    def words(text: str) -> set[str]:
+        found = {w for w in _folded_words(text) if len(w) > 2 and w not in _RELATED_STOP}
+        return found | {_CONCEPTS[w] for w in found if w in _CONCEPTS}
+
+    return bool(words(a) & words(b)) or similarity(a, b) >= DEDUPE_SEQ_RATIO
+
+
+def _subject(text: str) -> str:
+    """Who a memory is about: "user" for the user themself, "user s sister" for something of
+    theirs (normalize turns "User's" into "user s"), else its first word."""
+    words = normalize(text).split()
+    if words[:2] == ["user", "s"] or words[:1] == ["users"]:
+        rest = words[2:] if words[:2] == ["user", "s"] else words[1:]
+        return "user s " + (rest[0] if rest else "")
+    return words[0] if words else ""
+
+
+# Too common to tie two memories together (unlike the framing verbs, which do: "lives").
+_RELATED_STOP = frozenset("user users the and for with from that this has have had are was his her their its".split())
+# Words that state the same kind of fact differently: "moved to Ankara" replaces "lives in Istanbul".
+_CONCEPTS = {
+    **dict.fromkeys(
+        "live lives living lived moved move moving relocated based resides reside located city hometown".split(),
+        "~residence",
+    ),
+    **dict.fromkeys(
+        "work works working worked job employed employer company occupation profession".split(), "~work"
+    ),
+}
+
+
+def _superseded(content: str, window: list[dict[str, Any]], existing: list[dict[str, Any]]) -> bool:
+    """A learned fact is older news when a related memory changed after the message that
+    stated it (measured: extraction of "I live in Istanbul" finished after the next turn
+    saved "User moved to Ankara", and stored both)."""
+    stated = next(
+        (m.get("created_at") for m in reversed(window)
+         if m.get("role") == "user" and grounded(content, str(m.get("content") or ""))),
+        None,
+    )
+    if not stated:
+        return False
+    return any(
+        (memory.get("updated_at") or "") > stated and related(memory["content"], content)
+        and not is_similar(memory["content"], content)
+        for memory in existing
+    )
+
+
+def _relay(source: Any, target: Any) -> None:
+    """Set ``target`` once ``source`` is set (ends when either is)."""
+    while not target.wait(0.2):
+        if source.is_set():
+            target.set()
+            return
 
 
 def _transcript_cost(message: dict[str, Any]) -> int:
@@ -418,33 +487,40 @@ class MemoryEngine:
         kind: Any = None,
         *,
         source_conversation_id: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, Any]:
         """Insert a memory, merging into a near-duplicate when one exists.
 
         Without an explicit ``kind`` a merge keeps the existing memory's kind. Memories
         saved from a conversation (the remember tool) are model-written, so first-person
-        wording is attributed to the user.
+        wording is attributed to the user. ``origin`` defaults to ``chat`` for those and
+        ``you`` for memories added in the Memory sheet; a memory the user adds again
+        becomes theirs.
         """
         cleaned = validate_content(content)
         if source_conversation_id is not None:
             cleaned = validate_content(third_person(cleaned))
+        origin = origin or ("chat" if source_conversation_id is not None else "you")
         kind_name = validate_kind(kind) if kind else None
         match = self.find_similar(cleaned)
         if match:
+            claim = {"origin": "you"} if origin == "you" and match.get("origin") != "you" else {}
             if len(cleaned) > len(match["content"]):
                 updated = self.db.update_memory(
                     match["id"],
                     content=cleaned,
                     normalized=normalize(cleaned),
                     kind=kind_name or match["kind"],
+                    **claim,
                 )
                 return updated or match
-            return self.db.update_memory(match["id"]) or match
+            return self.db.update_memory(match["id"], **claim) or match
         memory = self.db.create_memory(
             kind_name or "fact",
             cleaned,
             normalize(cleaned),
             source_conversation_id=source_conversation_id,
+            origin=origin,
         )
         self.db.prune_memories(config.MEMORY_CAP, keep=[memory["id"]])
         return memory
@@ -462,6 +538,7 @@ class MemoryEngine:
             cleaned = validate_content(content)
             fields["content"] = cleaned
             fields["normalized"] = normalize(cleaned)
+            fields["origin"] = "you"  # edited by the user: theirs now, never auto-deleted
         if kind is not None:
             fields["kind"] = validate_kind(kind)
         if pinned is not None:
@@ -470,6 +547,61 @@ class MemoryEngine:
 
     def delete(self, memory_id: str) -> bool:
         return self.db.delete_memory(memory_id)
+
+    # --- model-driven edits (the remember tool) ------------------------------
+
+    @staticmethod
+    def about_assistant(content: str) -> bool:
+        return bool(_ABOUT_ASSISTANT_RE.match((content or "").strip()))
+
+    def find_target(self, reference: Any) -> dict[str, Any] | None:
+        """The stored memory a model's reference means: an id, or words from it
+        ("lives in Istanbul"). None unless one memory holds most of its key words."""
+        text = str(reference or "").strip()
+        if not text:
+            return None
+        if re.fullmatch(r"mem_[0-9a-f]{6,}", text):
+            return self.db.get_memory(text)
+        terms = {t for t in _tokens(normalize(text)) if len(t) > 2 and t not in _FRAMING_WORDS}
+        terms = terms or _tokens(normalize(text))
+        best, best_score = None, 0.0
+        for memory in self._search_pool(text):
+            words = _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
+            # Key words decide ("tea" never means "jazz", however alike the sentences
+            # read: "User likes tea" / "User likes jazz" are 0.83 similar); only a
+            # near-duplicate counts on wording alone.
+            score = len(terms & words) / len(terms) if terms else 0.0
+            if is_similar(text, memory.get("content") or ""):
+                score = 1.0
+            if score > best_score:
+                best, best_score = memory, score
+        return best if best_score >= TARGET_MIN_SCORE else None
+
+    def revise(
+        self, reference: Any, content: Any, kind: Any = None, *, source_conversation_id: str | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        """Replace an outdated memory with ``content`` (a fact changed or was corrected).
+        Returns ``(memory, replaced)``; with no matching memory the fact is saved as new."""
+        cleaned = validate_content(third_person(validate_content(content)))
+        match = self.find_target(reference) if str(reference or "").strip() else None
+        if match is None:
+            return self.remember(cleaned, kind, source_conversation_id=source_conversation_id), False
+        updated = self.db.update_memory(
+            match["id"], content=cleaned, normalized=normalize(cleaned),
+            kind=validate_kind(kind) if kind else match["kind"],
+        )
+        return updated or match, True
+
+    def forget(self, reference: Any) -> tuple[dict[str, Any] | None, str]:
+        """Delete the memory ``reference`` means. Returns ``(memory, outcome)`` with outcome
+        ``deleted``, ``pinned`` (kept: only the user unpins) or ``missing``."""
+        match = self.find_target(reference)
+        if match is None:
+            return None, "missing"
+        if match.get("pinned"):
+            return match, "pinned"
+        self.db.delete_memory(match["id"])
+        return match, "deleted"
 
     def delete_all(self) -> int:
         return self.db.delete_all_memories()
@@ -525,8 +657,13 @@ class MemoryEngine:
         except Exception:  # watermark bookkeeping must never fail a turn
             log.warning("could not advance extraction watermark", exc_info=True)
 
-    def extract_and_apply(self, conversation_id: str, model: str | None) -> dict[str, int]:
-        """Synchronous post-turn extraction. Never raises; bounded by a speed-sized budget."""
+    def extract_and_apply(
+        self, conversation_id: str, model: str | None, *, abort: Any = None
+    ) -> dict[str, int]:
+        """Synchronous post-turn extraction. Never raises; bounded by a speed-sized budget.
+
+        ``abort`` (a threading.Event) cancels the model call; the result then has
+        ``cancelled: 1`` and the watermark is untouched, so nothing is skipped."""
         counts = {"added": 0, "updated": 0, "removed": 0}
         settings = self._settings()
         if not settings.get("memory_enabled", True) or not model:
@@ -543,7 +680,9 @@ class MemoryEngine:
                 # Nothing learnable (tool chatter only): advance without an LLM call.
                 self._advance_watermark(conversation_id, through_seq)
                 return counts
-            raw = self._bounded_extract(conversation_id, model, window=window)
+            raw, outcome = self._bounded_extract(conversation_id, model, window=window, abort=abort)
+            if outcome == "cancelled":
+                return {**counts, "cancelled": 1}
             if raw is None:
                 last_seq, failures = self._failed_windows.get(conversation_id, (through_seq, 0))
                 failures = failures + 1 if last_seq == through_seq else 1
@@ -560,17 +699,19 @@ class MemoryEngine:
             if not ops:
                 return counts
             transcript = "\n".join(str(message.get("content") or "") for message in window)
-            return self._apply_ops(ops, transcript)
+            return self._apply_ops(ops, transcript, conversation_id=conversation_id, window=window)
         except Exception:  # extraction must never fail the turn
             log.warning("memory extraction failed for %s", conversation_id, exc_info=True)
             return counts
 
     def _bounded_extract(
-        self, conversation_id: str, model: str, window: list[dict[str, Any]] | None = None
-    ) -> Any:
+        self, conversation_id: str, model: str, window: list[dict[str, Any]] | None = None,
+        *, abort: Any = None,
+    ) -> tuple[Any, str]:
+        """(parsed JSON or None, outcome): outcome is ``ok``, ``failed`` or ``cancelled``."""
         messages = self._extraction_messages(conversation_id, window=window)
         if not messages:
-            return None
+            return None, "failed"
         # Sized from this model's measured speeds: a fixed short timeout means a CPU-only
         # machine never finishes an extraction (the watermark then retries forever).
         budget = inference.SPEEDS.budget_s(
@@ -580,6 +721,11 @@ class MemoryEngine:
             floor=config.MEMORY_EXTRACTION_TIMEOUT_S,
         )
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kiwibro-mem")
+        stop = threading.Event()  # set on timeout too, so LM Studio stops working on it
+        watcher = None
+        if abort is not None:
+            watcher = threading.Thread(target=_relay, args=(abort, stop), daemon=True)
+            watcher.start()
         try:
             future = executor.submit(
                 self.llm.complete_json,
@@ -589,15 +735,20 @@ class MemoryEngine:
                 temperature=0.0,
                 read_timeout=int(budget),
                 retries=0,
+                **({"abort": stop} if abort is not None else {}),
             )
-            return future.result(timeout=budget + 1.0)
+            raw = future.result(timeout=budget + 1.0)
+            return raw, "ok" if raw is not None else "failed"
+        except TurnAborted:
+            return None, "cancelled" if abort is not None and abort.is_set() else "failed"
         except TimeoutError:
             log.info("memory extraction timed out")
-            return None
+            return None, "failed"
         except LMStudioError as exc:
             log.debug("memory extraction LLM error: %s", exc.message)
-            return None
+            return None, "failed"
         finally:
+            stop.set()
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _relevant_existing_memories(self, transcript_lines: list[str]) -> list[dict[str, Any]]:
@@ -669,15 +820,23 @@ class MemoryEngine:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _apply_ops(self, ops: list[dict[str, Any]], transcript: str | None = None) -> dict[str, int]:
-        """Apply extraction ops; with ``transcript``, new facts must be grounded in it."""
+    def _apply_ops(
+        self, ops: list[dict[str, Any]], transcript: str | None = None, *, conversation_id: str | None = None,
+        window: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
+        """Apply extraction ops; with ``transcript``, new facts must be grounded in it, and
+        with the ``window`` of messages a fact a newer memory already changed is not added."""
         counts = {"added": 0, "updated": 0, "removed": 0}
         added_ids: list[str] = []
         existing = self.db.all_memories()
         for op in ops:
-            if op["op"] == "update" and not (op.get("id") and self.db.get_memory(op["id"])):
-                # Small models "update" invented ids (mem_123) when nothing exists yet;
-                # the content is still a new fact.
+            target = self.db.get_memory(op["id"]) if op["op"] == "update" and op.get("id") else None
+            if op["op"] == "update" and (
+                target is None or (op.get("content") and not related(target["content"], str(op["content"])))
+            ):
+                # Small models "update" invented ids (mem_123), or an unrelated memory they
+                # happened to see (measured: "User lives in Istanbul…" overwrote a memory
+                # about something else). The content is still a new fact.
                 op = {**op, "op": "add"}
             try:
                 if op["op"] == "add":
@@ -686,6 +845,11 @@ class MemoryEngine:
                         continue  # a bare name ("Pamuk") is not a self-contained fact
                     if transcript is not None and not grounded(content, transcript):
                         log.info("memory extraction dropped an ungrounded fact: %s", content[:80])
+                        continue
+                    if self.about_assistant(content):
+                        continue
+                    if window and _superseded(content, window, existing):
+                        log.info("memory extraction skipped a fact a newer memory changed: %s", content[:80])
                         continue
                     kind = lenient_kind(op.get("kind"))
                     duplicate = self.find_similar(content, existing)
@@ -699,7 +863,10 @@ class MemoryEngine:
                         )
                         counts["updated"] += 1
                     else:
-                        created = self.db.create_memory(kind or "fact", content, normalize(content))
+                        created = self.db.create_memory(
+                            kind or "fact", content, normalize(content),
+                            source_conversation_id=conversation_id, origin="learned",
+                        )
                         existing.append(created)
                         added_ids.append(created["id"])
                         counts["added"] += 1
@@ -709,6 +876,10 @@ class MemoryEngine:
                     if not memory:
                         continue
                     content = validate_content(op.get("content") or memory["content"])
+                    if self.about_assistant(content) or (
+                        transcript is not None and content != memory["content"] and not grounded(content, transcript)
+                    ):
+                        continue
                     kind = lenient_kind(op.get("kind")) or memory["kind"]
                     self.db.update_memory(
                         memory_id,
@@ -720,8 +891,8 @@ class MemoryEngine:
                 elif op["op"] == "delete":
                     memory_id = op.get("id")
                     memory = self.db.get_memory(memory_id) if memory_id else None
-                    if memory is None or memory.get("pinned"):
-                        continue  # pinned memories are the user's; only the user removes them
+                    if memory is None or memory.get("pinned") or memory.get("origin") == "you":
+                        continue  # pinned and user-added memories are the user's; only they remove them
                     if self.db.delete_memory(memory_id):
                         existing = [m for m in existing if m["id"] != memory_id]
                         counts["removed"] += 1
