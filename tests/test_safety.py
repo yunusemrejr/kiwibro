@@ -332,7 +332,9 @@ def test_command_env_drops_injection_variables(ws: Path) -> None:
     env = command_env(ws, ws, {"LD_PRELOAD": "x.so", "BASH_ENV": "x", "PATH": "/evil", "FOO": "bar", "1BAD": "x"})
     assert env["FOO"] == "bar"
     assert "LD_PRELOAD" not in env and "BASH_ENV" not in env and "1BAD" not in env
-    assert env["PATH"] != "/evil" and env["HOME"] == str(ws)
+    assert env["PATH"] != "/evil" and env["HOME"] == str(safety.tool_home())
+    with safety.applied(safety.Decision("ask", "high"), approved_by_user=True):
+        assert command_env(ws, ws)["HOME"] == str(Path.home())  # approved high-risk: real credentials
 
 
 # --- confinement (real bubblewrap; skipped where unavailable) -----------------

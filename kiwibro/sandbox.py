@@ -76,10 +76,18 @@ _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def command_env(root: Path, workdir: Path, env_vars: dict[str, str] | None = None, **extra: str) -> dict[str, str]:
-    """Minimal environment for workspace commands; HOME is the workspace."""
+    """Minimal environment for workspace commands.
+
+    HOME is Kiwibro's tool home (safety.tool_home) so caches never land in the
+    user's projects; git still sees the user's identity through GIT_CONFIG_GLOBAL.
+    A high-risk command the user explicitly approved gets the real HOME, since it
+    may need the user's own credentials (npm publish, gh, cloud CLIs)."""
+    real_home = Path.home()
+    gitconfig = real_home / ".gitconfig"
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": str(root),
+        "HOME": str(real_home if safety.is_unconfined() else safety.tool_home()),
+        **({"GIT_CONFIG_GLOBAL": str(gitconfig)} if gitconfig.is_file() else {}),
         "PWD": str(workdir),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -94,7 +102,7 @@ def command_env(root: Path, workdir: Path, env_vars: dict[str, str] | None = Non
 
 def shell_argv(command: str, root: Path, workdir: Path) -> list[str]:
     """`bash -c command`, confined to the workspace when a sandbox is available."""
-    return safety.confine([_SHELL, "-c", command], writable=[root], cwd=workdir)
+    return safety.confine([_SHELL, "-c", command], writable=[root, safety.tool_home()], cwd=workdir)
 
 
 def kill_group(proc: subprocess.Popen[str], sig: int = signal.SIGKILL) -> None:

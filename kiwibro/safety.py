@@ -2205,6 +2205,21 @@ def configure(settings: dict[str, Any]) -> None:
         _CONFIG["sandbox"] = settings["sandbox"]
 
 
+def is_unconfined() -> bool:
+    """True inside `applied(...)` for a high-risk call the user explicitly approved."""
+    return _UNCONFINED.get()
+
+
+def tool_home() -> Path:
+    """HOME for confined commands: a Kiwibro-owned folder in the XDG cache, so npm/pip/
+    cargo caches and tool configs never litter the user's projects (and stay warm
+    across runs). Writable inside the sandbox; nothing else in $HOME is."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser()
+    path = base / "kiwibro" / "home"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @contextlib.contextmanager
 def applied(decision: Decision | None, *, approved_by_user: bool = False) -> Iterator[None]:
     """Run a tool call under its decision. A high-risk call that the user
