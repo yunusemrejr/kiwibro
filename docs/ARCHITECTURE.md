@@ -526,7 +526,14 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   `git push`, which needs `~/.ssh`) runs unconfined.
 - **Processes.** `sandbox.run_process` puts each command in its own process group
   and kills the whole group on timeout; stdin is EOF; one env builder drops
-  code-injection variables (`LD_PRELOAD`, `GIT_EXTERNAL_DIFF`, …).
+  code-injection variables (`LD_PRELOAD`, `GIT_EXTERNAL_DIFF`, …) and sets HOME to
+  `safety.tool_home()` (`~/.cache/kiwibro/home`, writable in the sandbox) with
+  `GIT_CONFIG_GLOBAL` pointing at the user's `~/.gitconfig`; a user-approved
+  high-risk command gets the real HOME.
+- **Failure loops.** After 3 failed tool calls in a row the result carries a
+  coaching line; after 6 the agent refuses further calls this turn
+  (`prompts.TOOLS_PAUSED`) so the model answers instead of guessing until the
+  round limit. Refusing keeps the tool list, and so the KV-cached prefix, intact.
 - **Paths.** Every file-tool path is resolved and must stay inside the workspace;
   a conversation can bind its own folder (`workspaces.py`, schema v3), and the
   model may switch folders on its own only to a folder the user's message names.

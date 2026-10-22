@@ -51,12 +51,16 @@ local models.
   *autonomous* never waits and refuses risky steps with reasons the model can act on.
   Critical actions (wiping home, `sudo`, start-up-file writes, credential
   exfiltration) are always refused. Graded per-turn breakers escalate mass deletes and
-  edits; a duplicate-call loop guard and all-or-nothing patches remain.
+  edits; after 3 failed tool calls in a row the model is coached to change approach and
+  after 6 its tools pause for the turn (measured live: a 16-round path-guessing loop on a
+  4B model dropped to 6 rounds); a duplicate-call loop guard and all-or-nothing patches remain.
 - **Command sandbox.** `run_command`, terminal sessions and `run_python`/`run_javascript`
   run in bubblewrap inside a systemd scope: read-only root, writable workspace (snippets:
   scratch only, no network), private `/tmp`, own PID namespace, credentials and session
-  bus hidden, memory/task caps, whole process group killed on timeout. Feature-detected
-  and self-tested; `sandbox` setting auto / strict (no network) / off.
+  bus hidden, memory/task caps, whole process group killed on timeout. Commands use a
+  Kiwibro-owned HOME (`~/.cache/kiwibro/home`) so caches never land in your projects, while
+  git keeps your identity. Feature-detected and self-tested; `sandbox` setting auto /
+  strict (no network) / off.
 - **Staying on task.** A directive ledger built from your messages (no extra model calls)
   carries the goal, constraints, standing choices and overridden instructions into each
   turn; after real work the model gets one transient checklist to verify its result.
