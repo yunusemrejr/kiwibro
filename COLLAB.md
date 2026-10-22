@@ -433,6 +433,16 @@ staged in the shared index when that commit ran. Content is exactly as validated
 - SSE event names/shapes are contract-tested by `tests/e2e/` — keep
   `meta` first and `done` last; additive fields only.
 - DB schema is forward-migrated in `kiwibro/db.py` (`_MIGRATIONS`).
+- **Self-update (2026-10-22, Claude Code session — launcher/memory lane):** the running server
+  re-executes itself ~20 s after source edits settle, once idle, if the tree compiles and imports
+  (`kiwibro/selfupdate.py`). Your edits in this checkout therefore reach the user's live app on
+  their own: keep the tree importable between saves. `GET /api/version` = cheap
+  `{code_version, busy, update_pending, update_blocked, pid}`.
+- **Message 0 is minimal** (`prompts.SYSTEM_PROMPT` + `TOOLS_BLOCK` ≈ 1.6k chars). Put new
+  situational instructions in `kiwibro/guidance.py` `SNIPPETS` (picked per turn into the
+  context note), not in message 0. Facts the user states are saved by `MemoryEngine.capture`
+  (`kiwibro/autofacts.py`) before each reply; SSE `memory {added, updated, removed}` is now
+  emitted by turns.
 
 ## Plan for the 2.0 tool/efficiency work (`01a1608a`)
 

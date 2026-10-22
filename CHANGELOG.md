@@ -8,11 +8,11 @@ All notable changes to Kiwibro are documented here.
 
 - **Self-updating server** (`selfupdate.py`). The server keeps a content fingerprint of
   the code it serves (`code_version` in `/health` and the new cheap `GET /api/version`).
-  A watcher notices changes on disk, waits for them to settle (15 s), checks that the
+  A watcher notices changes on disk, waits for them to settle (20 s), checks that the
   new code compiles and imports, and re-executes the server in place once no reply or
   memory extraction is running. Broken code is never switched to (`update_blocked`).
-  Open windows poll `/api/version` and reload onto the new code, keeping an unsent
-  draft. The launcher compares the fingerprint too and replaces a stale idle server
+  Open windows poll `/api/version` and reload when the page assets changed
+  (`ui_version`), keeping an unsent draft; a backend-only update needs no reload. The launcher compares the fingerprint too and replaces a stale idle server
   before opening the window.
 - **Kiwibro in system monitors.** The launcher runs the server in its own systemd user
   scope, `app-kiwibro.scope`, through an interpreter link named `kiwibro`, so the process
@@ -21,9 +21,29 @@ All notable changes to Kiwibro are documented here.
   hand, the server still renames itself (`prctl`).
 - **Restart / Quit** actions on the app icon and `kiwibro [--restart | --quit | --server]`
   on the command line (`install.sh` links it into `~/.local/bin`).
+- **Memory saved by code, not left to the model** (`autofacts.py`, `MemoryEngine.capture`).
+  Before every reply, high-precision patterns store what the user just stated about
+  themselves (name, place, job, OS, editor, reply language, preferences, projects,
+  "remember …" / "forget …"), so it is known on the very next turn even when a small
+  model never calls `remember` (the UI shows the memory chip). Questions, hypotheticals,
+  reported speech, roleplay and code are never read as facts. Single-valued facts
+  (name, location, editor…) are rewritten in place by a later statement.
+- **Minimal, adaptive prompt** (`guidance.py`). Message 0 shrank from ~4.8k to ~1.6k
+  characters (~900 fewer tokens to prefill on every cold start) and stays byte-stable
+  for the KV cache. How to research, code, compute, use the desktop, render charts,
+  handle memory or attachments is chosen per turn by code from the message and the
+  turn plan, and rides in the context note only when it applies; a greeting gets none.
+
+### Changed
+
+- Memory injection is relevance-gated: pinned memories and the profile (name, reply
+  language) always, other memories only when they share a word with the message; only
+  matched memories count as used.
 
 ### Fixed
 
+- The per-turn context note is reserved before compaction decides, so memory and
+  guidance can no longer push a small-context prompt past the window.
 - A server re-executing itself could not bind its port again: Werkzeug leaves the
   listening socket inheritable. Inherited descriptors are closed before `execv`.
 - The page and static assets are always revalidated (`Cache-Control: no-cache`), so an

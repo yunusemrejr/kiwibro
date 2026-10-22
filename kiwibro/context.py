@@ -474,7 +474,10 @@ class ContextEngine:
         ctx_len, model_info = self.inventory(model)
         budget = compute_budget(ctx_len, int(settings.get("max_output_tokens") or config.DEFAULT_MAX_OUTPUT_TOKENS))
         budget = max(512, budget - max(0, int(reserve_tokens)))
-        trigger = int(budget * COMPACT_TRIGGER)
+        # The per-turn note (memory, guidance, directives) is added after compaction; reserve
+        # its tokens up front so it cannot push a small-context prompt over the window.
+        room = max(512, budget - (estimate_tokens(turn_context) if turn_context.strip() else 0))
+        trigger = int(room * COMPACT_TRIGGER)
         history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
         messages = build_llm_messages(
             combine_system_prompt(system_prompt, conversation["summary"]), history
@@ -520,7 +523,7 @@ class ContextEngine:
                     raw = candidate_raw
                     trimmed = True
 
-            while self._used(raw, model) > budget and len(history) > MIN_KEEP_MESSAGES:
+            while self._used(raw, model) > room and len(history) > MIN_KEEP_MESSAGES:
                 keep = max(MIN_KEEP_MESSAGES, len(history) // 2)
                 shorter = self._truncate(history, keep)
                 if len(shorter) >= len(history):  # only the kept request is left to cut

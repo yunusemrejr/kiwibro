@@ -112,7 +112,8 @@ def _remember(env: Env, said: str, **args):
 
 
 def test_remember_saves_what_the_user_said(env: Env):
-    result = _remember(env, "I live in Istanbul", content="User lives in Istanbul")
+    # Lower case: memory capture (autofacts) only reads capitalised places, so the tool saves it.
+    result = _remember(env, "i live in istanbul", content="User lives in Istanbul")
     assert result["ok"] is True
     (memory,) = env.svc.db.list_memories()
     assert memory["content"] == "User lives in Istanbul" and memory["origin"] == "chat"
@@ -140,7 +141,8 @@ def test_remember_forget_removes_the_memory_but_keeps_pinned_ones(env: Env):
     plain = env.svc.memory.remember("User drinks oat milk")
     pinned = env.svc.memory.remember("User's cat is called Pamuk")
     env.svc.memory.update(pinned["id"], pinned=True)
-    assert _remember(env, "forget the oat milk thing", content="oat milk", action="forget")["ok"] is True
+    # Not "forget …": memory capture would delete it before the tool runs.
+    assert _remember(env, "drop the oat milk thing", content="oat milk", action="forget")["ok"] is True
     assert env.svc.db.get_memory(plain["id"]) is None
     assert _remember(env, "forget my cat Pamuk", content="cat Pamuk", action="forget")["ok"] is False
     assert env.svc.db.get_memory(pinned["id"]) is not None
@@ -355,3 +357,43 @@ def test_an_older_single_fact_loses_to_a_later_one_in_the_same_batch(env: Env):
         "\n".join(m["content"] for m in window), conversation_id=conversation["id"], window=window,
     )
     assert [m["content"] for m in env.svc.db.list_memories()] == ["User moved to Ankara"]
+
+
+# --- memory capture: facts saved by code before the reply ------------------------------
+
+
+def test_stated_facts_are_saved_before_the_reply_without_a_tool_call(env: Env):
+    env.fake.stream_script = [ChatResult(content="Nice to meet you, Yunus!")]
+    events, _raw = chat_events(env, "Hi! My name is Yunus and I'm on Ubuntu.")
+    memory_events = [payload for event, payload in events if event == "memory"]
+    assert memory_events == [{"added": 2, "updated": 0, "removed": 0}]
+    contents = sorted(m["content"] for m in env.svc.db.list_memories())
+    assert contents == ["User's name is Yunus.", "User's operating system is Ubuntu."]
+    assert {m["origin"] for m in env.svc.db.list_memories()} == {"learned"}
+    # The profile rides along on the next turn even when the message shares no word with it.
+    env.fake.stream_script = [ChatResult(content="Sure.")]
+    chat_events(env, "Tell me a joke")
+    turn_note = env.fake.stream_calls[-1]["messages"][-1]["content"]
+    assert "User's name is Yunus." in turn_note
+    assert "operating system" not in turn_note  # not relevant to this message
+
+
+def test_a_later_statement_replaces_the_slot(env: Env):
+    env.fake.stream_script = [ChatResult(content="Noted.")]
+    chat_events(env, "I live in Berlin.")
+    env.fake.stream_script = [ChatResult(content="Noted.")]
+    events, _raw = chat_events(env, "Actually I moved, I live in Istanbul now.")
+    assert [p for e, p in events if e == "memory"] == [{"added": 0, "updated": 1, "removed": 0}]
+    assert [m["content"] for m in env.svc.db.list_memories()] == ["User lives in Istanbul."]
+    env.fake.stream_script = [ChatResult(content="Done.")]
+    events, _raw = chat_events(env, "Forget that I live in Istanbul.")
+    assert [p for e, p in events if e == "memory"] == [{"added": 0, "updated": 0, "removed": 1}]
+    assert env.svc.db.list_memories() == []
+
+
+def test_capture_respects_memory_off(env: Env):
+    env.settings_patch({"memory_enabled": False})
+    env.fake.stream_script = [ChatResult(content="Hello Yunus.")]
+    events, _raw = chat_events(env, "My name is Yunus.")
+    assert not [p for e, p in events if e == "memory"]
+    assert env.svc.db.list_memories() == []

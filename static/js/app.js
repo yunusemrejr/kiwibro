@@ -179,7 +179,7 @@ async function boot() {
     await restoreConversation();
     restoreReloadDraft();
     focusComposerSoon();
-    if (data.health?.code_version) codeVersion = data.health.code_version;
+    if (data.health?.ui_version) uiVersion = data.health.ui_version;
   } catch (error) {
     state.booted = false;
     state.unreachable = true;
@@ -1382,9 +1382,10 @@ async function reconnect() {
 }
 
 /* Self-update: the server re-executes itself on new code once it is idle (and the
-   launcher restarts a stale one). Reload onto it, keeping an unsent draft. */
+   launcher restarts a stale one). When the page assets changed, reload onto them,
+   keeping an unsent draft; a backend-only update needs no reload. */
 const RELOAD_DRAFT_KEY = "kiwibro.reloadDraft";
-let codeVersion = null;
+let uiVersion = null;
 
 async function checkForUpdate() {
   if (IS_MOCK || document.hidden || !state.booted) return;
@@ -1394,13 +1395,13 @@ async function checkForUpdate() {
   } catch {
     return; // restarting or offline: the next poll sees the new version
   }
-  const next = info?.code_version;
+  const next = info?.ui_version;
   if (!next) return;
-  if (!codeVersion) {
-    codeVersion = next;
+  if (!uiVersion) {
+    uiVersion = next;
     return;
   }
-  if (next === codeVersion || state.streaming) return;
+  if (next === uiVersion || state.streaming) return;
   try {
     if (els.input.value.trim()) sessionStorage.setItem(RELOAD_DRAFT_KEY, els.input.value);
   } catch {

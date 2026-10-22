@@ -24,14 +24,16 @@ the current server image started (Unix seconds, renewed by a self-update).
 Cheap poll (never calls LM Studio): which code this process serves.
 ```json
 {"ok": true, "version": "2.2.0", "started_at": 1761000000, "pid": 4242, "busy": false,
- "code_version": "a8a52b7b0cad72fd", "update_pending": false, "update_blocked": false}
+ "code_version": "a8a52b7b0cad72fd", "ui_version": "3f0c9e2a71d4b6e8", "update_pending": false,
+ "update_blocked": false}
 ```
 `code_version` is the content fingerprint of the served source (`kiwibro/selfupdate.py`;
 `null` when not started through `app.py`). `update_pending`: the code on disk differs;
 the server restarts onto it once `busy` (a reply or memory extraction running) is false.
 `update_blocked`: the new code failed to compile/import, so the server stays on the
-current version. Open windows reload when `code_version` changes; the launcher replaces
-a stale idle server.
+current version. `ui_version` fingerprints only the page assets (templates, static): open
+windows reload when it changes, not for backend-only updates. The launcher replaces a
+stale idle server.
 
 ### `GET /api/bootstrap`
 Aggregate for first paint.

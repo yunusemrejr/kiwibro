@@ -137,6 +137,7 @@ def _runtime_status(svc: Any) -> dict[str, Any]:
         "pid": os.getpid(),
         "busy": agent.active_turns() > 0 or bool(getattr(agent, "_extracting", None)),
         "code_version": None,
+        "ui_version": None,
         "update_pending": False,
     }
     updater = current_app.extensions.get("kiwibro_updater")

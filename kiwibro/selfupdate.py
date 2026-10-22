@@ -9,8 +9,8 @@ Two pieces close that gap:
   idle server before opening the window.
 * ``Updater`` watches the tree from inside the server. Once the code has changed, stayed
   quiet for ``settle_s`` and the new code imports cleanly, it re-executes the server in
-  place the moment no reply is running. Open windows see the new ``code_version`` and
-  reload themselves.
+  place the moment no reply is running. Open windows reload themselves when the page
+  assets changed (``ui_version``); a backend-only update needs no reload.
 
 Stdlib only: the launcher runs this file as a script (``python3 kiwibro/selfupdate.py
 fingerprint <root>``) without importing the package or its dependencies.
@@ -34,15 +34,16 @@ log = logging.getLogger(__name__)
 # change without making a running server stale.
 _ROOT_FILES = ("app.py", "requirements.txt")
 _TREES = ("kiwibro", "templates", "static")
+_UI_TREES = ("templates", "static")  # what an open page has loaded
 _SUFFIXES = {
     ".py", ".html", ".js", ".mjs", ".css", ".json", ".svg", ".png", ".ico", ".woff2", ".txt",
 }
 
 
-def source_files(root: Path) -> list[Path]:
+def source_files(root: Path, *, ui_only: bool = False) -> list[Path]:
     root = Path(root)
-    files = [root / name for name in _ROOT_FILES if (root / name).is_file()]
-    for tree in _TREES:
+    files = [] if ui_only else [root / name for name in _ROOT_FILES if (root / name).is_file()]
+    for tree in _UI_TREES if ui_only else _TREES:
         base = root / tree
         if not base.is_dir():
             continue
@@ -66,11 +67,11 @@ def stat_signature(root: Path) -> tuple:
     return tuple(sig)
 
 
-def fingerprint(root: Path) -> str:
-    """Content hash of the served source; equal trees give equal fingerprints."""
+def fingerprint(root: Path, *, ui_only: bool = False) -> str:
+    """Content hash of the served source (or only the page assets); equal trees, equal hashes."""
     root = Path(root)
     digest = hashlib.sha256()
-    for path in source_files(root):
+    for path in source_files(root, ui_only=ui_only):
         try:
             data = path.read_bytes()
         except OSError:
@@ -121,7 +122,7 @@ class Updater:
         busy_fn: Callable[[], bool],
         *,
         poll_s: float = 3.0,
-        settle_s: float = 15.0,
+        settle_s: float = 20.0,
         exec_fn: Callable[[list[str]], None] | None = None,
         preflight_fn: Callable[[Path], tuple[bool, str]] | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -134,6 +135,8 @@ class Updater:
         self._preflight = preflight_fn or preflight
         self._clock = clock
         self.code_version = fingerprint(self.root)
+        # Open pages reload only when this changes: a backend-only update needs no reload.
+        self.ui_version = fingerprint(self.root, ui_only=True)
         self._signature = stat_signature(self.root)
         self._changed_at: float | None = None
         self._disk_version = self.code_version
@@ -150,6 +153,7 @@ class Updater:
     def status(self) -> dict:
         return {
             "code_version": self.code_version,
+            "ui_version": self.ui_version,
             "update_pending": self.update_pending,
             "update_blocked": self._failed_version is not None
             and self._failed_version == self._disk_version,

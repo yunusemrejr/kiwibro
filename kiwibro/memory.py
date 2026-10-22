@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import config, inference, prompts
+from . import autofacts, config, inference, prompts
 from .context import estimate_tokens
 from .db import Database
 from .llm import LMStudioClient, LMStudioError, TurnAborted, parse_json_loose
@@ -106,6 +106,19 @@ def validate_content(text: Any) -> str:
     if len(content) > MAX_CONTENT:
         content = content[:MAX_CONTENT].rstrip()
     return content
+
+
+# Single-valued facts every turn benefits from, kept in the canonical wording autofacts writes.
+PROFILE_SLOTS = ("name", "reply_language")
+_PROFILE_PREFIXES = tuple(autofacts.slot_prefix(slot) for slot in PROFILE_SLOTS)
+
+
+def is_profile(memory: dict[str, Any]) -> bool:
+    return str(memory.get("content") or "").startswith(_PROFILE_PREFIXES)
+
+
+def _memory_tokens(memory: dict[str, Any]) -> set[str]:
+    return _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
 
 
 _FIRST_PERSON_RE = re.compile(r"^(i|i'm|i've|i'd|i'll|my|me|we|our)\b", re.IGNORECASE)
@@ -352,16 +365,33 @@ class MemoryEngine:
         # FTS query is an OR over query tokens, so common words match many
         # rows; coverage scoring below separates true matches from noise.)
         add(self.db.pinned_memories(8))
+        add(self._profile())
         if (query or "").strip():
             add(self._search_pool(query))
         add(self.db.recently_used_memories(8))
-        result = self._rank(candidates, query)[:limit]
-        if result:
+        # Every injected line costs prefill on a small model: beyond the pinned memories and
+        # the profile, only memories that share a word with the message ride along.
+        query_tokens = _tokens(normalize(query or ""))
+        relevant = [m for m in candidates if query_tokens & _memory_tokens(m)]
+        relevant_ids = {m["id"] for m in relevant}
+        kept = [m for m in candidates if m.get("pinned") or is_profile(m) or m["id"] in relevant_ids]
+        result = self._rank(kept, query)[:limit]
+        # Only a memory that matched counts as used; counting every injected one made the
+        # same memories win forever (use_count feeds the ranking).
+        used = [m["id"] for m in result if m["id"] in relevant_ids]
+        if used:
             try:
-                self.db.mark_memories_used([memory["id"] for memory in result])
+                self.db.mark_memories_used(used)
             except Exception:  # pragma: no cover - defensive
                 log.warning("could not mark memories as used", exc_info=True)
         return result
+
+    def _profile(self) -> list[dict[str, Any]]:
+        """Who the user is and how to reply: useful on every turn (see PROFILE_SLOTS)."""
+        try:
+            return [m for m in self.db.all_memories() if is_profile(m)][: len(PROFILE_SLOTS)]
+        except Exception:  # pragma: no cover - defensive
+            return []
 
     @staticmethod
     def _rank(memories: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
@@ -373,8 +403,8 @@ class MemoryEngine:
         """
         query_tokens = _tokens(normalize(query or ""))
 
-        def score(memory: dict[str, Any]) -> tuple[int, float, float, int, str]:
-            tokens = _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
+        def score(memory: dict[str, Any]) -> tuple[int, int, float, float, int, str]:
+            tokens = _memory_tokens(memory)
             if query_tokens and tokens:
                 matched = len(query_tokens & tokens)
                 coverage = matched / len(query_tokens)
@@ -383,7 +413,8 @@ class MemoryEngine:
                 coverage = jaccard_score = 0.0
             uses = min(int(memory.get("use_count") or 0), 50)
             recency = memory.get("last_used_at") or memory.get("updated_at") or ""
-            return (1 if memory.get("pinned") else 0, coverage, jaccard_score, uses, recency)
+            return (1 if memory.get("pinned") else 0, 1 if is_profile(memory) else 0, coverage, jaccard_score, uses,
+                    recency)
 
         return sorted(memories, key=score, reverse=True)
 
@@ -545,6 +576,49 @@ class MemoryEngine:
         )
         self.db.prune_memories(config.MEMORY_CAP, keep=[memory["id"]])
         return memory
+
+    def capture(self, message: str, *, conversation_id: str | None = None) -> dict[str, int]:
+        """Save what the user just said about themselves, before the reply (no model call).
+
+        A small local model often never calls ``remember``, and LLM extraction runs only
+        once the user is idle, so the facts autofacts reads with high-precision patterns
+        are stored right away and are in memory for the very next turn. A single-valued
+        fact (name, location, editor, reply language…) replaces the one already held for
+        its slot: the later statement wins. Returns ``{added, updated, removed}``.
+        """
+        counts = {"added": 0, "updated": 0, "removed": 0}
+        for fact in autofacts.extract(message):
+            try:
+                if fact.forget:
+                    _memory, outcome = self.forget(fact.content)
+                    counts["removed"] += outcome == "deleted"
+                    continue
+                replaced = self._replace_slot(fact) if fact.slot else None
+                if replaced is not None:
+                    counts["updated"] += replaced
+                    continue
+                before = self.db.count_memories()
+                self.remember(fact.content, fact.kind, source_conversation_id=conversation_id, origin="learned")
+                counts["added" if self.db.count_memories() > before else "updated"] += 1
+            except ValueError:
+                continue
+        return counts
+
+    def _replace_slot(self, fact: autofacts.Fact) -> bool | None:
+        """Point the slot's existing memory at the new value: True when it changed, False when
+        it already said that, None when nothing is held for the slot yet."""
+        prefix = autofacts.slot_prefix(fact.slot or "")
+        held = [m for m in self.db.all_memories() if str(m.get("content") or "").startswith(prefix)]
+        if not held:
+            return None
+        keep, extra = held[0], held[1:]
+        changed = normalize(keep["content"]) != normalize(fact.content)
+        if changed:
+            self.db.update_memory(keep["id"], content=fact.content, normalized=normalize(fact.content), kind=fact.kind)
+        for memory in extra:  # one value per slot
+            if not memory.get("pinned"):
+                self.db.delete_memory(memory["id"])
+        return changed
 
     def update(
         self,

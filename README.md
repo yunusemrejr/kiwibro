@@ -120,8 +120,8 @@ feels like a native Ubuntu application. No root required.
 
 **Always the newest code.** Closing the window leaves the local server running, so it
 updates itself: when the code on disk changes (for example after `git pull`) and no
-reply is running, the server restarts onto the new version within ~20 s and any open
-window reloads (an unsent draft is kept). Code that does not import is never switched
+reply is running, the server restarts onto the new version within ~25 s, and an open
+window reloads when the page itself changed (an unsent draft is kept). Code that does not import is never switched
 to; the server keeps the working version and says so. Launching Kiwibro also replaces a
 stale idle server before the window opens.
 

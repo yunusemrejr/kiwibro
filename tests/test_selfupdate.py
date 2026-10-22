@@ -37,7 +37,12 @@ def test_fingerprint_follows_served_source_only(tmp_path: Path) -> None:
     os.utime(root / "app.py")  # touched, same content
     assert selfupdate.fingerprint(root) == base
 
+    ui = selfupdate.fingerprint(root, ui_only=True)
+    (root / "kiwibro" / "core.py").write_text("X = 9\n")  # backend only: the page needs no reload
+    assert selfupdate.fingerprint(root, ui_only=True) == ui
+    (root / "kiwibro" / "core.py").write_text("X = 1\n")
     (root / "static" / "js" / "app.js").write_text("let a = 2;\n")
+    assert selfupdate.fingerprint(root, ui_only=True) != ui
     changed = selfupdate.fingerprint(root)
     assert changed != base
     (root / "static" / "js" / "app.js").write_text("let a = 1;\n")
@@ -151,6 +156,7 @@ def test_version_endpoint_reports_running_code(env) -> None:
     env.app.extensions["kiwibro_updater"] = updater
     data = client.get("/api/version").get_json()
     assert data["code_version"] == updater.code_version
+    assert data["ui_version"] == selfupdate.fingerprint(REPO, ui_only=True) != updater.code_version
     assert data["update_pending"] is False
     health = client.get("/health").get_json()
     assert health["code_version"] == updater.code_version

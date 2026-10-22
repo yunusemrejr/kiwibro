@@ -42,6 +42,22 @@ Nothing is ever deleted by compaction. Compaction only changes what is
 
 ## Durable memory (`kiwibro/memory.py`)
 
+- **Code saves first, the model is the backup** (`kiwibro/autofacts.py`,
+  `MemoryEngine.capture`). Before every reply, high-precision patterns read what the
+  user just stated about themselves (name, location, hometown, job, employer, OS,
+  editor, reply / native language, favourites, preferences, projects, "remember …",
+  "forget …") and store it at once (origin `learned`, SSE `memory`), so the next turn
+  already knows it even when the model never calls `remember`. Questions,
+  hypotheticals ("if I…"), reported speech ("my friend said…"), roleplay and code
+  never yield a fact. Single-valued facts have a slot with a canonical wording
+  ("User lives in …"): a later statement rewrites that memory instead of adding a
+  contradicting one. LLM extraction still runs when the user is idle, for what
+  patterns cannot read.
+- **What rides along each turn.** Pinned memories and the profile (name, preferred
+  reply language) always; every other memory only when it shares a word with the
+  message — the 8 recently used ones are no longer injected regardless of relevance.
+  Only memories that matched count as used, so `use_count` no longer rewards whatever
+  happened to be injected.
 - **Extraction watermark**: `extracted_through_seq` advances only after a
   successful extraction response, so a timed-out small model retries next
   turn instead of silently skipping facts. The extraction timeout is sized

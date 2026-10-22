@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    checkpoints, config, delegate, directives, guard, inference, library, plan, prompts, research, safety, toolcall, tools,
-    workspaces,
+    checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
+    toolcall, tools, workspaces,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -531,6 +531,7 @@ class AgentManager:
         turn.reserve = estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) if tool_list else 0
         self._page_long_message(turn, user_message, model)
         turn.plan = self._plan_for(turn, settings)
+        captured = self._capture_memory(turn, settings)
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
@@ -544,6 +545,8 @@ class AgentManager:
             self._emit_context(turn, prepared)
         if turn.plan is not None:  # after meta, which is always the first event
             turn.emit("plan", {"steps": turn.plan.statuses()})
+        if any(captured.values()):
+            turn.emit("memory", captured)
         self._raise_if_aborted(turn)
 
         if self.readiness is not None:
@@ -1092,6 +1095,16 @@ class AgentManager:
         self.db.update_message(user_message["id"], meta=meta)
         log.info("turn %s: %s-char message stored as %s", turn.conversation_id, len(text), stored["handle"])
 
+    def _capture_memory(self, turn: Turn, settings: dict[str, Any]) -> dict[str, int]:
+        """Facts the user just stated, saved by code before the reply (memory.capture)."""
+        if not settings.get("memory_enabled", True):
+            return {"added": 0, "updated": 0, "removed": 0}
+        try:
+            return self.memory.capture(turn.message, conversation_id=turn.conversation_id)
+        except Exception:  # memory must never break a turn
+            log.warning("turn %s: memory capture failed", turn.conversation_id, exc_info=True)
+            return {"added": 0, "updated": 0, "removed": 0}
+
     def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
         memory_block, _memories = self.memory.build_block(
@@ -1102,7 +1115,18 @@ class AgentManager:
             max_tokens=self.context.memory_cap_for(turn.model) if turn.model else 800,
         )
         plan_note = turn.plan.note() if turn.plan is not None else ""
-        blocks = [inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id), plan_note]
+        steps = turn.plan.steps if turn.plan is not None else []
+        guidance_note = guidance.note(guidance.select(
+            turn.message,
+            tools=bool(settings.get("agent_enabled", True)),
+            attachments=bool(turn.attachments),
+            plan_kinds=[step.kind for step in steps],
+            plan_steps=len(steps),
+        ))
+        blocks = [
+            inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id), plan_note,
+            guidance_note,
+        ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
 
