@@ -606,13 +606,15 @@ a file name, or a place alone. No model call is involved.
   call cut off by the cap (`finish_reason: length`) is refused instead of run, since
   repaired JSON would save a truncated file.
 - **Thinking budget.** A request that should act (a planned tool step is open, or tool
-  results are in) may stream 6,000 characters of reasoning before it does; past that it
+  results are in) may stream 4,000 characters of reasoning before it does; past that it
   is cut and retried once with thinking off and `prompts.ACT_NOW` naming the next step.
   Later rounds think again. Seen live: `spark-x2.6-4b` drafted the same file in its
   thinking for 20 minutes (29,500 characters, the call written out inside the
-  reasoning) and never called `write_file`. Good rounds measured 150–3,500 characters.
-  Switching thinking off re-prefills the prompt once for this model (47 s for a 1.6k-token
-  prompt; a `/no_think` soft switch is ignored), still far cheaper than an unbounded think.
+  reasoning) and never called `write_file`. 30 acting rounds measured a median of 440
+  characters (p90 1,640, max 3,540). Switching thinking off re-prefills the prompt once for
+  this model (47 s for 1.6k tokens, 190 s for a 6k-token chat; a `/no_think` soft switch is
+  ignored), still far cheaper than an unbounded think. Live: cut after ~5 min, file
+  written 6 min later, instead of 20+ min and no file.
 - **Greetings need no tools.** For "hi" or "thanks" tool calls are refused with a
   one-line reason (small models otherwise read files or the task board to say hello).
 

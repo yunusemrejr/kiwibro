@@ -43,7 +43,7 @@ looping on its own words.
   of regenerating everything; the stored reply is what the user saw. Deliberation
   loops are still cleared and redone.
 - **Thinking has a budget when it is time to act.** With a planned tool step open, or
-  after tool results, a request may think 6,000 characters; past that it is retried once
+  after tool results, a request may think 4,000 characters; past that it is retried once
   with thinking off and told the exact next step. Live, a 4B model had drafted the same
   file in its thinking for 20 minutes without ever calling `write_file`.
 - **Switching models frees memory.** The model Kiwibro loaded for the previous
@@ -58,8 +58,8 @@ looping on its own words.
 ### Fixed
 
 - A write the user explicitly placed on the Desktop asked for approval and then failed
-  with "path is outside the workspace" even when approved (live: 16 minutes, no file).
-  Now: 6 minutes, file written, no prompt.
+  with "path is outside the workspace" even when approved (live, `spark-x2.6-4b` with
+  thinking on: 16 minutes, no file). Now: 6–12 minutes, file written, no prompt.
 - A tool call cut off by the reply limit (`finish_reason: length`) was repaired and run,
   saving a truncated file; it is now refused and redone.
 - Compaction during a long tool turn could summarise the user's own request away (and

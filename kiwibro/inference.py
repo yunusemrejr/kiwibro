@@ -372,12 +372,13 @@ class Overthinking(Exception):
 
 
 # Reasoning a request may stream before it acts, when acting is what is left (a planned
-# tool step, or a round after tool results). Good rounds measured live think 150-3,500
-# characters; a 4B model once drafted the same file in its thinking for 20 minutes
-# (29,500 characters) and never made the call. Past the budget the request is retried
-# with thinking off: one re-prefill (the switch renders at the top of the template:
-# measured 47 s for a 1.6k-token prompt) instead of an unbounded think.
-THINK_BUDGET_CHARS = 6000
+# tool step, or a round after tool results). 30 acting rounds measured live thought a
+# median 440 characters (p90 1,640, max 3,540); a 4B model once drafted the same file in
+# its thinking for 20 minutes (29,500 characters) and never made the call. Past the
+# budget the request is retried with thinking off: one re-prefill (the switch renders at
+# the top of the template: 47 s for 1.6k tokens, 190 s for a 6k-token chat) instead of
+# an unbounded think.
+THINK_BUDGET_CHARS = 4000
 
 
 # Anti-repetition sampling for the one request that continues a collapsed reply (LM Studio

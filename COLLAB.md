@@ -654,4 +654,5 @@ search pacing (near-repeat refusal, 3/5-round budget); repetition loops cut at t
 copy and *continued*; compaction never drops the current request; readiness unloads
 the model it loaded for a previous selection. Suite: 766+ passed (only the known
 `example.com` DNS test fails here). Live (`spark-x2.6-4b`, Think on): the Desktop-doc
-request went from 968 s + failed write to 362 s with the file written and no prompt.
+request went from 968 s + failed write to 362–729 s with the file written and no prompt
+(the slower run overthought the write round: cut by the thinking budget, then acted).
