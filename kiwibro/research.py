@@ -22,6 +22,10 @@ MAX_QUERIES = 4
 MAX_URLS = 5
 MAX_WORKERS = 4
 EVIDENCE_PAGE_CAP = 2500
+NO_RESULTS = (
+    "No relevant web results were found. Search again with fewer, more specific keywords "
+    "(names, versions, error text), or answer from what you know and say it is unverified."
+)
 
 
 def multi_search(
@@ -96,7 +100,7 @@ def fetch_pages(
 def format_search_results(results: list[dict[str, str]]) -> str:
     """Numbered result list (title, URL, snippet) for tool output."""
     if not results:
-        return "No web results were found."
+        return NO_RESULTS
     lines: list[str] = []
     for index, result in enumerate(results, start=1):
         lines.append(f"[{index}] {result.get('title', '')}\n{result.get('url', '')}")
@@ -138,7 +142,7 @@ def web_research(
     max_results = max(1, min(int(max_results or 6), 8))
     results = dedupe_results(rerank_results(query, engine.web_search(query, max_results)))
     if not results:
-        return {"query": query, "results": [], "pages": [], "evidence": "No web results were found."}
+        return {"query": query, "results": [], "pages": [], "evidence": NO_RESULTS}
     top_urls = [result["url"] for result in results[:depth] if result.get("url")]
     fetched = fetch_pages(engine, top_urls, max_chars=EVIDENCE_PAGE_CAP)
     evidence = (

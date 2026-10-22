@@ -752,11 +752,11 @@ def test_search_provider_cooldown_skips_rate_limited_provider(monkeypatch: pytes
 
     def working(query, limit):
         calls.append("working")
-        return [{"title": "Result", "url": "https://example.com", "snippet": "text"}]
+        return [{"title": f"Result {query}", "url": "https://example.com", "snippet": "text"}]
 
     monkeypatch.setattr(search_module, "PROVIDERS", (("brave", rate_limited), ("wikipedia", working)))
-    assert engine.web_search("one", 3)[0]["title"] == "Result"
-    assert engine.web_search("two", 3)[0]["title"] == "Result"
+    assert engine.web_search("one", 3)[0]["title"] == "Result one"
+    assert engine.web_search("two", 3)[0]["title"] == "Result two"
     assert calls == ["limited", "working", "working"]
 
 
@@ -793,7 +793,7 @@ def test_search_chain_cache_and_snippet_enrichment(monkeypatch: pytest.MonkeyPat
 
     def provider_two(query, limit):
         calls.append("two")
-        return [{"title": "Result", "url": "https://example.com", "snippet": ""}]
+        return [{"title": "Kiwi result", "url": "https://example.com", "snippet": ""}]
 
     monkeypatch.setattr(search_module, "PROVIDERS", (("one", provider_one), ("two", provider_two)))
     monkeypatch.setattr(engine, "fetch_snippet", lambda url: "A real description.")
@@ -802,6 +802,98 @@ def test_search_chain_cache_and_snippet_enrichment(monkeypatch: pytest.MonkeyPat
     assert calls == ["one", "two"]
     assert first[0]["snippet"] == "A real description."
     assert second == first
+
+
+YAHOO_HTML = """<html><body>
+<div class="dd algo algo-sr"><div class="compTitle">
+<a href="https://r.search.yahoo.com/_ylt=x/RV=2/RE=1/RO=10/RU=https%3a%2f%2fstackoverflow.com%2fquestions%2f1%2freverse-a-vec/RK=2/RS=y-">
+<h3 class="title"><span>Reverse a Vec in Rust - Stack Overflow</span></h3></a></div>
+<div class="compText"><p>Use <b>iter().rev()</b> or reverse() on a Vec.</p></div></div>
+<div class="dd algo algo-sr"><div class="compTitle">
+<a aria-label="Vec in std::vec - Rust" href="https://r.search.yahoo.com/_ylt=x/RU=https%3a%2f%2fdoc.rust-lang.org%2fstd%2fvec%2f/RK=2/RS=z-">
+<h3><span>doc.rust-lang.org · std · vec</span> Vec in std::vec - Rust</h3></a></div>
+<div class="compText"><p>A contiguous growable array type.</p></div></div>
+</body></html>"""
+
+
+def test_yahoo_parser_unwraps_links_and_retries_server_errors(monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import search as search_module
+
+    hosts: list[str] = []
+
+    def fake_get(url, **kwargs):
+        hosts.append(url)
+        return FakeResponse("", 500) if len(hosts) == 1 else FakeResponse(YAHOO_HTML)
+
+    monkeypatch.setattr(search_module, "_get", fake_get)
+    results = search_module.yahoo_search("reverse a vec in rust", 5)
+    assert len(hosts) == 2 and hosts[0] != hosts[1]
+    assert results[0] == {
+        "title": "Reverse a Vec in Rust - Stack Overflow",
+        "url": "https://stackoverflow.com/questions/1/reverse-a-vec",
+        "snippet": "Use iter().rev() or reverse() on a Vec.",
+    }
+    # The breadcrumb layout takes its clean title from the link's aria-label.
+    assert results[1]["title"] == "Vec in std::vec - Rust"
+    assert results[1]["url"] == "https://doc.rust-lang.org/std/vec/"
+
+
+def test_relevance_filter_drops_off_topic_results():
+    from kiwibro import search as search_module
+
+    query = "how to reverse a list in rust"
+    on_topic = {"title": "Reverse a list, in Rust", "url": "https://x.org/a", "snippet": ""}
+    stemmed = {"title": "Reversing lists", "url": "https://x.org/rust-guide", "snippet": ""}
+    off_topic = {"title": "Rust Belt", "url": "https://en.wikipedia.org/wiki/Rust_Belt", "snippet": "A region."}
+    kept = search_module.filter_relevant(query, [on_topic, stemmed, off_topic])
+    assert kept == [on_topic, stemmed]
+    # Loose fallback indexes need a closer match than real web engines.
+    partial = {"title": "Reverse in Rust", "url": "https://x.org/b", "snippet": ""}
+    assert search_module.filter_relevant("reverse list rust iterator vec", [partial]) == [partial]
+    assert search_module.filter_relevant("reverse list rust iterator vec", [partial], strict=True) == []
+    # A query of only stopwords keeps everything.
+    assert search_module.filter_relevant("how to", [off_topic]) == [off_topic]
+
+
+def test_search_tier_runs_in_parallel_and_skips_later_tiers(monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    from kiwibro import search as search_module
+
+    started: list[str] = []
+    both_started = threading.Barrier(2, timeout=5)
+
+    def provider(name, results):
+        def run(query, limit):
+            started.append(name)
+            if name in ("yahoo", "brave"):
+                both_started.wait()  # deadlocks unless the tier runs concurrently
+            return results
+
+        return run
+
+    hit = [{"title": f"Kiwi bird {n}", "url": f"https://example.com/{n}", "snippet": "kiwi"} for n in range(3)]
+    junk = [{"title": "Unrelated page", "url": "https://example.com/junk", "snippet": "nothing"}]
+    monkeypatch.setattr(
+        search_module,
+        "PROVIDERS",
+        (
+            ("yahoo", provider("yahoo", hit)),
+            ("brave", provider("brave", junk)),
+            ("wikipedia", provider("wikipedia", hit)),
+        ),
+    )
+    results = SearchEngine().web_search("kiwi bird", 5)
+    assert [result["url"] for result in results] == [item["url"] for item in hit]
+    assert "wikipedia" not in started
+
+
+def test_search_returns_nothing_rather_than_junk(monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import search as search_module
+
+    junk = [{"title": "Rust Belt", "url": "https://en.wikipedia.org/wiki/Rust_Belt", "snippet": "A US region."}]
+    monkeypatch.setattr(search_module, "PROVIDERS", (("wikipedia", lambda q, n: junk),))
+    assert SearchEngine().web_search("how to reverse a list in rust", 5) == []
 
 
 def test_ssrf_guard_rejects_local_targets():

@@ -10,8 +10,9 @@ import socket
 import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -35,6 +36,26 @@ FETCH_MAX_BYTES = 2 * 1024 * 1024
 META_MAX_BYTES = 512 * 1024
 MAX_REDIRECTS = 5
 TEXT_TYPES = ("text/html", "application/xhtml", "text/plain", "text/markdown", "application/json")
+
+
+try:  # lxml parses result pages several times faster; html.parser is the fallback
+    import lxml  # noqa: F401
+
+    HTML_PARSER = "lxml"
+except ImportError:  # pragma: no cover - depends on the install
+    HTML_PARSER = "html.parser"
+
+_local = threading.local()
+
+
+def _session() -> requests.Session:
+    """One keep-alive session per thread, so repeat requests skip the TCP/TLS handshake."""
+    session = getattr(_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        _local.session = session
+    return session
 
 
 class SearchError(Exception):
@@ -90,7 +111,7 @@ def assert_public_host(hostname: str) -> None:
 def _strip_html(text: str) -> str:
     if not text:
         return ""
-    return re.sub(r"\s+", " ", BeautifulSoup(text, "html.parser").get_text(" ", strip=True)).strip()
+    return re.sub(r"\s+", " ", BeautifulSoup(text, HTML_PARSER).get_text(" ", strip=True)).strip()
 
 
 def _clean(text: str, limit: int = 500) -> str:
@@ -120,15 +141,66 @@ def _decode_bing_url(href: str) -> str:
     return decoded if decoded.startswith(("http://", "https://")) else href
 
 
+def _decode_yahoo_url(href: str) -> str:
+    """Yahoo wraps result links in r.search.yahoo.com/.../RU=<quoted url>/RK=...; unwrap them."""
+    match = re.search(r"/RU=([^/]+)/R[KS]=", href or "")
+    if not match:
+        return href
+    decoded = unquote(match.group(1))
+    return decoded if decoded.startswith(("http://", "https://")) else href
+
+
 def _get(url: str, *, timeout: int = PROVIDER_TIMEOUT, params: dict[str, Any] | None = None) -> requests.Response:
-    return requests.get(url, params=params, headers=HEADERS, timeout=(5, timeout))
+    return _session().get(url, params=params, timeout=(4, timeout))
 
 
 def _post(url: str, *, data: dict[str, Any], timeout: int = PROVIDER_TIMEOUT) -> requests.Response:
-    return requests.post(url, data=data, headers=HEADERS, timeout=(5, timeout), allow_redirects=True)
+    return _session().post(url, data=data, timeout=(4, timeout), allow_redirects=True)
 
 
 # --- providers --------------------------------------------------------------
+
+
+YAHOO_HOSTS = ("search.yahoo.com", "uk.search.yahoo.com", "ca.search.yahoo.com", "search.yahoo.com")
+
+
+def yahoo_search(query: str, limit: int) -> list[dict[str, str]]:
+    """Yahoo HTML: div.algo with an h3 title, RU=-wrapped links and .compText snippets."""
+    params = {"p": query, "ei": "UTF-8"}
+    # Yahoo answers roughly a third to a half of requests with a fast (~0.5 s), empty
+    # HTTP 500 at random; retrying across its hosts makes a miss rare and stays cheap.
+    for host in YAHOO_HOSTS:
+        response = _get(f"https://{host}/search", params=params)
+        if response.status_code < 500:
+            break
+    if response.status_code != 200:
+        raise SearchError(f"Yahoo returned HTTP {response.status_code}")
+    soup = BeautifulSoup(response.text, HTML_PARSER)
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in soup.select("div.algo"):
+        link = item.select_one("a[href]")
+        title_el = item.select_one("h3")
+        if link is None or title_el is None:
+            continue
+        url = _decode_yahoo_url(link.get("href", ""))
+        if not url.startswith(("http://", "https://")) or "yahoo.com" in (urlsplit(url).hostname or ""):
+            continue
+        key = normalize_url(url)
+        if key in seen:
+            continue
+        # Newer markup puts a "host · path" breadcrumb inside the h3; the link's
+        # aria-label carries the clean title there.
+        title = _clean(link.get("aria-label") or title_el.get_text(" ", strip=True), 200)
+        snippet_el = item.select_one(".compText")
+        snippet = _clean(snippet_el.get_text(" ", strip=True) if snippet_el else "", 500)
+        if not title:
+            continue
+        seen.add(key)
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
 
 
 def brave_search(query: str, limit: int) -> list[dict[str, str]]:
@@ -136,7 +208,7 @@ def brave_search(query: str, limit: int) -> list[dict[str, str]]:
     response = _get("https://search.brave.com/search", params={"q": query, "source": "web"})
     if response.status_code != 200:
         raise SearchError(f"Brave returned HTTP {response.status_code}")
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, HTML_PARSER)
     results: list[dict[str, str]] = []
     seen: set[str] = set()
     for snippet in soup.select('div.snippet[data-type="web"]'):
@@ -190,7 +262,7 @@ def bing_search(query: str, limit: int) -> list[dict[str, str]]:
         raise SearchError("Bing is not reachable") from exc
     if response.status_code != 200:
         raise SearchError(f"Bing returned HTTP {response.status_code}")
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, HTML_PARSER)
     results: list[dict[str, str]] = []
     for item in soup.select("li.b_algo"):
         link = item.select_one("h2 a[href]")
@@ -225,7 +297,7 @@ def ddg_search(query: str, limit: int) -> list[dict[str, str]]:
     page = response.text.lower()
     if "captcha" in page or "anomaly" in page:
         raise SearchError("DuckDuckGo returned a captcha page")
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, HTML_PARSER)
     results: list[dict[str, str]] = []
     for link in soup.select("a.result-link[href]"):
         url = link.get("href", "")
@@ -294,13 +366,23 @@ def wikipedia_search(query: str, limit: int) -> list[dict[str, str]]:
 
 
 PROVIDERS: tuple[tuple[str, Callable[[str, int], list[dict[str, str]]]], ...] = (
+    ("yahoo", yahoo_search),
     ("brave", brave_search),
     ("bing", bing_search),
     ("ddg", ddg_search),
     ("wikipedia", wikipedia_search),
     ("bing_rss", bing_rss_search),
 )
-PROVIDER_COOLDOWN_S = 30.0
+# Providers in one tier are queried at the same time; the next tier only runs when
+# the earlier ones did not return enough relevant results. Providers missing here
+# (e.g. in tests) each get their own tier, in PROVIDERS order.
+PROVIDER_TIERS = {"yahoo": 0, "brave": 0, "bing": 1, "ddg": 1, "wikipedia": 2, "bing_rss": 2}
+# Fallback indexes rank loosely (Wikipedia matches any word), so they need a closer match.
+STRICT_PROVIDERS = frozenset({"wikipedia", "bing_rss"})
+PROVIDER_COOLDOWN_S = 120.0
+ENRICH_TIMEOUT_S = 5.0
+_BLOCK_MARKERS = ("429", "captcha", "202", "403")
+_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="kiwibro-search")
 FETCH_CACHE_TTL = 300.0
 FETCH_CACHE_MAX = 64
 BROWSE_MAX_LINKS = 40
@@ -322,6 +404,53 @@ def normalize_url(url: str) -> str:
 
 def _query_terms(query: str) -> set[str]:
     return {term.lower() for term in _WORDS.findall(query or "") if len(term) > 2}
+
+
+_STOPWORDS = frozenset(
+    """a an and are as at be by can do does for from has have how i if in is it its me my
+    of on or so than that the their them then there these this to vs was what when where
+    which who why will with you your about into get use using best way ways""".split()
+)
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ing", "ies", "es", "ed", "s"):
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _key_terms(text: str) -> set[str]:
+    """Content words of a query (stopwords dropped, light stemming; numbers kept)."""
+    terms = set()
+    for word in _WORDS.findall((text or "").lower()):
+        if word in _STOPWORDS:
+            continue
+        if len(word) > 1 or word.isdigit():
+            terms.add(_stem(word))
+    return terms
+
+
+def relevance(query: str, result: dict[str, str]) -> float:
+    """Share of the query's content words found in a result's title, snippet or URL."""
+    terms = _key_terms(query)
+    if not terms:
+        return 1.0
+    haystack = _key_terms(
+        " ".join((result.get("title") or "", result.get("snippet") or "", result.get("url") or ""))
+    )
+    return len(terms & haystack) / len(terms)
+
+
+def filter_relevant(query: str, results: list[dict[str, str]], *, strict: bool = False) -> list[dict[str, str]]:
+    """Drop off-topic results: at least 40% of the query's content words must appear
+    (60% for loose fallback indexes), and always at least one."""
+    terms = _key_terms(query)
+    if not terms:
+        return list(results)
+    share = 0.6 if strict else 0.4
+    needed = max(1.0, -(-len(terms) * share // 1)) / len(terms)
+    return [result for result in results if relevance(query, result) >= needed - 1e-9]
 
 
 def rerank_results(query: str, results: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -371,27 +500,7 @@ class SearchEngine:
             cached = self._cache.get(key)
             if cached and time.monotonic() - cached[0] < self._cache_ttl:
                 return [dict(item) for item in cached[1]]
-        results: list[dict[str, str]] = []
-        now = time.monotonic()
-        for name, provider in PROVIDERS:
-            if self._cooldowns.get(name, 0.0) > now:
-                log.info("search provider %s cooling down after a rate limit", name)
-                continue
-            try:
-                results = provider(query, max_results)
-            except (SearchError, requests.RequestException) as exc:
-                message = str(exc).lower()
-                if "429" in message or "captcha" in message:
-                    self._cooldowns[name] = now + PROVIDER_COOLDOWN_S
-                log.info("search provider %s unavailable: %s", name, exc)
-                continue
-            except Exception:  # pragma: no cover - parser drift is non-fatal
-                log.warning("search provider %s failed", name, exc_info=True)
-                continue
-            if results:
-                log.info("search provider %s returned %d results", name, len(results))
-                results = results[:max_results]
-                break
+        results = self._search_providers(query, max_results)
         if results:
             results = self._enrich_snippets(results)
         with self._lock:
@@ -401,23 +510,74 @@ class SearchEngine:
             self._cache[key] = (time.monotonic(), [dict(item) for item in results])
         return [dict(item) for item in results]
 
-    def _enrich_snippets(self, results: list[dict[str, str]], limit: int = 3) -> list[dict[str, str]]:
-        """Fill empty snippets from page metadata (bounded, SSRF-guarded, 4s each)."""
-        filled = 0
-        for result in results:
-            if filled >= limit:
+    def _run_provider(self, name: str, provider: Callable[[str, int], list[dict[str, str]]], query: str, limit: int) -> list[dict[str, str]]:
+        try:
+            results = provider(query, limit)
+        except (SearchError, requests.RequestException) as exc:
+            message = str(exc).lower()
+            if any(marker in message for marker in _BLOCK_MARKERS):
+                self._cooldowns[name] = time.monotonic() + PROVIDER_COOLDOWN_S
+            log.info("search provider %s unavailable: %s", name, exc)
+            return []
+        except Exception:  # pragma: no cover - parser drift is non-fatal
+            log.warning("search provider %s failed", name, exc_info=True)
+            return []
+        relevant = filter_relevant(query, results or [], strict=name in STRICT_PROVIDERS)
+        log.info("search provider %s returned %d results, %d relevant", name, len(results or []), len(relevant))
+        return relevant
+
+    def _search_providers(self, query: str, max_results: int) -> list[dict[str, str]]:
+        """Query providers tier by tier (in parallel within a tier) and keep relevant hits.
+
+        A tier stops waiting as soon as its providers have produced enough relevant
+        results; slower providers in that tier are not awaited.
+        """
+        tiers: dict[int, list[tuple[int, str, Callable[[str, int], list[dict[str, str]]]]]] = {}
+        for index, (name, provider) in enumerate(PROVIDERS):
+            tiers.setdefault(PROVIDER_TIERS.get(name, 100 + index), []).append((index, name, provider))
+        wanted = min(max_results, 3)
+        collected: dict[int, list[dict[str, str]]] = {}
+        merged: list[dict[str, str]] = []
+        for tier in sorted(tiers):
+            now = time.monotonic()
+            futures: dict[Future[list[dict[str, str]]], int] = {}
+            for index, name, provider in tiers[tier]:
+                if self._cooldowns.get(name, 0.0) > now:
+                    log.info("search provider %s cooling down after a block", name)
+                    continue
+                futures[_POOL.submit(self._run_provider, name, provider, query, max_results)] = index
+            pending = set(futures)
+            while pending:
+                done, pending = wait(pending, timeout=PROVIDER_TIMEOUT + 6, return_when=FIRST_COMPLETED)
+                if not done:
+                    break
+                for future in done:
+                    collected[futures[future]] = future.result()
+                if sum(len(items) for items in collected.values()) >= wanted:
+                    break
+            merged = dedupe_results([item for index in sorted(collected) for item in collected[index]])
+            if len(merged) >= wanted:
                 break
-            if result.get("snippet"):
-                continue
+        return merged[:max_results]
+
+    def _enrich_snippets(self, results: list[dict[str, str]], limit: int = 3) -> list[dict[str, str]]:
+        """Fill empty snippets from page metadata, fetched in parallel (bounded, SSRF-guarded)."""
+        empty = [result for result in results if not result.get("snippet")][:limit]
+        if not empty:
+            return results
+
+        def snippet_for(result: dict[str, str]) -> str:
             try:
-                snippet = self.fetch_snippet(result["url"])
-            except (SearchError, requests.RequestException, ValueError):
-                continue
-            except Exception:  # pragma: no cover - enrichment is best effort
-                continue
+                return self.fetch_snippet(result["url"])
+            except Exception:  # enrichment is best effort
+                return ""
+
+        futures = {_POOL.submit(snippet_for, result): result for result in empty}
+        done, _pending = wait(futures, timeout=ENRICH_TIMEOUT_S)
+        for future in done:
+            snippet = future.result()
             if snippet:
-                result["snippet"] = snippet
-                filled += 1
+                futures[future]["snippet"] = snippet
         return results
 
     # --- guarded fetching --------------------------------------------------
@@ -444,10 +604,9 @@ class SearchEngine:
                     raise SearchError("URL has no host.")
                 assert_public_host(parts.hostname)
                 try:
-                    response = requests.get(
+                    response = _session().get(
                         current,
-                        headers=HEADERS,
-                        timeout=(5, read_timeout),
+                        timeout=(4, read_timeout),
                         allow_redirects=False,
                         stream=True,
                     )
@@ -499,7 +658,7 @@ class SearchEngine:
             return ""
         if content_type and "html" not in content_type:
             return ""
-        soup = BeautifulSoup(self._decode(raw, encoding), "html.parser")
+        soup = BeautifulSoup(self._decode(raw, encoding), HTML_PARSER)
         for meta in soup.find_all("meta"):
             name = (meta.get("name") or meta.get("property") or "").lower()
             if name in ("description", "og:description", "twitter:description"):
@@ -536,7 +695,7 @@ class SearchEngine:
             url, read_timeout=15, max_bytes=FETCH_MAX_BYTES
         )
         text = self._decode(raw, encoding)
-        soup = BeautifulSoup(text, "html.parser")
+        soup = BeautifulSoup(text, HTML_PARSER)
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         for tag in soup(
             ["script", "style", "noscript", "nav", "footer", "header", "aside", "form", "svg", "iframe"]
@@ -571,7 +730,7 @@ class SearchEngine:
         final_url, _content_type, encoding, raw = self._guarded_get(
             url, read_timeout=15, max_bytes=FETCH_MAX_BYTES
         )
-        soup = BeautifulSoup(self._decode(raw, encoding), "html.parser")
+        soup = BeautifulSoup(self._decode(raw, encoding), HTML_PARSER)
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         links: list[dict[str, str]] = []
         seen: set[str] = set()

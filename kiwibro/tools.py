@@ -1298,7 +1298,7 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name == "web_search":
         results = ctx.search.web_search(args["query"], args["max_results"])
         if not results:
-            return ToolResult(ok=True, content="No web results were found.", preview="No results", meta={"count": 0})
+            return ToolResult(ok=True, content=research.NO_RESULTS, preview="No results", meta={"count": 0})
         lines = []
         for index, result in enumerate(results, start=1):
             lines.append(f"{index}. {result['title']}\n{result['url']}")
