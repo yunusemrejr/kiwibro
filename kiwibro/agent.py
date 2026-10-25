@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 
 from . import (
     checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
-    toolcall, tools, workspaces,
+    sessions, terms, toolcall, tools, workspaces,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -52,12 +52,20 @@ class ConversationNotFound(Exception):
 _LEADING_NOISE = re.compile(
     r"^(?:(?:please|pls|kindly|hey|hi|hello|ok|okay|so|now|just)\b[\s,]+)+", re.IGNORECASE
 )
+_FILLER_PREFIX = re.compile(
+    r"^(?:there\s+(?:has|have)\s+been|there\s+(?:is|are|was|were)|what(?:'s|\s+is)?\s+"
+    r"(?:happened|happening|going\s+on)(?:\s+(?:yesterday|today|recently|lately|this\s+week"
+    r"|last\s+(?:night|week|month)))?)\s+(?:a\s+|an\s+|the\s+)?",
+    re.IGNORECASE,
+)
 _LEADING_PREPOSITION = re.compile(
-    r"^(?:from|about|regarding|in|on|at|by|for|to)\s+", re.IGNORECASE
+    r"^(?:from|about|regarding|in|on|at|by|for|to|with)\s+", re.IGNORECASE
 )
 _REQUEST_PREFIX = re.compile(
     r"^(?:(?:can|could|would|will)\s+you(?:\s+please)?|i\s+(?:want|need)\s+you\s+to"
-    r"|i'd\s+like\s+you\s+to|i\s+would\s+like\s+you\s+to)\s+",
+    r"|i'd\s+like\s+you\s+to|i\s+would\s+like\s+you\s+to"
+    r"|(?:can|could)(?=\s+(?:search|find|look|write|make|create|help|explain|show|give|check|fix|build"
+    r"|summari[sz]e)\b))\s+",
     re.IGNORECASE,
 )
 _TOOL_PREFIX = re.compile(
@@ -75,6 +83,11 @@ _REPLY_PREFIX = re.compile(
 )
 _TRAILING_STOPWORDS = {
     "a",
+    "about",
+    "into",
+    "lately",
+    "like",
+    "recently",
     "an",
     "and",
     "as",
@@ -129,12 +142,16 @@ def derive_title(message: str) -> str:
             _TOOL_PREFIX,
             _REPLY_PREFIX,
             _SEARCH_PREFIX,
+            _FILLER_PREFIX,
             _LEADING_PREPOSITION,
         ):
             text = pattern.sub("", text).strip()
         if text == before:
             break
     text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    clause = re.split(r"\s*[,;]\s+", text, maxsplit=1)[0]
+    if len(clause.split()) >= 2:
+        text = clause
     text = text.strip("\"'\u201c\u201d\u2018\u2019`.,:;!?()[]{} ")
     if not text:
         return "New chat"
@@ -147,6 +164,35 @@ def derive_title(message: str) -> str:
     if not title:
         return "New chat"
     return title[:1].upper() + title[1:]
+
+
+_SMALL_TALK = frozenset(
+    "good morning afternoon evening night day sup yo hola merhaba selam test testing whats up new chat howdy "
+    "greetings hii hiii heyy there bye".split()
+)
+
+
+def is_small_talk_title(title: str) -> bool:
+    """A title that names no topic ("Hi", "How's it going", "Good morning")."""
+    return not [word for word in terms.content_words(title) if word not in _SMALL_TALK]
+
+
+def retitle_small_talk_chats(db: Database) -> int:
+    """Give auto-titled chats that opened with small talk the title of their first real
+    request (chats from before re-titling existed). Returns how many were renamed."""
+    renamed = 0
+    for conversation in db.list_conversations():
+        if not conversation.get("title_auto") or not is_small_talk_title(conversation.get("title") or ""):
+            continue
+        request = next((
+            m for m in db.list_messages(conversation["id"], limit=40)
+            if m.get("role") == "user" and len(terms.content_words(m.get("content") or "")) >= 3
+        ), None)
+        title = derive_title(request["content"]) if request else ""
+        if title and not is_small_talk_title(title):
+            db.update_conversation(conversation["id"], title=title, touch=False)
+            renamed += 1
+    return renamed
 
 
 def validate_llm_title(text: str | None, *, prompt_text: str = "") -> str | None:
@@ -489,7 +535,7 @@ class AgentManager:
         conversation = self.db.get_conversation(turn.conversation_id)
         if conversation is None:
             raise ConversationNotFound(turn.conversation_id)
-        user_message = self.db.add_message(
+        user_message = self._unanswered_repeat(turn) or self.db.add_message(
             turn.conversation_id, "user", turn.message,
             meta={"attachments": turn.attachments} if turn.attachments else None,
         )
@@ -660,8 +706,7 @@ class AgentManager:
         # the UI refreshes its memory count from /api/bootstrap or /api/memories later).
         self._raise_if_aborted(turn)
         self._drain_steering(turn)
-        if conversation["title_auto"] and conversation["title"] == "New chat":
-            self._maybe_title(turn)
+        self._maybe_title(turn)
         self._insert_usage(turn, model)
         self._start_memory_extraction(turn.conversation_id, model)
         turn.emit(
@@ -1002,7 +1047,7 @@ class AgentManager:
         seen = []
         for item in turn.attachments:
             self._raise_if_aborted(turn)
-            if item.get("kind") in ("image", "video", "audio", "svg"):
+            if item.get("kind") in ("image", "video", "audio", "svg") and "seen" not in item:
                 turn.emit("status", {"phase": "seeing", "label": f"Looking at {item['name']}"})
                 try:
                     item = {**item, "seen": delegate.see_attachment(
@@ -1082,7 +1127,7 @@ class AgentManager:
         _ctx, budget, _info = self.context.budget_for(model)
         limit = max(4000, int((budget - turn.reserve) * USER_MESSAGE_SHARE * 3.6))
         text = turn.message
-        if len(text) <= limit:
+        if len(text) <= limit or (user_message.get("meta") or {}).get("paged"):
             return
         try:
             stored = self._library().stash_text(text, title=derive_title(text) or "Long message", source="chat")
@@ -1124,11 +1169,20 @@ class AgentManager:
             plan_steps=len(steps),
         ))
         blocks = [
-            inference.time_line(), memory_block, _directives_note(self.db, turn.conversation_id), plan_note,
-            guidance_note,
+            inference.time_line(), memory_block, self._earlier_chats_note(turn),
+            _directives_note(self.db, turn.conversation_id), plan_note, guidance_note,
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
+    def _earlier_chats_note(self, turn: Turn) -> str:
+        """Other recent chats, only when the message refers back to one (sessions.py)."""
+        if not sessions.refers_back(turn.message):
+            return ""
+        budget = self.context.budget_for(turn.model)[1] if turn.model else 4096
+        return sessions.recent_note(
+            self.db, turn.conversation_id, turn.message, max_tokens=min(sessions.NOTE_MAX_TOKENS, budget // 10)
+        )
 
     @staticmethod
     def _system_prompt(
@@ -1560,10 +1614,35 @@ class AgentManager:
 
     # --- title -------------------------------------------------------------
 
+    def _unanswered_repeat(self, turn: Turn) -> dict[str, Any] | None:
+        """The chat's last message when it is this same user message, still unanswered.
+
+        Retry (and re-sending after a failed or stopped turn) repeats the text; storing it
+        again showed the model the request twice in a row and searched it twice."""
+        last = self.db.recent_messages(turn.conversation_id, limit=1)
+        if not last or last[0].get("role") != "user":
+            return None
+        message = last[0]
+        if " ".join((message.get("content") or "").split()) != " ".join(turn.message.split()):
+            return None
+        stored = (message.get("meta") or {}).get("attachments") or []
+        if [{k: v for k, v in item.items() if k != "seen"} for item in stored] != (turn.attachments or []):
+            return None
+        turn.attachments = stored  # already looked at: _see_attachments keeps the descriptions
+        return message
+
     def _maybe_title(self, turn: Turn) -> None:
-        """Deterministic title derived from the first user message (no extra LLM call)."""
+        """Deterministic title (no extra LLM call): from the first user message, and again
+        from the first real request when the chat opened with small talk ("Hi")."""
+        conversation = self.db.get_conversation(turn.conversation_id)
+        if conversation is None or not conversation.get("title_auto"):
+            return
+        current = conversation.get("title") or "New chat"
+        if current != "New chat":
+            if not is_small_talk_title(current) or len(terms.content_words(turn.message)) < 3:
+                return
         title = derive_title(turn.message)
-        if not title:
+        if not title or title == current or (current != "New chat" and is_small_talk_title(title)):
             return
         updated = self.db.update_conversation(turn.conversation_id, title=title, touch=False)
         if updated:

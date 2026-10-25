@@ -261,9 +261,15 @@ def test_recall_includes_episodes(env):
     conversation = svc.db.create_conversation()
     svc.db.add_message(conversation["id"], "user", "Remember the harbor gate code is 4815")
     svc.db.add_message(conversation["id"], "assistant", "Noted: 4815")
+    svc.db.add_message(conversation["id"], "user", "And the harbor gate is on pier 9")
+    # Messages still in the working window are already in view: recall leaves them out.
+    items = svc.memory.recall("harbor gate", conversation_id=conversation["id"], limit=4)
+    assert [i for i in items if i["source"] == "episode"] == []
+    svc.db.update_conversation(conversation["id"], summary="Gate details.", summary_through_seq=2, touch=False)
     items = svc.memory.recall("harbor gate code", conversation_id=conversation["id"], limit=4)
     episodes = [i for i in items if i["source"] == "episode"]
     assert episodes and "4815" in episodes[0]["content"]
+    assert all(i["seq"] <= 2 for i in episodes)
 
 
 def test_use_count_increments_on_retrieval(env):

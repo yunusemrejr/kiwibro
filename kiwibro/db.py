@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from . import config
+from . import config, terms
 
 log = logging.getLogger(__name__)
 
@@ -197,8 +197,13 @@ def _message_est_tokens(content: str, tool_calls_json: str | None) -> int:
 
 
 def fts_query(query: str) -> str | None:
-    """Turn a user query into a safe FTS5 MATCH expression (OR of quoted tokens)."""
+    """Turn a user query into a safe FTS5 MATCH expression (OR of quoted tokens).
+
+    Function words are dropped when the query has any other word: in an OR match "the"
+    or "is" makes nearly every message a hit, which filled recall with noise."""
     tokens = [t for t in re.findall(r"[^\W_]+", query or "", flags=re.UNICODE) if len(t) >= 1]
+    meaningful = [t for t in tokens if t.lower() not in terms.STOPWORDS]
+    tokens = meaningful or tokens
     if not tokens:
         return None
     seen: list[str] = []
@@ -346,6 +351,17 @@ class Database:
             result.append(item)
         return result
 
+    def recent_conversations(self, limit: int = 6) -> list[dict[str, Any]]:
+        """The most recently active conversations that have messages, newest first."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.* FROM conversations c WHERE EXISTS "
+                "(SELECT 1 FROM messages m WHERE m.conversation_id = c.id) "
+                "ORDER BY c.updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._conversation(row) for row in rows]
+
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
         allowed = {
             "title", "title_auto", "model", "summary", "summary_through_seq",
@@ -410,6 +426,90 @@ class Database:
                 raise
             row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
         return self._conversation(row) if row else None
+
+    def fork_conversation(
+        self, source_id: str, *, through_seq: int | None = None, title: str | None = None
+    ) -> dict[str, Any] | None:
+        """Copy a conversation's messages up to ``through_seq`` (default all) into a new one, atomically."""
+        now = config.now_iso()
+        new_id = _new_id("c")
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                source = conn.execute("SELECT * FROM conversations WHERE id = ?", (source_id,)).fetchone()
+                if source is None:
+                    conn.execute("ROLLBACK")
+                    return None
+                last_seq = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE conversation_id = ?",
+                    (source_id,),
+                ).fetchone()["seq"]
+                cut = int(last_seq if through_seq is None else through_seq)
+                summary_through = int(source["summary_through_seq"])
+                compacted = summary_through <= cut
+                conn.execute(
+                    "INSERT INTO conversations(id, title, title_auto, model, summary, summary_through_seq, "
+                    "extracted_through_seq, workspace, created_at, updated_at) "
+                    "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_id,
+                        title or f"{source['title']} (fork)",
+                        source["model"],
+                        (source["summary"] or "") if compacted else "",
+                        summary_through if compacted else 0,
+                        min(int(source["extracted_through_seq"]), cut),
+                        source["workspace"],
+                        now,
+                        now,
+                    ),
+                )
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE conversation_id = ? AND seq <= ? ORDER BY seq ASC",
+                    (source_id, cut),
+                ).fetchall()
+                message_rows: list[tuple[Any, ...]] = []
+                fts_rows: list[tuple[str, str, str]] = []
+                for row in rows:
+                    mid = _new_id("m")
+                    message_rows.append((
+                        mid, new_id, row["seq"], row["role"], row["content"], row["reasoning"],
+                        row["tool_calls"], row["tool_call_id"], row["tool_name"], row["model"],
+                        row["tokens"], row["est_tokens"], row["meta"], row["created_at"],
+                    ))
+                    if (row["content"] or "").strip():
+                        fts_rows.append((mid, new_id, row["content"]))
+                conn.executemany(
+                    "INSERT INTO messages(id, conversation_id, seq, role, content, reasoning, "
+                    "tool_calls, tool_call_id, tool_name, model, tokens, est_tokens, meta, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    message_rows,
+                )
+                conn.executemany(
+                    "INSERT INTO messages_fts(message_id, conversation_id, content) VALUES (?, ?, ?)",
+                    fts_rows,
+                )
+                if compacted:
+                    segments = conn.execute(
+                        "SELECT * FROM summary_segments WHERE conversation_id = ? AND through_seq <= ? "
+                        "ORDER BY from_seq ASC",
+                        (source_id, cut),
+                    ).fetchall()
+                    conn.executemany(
+                        "INSERT INTO summary_segments(id, conversation_id, from_seq, through_seq, "
+                        "summary, est_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            (
+                                _new_id("seg"), new_id, seg["from_seq"], seg["through_seq"],
+                                seg["summary"], seg["est_tokens"], seg["created_at"],
+                            )
+                            for seg in segments
+                        ],
+                    )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return self.get_conversation(new_id)
 
     def conversation_message_count(self, conversation_id: str) -> int:
         with self.connect() as conn:
@@ -629,6 +729,30 @@ class Database:
             log.warning("episodic search unavailable: %s", exc)
             return []
         return [self._message(row) for row in rows]
+
+    def search_conversations(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+        """Chats whose messages match ``query``, best match first, with a short snippet of it."""
+        match = fts_query(query)
+        if not match:
+            return []
+        try:
+            with self.connect() as conn:
+                rows = conn.execute(
+                    "SELECT conversation_id, snippet(messages_fts, 2, '', '', '…', 12) AS snippet "
+                    "FROM messages_fts WHERE messages_fts MATCH ? ORDER BY bm25(messages_fts) LIMIT 400",
+                    (match,),
+                ).fetchall()
+        except sqlite3.Error as exc:  # pragma: no cover - defensive (pre-v2 DB)
+            log.warning("conversation search unavailable: %s", exc)
+            return []
+        found: dict[str, str] = {}
+        for row in rows:
+            if row["conversation_id"] not in found:
+                snippet = re.sub(r"\*\*|__|`+|(?<!\S)(?:-{3,}|#{1,6})(?!\S)", " ", row["snippet"] or "")
+                found[row["conversation_id"]] = " ".join(snippet.split())
+                if len(found) >= limit:
+                    break
+        return [{"id": cid, "snippet": snippet} for cid, snippet in found.items()]
 
     def message_token_rows(
         self, conversation_id: str, after_seq: int = 0

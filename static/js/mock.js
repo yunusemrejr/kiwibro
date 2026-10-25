@@ -581,6 +581,16 @@ export class MockBackend {
       return { ok: true, conversations: this._list() };
     }
 
+    if (route === "/api/conversations/search" && verb === "GET") {
+      const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+      const matches = [];
+      for (const conversation of this.conversations) {
+        const hit = q.length >= 2 && conversation.messages.find((m) => (m.content || "").toLowerCase().includes(q));
+        if (hit) matches.push({ id: conversation.id, snippet: hit.content.slice(0, 90) });
+      }
+      return { ok: true, matches };
+    }
+
     if (route === "/api/conversations" && verb === "POST") {
       const conversation = this._createConversation(body?.title || "New chat");
       return {

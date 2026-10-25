@@ -143,6 +143,8 @@ export const api = {
     request("/api/models/context", { method: "POST", body: { id, context_length: contextLength } }),
 
   conversations: () => request("/api/conversations"),
+  searchConversations: (q, { signal } = {}) =>
+    request(`/api/conversations/search?q=${encodeURIComponent(q)}`, { signal }),
   conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),
   patchConversation: (id, patch) =>
     request(`/api/conversations/${encodeURIComponent(id)}`, { method: "PATCH", body: patch }),

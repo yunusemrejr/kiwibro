@@ -13,7 +13,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from . import config
-from .agent import AgentManager
+from .agent import AgentManager, retitle_small_talk_chats
 from .api import bp, error_body
 from .context import ContextEngine
 from .db import Database
@@ -88,6 +88,10 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
 
     db = Database(config.database_path(data_dir))
     db.initialize()
+    try:
+        retitle_small_talk_chats(db)
+    except Exception:  # titles are cosmetic; never block startup
+        logging.getLogger(__name__).warning("could not re-title chats", exc_info=True)
 
     defaults = config.default_settings(
         lmstudio_url=app.config.get("KIWIBRO_LMSTUDIO_URL"),

@@ -1750,6 +1750,8 @@ def _execute_recall(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     for item in items[:limit]:
         if isinstance(item, dict):
             source = str(item.get("source") or item.get("kind") or "memory")
+            if item.get("chat"):
+                source = f"from the chat “{item['chat']}”, {str(item.get('created_at') or '')[:10]}"
             text = str(item.get("content") or item.get("text") or "").strip()
         else:  # pragma: no cover - defensive
             source, text = "memory", str(item)

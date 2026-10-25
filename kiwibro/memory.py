@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import autofacts, config, inference, prompts
+from . import autofacts, config, inference, prompts, terms
 from .context import estimate_tokens
 from .db import Database
 from .llm import LMStudioClient, LMStudioError, TurnAborted, parse_json_loose
@@ -111,14 +111,21 @@ def validate_content(text: Any) -> str:
 # Single-valued facts every turn benefits from, kept in the canonical wording autofacts writes.
 PROFILE_SLOTS = ("name", "reply_language")
 _PROFILE_PREFIXES = tuple(autofacts.slot_prefix(slot) for slot in PROFILE_SLOTS)
+# The user describing themselves in their own words in the Memory sheet ("I am Yunus, a
+# developer from Istanbul…"). Model-written memories never start this way (third_person),
+# and such a note answers "who am I?" or "what's my name?" without sharing a word with it.
+_SELF_DESCRIPTION_RE = re.compile(r"^(?:i\s+am|i['\u2019]m|my\s+name\s+is|call\s+me)\b", re.IGNORECASE)
+SELF_DESCRIPTIONS = 3
 
 
 def is_profile(memory: dict[str, Any]) -> bool:
-    return str(memory.get("content") or "").startswith(_PROFILE_PREFIXES)
+    content = str(memory.get("content") or "")
+    return content.startswith(_PROFILE_PREFIXES) or bool(_SELF_DESCRIPTION_RE.match(content))
 
 
-def _memory_tokens(memory: dict[str, Any]) -> set[str]:
-    return _tokens(memory.get("normalized") or normalize(memory.get("content") or ""))
+def _memory_keys(memory: dict[str, Any]) -> set[str]:
+    """Key terms of a memory (terms.key_terms): what relevance and ranking compare."""
+    return terms.key_terms(memory.get("content") or "")
 
 
 _FIRST_PERSON_RE = re.compile(r"^(i|i'm|i've|i'd|i'll|my|me|we|our)\b", re.IGNORECASE)
@@ -337,10 +344,15 @@ class MemoryEngine:
                     seen.add(memory["id"])
                     pool.append(memory)
 
-        add(self.db.search_memories(query, per_query_limit))
-        tokens = [t for t in _tokens(normalize(query)) if len(t) >= 2]
-        for token in tokens[:4]:
+        # Function words in an OR query only add noise; search the content words, longest
+        # (most specific) first, plus the words of any everyday topic the query names.
+        words = terms.content_words(query)
+        add(self.db.search_memories(" ".join(words) if words else query, per_query_limit))
+        for token in sorted(words, key=len, reverse=True)[:4]:
             add(self.db.search_memories(token, 12))
+        for group in terms.concept_groups(terms.key_terms(query)):
+            for start in range(0, len(group), 12):  # an FTS query keeps 12 words
+                add(self.db.search_memories(" ".join(group[start:start + 12]), 12))
         return pool
 
     def retrieve(self, query: str, limit: int = 12) -> list[dict[str, Any]]:
@@ -370,9 +382,10 @@ class MemoryEngine:
             add(self._search_pool(query))
         add(self.db.recently_used_memories(8))
         # Every injected line costs prefill on a small model: beyond the pinned memories and
-        # the profile, only memories that share a word with the message ride along.
-        query_tokens = _tokens(normalize(query or ""))
-        relevant = [m for m in candidates if query_tokens & _memory_tokens(m)]
+        # the profile, only memories that share a key term (not a function word) with the
+        # message ride along.
+        query_keys = terms.key_terms(query or "")
+        relevant = [m for m in candidates if query_keys & _memory_keys(m)]
         relevant_ids = {m["id"] for m in relevant}
         kept = [m for m in candidates if m.get("pinned") or is_profile(m) or m["id"] in relevant_ids]
         result = self._rank(kept, query)[:limit]
@@ -387,24 +400,28 @@ class MemoryEngine:
         return result
 
     def _profile(self) -> list[dict[str, Any]]:
-        """Who the user is and how to reply: useful on every turn (see PROFILE_SLOTS)."""
+        """Who the user is and how to reply: useful on every turn (PROFILE_SLOTS, plus the
+        user's own self-descriptions)."""
         try:
-            return [m for m in self.db.all_memories() if is_profile(m)][: len(PROFILE_SLOTS)]
+            memories = self.db.all_memories()
         except Exception:  # pragma: no cover - defensive
             return []
+        slots = [m for m in memories if str(m.get("content") or "").startswith(_PROFILE_PREFIXES)]
+        own = [m for m in memories if _SELF_DESCRIPTION_RE.match(str(m.get("content") or ""))]
+        return slots[: len(PROFILE_SLOTS)] + own[:SELF_DESCRIPTIONS]
 
     @staticmethod
     def _rank(memories: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-        """Rank by pinned, then query-token coverage, Jaccard, recency.
+        """Rank by pinned, then key-term coverage, Jaccard, recency.
 
         Coverage (fraction of *query* tokens present) leads because the FTS
         pool is an OR-match: a memory matching every query term must beat a
         newer one matching a single common word.
         """
-        query_tokens = _tokens(normalize(query or ""))
+        query_tokens = terms.key_terms(query or "")
 
         def score(memory: dict[str, Any]) -> tuple[int, int, float, float, int, str]:
-            tokens = _memory_tokens(memory)
+            tokens = _memory_keys(memory)
             if query_tokens and tokens:
                 matched = len(query_tokens & tokens)
                 coverage = matched / len(query_tokens)
@@ -423,7 +440,8 @@ class MemoryEngine:
         lines: list[str] = []
         used = 0
         for memory in memories:
-            line = f"- {memory['content']}"
+            # The user's own first-person notes read as the user's words, never as the assistant's.
+            line = f"- {third_person(memory['content'])}"
             cost = estimate_tokens(line)
             if lines and used + cost > max_tokens:
                 break
@@ -485,22 +503,43 @@ class MemoryEngine:
         search_messages = getattr(self.db, "search_messages", None)
         if callable(search_messages):
             try:
-                episodes = search_messages(query, conversation_id=conversation_id, limit=max(limit, 8))
+                episodes = list(search_messages(query, conversation_id=conversation_id, limit=max(limit, 8) * 2) or [])
+                if conversation_id:
+                    # Messages still verbatim in the window are already in view: returning them
+                    # spends a small model's context on text it has. Older tool results stay
+                    # recallable — the window shows them capped.
+                    conversation = self.db.get_conversation(conversation_id)
+                    if conversation is not None:
+                        in_view_from = int(conversation.get("summary_through_seq") or 0) + 1
+                        episodes = [m for m in episodes
+                                    if int(m.get("seq") or 0) < in_view_from or m.get("role") == "tool"]
+                episodes = episodes[: max(limit, 8)]
+                if conversation_id:
+                    # Then the user's other chats ("what did we decide in the other chat?").
+                    episodes += [
+                        m for m in search_messages(query, limit=max(limit, 8)) or []
+                        if m.get("conversation_id") != conversation_id and m.get("role") != "tool"
+                    ][: max(2, limit // 2)]
             except Exception:  # pragma: no cover - recall must never fail a turn/tool
                 log.warning("episodic search failed", exc_info=True)
                 episodes = []
-            for message in episodes or []:
-                items.append(
-                    {
-                        "source": "episode",
-                        "id": message["id"],
-                        "conversation_id": message.get("conversation_id"),
-                        "seq": message.get("seq"),
-                        "role": message.get("role"),
-                        "content": message.get("content") or "",
-                        "created_at": message.get("created_at"),
-                    }
-                )
+            titles: dict[str, str] = {}
+            for message in episodes:
+                item = {
+                    "source": "episode",
+                    "id": message["id"],
+                    "conversation_id": message.get("conversation_id"),
+                    "seq": message.get("seq"),
+                    "role": message.get("role"),
+                    "content": message.get("content") or "",
+                    "created_at": message.get("created_at"),
+                }
+                other = message.get("conversation_id")
+                if conversation_id and other and other != conversation_id:
+                    if other not in titles:
+                        titles[other] = (self.db.get_conversation(other) or {}).get("title") or "another chat"
+                    item["chat"] = titles[other]
+                items.append(item)
         # Durable facts lead, but reserve up to half the slots for exact
         # episode wording when episodes exist; backfill from either side.
         mem_items = [item for item in items if item["source"] == "memory"]
@@ -822,16 +861,19 @@ class MemoryEngine:
             watcher = threading.Thread(target=_relay, args=(abort, stop), daemon=True)
             watcher.start()
         try:
-            future = executor.submit(
-                self.llm.complete_json,
-                model=model,
-                messages=messages,
-                max_tokens=EXTRACT_MAX_TOKENS,
-                temperature=0.0,
-                read_timeout=int(budget),
-                retries=0,
-                **({"abort": stop} if abort is not None else {}),
-            )
+            try:
+                future = executor.submit(
+                    self.llm.complete_json,
+                    model=model,
+                    messages=messages,
+                    max_tokens=EXTRACT_MAX_TOKENS,
+                    temperature=0.0,
+                    read_timeout=int(budget),
+                    retries=0,
+                    **({"abort": stop} if abort is not None else {}),
+                )
+            except RuntimeError:  # the app is shutting down: not this window's failure
+                return None, "cancelled"
             raw = future.result(timeout=budget + 1.0)
             return raw, "ok" if raw is not None else "failed"
         except TurnAborted:
@@ -847,30 +889,31 @@ class MemoryEngine:
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _relevant_existing_memories(self, transcript_lines: list[str]) -> list[dict[str, Any]]:
-        """Memories the extractor might update/delete for this transcript.
+        """Memories the extractor might update or delete for this transcript: pinned ones,
+        the profile, and those sharing a key term with what the user said.
 
-        Pinned first, then FTS matches against the transcript text, then
-        recently used — deduped and capped. Sending only relevant memories
-        (instead of the latest 40) both improves dedupe decisions and keeps
-        the extraction prompt viable on small-context models.
+        Duplicates of new facts are caught in code (``find_similar``), so unrelated
+        memories stay out: each one cost prefill (up to ~1k tokens per extraction) and
+        invited "updates" of the wrong memory, a mistake small models made live.
         """
+        said = " ".join(line[len("User: "):] for line in transcript_lines if line.startswith("User: "))
+        keys = terms.key_terms(said)
         seen: set[str] = set()
         picked: list[dict[str, Any]] = []
 
-        def add(memories: list[dict[str, Any]]) -> None:
+        def add(memories: list[dict[str, Any]], *, related_only: bool = False) -> None:
             for memory in memories:
                 if len(picked) >= EXTRACT_EXISTING_LIMIT or memory["id"] in seen:
+                    continue
+                if related_only and not keys & _memory_keys(memory):
                     continue
                 seen.add(memory["id"])
                 picked.append(memory)
 
         add(self.db.pinned_memories(8))
-        query = " ".join(transcript_lines)[:600]
-        if query.strip():
-            add(self.db.search_memories(query, 20))
-        add(self.db.recently_used_memories(8))
-        if len(picked) < EXTRACT_EXISTING_LIMIT:
-            add(self.db.all_memories(EXTRACT_EXISTING_LIMIT))
+        add(self._profile())
+        if keys:
+            add(self._rank(self._search_pool(said[:2000]), said), related_only=True)
         return picked
 
     def _extraction_messages(

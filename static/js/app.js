@@ -91,6 +91,7 @@ const state = {
   currentModel: null,
   conversations: [],
   convFilter: "",
+  convMatches: new Map(), // chat id -> snippet of a message that matches the filter
   conversationId: null,
   conversation: null,
   memoriesCount: 0,
@@ -477,7 +478,7 @@ function renderSidebar() {
       if (!q) return true;
       const title = (conversation.title || "").toLowerCase();
       const model = (conversation.model || "").toLowerCase();
-      return title.includes(q) || model.includes(q);
+      return title.includes(q) || model.includes(q) || state.convMatches.has(conversation.id);
     });
   els.convEmpty.textContent = q ? "No matching chats." : "No chats yet.";
   els.convEmpty.hidden = conversations.length > 0;
@@ -529,7 +530,15 @@ function renderSidebar() {
       title: conversation.title,
       "aria-current": conversation.id === state.conversationId ? "page" : "false",
     });
-    open.append(el("span", { class: "conv-title", text: conversation.title || "New chat" }));
+    const snippet = q && !(conversation.title || "").toLowerCase().includes(q) && state.convMatches.get(conversation.id);
+    if (snippet) {
+      open.append(el("span", { class: "conv-text" }, [
+        el("span", { class: "conv-title", text: conversation.title || "New chat" }),
+        el("span", { class: "conv-snippet", text: snippet }),
+      ]));
+    } else {
+      open.append(el("span", { class: "conv-title", text: conversation.title || "New chat" }));
+    }
     if (isStreaming) {
       open.append(
         el("span", {
@@ -783,6 +792,7 @@ async function openConversation(id, { silent = false } = {}) {
     state.conversation = data.conversation || null;
     localStorage.setItem(STORAGE.conversation, id);
     chatView.renderConversation(data.messages, data.conversation);
+    offerRetryIfUnanswered(id, data);
     updateContext(data.context);
     renderSidebar();
     updateComposerState();
@@ -804,6 +814,18 @@ async function openConversation(id, { silent = false } = {}) {
     }
     return false;
   }
+}
+
+// The chat's last message never got a reply (the app quit, or the reply failed before any
+// text): offer Retry. The server reuses that message instead of storing it a second time.
+function offerRetryIfUnanswered(id, data) {
+  const messages = data.messages || [];
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user" || data.busy || backgroundStreams.has(id)) return;
+  if ((last.content || "").startsWith("[Steering note")) return;
+  const attachments = (last.meta?.attachments || []).map(({ path, name }) => ({ path, name }));
+  state.lastSend = { text: last.content || "", attachments };
+  chatView.showError("This message has no reply yet.", { retry: true });
 }
 
 function showEmptyState() {
@@ -901,10 +923,7 @@ async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
     return;
   }
   if (!composerReady()) {
-    toast(
-      !state.lmstudio ? "LM Studio isn't running" : "No model is available",
-      { tone: "error", iconName: "alert" },
-    );
+    toastNotReady();
     return;
   }
 
@@ -1193,10 +1212,20 @@ function stopStreaming() {
   }
 }
 
+function toastNotReady() {
+  toast(!state.lmstudio ? "LM Studio isn't running" : "No model is available", { tone: "error", iconName: "alert" });
+}
+
 function retryLastSend() {
   if (state.streaming) return;
   const { text = "", attachments = [] } = state.lastSend || {};
   if (!text && !attachments.length) return;
+  if (!composerReady()) {
+    // Nothing can be sent yet: keep the way back instead of dropping the Retry.
+    toastNotReady();
+    chatView.showError("This message has no reply yet.", { retry: true });
+    return;
+  }
   chatView.prepareRetry();
   sendMessage(text, { echo: false, attachments });
 }
@@ -1501,6 +1530,35 @@ function initComposer() {
   autosize();
 }
 
+// The sidebar filter also finds chats by what was said in them (server full-text search),
+// a moment after typing stops; titles still filter instantly.
+let convSearchTimer = 0;
+let convSearchAbort = null;
+function searchConversationText(text) {
+  window.clearTimeout(convSearchTimer);
+  convSearchAbort?.abort();
+  const q = text.trim();
+  if (q.length < 2) {
+    if (state.convMatches.size) {
+      state.convMatches = new Map();
+      renderSidebar();
+    }
+    return;
+  }
+  convSearchTimer = window.setTimeout(async () => {
+    const controller = new AbortController();
+    convSearchAbort = controller;
+    try {
+      const data = await api.searchConversations(q, { signal: controller.signal });
+      if (controller.signal.aborted || state.convFilter.trim() !== q) return;
+      state.convMatches = new Map((data.matches || []).map((match) => [match.id, match.snippet || ""]));
+      renderSidebar();
+    } catch (error) {
+      if (error?.name !== "AbortError") state.convMatches = new Map();
+    }
+  }, 220);
+}
+
 function initChrome() {
   els.sidebarToggle.addEventListener("click", toggleSidebar);
   els.brandHome.addEventListener("click", newChat);
@@ -1508,6 +1566,7 @@ function initChrome() {
   els.convSearch?.addEventListener("input", (event) => {
     state.convFilter = event.target.value || "";
     renderSidebar();
+    searchConversationText(state.convFilter);
   });
   els.convSearch?.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && els.convSearch.value) {
@@ -1515,6 +1574,7 @@ function initChrome() {
       event.stopPropagation();
       els.convSearch.value = "";
       state.convFilter = "";
+      searchConversationText("");
       renderSidebar();
     }
   });

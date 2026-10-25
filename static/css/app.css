@@ -592,6 +592,23 @@ p {
   text-overflow: ellipsis;
 }
 
+.conv-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.conv-snippet {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
 .conv-pin {
   width: 11px;
   height: 11px;

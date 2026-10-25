@@ -391,7 +391,8 @@ def test_normalize_model_metadata():
 def test_fts_query_is_sanitised():
     assert fts_query("kiwi bird") == '"kiwi"* OR "bird"*'
     assert fts_query("") is None
-    assert fts_query('quote" and *') == '"quote"* OR "and"'
+    assert fts_query('quote" and *') == '"quote"*'  # function words dropped beside real words
+    assert fts_query("is the") == '"is" OR "the"'  # but kept when nothing else is left
 
 
 def test_parse_json_loose_variants():
@@ -1057,7 +1058,7 @@ def test_derive_title_is_deterministic():
     assert derive_title("Use the web_search tool to search for 'kiwi bird facts'. Then explain.") == "Kiwi bird facts"
     assert derive_title("Create a file called notes.txt with a haiku") == "Create a file called notes.txt"
     assert derive_title("Reply with exactly: Kia ora — hello 👋") == "Kia ora — hello 👋"
-    assert derive_title("please can you write a short poem about kiwis?") == "Write a short poem about"
+    assert derive_title("please can you write a short poem about kiwis?") == "Write a short poem"
     assert derive_title("") == "New chat"
     assert derive_title("  hello   world  ") == "World"
     assert derive_title("One kiwi bird fact and") == "One kiwi bird fact"

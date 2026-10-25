@@ -273,6 +273,15 @@ def list_conversations() -> Response:
     )
 
 
+@bp.get("/api/conversations/search")
+def search_conversations() -> Response:
+    """Chats whose messages mention the query (the sidebar filter also matches titles)."""
+    query = (request.args.get("q") or "").strip()[:200]
+    if len(query) < 2:
+        return jsonify({"ok": True, "matches": []})
+    return jsonify({"ok": True, "matches": services().db.search_conversations(query)})
+
+
 @bp.post("/api/conversations")
 def create_conversation() -> Response:
     svc = services()
@@ -341,7 +350,8 @@ def get_conversation(conversation_id: str) -> Response:
             "oldest_seq": messages[0]["seq"] if messages else None,
         }
         estimate_messages = None  # estimate from the summary window, not the page
-    if before_seq is None and not svc.agent.is_busy(conversation_id):
+    busy = svc.agent.is_busy(conversation_id)
+    if before_seq is None and not busy:
         _prepare_model(svc, conversation_id=conversation_id)  # the next turn re-reads this history
     model = conversation.get("model") or svc.settings_provider().get("model")
     context = (
@@ -373,6 +383,7 @@ def get_conversation(conversation_id: str) -> Response:
                 for message in messages
             ],
             "context": context,
+            "busy": busy,
         }
     )
 
@@ -429,33 +440,19 @@ def fork_conversation(conversation_id: str) -> Response:
     conv = svc.db.get_conversation(conversation_id)
     if conv is None:
         raise ApiError("not_found", "Conversation not found.", 404)
-    data = request.get_json(silent=True) or {}
-    max_seq = data.get("seq")
-    new_title = f"{conv['title']} (fork)"
-    new_conv = svc.db.create_conversation(
-        title=new_title,
-        model=conv.get("model") or svc.settings_provider().get("model"),
-    )
-    messages = svc.db.list_messages(conversation_id)
-    for m in messages:
-        if max_seq is not None:
-            try:
-                if int(m.get("seq", 0)) > int(max_seq):
-                    continue
-            except (ValueError, TypeError):
-                pass
-        svc.db.add_message(
-            conversation_id=new_conv["id"],
-            role=m["role"],
-            content=m.get("content", ""),
-            reasoning=m.get("reasoning", ""),
-            tool_calls=m.get("tool_calls"),
-            tool_call_id=m.get("tool_call_id"),
-            tool_name=m.get("tool_name"),
-            model=m.get("model"),
-            tokens=m.get("tokens"),
-            meta=m.get("meta"),
-        )
+    data = request.get_json(silent=True)
+    through_seq = (data if isinstance(data, dict) else {}).get("seq")
+    if through_seq is not None and (
+        isinstance(through_seq, bool) or not isinstance(through_seq, int) or through_seq < 0
+    ):
+        raise ApiError("bad_request", "seq must be a non-negative integer.", 400)
+    new_conv = svc.db.fork_conversation(conversation_id, through_seq=through_seq)
+    if new_conv is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    if not new_conv.get("model"):
+        model = svc.settings_provider().get("model")
+        if model:
+            new_conv = svc.db.update_conversation(new_conv["id"], touch=False, model=model) or new_conv
     return jsonify({"ok": True, "conversation": _conversation_full(new_conv)}), 201
 
 
