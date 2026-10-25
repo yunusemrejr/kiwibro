@@ -56,6 +56,8 @@ kiwibro/
 │   │   # context & memory
 │   ├── context.py          # token estimation, budgets, compaction
 │   ├── memory.py           # durable memory: extraction, dedupe, retrieval
+│   ├── terms.py            # key terms: stop words, stems, topic tags for matching
+│   ├── sessions.py         # continuity across chats: earlier-chats note, gists
 │   ├── directives.py       # standing-instruction ledger + end-of-turn self-check
 │   ├── prompts.py          # prompt templates
 │   │   # agent & tools
@@ -691,7 +693,9 @@ SQLite at `data_dir/kiwibro.db`, `PRAGMA journal_mode=WAL`, `foreign_keys=ON`,
 ```sql
 conversations(id TEXT PK, title TEXT, title_auto INTEGER DEFAULT 1, model TEXT,
   summary TEXT DEFAULT '', summary_through_seq INTEGER DEFAULT 0,
-  created_at TEXT, updated_at TEXT)
+  extracted_through_seq INTEGER DEFAULT 0 /* v2 */,
+  created_at TEXT, updated_at TEXT, workspace TEXT /* v3 */,
+  private INTEGER DEFAULT 0 /* v5: never remembered, never shown to other chats */)
 messages(id TEXT PK, conversation_id TEXT FK ON DELETE CASCADE, seq INTEGER,
   role TEXT, content TEXT, reasoning TEXT, tool_calls TEXT, tool_call_id TEXT,
   tool_name TEXT, model TEXT, tokens INTEGER, meta TEXT, created_at TEXT,

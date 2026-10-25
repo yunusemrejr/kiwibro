@@ -33,12 +33,47 @@ All notable changes to Kiwibro are documented here.
   for the KV cache. How to research, code, compute, use the desktop, render charts,
   handle memory or attachments is chosen per turn by code from the message and the
   turn plan, and rides in the context note only when it applies; a greeting gets none.
+- **Chat search by content.** The sidebar filter also finds chats by what was said in
+  them, with a snippet under the title (`GET /api/conversations/search`).
+- **Continuity across chats** (`sessions.py`). When a message refers back ("what did we
+  decide yesterday?", "last time", "continue where we left off", "dün"), the turn gets
+  a short note on the most recent other chats: title, when, a gist and up to three
+  exact matching excerpts. No model call; other messages get nothing extra. `recall`
+  also searches other chats, labelled with their title.
+- **Retry for an unanswered message.** Opening a chat whose last message never got a
+  reply offers Retry.
+- **Private chats** (schema v5). The composer's Private pill makes the open chat, or the
+  next new one, private: nothing from it is saved to memory (no capture, no extraction,
+  and `remember` declines with the reason), and other chats never see it in their notes
+  or in `recall`. The chat still uses memory and its own history. Its extraction
+  watermark moves on, so making it public later does not learn from the private part.
+  A fork stays private; the sidebar marks private chats with a shield.
+- **Export as Markdown** from the chat menu: the transcript with tool results folded,
+  without reasoning. Reading a chat for export does not prefill it (`?warm=0`).
 
 ### Changed
 
 - Memory injection is relevance-gated: pinned memories and the profile (name, reply
-  language) always, other memories only when they share a word with the message; only
-  matched memories count as used.
+  language) always, other memories only when they share a key term with the message
+  (below); only matched memories count as used.
+- **Memory relevance by key terms** (`terms.py`). Function words are dropped, inflections
+  are folded and everyday topics are tagged. "where do I live?" finds "User lives in
+  Istanbul", "recommend a dinner" finds the favourite food, and "is the build passing"
+  no longer pulls in memories through "is" and "the".
+- The user's own self-descriptions ("I am …", "My name is …", "Call me …") count as
+  profile: up to three ride on every turn, rendered as "User said: …". Memories that
+  start in the first person are rendered the same way, never as the assistant's words.
+- Extraction sees only the memories it might change: pinned ones, the profile, and
+  those sharing a key term with what the user said. Measured on a 35-memory store:
+  32 memories → 5 (the one to update among them), 3,568 → 2,002 prompt characters.
+- `recall` leaves out messages still in the working window, since the model already
+  has them. Tool results stay recallable.
+- Forking copies the chat in one transaction (3,000 messages: 0.05 s instead of 0.48 s)
+  and keeps the workspace, privacy, the extraction watermark and, when the fork point
+  reaches them, the summary and its segments.
+- Chats that opened with small talk ("Hi") are titled from the first real request;
+  existing ones are re-titled once at startup. Titles drop filler such as "there has
+  been", "can search" and a trailing "about".
 
 ### Fixed
 
@@ -48,6 +83,14 @@ All notable changes to Kiwibro are documented here.
   listening socket inheritable. Inherited descriptors are closed before `execv`.
 - The page and static assets are always revalidated (`Cache-Control: no-cache`), so an
   update is never hidden behind the browser's heuristic cache.
+- Retry stored the same user message twice, so the model saw the request twice. An
+  unanswered identical last message is now reused.
+- Retry disappeared when LM Studio was not running. It stays, with the "LM Studio isn't
+  running" message.
+- Full-text queries matched on function words: "the" or "is" made nearly every message a
+  hit. Function words are dropped when the query has other words.
+- A memory extraction refused at interpreter shutdown is counted as cancelled, not as a
+  failed attempt.
 
 ## [2.2.0] — 2026-10-22
 

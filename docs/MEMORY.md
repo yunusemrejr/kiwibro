@@ -54,10 +54,15 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   contradicting one. LLM extraction still runs when the user is idle, for what
   patterns cannot read.
 - **What rides along each turn.** Pinned memories and the profile (name, preferred
-  reply language) always; every other memory only when it shares a word with the
-  message — the 8 recently used ones are no longer injected regardless of relevance.
-  Only memories that matched count as used, so `use_count` no longer rewards whatever
-  happened to be injected.
+  reply language) always, plus up to three self-descriptions the user wrote in their
+  own words ("I am …", "I'm …", "My name is …", "Call me …"), rendered as `User said: …`
+  so they are never read as the assistant's words. Every other memory only when it
+  shares a *key term* with the message. Key terms (`kiwibro/terms.py`) drop function
+  words, fold inflections to one stem (lives, living, lived → `liv`) and tag a few
+  everyday topics (food, home, job, family, health and others), so "where do I live?"
+  finds "User lives in Istanbul". The 8 recently used ones are no longer injected
+  regardless of relevance. Only memories that matched count as used, so `use_count` no
+  longer rewards whatever happened to be injected.
 - **Extraction watermark**: `extracted_through_seq` advances only after a
   successful extraction response, so a timed-out small model retries next
   turn instead of silently skipping facts. The extraction timeout is sized
@@ -66,13 +71,18 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   one extraction runs at a time, only while no reply streams (≥ 20 s of quiet) and
   no warm-up runs; a reply starting cancels it and re-queues the chat. The extractor
   sees the oldest
-  pending window and only *relevant* existing memories (pinned + search +
-  recent, char-capped) — small, accurate utility prompts.
+  pending window and only the existing memories it might change: pinned ones, the
+  profile, and those sharing a key term with what the user said (at most 32). A new
+  fact that duplicates a stored one is still caught in code (`find_similar`), so
+  unrelated memories stay out of the prompt.
 - **Dedupe**: FTS-prefiltered candidates compared on stored normalised text
   (~2 ms at 400 memories, proven equivalent to the old full scan).
 - **One recall engine**: `MemoryEngine.recall(query, conversation_id, limit)`
   merges durable memories and conversation episodes for both prompt
-  injection and the `recall` tool — one behaviour, two surfaces.
+  injection and the `recall` tool — one behaviour, two surfaces. Episodes leave out
+  messages still in the working window (the model already has them); tool results stay
+  recallable. The user's other chats are searched too, each item labelled with its
+  chat's title.
 - Memories carry `use_count`; pruning evicts unused low-confidence entries
   first. Everything is user-editable/deletable; model swaps never touch it.
 - **Origins** (schema v4): `you` (Memory sheet, or edited there), `chat` (the
@@ -87,6 +97,27 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   user message carries the new fact). A learned fact is skipped when a related memory
   about the same subject changed after the message that stated it (`_superseded`:
   "moved to Ankara" saved by a later turn beats "lives in Istanbul" from an earlier one).
+
+## Across chats (`kiwibro/sessions.py`)
+
+Each chat's prompt holds only that chat. When a message points back in time, the turn
+gets a short note about the other chats. Otherwise nothing is added.
+
+- **Triggers.** `refers_back` matches phrases such as "yesterday", "last time", "the
+  other chat", "we discussed", "you said", "continue where we left off", and the
+  Turkish "dün" and "geçen sefer".
+- **Contents.** "Your other recent chats": up to five, newest first, each with its
+  title, when (today, yesterday, N days ago, or the date) and a gist. The gist is the
+  rolling summary when the chat has one, else its first real request and last reply.
+  Then up to three exact excerpts from other chats that match the message: replies
+  first, duplicates dropped, each cut to 360 characters.
+- **Budget.** At most 500 tokens and at most a tenth of the model's budget. Below 60
+  tokens nothing is added.
+- **No model call.** Gists come from stored text, so the note costs no generation.
+- **Private chats** (schema v5) are never listed, excerpted or recalled in another chat,
+  and nothing from them is saved: no capture, no extraction (the watermark moves on, so
+  making a chat public later does not learn from its private part), and `remember`
+  declines. A private chat still reads memory and its own history.
 
 ## Capability routing (`kiwibro/routing.py`)
 
@@ -117,6 +148,14 @@ in `kiwibro/llm.py` — routing is only ranking + lifecycle.
 - A user message longer than ~40 % of the budget reaches the model as a fixed
   excerpt + library handle (`meta.prompt_text`), so it never overflows the
   window and still renders identically on every later turn.
+- Retrying an unanswered message never stores it twice.
+- Function words alone pull no memory into a prompt.
+- Extraction sees only the memories it might change.
+- Recall leaves out messages still in the working window.
+- A message that does not refer back gets no earlier-chats note.
+- A forked chat keeps every seq; it keeps the summary and its segments only when the
+  cut reaches them.
+- A title the user set is never replaced by automatic titling.
 
 ## Long sessions in the API
 

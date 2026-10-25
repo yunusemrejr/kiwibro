@@ -112,8 +112,18 @@ like local ones and are selected, loaded and warmed the same way.
 ```
 Order: pinned first, then `updated_at` desc.
 
+### `GET /api/conversations/search?q=<text>`
+```json
+{"ok": true, "matches": [{"id": "c_...", "snippet": "...the Lisbon trip budget is 900 euros..."}]}
+```
+Chats whose messages match `q` (full-text; function words are ignored), best match
+first, one entry per chat, at most 30. The snippet is a short cut around the match
+with the common markdown marks removed. `q` shorter than 2 characters returns
+`"matches": []`. Titles are not searched here: the sidebar filter matches them itself.
+
 ### `POST /api/conversations`
-Body `{"title": "..."}` (optional). Returns full conversation object
+Body `{"title": "...", "private": false}` (both optional; `private` must be a boolean,
+else `400`). Returns full conversation object
 `{"id","title","model","created_at","updated_at","summary":null,"messages":[]}`.
 
 ### `GET /api/conversations/<id>`
@@ -123,12 +133,15 @@ Body `{"title": "..."}` (optional). Returns full conversation object
  "messages": [{"id":"m_...","seq":1,"role":"user|assistant|tool","content":"...",
    "reasoning": "", "tool_calls": [...], "tool_name": null, "model": "...",
    "created_at": "...", "meta": {}}],
- "context": {"used": 1234, "budget": 30000, "percent": 4}}
+ "context": {"used": 1234, "budget": 30000, "percent": 4}, "busy": false}
 ```
-404 unknown id.
+`busy` is true while a reply is being generated for that chat; the conversation object
+includes `"private": bool`. Opening a chat queues a prefill of its history for the next
+turn; `?warm=0` reads it without that (an export). 404 unknown id.
 
 ### `PATCH /api/conversations/<id>`
-Body `{"title"?: str, "pinned"?: bool}` → `{"ok": true, "conversation": {...}}`.
+Body `{"title"?: str, "pinned"?: bool, "private"?: bool}` → `{"ok": true, "conversation": {...}}`.
+A private chat is never saved to memory and never shown to other chats.
 
 ### `DELETE /api/conversations/<id>`
 `{"ok": true}`. Deletes messages via cascade; does not delete memories.
@@ -136,6 +149,16 @@ Body `{"title"?: str, "pinned"?: bool}` → `{"ok": true, "conversation": {...}}
 ### `POST /api/conversations/<id>/clear`
 Delete messages and summary of one conversation, keep the conversation.
 `{"ok": true, "conversation": {...}}`.
+
+### `POST /api/conversations/<id>/fork`
+Body `{"seq": N}` (optional; a non-negative integer, else `400 bad_request`). Copies the
+messages with `seq <= N` (all when omitted) into a new chat, in one transaction, keeping
+their seqs. The copy keeps the workspace and the model, and its extraction watermark is
+clamped to `N`. The summary and its segments are kept only when `N` reaches the summary
+boundary (`summary_through_seq`); otherwise they are left out. The title is
+`"<title> (fork)"` and is not re-titled automatically; a fork of a private chat is private.
+Returns `201`
+`{"ok": true, "conversation": {...}}`. Unknown id: `404 not_found`.
 
 ---
 
@@ -150,7 +173,8 @@ Body:
 - `attachments`: up to 8 records returned by `POST /api/attachments`; `kind` and `size`
   are re-derived from the file. With attachments, `message` may be empty (the file names
   become the caption) and `meta` is sent before the server describes them.
-- If `conversation_id` is null/missing, create a conversation and use it.
+- If `conversation_id` is null/missing, create a conversation and use it; `"private": true`
+  makes that new conversation private (an existing one changes with `PATCH`).
 - If a turn is active for that conversation → `409 {"error":{"code":"busy"}}`.
 - Response `200 text/event-stream`, headers: `Cache-Control: no-cache`,
   `X-Accel-Buffering: no`, `Connection: keep-alive`. Heartbeat comment `: ping`
