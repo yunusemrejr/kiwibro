@@ -195,8 +195,18 @@ def build_llm_messages(system_prompt: str, db_messages: list[dict[str, Any]]) ->
     for index, db_message in enumerate(db_messages):
         cap = TOOL_RESULT_CAP_RECENT if index > last_user else TOOL_RESULT_CAP_OLD
         converted = to_llm_message(db_message, cap)
-        if converted is not None:
-            messages.append(converted)
+        if converted is None:
+            continue
+        previous = messages[-1] if messages else None
+        if converted["role"] == "user" and previous is not None and previous["role"] == "user":
+            # Two user messages in a row (a reply failed or was stopped before any text):
+            # one turn for the model. Strict chat templates (Gemma) reject consecutive user
+            # turns, and a re-sent duplicate would be read twice. Derived from the stored
+            # messages alone, so it renders the same on every later turn.
+            if converted["content"] != previous["content"]:
+                previous["content"] = f"{previous['content']}\n\n{converted['content']}"
+            continue
+        messages.append(converted)
     return messages
 
 
@@ -704,7 +714,11 @@ class ContextEngine:
         appended = build_llm_messages("", new_db)
         raw = prepared.raw_sum + raw_message_sum(appended)
         used = self._used(raw, model)
-        if any(m["seq"] <= conversation["summary_through_seq"] for m in new_db) or (
+        user_after_user = bool(
+            appended and appended[0]["role"] == "user" and prepared.messages
+            and prepared.messages[-1]["role"] == "user"
+        )  # e.g. a steering note after an empty round: a full render merges the two
+        if any(m["seq"] <= conversation["summary_through_seq"] for m in new_db) or user_after_user or (
             prepared.trigger and used > prepared.trigger
         ):
             # Compaction mid-turn: the turn's note (time, memory, directives, plan) stays on.

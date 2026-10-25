@@ -342,3 +342,25 @@ def test_reading_a_chat_for_export_does_not_prefill_it(app_client, monkeypatch):
     assert queued == []  # an export is not a next turn: no minutes of CPU prefill
     client.get(f"/api/conversations/{cid}")
     assert queued == [cid]  # opening the chat still warms it
+
+
+# --- rendering ------------------------------------------------------------------------
+
+
+def test_consecutive_user_messages_reach_the_model_as_one_turn():
+    from kiwibro.context import build_llm_messages
+
+    def u(text: str) -> dict[str, Any]:
+        return {"role": "user", "content": text}
+
+    def a(text: str) -> dict[str, Any]:
+        return {"role": "assistant", "content": text}
+
+    rendered = build_llm_messages("S", [u("hi"), u("hi"), a("Hello"), u("find PHP news"), u("Python news instead")])
+    assert [m["role"] for m in rendered] == ["system", "user", "assistant", "user"]
+    assert rendered[1]["content"] == "hi"  # a re-sent duplicate is read once
+    assert rendered[3]["content"] == "find PHP news\n\nPython news instead"
+    # Stable for the KV cache: a later turn renders the earlier part byte for byte.
+    later = build_llm_messages("S", [u("hi"), u("hi"), a("Hello"), u("find PHP news"), u("Python news instead"),
+                                     a("Here."), u("thanks")])
+    assert later[: len(rendered)] == rendered
