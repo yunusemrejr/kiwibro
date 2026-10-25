@@ -96,7 +96,8 @@ def recent_note(db: Any, conversation_id: str, message: str, *, max_tokens: int 
     if max_tokens < 60 or not refers_back(message):
         return ""
     try:
-        chats = [c for c in db.recent_conversations(RECENT_CHATS + 1) if c["id"] != conversation_id][:RECENT_CHATS]
+        chats = [c for c in db.recent_conversations(RECENT_CHATS * 2)
+                 if c["id"] != conversation_id and not c.get("private")][:RECENT_CHATS]
         if not chats:
             return ""
         titles = {c["id"]: c.get("title") or "Untitled" for c in chats}
@@ -126,8 +127,10 @@ def recent_note(db: Any, conversation_id: str, message: str, *, max_tokens: int 
                 seen.add(text)
                 title = titles.get(hit.get("conversation_id"))
                 if title is None:
-                    other = db.get_conversation(hit.get("conversation_id") or "")
-                    title = (other or {}).get("title") or "another chat"
+                    other = db.get_conversation(hit.get("conversation_id") or "") or {}
+                    if other.get("private"):
+                        continue
+                    title = other.get("title") or "another chat"
                 speaker = "you" if hit.get("role") == "assistant" else "user"
                 line = f"- [{title}, {when(hit.get('created_at') or '')}, {speaker}] {text}"
                 cost = estimate_tokens(line)

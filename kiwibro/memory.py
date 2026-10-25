@@ -506,8 +506,8 @@ class MemoryEngine:
                 episodes = list(search_messages(query, conversation_id=conversation_id, limit=max(limit, 8) * 2) or [])
                 if conversation_id:
                     # Messages still verbatim in the window are already in view: returning them
-                    # spends a small model's context on text it has. Older tool results stay
-                    # recallable — the window shows them capped.
+                    # spends a small model's context on text it has. Tool results stay
+                    # recallable, since the window shows older ones capped.
                     conversation = self.db.get_conversation(conversation_id)
                     if conversation is not None:
                         in_view_from = int(conversation.get("summary_through_seq") or 0) + 1
@@ -519,6 +519,7 @@ class MemoryEngine:
                     episodes += [
                         m for m in search_messages(query, limit=max(limit, 8)) or []
                         if m.get("conversation_id") != conversation_id and m.get("role") != "tool"
+                        and not self.is_private(m.get("conversation_id"))
                     ][: max(2, limit // 2)]
             except Exception:  # pragma: no cover - recall must never fail a turn/tool
                 log.warning("episodic search failed", exc_info=True)
@@ -626,6 +627,8 @@ class MemoryEngine:
         its slot: the later statement wins. Returns ``{added, updated, removed}``.
         """
         counts = {"added": 0, "updated": 0, "removed": 0}
+        if self.is_private(conversation_id):
+            return counts
         for fact in autofacts.extract(message):
             try:
                 if fact.forget:
@@ -642,6 +645,12 @@ class MemoryEngine:
             except ValueError:
                 continue
         return counts
+
+    def is_private(self, conversation_id: str | None) -> bool:
+        """A private chat: nothing from it is saved to memory or shown to other chats."""
+        if not conversation_id:
+            return False
+        return bool((self.db.get_conversation(conversation_id) or {}).get("private"))
 
     def _replace_slot(self, fact: autofacts.Fact) -> bool | None:
         """Point the slot's existing memory at the new value: True when it changed, False when
@@ -803,6 +812,11 @@ class MemoryEngine:
         if not settings.get("memory_enabled", True) or not model:
             return counts
         try:
+            if self.is_private(conversation_id):
+                # Never read; the watermark moves on so making the chat public later
+                # does not learn from what was said while it was private.
+                self._advance_watermark(conversation_id, self.db.last_message_seq(conversation_id))
+                return counts
             window, through_seq = self._pending_window(conversation_id)
             if not window:
                 return counts

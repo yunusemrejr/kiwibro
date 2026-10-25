@@ -368,6 +368,7 @@ class AgentManager:
         model: str | None = None,
         *,
         attachments: list[dict[str, Any]] | None = None,
+        private: bool = False,
     ) -> Turn:
         if conversation_id:
             conversation = self.db.get_conversation(conversation_id)
@@ -375,7 +376,7 @@ class AgentManager:
                 raise ConversationNotFound(conversation_id)
         else:
             conversation = self.db.create_conversation(
-                title="New chat", model=model or (self._settings().get("model"))
+                title="New chat", model=model or (self._settings().get("model")), private=private
             )
             conversation_id = conversation["id"]
         lock = self._lock_for(conversation_id)

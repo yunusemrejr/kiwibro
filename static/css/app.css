@@ -616,6 +616,12 @@ p {
   opacity: 0.85;
 }
 
+.conv-private {
+  width: 11px;
+  height: 11px;
+  color: var(--muted);
+}
+
 .conv-time {
   flex: none;
   color: var(--faint);
@@ -1897,6 +1903,20 @@ button.chip:hover {
   border-color: rgba(155, 206, 107, 0.22);
   background: var(--green-dim);
   color: #b7d995;
+}
+
+.composer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Private is a privacy state, not a capability: pressed reads neutral, not "on" green. */
+.private-toggle[aria-pressed="true"] {
+  border-color: var(--line-2);
+  background: var(--surface-3);
+  color: var(--text-2);
 }
 
 .composer-right {

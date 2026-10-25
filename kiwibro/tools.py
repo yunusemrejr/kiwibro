@@ -1698,6 +1698,12 @@ def _user_words(ctx: ToolContext, limit: int = 24, *, latest: bool = False) -> s
     return "\n".join(said)
 
 
+_PRIVATE_CHAT = (
+    "Not saved: this chat is private, so nothing from it goes into memory. If the user wants "
+    "it kept, they can add it in the Memory sheet or turn privacy off for this chat."
+)
+
+
 def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     from .memory import grounded  # local: memory imports this package's db/llm layers
 
@@ -1713,6 +1719,9 @@ def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             return ToolResult(ok=False, content=message, preview="Pinned memory kept")
         message = f"Forgot: {memory['content']}"
         return ToolResult(ok=True, content=message, preview=message, meta={"memory_id": memory["id"]})
+    is_private = getattr(ctx.memory, "is_private", None)
+    if callable(is_private) and is_private(ctx.conversation_id):
+        return ToolResult(ok=False, content=_PRIVATE_CHAT, preview="Private chat: not saved")
     old = args.get("old")
     if action == "update":
         latest = _user_words(ctx, latest=True)

@@ -145,7 +145,9 @@ export const api = {
   conversations: () => request("/api/conversations"),
   searchConversations: (q, { signal } = {}) =>
     request(`/api/conversations/search?q=${encodeURIComponent(q)}`, { signal }),
-  conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),
+  // warm: false reads a chat without prefilling its history for a next turn (export).
+  conversation: (id, { warm = true } = {}) =>
+    request(`/api/conversations/${encodeURIComponent(id)}${warm ? "" : "?warm=0"}`),
   patchConversation: (id, patch) =>
     request(`/api/conversations/${encodeURIComponent(id)}`, { method: "PATCH", body: patch }),
   deleteConversation: (id) =>

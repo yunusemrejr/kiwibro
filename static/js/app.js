@@ -8,6 +8,7 @@ import { createChatView } from "./chat.js";
 import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
+import { conversationMarkdown, exportFilename } from "./export.js";
 import {
   $,
   $$,
@@ -58,6 +59,7 @@ const els = {
   composer: $("#composer"),
   input: $("#composer-input"),
   agentToggle: $("#agent-toggle"),
+  privateToggle: $("#private-toggle"),
   contextRing: $("#context-ring"),
   ringValue: $("#ring-value"),
   sendBtn: $("#send-btn"),
@@ -101,6 +103,7 @@ const state = {
   streaming: false,
   controller: null,
   lastSend: null,
+  privateNext: false, // the next new chat starts private (the composer's Private pill)
   drawerOpen: false,
 };
 
@@ -550,6 +553,11 @@ function renderSidebar() {
       );
     }
     if (conversation.pinned) open.append(icon("pin", "conv-pin"));
+    if (conversation.private) {
+      const shield = icon("shield", "conv-private");
+      shield.setAttribute("aria-label", "Private");
+      open.append(shield);
+    }
     const time = el("span", { class: "conv-time", "data-ts": conversation.updated_at });
     time.textContent = relativeTime(conversation.updated_at);
     time.title = absoluteTime(conversation.updated_at);
@@ -614,6 +622,22 @@ function showConversationMenu(conversation, anchor, row) {
       toast("Chat forked");
     } catch (error) {
       toast(error?.message || "Couldn't fork chat", { tone: "error" });
+    }
+  });
+  addItem("file", "Export as Markdown", async () => {
+    closePopover({ restoreFocus: false });
+    try {
+      const data = await api.conversation(conversation.id, { warm: false });
+      const exported = data?.conversation ?? conversation;
+      const markdown = conversationMarkdown(exported, data?.messages ?? []);
+      const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+      const link = el("a", { href: url, download: exportFilename(exported.title) });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      toast(error?.message || "Couldn't export that chat", { tone: "error" });
     }
   });
   addItem("sparkles", "Compact context", async () => {
@@ -792,6 +816,7 @@ async function openConversation(id, { silent = false } = {}) {
     state.conversation = data.conversation || null;
     localStorage.setItem(STORAGE.conversation, id);
     chatView.renderConversation(data.messages, data.conversation);
+    renderPrivateToggle();
     offerRetryIfUnanswered(id, data);
     updateContext(data.context);
     renderSidebar();
@@ -831,6 +856,7 @@ function offerRetryIfUnanswered(id, data) {
 function showEmptyState() {
   state.conversationId = null;
   state.conversation = null;
+  renderPrivateToggle();
   chatView.reset();
   renderSidebar();
   updateContext(null);
@@ -843,6 +869,8 @@ function newChat() {
   }
   state.conversationId = null;
   state.conversation = null;
+  state.privateNext = false;
+  renderPrivateToggle();
   localStorage.removeItem(STORAGE.conversation);
   chatView.reset();
   renderSidebar();
@@ -959,6 +987,7 @@ async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
         message: text,
         model: state.currentModel || undefined,
         attachments: files.length ? files : undefined,
+        private: !state.conversationId && state.privateNext ? true : undefined,
       },
       { signal: controller.signal },
     );
@@ -1049,6 +1078,7 @@ function handleStreamEvent(event, data, activeStream) {
           title: data.title || "New chat",
           model: data.model || state.currentModel,
           pinned: false,
+          private: state.privateNext,
           message_count: 1,
           updated_at: new Date().toISOString(),
         });
@@ -1228,6 +1258,45 @@ function retryLastSend() {
   }
   chatView.prepareRetry();
   sendMessage(text, { echo: false, attachments });
+}
+
+function isPrivateNow() {
+  if (!state.conversationId) return state.privateNext;
+  const listed = state.conversations.find((entry) => entry.id === state.conversationId);
+  return Boolean(state.conversation?.private ?? listed?.private);
+}
+
+function renderPrivateToggle() {
+  const on = isPrivateNow();
+  els.privateToggle.setAttribute("aria-pressed", String(on));
+  els.privateToggle.title = on
+    ? "Private chat — nothing from it is remembered or shown to other chats"
+    : "Make this chat private";
+}
+
+// Private: nothing from the chat goes into memory, and other chats never see it.
+// A new chat takes the setting with its first message; an open chat changes at once.
+async function togglePrivate() {
+  const next = !isPrivateNow();
+  if (!state.conversationId) {
+    state.privateNext = next;
+    renderPrivateToggle();
+    announce(next ? "The new chat will be private" : "The new chat will not be private");
+    return;
+  }
+  const id = state.conversationId;
+  els.privateToggle.setAttribute("aria-pressed", String(next));
+  try {
+    const data = await api.patchConversation(id, { private: next });
+    if (state.conversationId === id) state.conversation = { ...(state.conversation || {}), ...(data?.conversation || {}), private: next };
+    const listed = state.conversations.find((entry) => entry.id === id);
+    if (listed) listed.private = next;
+    renderSidebar();
+    announce(next ? "This chat is private" : "This chat is no longer private");
+  } catch (error) {
+    toast(error?.message || "Couldn't change privacy", { tone: "error" });
+  }
+  renderPrivateToggle();
 }
 
 async function toggleAgent() {
@@ -1526,6 +1595,7 @@ function initComposer() {
   });
 
   els.agentToggle.addEventListener("click", toggleAgent);
+  els.privateToggle.addEventListener("click", togglePrivate);
   els.stopBtn.addEventListener("click", stopStreaming);
   autosize();
 }

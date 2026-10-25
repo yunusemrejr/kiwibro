@@ -460,6 +460,7 @@ export class MockBackend {
       title: conversation.title,
       model: conversation.model,
       pinned: conversation.pinned,
+      private: Boolean(conversation.private),
       message_count: conversation.messages.filter((message) => message.role !== "tool").length,
       created_at: conversation.created_at,
       updated_at: conversation.updated_at,
@@ -507,12 +508,13 @@ export class MockBackend {
     return message;
   }
 
-  _createConversation(title = "New chat") {
+  _createConversation(title = "New chat", isPrivate = false) {
     const conversation = {
       id: `c_mock_${++this.sequence}`,
       title,
       model: this.currentModel,
       pinned: false,
+      private: Boolean(isPrivate),
       created_at: nowIso(),
       updated_at: nowIso(),
       summary: "",
@@ -618,6 +620,7 @@ export class MockBackend {
             updated_at: conversation.updated_at,
             summary: conversation.summary || null,
             compacted: Boolean(conversation.compacted),
+            private: Boolean(conversation.private),
           },
           messages: clone(conversation.messages),
           context: this._context(conversation),
@@ -626,6 +629,7 @@ export class MockBackend {
       if (verb === "PATCH") {
         if (typeof body?.title === "string" && body.title.trim()) conversation.title = body.title.trim();
         if (typeof body?.pinned === "boolean") conversation.pinned = body.pinned;
+        if (typeof body?.private === "boolean") conversation.private = body.private;
         conversation.updated_at = nowIso();
         return {
           ok: true,
@@ -637,6 +641,7 @@ export class MockBackend {
             updated_at: conversation.updated_at,
             summary: conversation.summary || null,
             compacted: Boolean(conversation.compacted),
+            private: Boolean(conversation.private),
           },
         };
       }
@@ -773,10 +778,10 @@ export class MockBackend {
 
   /* ------------------------------------------------------------- streaming */
 
-  chat({ conversationId, message, model }, { signal } = {}) {
+  chat({ conversationId, message, model, private: isPrivate = false }, { signal } = {}) {
     let conversation;
     try {
-      conversation = conversationId ? this._conversation(conversationId) : this._createConversation();
+      conversation = conversationId ? this._conversation(conversationId) : this._createConversation("New chat", isPrivate);
     } catch (error) {
       return Promise.resolve({
         ok: false,

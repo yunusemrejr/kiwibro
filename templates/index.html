@@ -151,10 +151,16 @@
               <label class="sr-only" for="composer-input">Message Kiwibro</label>
               <textarea class="composer-input" id="composer-input" rows="1" maxlength="400000" placeholder="Ask Kiwibro…" autocomplete="off" spellcheck="true"></textarea>
               <div class="composer-bar">
-                <button class="agent-toggle" id="agent-toggle" type="button" aria-pressed="true" title="Agent mode — tools and memory">
-                  <svg class="icon" aria-hidden="true"><use href="#i-tool"/></svg>
-                  <span>Agent</span>
-                </button>
+                <div class="composer-left">
+                  <button class="agent-toggle" id="agent-toggle" type="button" aria-pressed="true" title="Agent mode — tools and memory">
+                    <svg class="icon" aria-hidden="true"><use href="#i-tool"/></svg>
+                    <span>Agent</span>
+                  </button>
+                  <button class="agent-toggle private-toggle" id="private-toggle" type="button" aria-pressed="false" title="Make this chat private">
+                    <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+                    <span>Private</span>
+                  </button>
+                </div>
                 <div class="composer-right">
                   <div class="context-ring" id="context-ring" title="Context usage" aria-label="Context usage">
                     <svg viewBox="0 0 24 24" aria-hidden="true">

@@ -84,6 +84,7 @@ def _conversation_full(conversation: dict[str, Any], *, with_messages: bool = Fa
         "summary_through_seq": conversation["summary_through_seq"],
         "workspace": conversation.get("workspace"),
         "compacted": bool(summary),
+        "private": bool(conversation.get("private")),
     }
     if with_messages:
         view["messages"] = []
@@ -96,6 +97,7 @@ def _conversation_list_item(conversation: dict[str, Any]) -> dict[str, Any]:
         "title": conversation["title"],
         "model": conversation["model"],
         "pinned": conversation["pinned"],
+        "private": bool(conversation.get("private")),
         "message_count": conversation.get("message_count", 0),
         "created_at": conversation["created_at"],
         "updated_at": conversation["updated_at"],
@@ -300,7 +302,12 @@ def create_conversation() -> Response:
     model = data.get("model")
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise ApiError("bad_request", "model must be a non-empty string", 400)
-    conversation = svc.db.create_conversation(title=title, model=model or svc.settings_provider().get("model"))
+    private = data.get("private", False)
+    if not isinstance(private, bool):
+        raise ApiError("bad_request", "private must be a boolean", 400)
+    conversation = svc.db.create_conversation(
+        title=title, model=model or svc.settings_provider().get("model"), private=private
+    )
     view = _conversation_full(conversation)
     view["summary"] = None
     view["messages"] = []
@@ -351,7 +358,8 @@ def get_conversation(conversation_id: str) -> Response:
         }
         estimate_messages = None  # estimate from the summary window, not the page
     busy = svc.agent.is_busy(conversation_id)
-    if before_seq is None and not busy:
+    # ?warm=0 reads a chat without prefilling it (an export is not a next turn).
+    if before_seq is None and not busy and request.args.get("warm") != "0":
         _prepare_model(svc, conversation_id=conversation_id)  # the next turn re-reads this history
     model = conversation.get("model") or svc.settings_provider().get("model")
     context = (
@@ -408,6 +416,10 @@ def patch_conversation(conversation_id: str) -> Response:
         if not isinstance(data["pinned"], bool):
             raise ApiError("bad_request", "pinned must be a boolean", 400)
         fields["pinned"] = data["pinned"]
+    if "private" in data:
+        if not isinstance(data["private"], bool):
+            raise ApiError("bad_request", "private must be a boolean", 400)
+        fields["private"] = data["private"]
     if not fields:
         raise ApiError("bad_request", "nothing to update", 400)
     updated = svc.db.update_conversation(conversation_id, **fields)
@@ -502,8 +514,11 @@ def chat() -> Response:
         if not isinstance(model, str) or not model.strip():
             raise ApiError("bad_request", "model must be a non-empty string", 400)
         model = model.strip()
+    private = data.get("private", False)  # a new chat only; an open chat changes it with PATCH
+    if not isinstance(private, bool):
+        raise ApiError("bad_request", "private must be a boolean", 400)
     try:
-        turn = svc.agent.start_chat(conversation_id or None, message, model, attachments=attachments)
+        turn = svc.agent.start_chat(conversation_id or None, message, model, attachments=attachments, private=private)
     except ConversationNotFound:
         raise ApiError("not_found", "Conversation not found.", 404) from None
     except BusyError:

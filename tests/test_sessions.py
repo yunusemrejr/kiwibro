@@ -329,3 +329,16 @@ def test_conversation_view_says_whether_a_reply_is_running(app_client):
     svc.db.add_message(cid, "user", "Now make it skip hidden files too")
     data = client.get(f"/api/conversations/{cid}").get_json()
     assert data["busy"] is False and data["messages"][-1]["role"] == "user"  # the UI offers Retry
+
+
+def test_reading_a_chat_for_export_does_not_prefill_it(app_client, monkeypatch):
+    client, svc = app_client
+    queued: list[str | None] = []
+    monkeypatch.setattr(
+        svc.agent.readiness, "request", lambda model=None, conversation_id=None: queued.append(conversation_id) or {}
+    )
+    cid = svc.db.create_conversation(title="Export me")["id"]
+    assert client.get(f"/api/conversations/{cid}?warm=0").status_code == 200
+    assert queued == []  # an export is not a next turn: no minutes of CPU prefill
+    client.get(f"/api/conversations/{cid}")
+    assert queued == [cid]  # opening the chat still warms it

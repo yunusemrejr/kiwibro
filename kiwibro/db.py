@@ -168,9 +168,17 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE memories ADD COLUMN origin TEXT")
 
 
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """Schema v5: a private chat — nothing from it is remembered or shown to other chats."""
+    if not any(row["name"] == "private" for row in conn.execute("PRAGMA table_info(conversations)")):
+        conn.execute("ALTER TABLE conversations ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
+
+
 # A migration is either a SQL script or a callable taking the connection
 # (for steps that must inspect the live schema, e.g. guarded ALTERs).
-_MIGRATIONS: list[tuple[int, Any]] = [(1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4)]
+_MIGRATIONS: list[tuple[int, Any]] = [
+    (1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4), (5, _migrate_v5),
+]
 
 MEMORY_ORIGINS = ("you", "chat", "learned")
 
@@ -317,18 +325,21 @@ class Database:
             "extracted_through_seq": row["extracted_through_seq"] if "extracted_through_seq" in keys else 0,
             "workspace": row["workspace"] if "workspace" in keys else None,
             "pinned": bool(row["pinned"]),
+            "private": bool(row["private"]) if "private" in keys else False,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
 
-    def create_conversation(self, title: str = "New chat", model: str | None = None) -> dict[str, Any]:
+    def create_conversation(
+        self, title: str = "New chat", model: str | None = None, *, private: bool = False
+    ) -> dict[str, Any]:
         now = config.now_iso()
         cid = _new_id("c")
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO conversations(id, title, title_auto, model, created_at, updated_at) "
-                "VALUES (?, ?, 1, ?, ?, ?)",
-                (cid, title or "New chat", model, now, now),
+                "INSERT INTO conversations(id, title, title_auto, model, private, created_at, updated_at) "
+                "VALUES (?, ?, 1, ?, ?, ?, ?)",
+                (cid, title or "New chat", model, 1 if private else 0, now, now),
             )
             row = conn.execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
         return self._conversation(row)
@@ -365,14 +376,14 @@ class Database:
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
         allowed = {
             "title", "title_auto", "model", "summary", "summary_through_seq",
-            "extracted_through_seq", "pinned", "workspace",
+            "extracted_through_seq", "pinned", "workspace", "private",
         }
         sets: list[str] = []
         values: list[Any] = []
         for key, value in fields.items():
             if key not in allowed:
                 continue
-            if key in ("title_auto", "pinned"):
+            if key in ("title_auto", "pinned", "private"):
                 value = 1 if value else 0
             sets.append(f"{key} = ?")
             values.append(value)
@@ -449,8 +460,8 @@ class Database:
                 compacted = summary_through <= cut
                 conn.execute(
                     "INSERT INTO conversations(id, title, title_auto, model, summary, summary_through_seq, "
-                    "extracted_through_seq, workspace, created_at, updated_at) "
-                    "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+                    "extracted_through_seq, workspace, private, created_at, updated_at) "
+                    "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new_id,
                         title or f"{source['title']} (fork)",
@@ -459,6 +470,7 @@ class Database:
                         summary_through if compacted else 0,
                         min(int(source["extracted_through_seq"]), cut),
                         source["workspace"],
+                        source["private"],
                         now,
                         now,
                     ),
