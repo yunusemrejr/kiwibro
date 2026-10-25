@@ -5,7 +5,7 @@ Kiwibro is a local-first AI agent for Linux: a **Python Flask** backend serving 
 **LM Studio** on `127.0.0.1:1234` (OpenAI-compatible API). No cloud, no accounts,
 no external CDNs, no bundled JS frameworks.
 
-Version 2.2.0 · MIT · Python 3.10+ · Flask 3
+Version 2.3.0 · MIT · Python 3.10+ · Flask 3
 
 ---
 

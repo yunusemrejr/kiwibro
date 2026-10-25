@@ -23,7 +23,7 @@ the current server image started (Unix seconds, renewed by a self-update).
 ### `GET /api/version`
 Cheap poll (never calls LM Studio): which code this process serves.
 ```json
-{"ok": true, "version": "2.2.0", "started_at": 1761000000, "pid": 4242, "busy": false,
+{"ok": true, "version": "2.3.0", "started_at": 1761000000, "pid": 4242, "busy": false,
  "code_version": "a8a52b7b0cad72fd", "ui_version": "3f0c9e2a71d4b6e8", "update_pending": false,
  "update_blocked": false}
 ```

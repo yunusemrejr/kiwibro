@@ -666,3 +666,21 @@ the model it loaded for a previous selection. Suite: 766+ passed (only the known
 `example.com` DNS test fails here). Live (`spark-x2.6-4b`, Think on): the Desktop-doc
 request went from 968 s + failed write to 362–729 s with the file written and no prompt
 (the slower run overthought the write round: cut by the thinking budget, then acted).
+
+## `kiwibro-ce` — 2.3.0 memory relevance and sessions (DONE 2026-10-25)
+
+User goal: smarter use of memory/context and smarter session handling. New
+`kiwibro/terms.py` (key terms: stop words, stems, topic tags) and `kiwibro/sessions.py`
+(earlier-chats note, gists; no model calls). Contracts changed: schema v5
+(`conversations.private`); `GET /api/conversations/search`; `busy` and `private` on
+conversation views; `?warm=0` on `GET /api/conversations/<id>`; `private` on
+`POST /api/conversations`, `PATCH` and (new chats) `POST /api/chat`; fork keeps
+summary/segments/watermark/workspace/privacy; `MemoryEngine.recall` skips in-window
+messages (tool results stay) and searches other chats (`item["chat"]`);
+`fts_query` drops function words; `build_llm_messages` merges consecutive user messages.
+Measured on real-shaped data: identity questions ("what's my name?") went from no memory
+to the user's own self-description; "is the build passing" from 7 injected memories to 0;
+extraction prompts 32 → 5 existing memories (3,568 → 2,002 chars). Suite: 966 passed,
+4 skipped. Live UI checks on an isolated instance (:8790, copy of the user's data):
+content search, Retry on an unanswered chat (no duplicate stored), Private pill + shield,
+export menu item. LM Studio was offline, so no live model turns this session.

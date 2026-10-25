@@ -4,6 +4,14 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-10-25
+
+Memory that finds what matters and sessions that keep their thread: the right memories
+reach a small model's prompt (and the noise stays out), a chat can pick up what another
+chat found, retries and interrupted replies no longer double the request, chats are
+findable by what was said in them, and a chat can be private. The app also updates itself
+when its code changes, and saves what the user states about themselves before every reply.
+
 ### Added
 
 - **Self-updating server** (`selfupdate.py`). The server keeps a content fingerprint of
@@ -91,6 +99,9 @@ All notable changes to Kiwibro are documented here.
   hit. Function words are dropped when the query has other words.
 - A memory extraction refused at interpreter shutdown is counted as cancelled, not as a
   failed attempt.
+- Two user messages in a row (a reply that failed before any text) reached the model as
+  two turns: strict chat templates such as Gemma's reject that, and a re-sent duplicate
+  was read twice. They now render as one turn, identically on every later turn.
 
 ## [2.2.0] — 2026-10-22
 
