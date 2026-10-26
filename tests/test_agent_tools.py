@@ -279,3 +279,28 @@ def test_execute_tool_end_to_end(ws: Workspace):
     assert board.ok and "write tests" in board.content
     missing = tools.execute_tool("read_file", {"path": "nope.txt", "start": None, "end": None}, ctx)
     assert missing.ok is False  # errors are results, never exceptions
+
+
+# --- run_python echoes a final bare expression ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "printed"),
+    [
+        ("1234 * 5678", "7006652\n"),
+        ("x = 2\n# keep this comment\nx ** 10\n", "1024\n"),
+        ("sum(\n  [1, 2,\n   3])\n", "6\n"),
+        ("import math\nmath.sqrt(4);", "2.0\n"),
+        ("print('hi')", "hi\n"),  # None results add nothing
+        ("a = 1; a + 1", ""),  # shares its line with another statement: left alone
+        ("for i in range(2):\n    i", ""),  # not top level
+    ],
+)
+def test_echo_last_expression_prints_like_a_repl(code: str, printed: str) -> None:
+    result = subprocess.run([sys.executable, "-I", "-c", codebase.echo_last_expression(code)],
+                            capture_output=True, text=True, timeout=30, check=True)
+    assert result.stdout == printed
+
+
+def test_echo_last_expression_keeps_invalid_code_for_the_interpreter() -> None:
+    assert codebase.echo_last_expression("def f(:") == "def f(:"

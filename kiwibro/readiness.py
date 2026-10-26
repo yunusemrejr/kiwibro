@@ -116,6 +116,12 @@ class Readiness:
         self._wake.set()
         return self.status()
 
+    def release_all(self) -> None:
+        """Unload every model this worker loaded (the engine is switching: free their RAM)."""
+        self._release_others("")
+        with self._lock:
+            self._warm.clear()
+
     def invalidate(self) -> None:
         """Settings that shape the prefix changed: forget what was warmed."""
         with self._lock:
@@ -276,6 +282,7 @@ class Readiness:
                 with self._lock:
                     self._loaded.add(key)
                 break
-            if getattr(self.llm, "_load_api_supported", None) is False:
+            direct = callable(getattr(self.llm, "direct_on", None)) and self.llm.direct_on()
+            if not direct and getattr(self.llm, "_load_api_supported", None) is False:
                 break  # this LM Studio has no load API: the warm-up request JIT-loads it
         return self._info(model, force=True) or info

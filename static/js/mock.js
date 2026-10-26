@@ -123,6 +123,14 @@ const DEFAULT_PERMISSIONS = {
   undo_changes: "auto",
 };
 
+// The llama.cpp build the direct engine would pick, and a server it already started.
+const DIRECT_RUNTIME = {
+  path: "/usr/local/bin/llama-server",
+  label: "llama.cpp · CPU",
+  kind: "system",
+  source: "PATH",
+};
+
 const SEED_MEMORIES = [
   {
     id: "mem_mock_1",
@@ -279,7 +287,24 @@ export class MockBackend {
       remote_hosts: [],
       max_tool_rounds: 16,
       permissions: clone(DEFAULT_PERMISSIONS),
+      engine: "lmstudio",
+      direct_runtime: "",
+      direct_models_dir: "",
+      direct_threads: 0,
     };
+    this.directServers = [
+      {
+        model: "qwen3.8-2b",
+        pid: 48213,
+        port: 8791,
+        context_length: 8192,
+        parallel: 1,
+        threads: 8,
+        runtime: DIRECT_RUNTIME.path,
+        started_at: isoAgo(12 * MINUTE),
+        busy: false,
+      },
+    ];
     this.memories = clone(SEED_MEMORIES);
     this.workspaceFiles = clone(WORKSPACE_FILES);
     this.dataDir = "/home/yemre/.local/share/kiwibro (mock)";
@@ -535,6 +560,20 @@ export class MockBackend {
     };
   }
 
+  _direct() {
+    const available = !this.offline;
+    return {
+      available,
+      runtime: clone(DIRECT_RUNTIME),
+      runtimes: [clone(DIRECT_RUNTIME)],
+      model_dirs: ["/home/yemre/.lmstudio/models"],
+      models_count: this.models.length,
+      threads: 8,
+      servers: clone(this.directServers),
+      error: available ? null : "No downloaded models were found in LM Studio's models folder.",
+    };
+  }
+
   _titleFromMessage(message) {
     const clean = String(message || "").replace(/\s+/g, " ").trim();
     const words = clean.split(" ").slice(0, 6).join(" ").replace(/[.,!?;:]+$/, "");
@@ -727,6 +766,15 @@ export class MockBackend {
         this.memories = this.memories.filter((entry) => entry.id !== memory.id);
         return { ok: true };
       }
+    }
+
+    if (route === "/api/engine" && verb === "GET") {
+      return { ok: true, engine: this.settings.engine, direct: clone(this._direct()) };
+    }
+
+    if (route === "/api/engine/stop" && verb === "POST") {
+      this.directServers = [];
+      return { ok: true, direct: clone(this._direct()) };
     }
 
     if (route === "/api/settings" && verb === "GET") {

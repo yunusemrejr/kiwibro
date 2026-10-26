@@ -82,6 +82,10 @@ const RISKY_STEPS = [
   ["smart", "Ask me first"],
   ["autonomous", "Refuse them"],
 ];
+const ENGINES = [
+  ["lmstudio", "LM Studio API"],
+  ["direct", "Direct · llama.cpp"],
+];
 const TOOL_PERMISSIONS = [
   ["auto", "Auto"],
   ["ask", "Ask"],
@@ -464,6 +468,8 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     models: [],
     current: null,
     lmstudio: false,
+    engine: "lmstudio",
+    direct: null,
     health: null,
     workspace: null,
     dataDir: "",
@@ -485,11 +491,12 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     data.loading = true;
     data.error = null;
     render();
-    const [settingsResult, modelsResult, healthResult, workspaceResult] = await Promise.allSettled([
+    const [settingsResult, modelsResult, healthResult, workspaceResult, engineResult] = await Promise.allSettled([
       api.settings(),
       api.models(),
       api.health(),
       api.workspace(),
+      api.engine(),
     ]);
 
     if (settingsResult.status === "fulfilled") {
@@ -505,6 +512,10 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     }
     if (healthResult.status === "fulfilled") data.health = healthResult.value;
     if (workspaceResult.status === "fulfilled") data.workspace = workspaceResult.value;
+    // If the engine call fails, the saved setting still says which engine is active.
+    const engineData = engineResult.status === "fulfilled" ? engineResult.value : null;
+    data.engine = engineData?.engine || data.settings?.engine || "lmstudio";
+    data.direct = engineData?.direct || null;
 
     data.loading = false;
     render();
@@ -682,6 +693,97 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     ]);
   }
 
+  // Direct mode: which llama.cpp build runs the models, where the model files are, and how
+  // many CPU threads it may use. Each save reloads the sheet so it shows what was found.
+  function directRows() {
+    const direct = data.direct;
+    const runtimeInput = el("input", {
+      class: "setting-input",
+      type: "text",
+      value: data.settings.direct_runtime || "",
+      placeholder: direct?.runtime?.path || "Automatic",
+      "aria-label": "llama.cpp runtime path",
+      spellcheck: "false",
+      autocomplete: "off",
+    });
+    runtimeInput.addEventListener("change", async () => {
+      const previous = data.settings.direct_runtime || "";
+      const value = runtimeInput.value.trim();
+      if (value === previous) {
+        runtimeInput.value = previous;
+        return;
+      }
+      if (await patch({ direct_runtime: value }, () => (runtimeInput.value = previous))) await load();
+    });
+    const modelsInput = el("input", {
+      class: "setting-input",
+      type: "text",
+      value: data.settings.direct_models_dir || "",
+      placeholder: direct?.model_dirs?.[0] || "Automatic",
+      "aria-label": "Models folder",
+      spellcheck: "false",
+      autocomplete: "off",
+    });
+    modelsInput.addEventListener("change", async () => {
+      const previous = data.settings.direct_models_dir || "";
+      const value = modelsInput.value.trim();
+      if (value === previous) {
+        modelsInput.value = previous;
+        return;
+      }
+      if (await patch({ direct_models_dir: value }, () => (modelsInput.value = previous))) await load();
+    });
+    const threadsInput = el("input", {
+      class: "setting-input",
+      type: "number",
+      min: "0",
+      max: "256",
+      step: "1",
+      value: data.settings.direct_threads || "",
+      placeholder: `Auto (${direct?.threads ?? 0})`,
+      "aria-label": "CPU threads",
+    });
+    threadsInput.addEventListener("change", async () => {
+      const previous = data.settings.direct_threads || 0;
+      const parsed = parseInt(threadsInput.value, 10);
+      const threads = Number.isFinite(parsed) ? parsed : 0;
+      if (threads === previous) return;
+      if (await patch({ direct_threads: threads }, () => (threadsInput.value = previous || ""))) await load();
+    });
+    const row = (name, description, controls) =>
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: name }),
+          el("div", { class: "setting-desc", text: description }),
+        ]),
+        ...controls,
+      ]);
+    const rows = [
+      row("llama.cpp runtime", "Empty uses LM Studio's bundled engine. Set a path to use your own llama-server build.", [runtimeInput]),
+      row("Models folder", "Empty scans LM Studio's models folders.", [modelsInput]),
+      row("CPU threads", "Auto uses every physical core.", [threadsInput]),
+    ];
+
+    const servers = direct?.servers || [];
+    if (servers.length) {
+      const stop = el("button", { class: "text-btn", type: "button", text: "Stop" });
+      stop.addEventListener("click", async () => {
+        stop.disabled = true;
+        try {
+          await api.engineStop();
+        } catch (error) {
+          toast(error?.message || "Couldn't stop the engine", { tone: "error" });
+        }
+        await load();
+      });
+      const description = servers
+        .map((server) => `${server.model} · ${Math.round(server.context_length / 1024)}K · ${server.threads} threads`)
+        .join("; ");
+      rows.push(row("Running", description, [stop]));
+    }
+    return el("div", {}, rows);
+  }
+
   function workspaceSection() {
     const section = group("Workspace");
     const workspace = data.settings?.workspace || data.workspace?.root || "";
@@ -768,27 +870,66 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     }
     if (!data.settings) return;
 
-    /* --- LM Studio --- */
-    const lmSection = group("LM Studio");
+    /* --- Models: LM Studio API or direct llama.cpp --- */
+    const lmSection = group("Models");
     const modelsCount = data.models.length;
+    const directMode = data.engine === "direct";
+    const direct = data.direct;
+    const directReady = Boolean(direct?.available && direct?.runtime);
+
+    // The engine picker comes first: it decides what the status card below describes.
+    const engineSelect = el("select", { class: "setting-select", "aria-label": "Engine" });
+    for (const [value, label] of ENGINES) {
+      const option = el("option", { value, text: label });
+      if (value === data.engine) option.selected = true;
+      engineSelect.append(option);
+    }
+    engineSelect.addEventListener("change", async () => {
+      const previous = data.engine;
+      if (await patch({ engine: engineSelect.value }, () => (engineSelect.value = previous))) await load();
+    });
+    lmSection.append(
+      el("div", { class: "setting-row" }, [
+        el("div", { class: "setting-text" }, [
+          el("div", { class: "setting-name", text: "Engine" }),
+          el("div", {
+            class: "setting-desc",
+            text: "Direct runs LM Studio's downloaded models with llama.cpp itself: faster, and LM Studio doesn't need to be open.",
+          }),
+        ]),
+        engineSelect,
+      ]),
+    );
+
+    let statusName;
+    let statusSub;
+    if (directMode) {
+      const count = direct?.models_count || 0;
+      statusName = directReady ? "Direct engine ready" : "Direct engine unavailable";
+      statusSub = directReady
+        ? `${direct.runtime.label} · ${count} model${count === 1 ? "" : "s"}`
+        : direct?.error || "No llama.cpp runtime was found.";
+    } else {
+      statusName = data.lmstudio ? "LM Studio is running" : "LM Studio isn't running";
+      statusSub = data.lmstudio
+        ? `${data.settings.lmstudio_url} · ${modelsCount} model${modelsCount === 1 ? "" : "s"}`
+        : "Start LM Studio, then reconnect.";
+    }
     const statusCard = el("div", { class: "status-card" }, [
-      el("span", { class: "status-dot", "data-tone": data.lmstudio ? "loaded" : "warn" }),
+      el("span", { class: "status-dot", "data-tone": (directMode ? directReady : data.lmstudio) ? "loaded" : "warn" }),
       el("div", { class: "status-text" }, [
-        el("div", { class: "status-name", text: data.lmstudio ? "LM Studio is running" : "LM Studio isn't running" }),
-        el(
-          "div",
-          {
-            class: "status-sub",
-            text: data.lmstudio
-              ? `${data.settings.lmstudio_url} · ${modelsCount} model${modelsCount === 1 ? "" : "s"}`
-              : "Start LM Studio, then reconnect.",
-          },
-        ),
+        el("div", { class: "status-name", text: statusName }),
+        el("div", { class: "status-sub", text: statusSub }),
       ]),
       (() => {
         const refresh = el(
           "button",
-          { class: "icon-btn menu-refresh", type: "button", title: "Reconnect", "aria-label": "Reconnect to LM Studio" },
+          {
+            class: "icon-btn menu-refresh",
+            type: "button",
+            title: directMode ? "Refresh" : "Reconnect",
+            "aria-label": directMode ? "Refresh" : "Reconnect to LM Studio",
+          },
           [icon("refresh")],
         );
         refresh.addEventListener("click", async () => {
@@ -806,11 +947,14 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
       for (const model of data.models) modelList.append(modelRow(model, model.id === data.current));
       lmSection.append(modelList);
     } else if (!data.models.length) {
-      lmSection.append(
-        el("div", { class: "model-empty", text: data.lmstudio ? "No chat models are available in LM Studio." : "Models will appear here once LM Studio is reachable." }),
-      );
+      const emptyText = directMode
+        ? "No downloaded models were found in LM Studio's models folder."
+        : data.lmstudio
+          ? "No chat models are available in LM Studio."
+          : "Models will appear here once LM Studio is reachable.";
+      lmSection.append(el("div", { class: "model-empty", text: emptyText }));
     }
-    lmSection.append(serverRows());
+    lmSection.append(directMode ? directRows() : serverRows());
     body.append(lmSection);
 
     // One select row per enum setting; a failed save puts the old value back.

@@ -39,8 +39,10 @@ def error_body(code: str, message: str) -> dict[str, Any]:
 # Settings that change the prompt prefix (message 0 or the tool list): a change re-warms.
 PREFIX_SETTINGS = frozenset({
     "user_name", "workspace", "agent_enabled", "tool_profile", "reasoning", "lmstudio_url", "lmstudio_token",
-    "autonomy",
+    "autonomy", "engine", "direct_runtime", "direct_models_dir", "direct_threads",
 })
+# Settings that change how the direct engine launches llama.cpp: running servers restart.
+DIRECT_LAUNCH_SETTINGS = frozenset({"direct_runtime", "direct_models_dir", "direct_threads"})
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +166,7 @@ def health() -> Response:
         **_runtime_status(svc),
         "lmstudio": ok,
         "lmstudio_url": settings.get("lmstudio_url"),
+        "engine": svc.llm.engine_mode(),
         "model": _current_model(models) if ok else settings.get("model"),
     }
     if error:
@@ -182,6 +185,7 @@ def bootstrap() -> Response:
             **_runtime_status(svc),
             "lmstudio": ok,
             "lmstudio_url": settings.get("lmstudio_url"),
+            "engine": svc.llm.engine_mode(),
         },
         "settings": public_settings(settings),
         "models": models if ok else [],
@@ -216,6 +220,24 @@ def list_models() -> Response:
     if error:
         payload["lmstudio_error"] = error
     return jsonify(payload)
+
+
+@bp.get("/api/engine")
+def engine_status() -> Response:
+    """Which engine serves models, and what the direct engine found (runtime, folders, servers)."""
+    svc = services()
+    return jsonify({"ok": True, "engine": svc.llm.engine_mode(), "direct": svc.llm.direct_engine().status()})
+
+
+@bp.post("/api/engine/stop")
+def engine_stop() -> Response:
+    """Stop the direct engine's llama.cpp servers (frees their memory; the next message restarts one)."""
+    svc = services()
+    if svc.agent.active_turns():
+        raise ApiError("busy", "Wait for the current reply to finish.", 409)
+    svc.llm.stop_direct()
+    svc.agent.readiness.invalidate()
+    return jsonify({"ok": True, "direct": svc.llm.direct_engine().status()})
 
 
 @bp.get("/api/models/ready")
@@ -723,7 +745,15 @@ def patch_settings() -> Response:
         raise ApiError("bad_request", str(exc), 400) from None
     if not cleaned:
         raise ApiError("bad_request", "nothing to update", 400)
+    changed = {key for key in cleaned if current.get(key) != cleaned[key]}
+    if "engine" in changed and cleaned["engine"] == "direct":
+        # LM Studio would keep the models Kiwibro loaded there resident next to llama.cpp's.
+        svc.agent.readiness.release_all()
     svc.db.patch_settings(cleaned)
+    if "engine" in changed and cleaned["engine"] != "direct" or changed & DIRECT_LAUNCH_SETTINGS:
+        svc.llm.stop_direct()  # back on LM Studio, or relaunch with the new runtime/threads
+    if "engine" in changed:
+        svc.llm.clear_cache()
     if "workspace" in cleaned:
         try:
             Path(cleaned["workspace"]).mkdir(parents=True, exist_ok=True)

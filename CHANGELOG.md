@@ -4,6 +4,48 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-10-26
+
+A direct engine: LM Studio's downloaded models run with llama.cpp itself, without the
+LM Studio API or app, tuned for the machine — plus a smaller "smarter" fix for small
+models doing arithmetic in code.
+
+### Added
+
+- **Direct engine** (`engine.py`, `gguf.py`; Settings → Models → *Engine*). With
+  `engine: "direct"` Kiwibro scans the GGUF files LM Studio downloaded (native and
+  Flatpak installs, or any folder), picks LM Studio's bundled `llama-server` (or a custom
+  build from Settings / `KIWIBRO_LLAMA_SERVER`, or one on PATH) and runs the selected
+  model as its own child process on a private localhost port with a random API key.
+  Everything above the client is unchanged: model list (with tools, vision, thinking
+  switch, size, trained context), JIT loading, readiness load + warm-up, context
+  choices, model teamwork. Measured against the LM Studio API on a Ryzen 5 7530U with
+  `spark-x2.6-4b` IQ2_M under the same load: model start 3.6 s; prompt processing
+  37–43 tok/s vs 27–34 (every physical core instead of LM Studio's 4 threads; 12 SMT
+  threads were slower); decode 6.8 vs 4.7 tok/s on a reply that repeats its input
+  (n-gram speculative decoding, no draft model; unchanged on free text); and the
+  LM Studio app (~720 MB) need not run. Also on: unified KV pool, `--cache-reuse`, a
+  RAM prompt cache sized to free memory, flash attention auto.
+- Older llama.cpp builds work: flags missing from a runtime's `--help` are left out; a
+  runtime that exits while loading is retried without speculative decoding and then
+  the next runtime is tried.
+- Servers stop with Kiwibro (also across self-update `execv`), when switching back to
+  LM Studio, on *Stop* in Settings (`POST /api/engine/stop`), or when a third model
+  needs room; a server answering a request is never stopped. `GET /api/engine` reports
+  the runtime, folders and running servers.
+- Settings `engine`, `direct_runtime`, `direct_models_dir`, `direct_threads`; env
+  `KIWIBRO_ENGINE`, `KIWIBRO_LLAMA_SERVER`, `KIWIBRO_MODELS_DIR`. Switching to direct
+  unloads the models Kiwibro's warm-up had loaded in LM Studio (models you loaded there
+  yourself stay loaded).
+
+### Changed
+
+- **`run_python` prints a final bare expression**, like a REPL. Small models sent
+  `1234 * 5678`, got "(no output)" and then guessed the product (seen live: 7853476 for
+  7006652).
+- The header, model menu and composer hints name the direct engine instead of
+  LM Studio when it is selected.
+
 ## [2.3.0] — 2026-10-25
 
 Memory that finds what matters and sessions that keep their thread: the right memories

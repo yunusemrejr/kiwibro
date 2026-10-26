@@ -1,4 +1,8 @@
-"""LM Studio client: model discovery, streaming chat, non-streaming JSON helpers."""
+"""LM Studio client: model discovery, streaming chat, non-streaming JSON helpers.
+
+With the ``engine`` setting on ``direct`` the same client serves LM Studio's
+downloaded models through :mod:`kiwibro.engine` (llama.cpp run by Kiwibro)
+instead of the LM Studio API; everything above this module is unchanged."""
 
 from __future__ import annotations
 
@@ -9,8 +13,10 @@ import re
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from pathlib import Path
+from typing import Any, Callable, Iterator, Mapping
 
 import requests
 
@@ -239,8 +245,12 @@ class LMStudioClient:
         settings_provider: Callable[[], dict[str, Any]],
         *,
         cache_ttl: float = MODEL_CACHE_TTL,
+        data_dir: str | Path | None = None,
     ) -> None:
         self._settings = settings_provider
+        self._data_dir = data_dir
+        self._direct: Any = None  # engine.DirectEngine, created on first use
+        self._direct_lock = threading.Lock()
         self._cache: list[dict[str, Any]] | None = None
         self._cache_at = 0.0
         self._cache_ttl = cache_ttl
@@ -248,6 +258,50 @@ class LMStudioClient:
         self._fetch_lock = threading.Lock()
         self._load_api_supported: bool | None = None
         self._instances: dict[str, str] = {}  # model key -> instance id we loaded
+
+    # --- engine switch -----------------------------------------------------
+
+    def engine_mode(self) -> str:
+        return "direct" if self._settings().get("engine") == "direct" else "lmstudio"
+
+    def direct_on(self) -> bool:
+        return self.engine_mode() == "direct"
+
+    def direct_engine(self) -> Any:
+        """The direct engine (created lazily: LM Studio mode never touches it)."""
+        with self._direct_lock:
+            if self._direct is None:
+                from .engine import DirectEngine
+
+                self._direct = DirectEngine(self._settings, self._data_dir)
+            return self._direct
+
+    def stop_direct(self) -> None:
+        """Stop every llama.cpp server the direct engine runs (switching back to LM Studio)."""
+        with self._direct_lock:
+            engine = self._direct
+        if engine is not None:
+            engine.shutdown()
+        self.clear_cache()
+
+    @contextmanager
+    def _serving(self, model: str) -> Iterator[str]:
+        """The base URL that serves ``model``: LM Studio's, or a direct server held busy
+        for the request (started just in time, the way LM Studio JIT-loads)."""
+        if not self.direct_on():
+            yield self.base_url()
+            return
+        from .engine import EngineError
+
+        engine = self.direct_engine()
+        try:
+            server = engine.acquire(model)
+        except EngineError as exc:
+            raise LMStudioError("engine", str(exc)) from exc
+        try:
+            yield server.url
+        finally:
+            engine.release(server)
 
     # --- model discovery ---------------------------------------------------
 
@@ -259,6 +313,9 @@ class LMStudioClient:
         """Request headers; a server with authentication on (e.g. another machine's
         LM Studio) gets the API token from Settings or ``KIWIBRO_LMSTUDIO_TOKEN``."""
         headers = {"User-Agent": USER_AGENT, **(extra or {})}
+        if self.direct_on():
+            headers["Authorization"] = f"Bearer {self.direct_engine().api_key}"
+            return headers
         token = str(self._settings().get("lmstudio_token") or os.environ.get("KIWIBRO_LMSTUDIO_TOKEN") or "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -285,6 +342,10 @@ class LMStudioClient:
             return [dict(item) for item in models]
 
     def _fetch_models(self) -> list[dict[str, Any]]:
+        if self.direct_on():
+            engine = self.direct_engine()
+            models = [m for m in (normalize_model(raw) for raw in engine.raw_entries()) if m]
+            return merge_native_metadata(models, engine.native_entries())
         base = self.base_url()
         try:
             response = requests.get(
@@ -350,6 +411,11 @@ class LMStudioClient:
         preferred = requested or self._settings().get("model")
         if preferred and preferred in ids:
             return preferred
+        if preferred and self.direct_on():
+            # An id saved under LM Studio (e.g. liquid/lfm2.5-1.2b) names the same file here.
+            canonical = self.direct_engine().canonical(preferred)
+            if canonical in ids:
+                return canonical
         for model in models:
             if model["state"] == "loaded":
                 return model["id"]
@@ -361,6 +427,8 @@ class LMStudioClient:
         if not ok:
             raise LMStudioError("connection", self._connection_message(base))
         if not models:
+            if self.direct_on():
+                raise LMStudioError("no_model", "No downloaded models were found. Download one in LM Studio first.")
             raise LMStudioError("no_model", "No chat model is available in LM Studio. Load a model to start.")
         model = self.pick_model(models, requested)
         if not model:  # pragma: no cover - guarded by models check
@@ -377,8 +445,9 @@ class LMStudioClient:
                 return model
         return None
 
-    @staticmethod
-    def _connection_message(base: str) -> str:
+    def _connection_message(self, base: str) -> str:
+        if self.direct_on():
+            return "The built-in llama.cpp server stopped responding. Try again."
         return f"LM Studio is not reachable at {base}. Open LM Studio and load a model."
 
     # --- streaming chat ----------------------------------------------------
@@ -411,6 +480,10 @@ class LMStudioClient:
         if extra:
             # Server knobs such as reasoning_effort, ttl or draft_model; never the core fields.
             payload.update({k: v for k, v in extra.items() if k not in _CORE_PAYLOAD_KEYS})
+        if self.direct_on():
+            from .engine import adapt_payload
+
+            payload = adapt_payload(payload)
         return payload
 
     def stream_chat(
@@ -427,9 +500,8 @@ class LMStudioClient:
         extra: Mapping[str, Any] | None = None,
         on_rewrite: Callable[[str, str], None] | None = None,
     ) -> ChatResult:
-        base = self.base_url()
-        url = f"{base}/v1/chat/completions"
         use_tools = bool(tools)
+        base = url = ""  # set by _serving below, before attempt() runs
 
         def attempt(with_tools: bool) -> ChatResult:
             payload = self._payload(
@@ -499,15 +571,17 @@ class LMStudioClient:
             result.tool_calls = self._finish_tool_calls(tool_acc)
             return result
 
-        try:
-            return attempt(use_tools)
-        except ToolsUnsupportedError:
-            if not use_tools:
-                raise
-            log.info("model %s rejected tools; retrying without tools", model)
-            result = attempt(False)
-            result.tools_disabled = True
-            return result
+        with self._serving(model) as base:
+            url = f"{base}/v1/chat/completions"
+            try:
+                return attempt(use_tools)
+            except ToolsUnsupportedError:
+                if not use_tools:
+                    raise
+                log.info("model %s rejected tools; retrying without tools", model)
+                result = attempt(False)
+                result.tools_disabled = True
+                return result
 
     def prefill(
         self,
@@ -523,33 +597,33 @@ class LMStudioClient:
         LM Studio sends nothing while it prefills, so an abort flag checked per stream
         line would wait minutes; a watcher shuts the socket down instead, which ends
         the request mid-prefill."""
-        base = self.base_url()
-        payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
-        finished = threading.Event()
-        try:
-            with requests.post(
-                f"{base}/v1/chat/completions", json=payload, stream=True,
-                timeout=(CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
-                headers=self._headers({"Accept": "text/event-stream"}),
-            ) as response:
-                if abort is not None:
-                    threading.Thread(
-                        target=self._close_on_abort, args=(response, abort, finished),
-                        name="kiwibro-prefill-watch", daemon=True,
-                    ).start()
-                if response.status_code != 200:
-                    raise classify_http_error(response.status_code, self._read_body(response))
-                for raw_line in response.iter_lines(decode_unicode=False):
-                    if raw_line and raw_line.startswith(b"data:"):
-                        break  # the first token: the whole prompt is in the cache now
-        except requests.RequestException as exc:
+        with self._serving(model) as base:
+            payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
+            finished = threading.Event()
+            try:
+                with requests.post(
+                    f"{base}/v1/chat/completions", json=payload, stream=True,
+                    timeout=(CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+                    headers=self._headers({"Accept": "text/event-stream"}),
+                ) as response:
+                    if abort is not None:
+                        threading.Thread(
+                            target=self._close_on_abort, args=(response, abort, finished),
+                            name="kiwibro-prefill-watch", daemon=True,
+                        ).start()
+                    if response.status_code != 200:
+                        raise classify_http_error(response.status_code, self._read_body(response))
+                    for raw_line in response.iter_lines(decode_unicode=False):
+                        if raw_line and raw_line.startswith(b"data:"):
+                            break  # the first token: the whole prompt is in the cache now
+            except requests.RequestException as exc:
+                if abort is not None and abort.is_set():
+                    raise TurnAborted() from exc
+                raise LMStudioError("connection", self._connection_message(base)) from exc
+            finally:
+                finished.set()
             if abort is not None and abort.is_set():
-                raise TurnAborted() from exc
-            raise LMStudioError("connection", self._connection_message(base)) from exc
-        finally:
-            finished.set()
-        if abort is not None and abort.is_set():
-            raise TurnAborted()
+                raise TurnAborted()
 
     @staticmethod
     def _close_on_abort(response: requests.Response, abort: threading.Event, finished: threading.Event) -> None:
@@ -680,8 +754,6 @@ class LMStudioClient:
         extra: Mapping[str, Any] | None = None,
         abort: threading.Event | None = None,
     ) -> Completion:
-        base = self.base_url()
-        url = f"{base}/v1/chat/completions"
         if extra is None:
             # Non-streaming calls are utility work (summaries, memory, titles, helpers):
             # they never think. Reasoning tokens cost as much as answer tokens on a
@@ -698,59 +770,61 @@ class LMStudioClient:
                 text=streamed.content or streamed.reasoning or "", usage=streamed.usage,
                 finish_reason=streamed.finish_reason,
             )
-        payload = self._payload(
-            model, messages, None, temperature, max_tokens, stream=False,
-            response_format=response_format, extra=extra,
-        )
-        last_error: LMStudioError | None = None
-        for attempt in range(retries + 1):
-            try:
-                response = requests.post(
-                    url,
-                    json=payload,
-                    timeout=(CONNECT_TIMEOUT, read_timeout),
-                    headers=self._headers(),
-                )
-            except requests.ConnectionError as exc:
-                last_error = LMStudioError("connection", self._connection_message(base))
-                if attempt < retries:
-                    time.sleep(0.4)
-                    continue
-                raise last_error from exc
-            except requests.Timeout as exc:
-                last_error = LMStudioError("timeout", "LM Studio did not answer in time.")
-                if attempt < retries:
-                    continue
-                raise last_error from exc
-            except requests.RequestException as exc:  # pragma: no cover - defensive
-                last_error = LMStudioError("connection", self._connection_message(base))
-                if attempt < retries:
-                    continue
-                raise last_error from exc
-            if response.status_code != 200:
-                error = classify_http_error(response.status_code, self._read_body(response))
-                if isinstance(error, (ContextLimitError, ToolsUnsupportedError)):
-                    raise error
-                last_error = error
-                if attempt < retries:
-                    time.sleep(0.4)
-                    continue
-                raise error
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise LMStudioError("bad_response", "LM Studio returned an invalid response.") from exc
-            choices = data.get("choices") if isinstance(data, dict) else None
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise LMStudioError("bad_response", "LM Studio returned an empty response.")
-            message = choices[0].get("message") or {}
-            content = message.get("content") or message.get("reasoning_content") or ""
-            return Completion(
-                text=str(content),
-                usage=_usage(data.get("usage")),
-                finish_reason=str(choices[0].get("finish_reason") or "") or None,
+        with self._serving(model) as base:
+            url = f"{base}/v1/chat/completions"
+            payload = self._payload(
+                model, messages, None, temperature, max_tokens, stream=False,
+                response_format=response_format, extra=extra,
             )
-        raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
+            last_error: LMStudioError | None = None
+            for attempt in range(retries + 1):
+                try:
+                    response = requests.post(
+                        url,
+                        json=payload,
+                        timeout=(CONNECT_TIMEOUT, read_timeout),
+                        headers=self._headers(),
+                    )
+                except requests.ConnectionError as exc:
+                    last_error = LMStudioError("connection", self._connection_message(base))
+                    if attempt < retries:
+                        time.sleep(0.4)
+                        continue
+                    raise last_error from exc
+                except requests.Timeout as exc:
+                    last_error = LMStudioError("timeout", "LM Studio did not answer in time.")
+                    if attempt < retries:
+                        continue
+                    raise last_error from exc
+                except requests.RequestException as exc:  # pragma: no cover - defensive
+                    last_error = LMStudioError("connection", self._connection_message(base))
+                    if attempt < retries:
+                        continue
+                    raise last_error from exc
+                if response.status_code != 200:
+                    error = classify_http_error(response.status_code, self._read_body(response))
+                    if isinstance(error, (ContextLimitError, ToolsUnsupportedError)):
+                        raise error
+                    last_error = error
+                    if attempt < retries:
+                        time.sleep(0.4)
+                        continue
+                    raise error
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    raise LMStudioError("bad_response", "LM Studio returned an invalid response.") from exc
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    raise LMStudioError("bad_response", "LM Studio returned an empty response.")
+                message = choices[0].get("message") or {}
+                content = message.get("content") or message.get("reasoning_content") or ""
+                return Completion(
+                    text=str(content),
+                    usage=_usage(data.get("usage")),
+                    finish_reason=str(choices[0].get("finish_reason") or "") or None,
+                )
+            raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
 
     def complete_json(
         self,
@@ -798,6 +872,8 @@ class LMStudioClient:
 
     def _native_models(self) -> list[dict[str, Any]]:
         """``/api/v1/models`` entries, or [] on builds/servers without it (optional metadata)."""
+        if self.direct_on():
+            return self.direct_engine().native_entries()
         try:
             response = requests.get(
                 f"{self.base_url()}/api/v1/models", timeout=(CONNECT_TIMEOUT, 5),
@@ -810,6 +886,8 @@ class LMStudioClient:
         return [entry for entry in native if isinstance(entry, dict)] if isinstance(native, list) else []
 
     def _fetch_raw_models(self) -> list[dict[str, Any]]:
+        if self.direct_on():
+            return self.direct_engine().raw_entries()
         base = self.base_url()
         for path in ("/api/v0/models", "/v1/models"):
             try:
@@ -892,32 +970,32 @@ class LMStudioClient:
         """Embed texts via ``/v1/embeddings``; returns vectors in input order."""
         if not texts:
             return []
-        base = self.base_url()
-        try:
-            response = requests.post(
-                f"{base}/v1/embeddings",
-                json={"model": model, "input": texts},
-                timeout=(CONNECT_TIMEOUT, read_timeout),
-                headers=self._headers(),
+        with self._serving(model) as base:
+            try:
+                response = requests.post(
+                    f"{base}/v1/embeddings",
+                    json={"model": model, "input": texts},
+                    timeout=(CONNECT_TIMEOUT, read_timeout),
+                    headers=self._headers(),
+                )
+            except requests.ConnectionError as exc:
+                raise LMStudioError("connection", self._connection_message(base)) from exc
+            except requests.RequestException as exc:
+                raise LMStudioError("timeout", "LM Studio did not answer in time.") from exc
+            if response.status_code != 200:
+                raise classify_http_error(response.status_code, self._read_body(response))
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise LMStudioError("bad_response", "LM Studio returned an invalid embedding response.") from exc
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list):
+                raise LMStudioError("bad_response", "LM Studio returned no embeddings.")
+            ordered = sorted(
+                (d for d in data if isinstance(d, dict)),
+                key=lambda d: d.get("index") if isinstance(d.get("index"), int) else 0,
             )
-        except requests.ConnectionError as exc:
-            raise LMStudioError("connection", self._connection_message(base)) from exc
-        except requests.RequestException as exc:
-            raise LMStudioError("timeout", "LM Studio did not answer in time.") from exc
-        if response.status_code != 200:
-            raise classify_http_error(response.status_code, self._read_body(response))
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise LMStudioError("bad_response", "LM Studio returned an invalid embedding response.") from exc
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list):
-            raise LMStudioError("bad_response", "LM Studio returned no embeddings.")
-        ordered = sorted(
-            (d for d in data if isinstance(d, dict)),
-            key=lambda d: d.get("index") if isinstance(d.get("index"), int) else 0,
-        )
-        return [[float(v) for v in d.get("embedding") or []] for d in ordered]
+            return [[float(v) for v in d.get("embedding") or []] for d in ordered]
 
     def _load_api_call(
         self, action: str, model: str, context_length: int | None = None, parallel: int | None = None
@@ -972,13 +1050,23 @@ class LMStudioClient:
 
     def load_model(self, model: str, context_length: int | None = None, parallel: int | None = None) -> bool:
         """Best-effort explicit load; False means rely on LM Studio JIT loading."""
+        if self.direct_on():
+            loaded = self.direct_engine().load(model, context_length, parallel)
+            self.clear_cache()
+            return loaded
         return self._load_api_call("load", model, context_length, parallel)
 
     def loaded_instance(self, model: str) -> str | None:
         """Instance id LM Studio assigned when this client loaded ``model``."""
+        if self.direct_on():
+            return self.direct_engine().canonical(model)
         with self._lock:
             return self._instances.get(model)
 
     def unload_model(self, model: str) -> bool:
         """Best-effort explicit unload of a model this client loaded (or a loaded instance id)."""
+        if self.direct_on():
+            unloaded = self.direct_engine().unload(model)
+            self.clear_cache()
+            return unloaded
         return self._load_api_call("unload", model)

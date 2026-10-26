@@ -46,7 +46,9 @@ kiwibro/
 │   ├── config.py           # paths, defaults, settings values + validation
 │   ├── db.py               # SQLite schema, forward migrations, CRUD
 │   │   # model & inference
-│   ├── llm.py              # LM Studio client: discovery, streaming, JSON helpers
+│   ├── llm.py              # LM Studio client: discovery, streaming, JSON helpers (both engines)
+│   ├── engine.py           # direct engine: LM Studio's models run by llama.cpp children
+│   ├── gguf.py             # GGUF header reader (arch, context, quant, chat template)
 │   ├── inference.py        # KV-stable prompt layout, thinking control, telemetry
 │   ├── readiness.py        # load the selected model + prefill its prompt ahead of time
 │   ├── capabilities.py     # model capability inference, smallest-capable pick
@@ -210,6 +212,52 @@ returns a 400 mentioning tools, retry once without tools.
 - 5xx / timeouts → one retry for non-critical generation; stream errors emit
   `event: error` with `recoverable: true` and a short message.
 - Never surface raw HTML or Python tracebacks; log details to the log file.
+
+### Direct engine (`engine.py`, `gguf.py`)
+
+`settings.engine = "direct"` keeps every call above but serves it from llama.cpp
+processes Kiwibro runs itself; `LMStudioClient` switches per request, so nothing above
+`llm.py` knows which engine answers.
+
+- **Models**: GGUF files under `KIWIBRO_MODELS_DIR`, Settings' `direct_models_dir`, LM
+  Studio's `downloadsFolder` and `models/` of the native (`~/.lmstudio`) and Flatpak
+  (`~/.var/app/ai.lmstudio.lm-studio/.lmstudio`) installs, publisher/repo/file deep.
+  `gguf.py` reads only the header's key/values (the tokenizer arrays are skipped by
+  seeking): architecture, trained context, size label, file type → quantisation, and
+  the chat template (tools; `<think>` = thinks; `enable_thinking`/`reasoning_effort` =
+  switchable). Ids follow LM Studio's: `publisher/repo` lower-cased without `-GGUF`,
+  `@quant` when one folder holds several; `mmproj` files make their folder's model a
+  vision model; split files list once. Entries are built in LM Studio's v0/v1 shapes so
+  `normalize_model`/`merge_native_metadata` stay the only normalisers. LM Studio ids
+  that differ (`liquid/lfm2.5-1.2b` for lmstudio-community's upload) resolve through
+  aliases and the name part.
+- **Runtimes**: Settings' `direct_runtime` / `KIWIBRO_LLAMA_SERVER`, then LM Studio's
+  bundled `extensions/backends/llama.cpp-*/llama-server` (the one in its
+  `backend-preferences-v1.json` first, then newest, CPU before GPU; CUDA only with an
+  NVIDIA device), then `llama-server` on PATH. Each is started with its own folder on
+  `LD_LIBRARY_PATH`; its `--help` is read once so flags an older build lacks are left
+  out. A runtime that exits while loading (e.g. an architecture it does not know) is
+  retried without speculative decoding, then the next runtime is tried (three at most).
+- **Launch**: `--ctx-size` (32K by default, capped by the trained context), `--parallel
+  4 --kv-unified` (one KV pool for the chat slot and background slots), `--threads` =
+  `--threads-batch` = physical cores (measured: 12 batch threads on this 6-core SMT CPU
+  prefilled at 27 tok/s vs 37 with 6), `--flash-attn auto`, `--jinja`,
+  `--reasoning-format deepseek`, `--cache-reuse 256`, `--cache-ram` = a quarter of free
+  memory (1–8 GiB), `--spec-type ngram-mod` (no draft model; measured 4.7 → 6.8 tok/s
+  on a reply that copies its input, unchanged on free text), `--no-webui`, a random
+  `--api-key`, `127.0.0.1` on a free port. LM Studio itself started the same binary
+  with 4 threads and flash attention off.
+- **Lifecycle**: a request `acquire`s its model's server (JIT start, like LM Studio)
+  and `release`s it when done; eviction and `unload` only stop servers with no request
+  in flight. At most two servers run (a third stops the least recently used idle one,
+  or one that no longer fits in free memory). Children are spawned from one long-lived
+  thread with `PR_SET_PDEATHSIG`, so they die with Kiwibro even through its self-update
+  `execv`; pid files in `<data>/engine/` let the next start stop any left behind. Logs:
+  `<data>/engine/<model>.log`.
+- **Requests**: `adapt_payload` sets `cache_prompt`, drops LM Studio-only keys (`ttl`,
+  `draft_model`), keeps `reasoning_effort: "none"` (llama.cpp turns thinking off) and
+  turns other effort words into `chat_template_kwargs.enable_thinking: true` (templates
+  disagree on effort vocabulary: spark-x2.6 raises on "medium").
 
 ### 4.1 Local inference engine (`inference.py`, `routing.py`, `media.py`)
 

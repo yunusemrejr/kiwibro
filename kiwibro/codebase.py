@@ -358,6 +358,29 @@ def multi_command(
 SNIPPET_LANGUAGES = ("python", "javascript")
 
 
+def echo_last_expression(code: str) -> str:
+    """Python code that also prints its final bare expression, the way a REPL does.
+
+    Small models often send ``1234 * 5678`` and get "(no output)" back, then guess
+    the number. Only a top-level expression that ends the snippet on its own lines
+    is wrapped (the rest of the text, comments included, is kept as written);
+    ``None`` results such as ``print(...)`` add nothing."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code  # the interpreter reports it
+    last = tree.body[-1] if tree.body else None
+    if not isinstance(last, ast.Expr) or last.col_offset != 0 or last.end_lineno is None:
+        return code
+    lines = code.splitlines(keepends=True)
+    if lines[last.end_lineno - 1][last.end_col_offset:].strip().lstrip(";").strip():
+        return code  # something else shares its last line
+    expression = "".join(lines[last.lineno - 1:last.end_lineno])
+    head = "".join(lines[:last.lineno - 1])
+    return (f"{head}__kiwibro_value = (\n{expression.rstrip().rstrip(';')}\n)\n"
+            "if __kiwibro_value is not None:\n    print(repr(__kiwibro_value))\n")
+
+
 def run_snippet(
     workspace: Workspace,
     language: str,
@@ -405,7 +428,7 @@ def run_snippet(
         cache.mkdir(exist_ok=True)
         _prune_runs(runs, keep=SNIPPET_KEEP_RUNS)
         script = scratch / filename
-        script.write_text(code, encoding="utf-8")
+        script.write_text(echo_last_expression(code) if language == "python" else code, encoding="utf-8")
     except OSError as exc:
         raise SandboxError(f"could not prepare snippet: {exc.strerror or exc}") from exc
     env = command_env(

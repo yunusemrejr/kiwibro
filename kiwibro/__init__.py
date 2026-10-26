@@ -119,7 +119,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             _settings_cache["version"] = db.settings_version
         return {**cached, "permissions": dict(cached.get("permissions") or {})}
 
-    llm = LMStudioClient(settings_provider)
+    llm = LMStudioClient(settings_provider, data_dir=data_dir)
     context = ContextEngine(db, llm, settings_provider)
     memory = MemoryEngine(db, llm, settings_provider)
     search = SearchEngine()

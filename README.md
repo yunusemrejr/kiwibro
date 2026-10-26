@@ -64,6 +64,7 @@ permission, inside its own workspace.
 | **Offline compute** | `calculate` for exact math, unit conversion and date arithmetic; `analyze_table` for CSV/JSON profiling, filters and group-by — no model arithmetic. |
 | **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first; `undo_changes` puts it back. |
 | **Tool profiles** | Auto offers one fixed core set (about 20 tools) sized for 1–4B models (the rest run when called by name); full/minimal/coding/research/desktop are explicit choices. Independent read/search calls run in parallel. |
+| **Direct engine** | A toggle in Settings → Models runs LM Studio's downloaded models with llama.cpp itself, no LM Studio API in between and no LM Studio window needed. Kiwibro finds the models (native and Flatpak installs) and LM Studio's bundled llama.cpp (or your own `llama-server`), starts the model in about 4 s and tunes it for the machine: every physical core, n-gram speculative decoding, a unified KV pool and a RAM prompt cache. |
 | **Fast local inference** | The prompt prefix stays byte-stable so LM Studio reuses its KV cache: on a laptop CPU a 4k-token prompt goes from 124 s to 1.3 s. A *Think* control (auto/on/off) spends reasoning tokens only where they help; background work never thinks. Each reply shows time to first token, tokens/s and the cached share. |
 | **Model teamwork** | When the main model lacks a capability (e.g. vision), Kiwibro loads the smallest installed model that has it, if it fits in free memory, asks it, unloads it and continues on the main model. With no capable model it falls back to code-based media analysis. |
 | **Attachments** | Attach, paste or drop images, audio, video and documents. Images and video frames are described by a vision model before your model answers; audio and other media get measured facts; every file lands in the workspace for the agent's tools. |
@@ -81,8 +82,10 @@ permission, inside its own workspace.
 
 - Linux (developed on Ubuntu; any GTK/GNOME desktop works)
 - Python 3.10+
-- [LM Studio](https://lmstudio.ai) running with its local server enabled
-  (default `http://127.0.0.1:1234`), and at least one chat model
+- [LM Studio](https://lmstudio.ai) with at least one downloaded chat model. With the
+  default engine its local server must be running (default `http://127.0.0.1:1234`);
+  with the direct engine LM Studio only has to be installed (its bundled llama.cpp is
+  used), or point Kiwibro at your own `llama-server` build
 - Chrome/Chromium (for the native app window) or any modern browser
 
 ## Quick start
@@ -148,6 +151,27 @@ the model (if needed) and feeds LM Studio the prompt your next message will star
 On a laptop CPU that turns a 47-second first reply into a 7-second one. Send a message
 while it is still getting ready and the reply simply picks up that work.
 
+**Engine.** Settings → Models → *Engine* switches between the **LM Studio API** (the
+default) and **Direct · llama.cpp**. Direct mode reads the GGUF files LM Studio
+downloaded, picks the llama.cpp engine LM Studio uses (or the `llama-server` you set),
+and runs the selected model as a private child process on a random localhost port with
+its own API key. The model list, thinking switch, tool calls, warm-up and context
+choices work the same way; ids saved under LM Studio keep working. Compared with the
+LM Studio API on the same laptop (Ryzen 5 7530U, `spark-x2.6-4b` IQ2_M, a fresh
+3.9k-token prompt, both measured under the same background load):
+
+| | LM Studio API | Direct |
+|---|---|---|
+| Model start | JIT load | 3.6 s |
+| Prompt processing | 27–34 tok/s (LM Studio uses 4 threads) | 37–43 tok/s (6 physical cores) |
+| Reply that repeats what it read (code, quotes) | 4.7 tok/s | 6.8 tok/s (n-gram speculative decoding) |
+| Free-form reply | ~4–5 tok/s | ~4–5 tok/s (unchanged) |
+| LM Studio app in memory | ~720 MB | not needed |
+
+Servers stop when Kiwibro exits (also after a self-update), when you switch back, or
+with *Stop* in Settings; a second model (e.g. a vision helper) may run beside the chat
+model, and a third replaces the least recently used idle one.
+
 **Context.** You never need to manage it. When a conversation approaches the model's
 window, Kiwibro summarises the older part into a rolling summary and keeps recent
 turns verbatim. A message longer than the model can read at once is stored as a
@@ -185,10 +209,14 @@ Environment variables:
 | `KIWIBRO_DATA_DIR` | `~/.local/share/kiwibro` | Database and logs |
 | `KIWIBRO_LMSTUDIO_URL` | `http://127.0.0.1:1234` | LM Studio server |
 | `KIWIBRO_LMSTUDIO_TOKEN` | — | API token for an LM Studio server with authentication on |
+| `KIWIBRO_ENGINE` | `lmstudio` | Default engine for a fresh settings DB: `lmstudio` or `direct` |
+| `KIWIBRO_LLAMA_SERVER` | — | A `llama-server` to use in direct mode (Settings can set it too) |
+| `KIWIBRO_MODELS_DIR` | — | Extra GGUF folders for direct mode (`:`-separated), scanned before LM Studio's |
 | `KIWIBRO_WARMUP` | `1` | `0` turns off loading and warming the model ahead of the first message |
 | `KIWIBRO_MEMORY_IDLE_S` | `20` | Seconds without a streaming reply before memory is learned in the background |
 
-Runtime settings (model, LM Studio address and token, permissions, autonomy, command
+Runtime settings (model, engine, llama.cpp runtime / models folder / CPU threads, LM
+Studio address and token, permissions, autonomy, command
 sandbox, remote hosts, workspace, temperature, output tokens, user name, thinking, tool
 profile, max tool steps per reply) live in the Settings sheet and are stored in SQLite.
 
@@ -206,7 +234,8 @@ Flask API ── agent loop ── tools (permissions + sandbox)
 context engine (token budget, rolling summaries)
         │
         ▼
-LM Studio (OpenAI-compatible, localhost)
+LM Studio API  ─or─  direct engine: llama.cpp child process
+(OpenAI-compatible, localhost)
         │
         ▼
 SQLite (chats, memories, settings, usage)

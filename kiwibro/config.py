@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.
@@ -117,8 +117,15 @@ DEFAULT_AUTONOMY = "smart"
 SANDBOX_MODES = ("auto", "strict", "off")
 DEFAULT_SANDBOX = "auto"
 
+# Where models run: "lmstudio" calls LM Studio's API; "direct" runs LM Studio's downloaded
+# models with llama.cpp itself (see engine.py), so the LM Studio app need not be open.
+ENGINES = ("lmstudio", "direct")
+DEFAULT_ENGINE = "lmstudio"
+DIRECT_THREADS_RANGE = (0, 256)  # 0 = every physical core
+
 # Settings whose value must be one of a fixed set.
 SETTING_CHOICES: dict[str, tuple[str, ...]] = {
+    "engine": ENGINES,
     "tool_profile": TOOL_PROFILES,
     "reasoning": REASONING_MODES,
     "autonomy": AUTONOMY_MODES,
@@ -160,6 +167,10 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
         "model": None,
         "lmstudio_url": url,
         "lmstudio_token": "",
+        "engine": os.environ.get("KIWIBRO_ENGINE") if os.environ.get("KIWIBRO_ENGINE") in ENGINES else DEFAULT_ENGINE,
+        "direct_runtime": "",
+        "direct_models_dir": "",
+        "direct_threads": 0,
         "agent_enabled": True,
         "memory_enabled": True,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
@@ -213,6 +224,23 @@ def validate_lmstudio_url(value: Any) -> str:
     return url
 
 
+def _validate_optional_path(value: Any, key: str, *, executable: bool) -> str:
+    """'' (automatic) or an absolute path to an existing executable file / folder."""
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError(f"{key} must be a path")
+    raw = value.strip()
+    if not raw:
+        return ""
+    path = Path(os.path.expanduser(raw))
+    if not path.is_absolute():
+        raise ValueError(f"{key} must be an absolute path")
+    if executable and not (path.is_file() and os.access(path, os.X_OK)):
+        raise ValueError(f"{key} must be an executable llama-server file")
+    if not executable and not path.is_dir():
+        raise ValueError(f"{key} must be an existing folder")
+    return str(path)
+
+
 def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     """Validate a settings PATCH body; returns the normalised values to persist."""
     cleaned: dict[str, Any] = {}
@@ -245,6 +273,17 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             cleaned["workspace"] = validate_workspace(value)
         elif key == "lmstudio_url":
             cleaned["lmstudio_url"] = validate_lmstudio_url(value)
+        elif key == "direct_runtime":
+            # A custom llama.cpp build's llama-server; empty = LM Studio's bundled engine.
+            cleaned["direct_runtime"] = _validate_optional_path(value, key, executable=True)
+        elif key == "direct_models_dir":
+            cleaned["direct_models_dir"] = _validate_optional_path(value, key, executable=False)
+        elif key == "direct_threads":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("direct_threads must be an integer")
+            if not DIRECT_THREADS_RANGE[0] <= value <= DIRECT_THREADS_RANGE[1]:
+                raise ValueError("direct_threads must be between 0 and 256")
+            cleaned["direct_threads"] = value
         elif key == "lmstudio_token":
             # API token for an LM Studio server with authentication on (another machine's).
             if not isinstance(value, str) or len(value) > 512 or any(c.isspace() for c in value.strip()):

@@ -74,6 +74,28 @@ Additive fields from LM Studio's `/api/v1/models` when available: `key`, `displa
 (`context_length`, `parallel`, `flash_attention`) plus `context_choices` (larger windows
 the model supports, at most three).
 
+### `GET /api/engine`
+Which engine serves models and what the direct engine found:
+```json
+{"ok": true, "engine": "lmstudio|direct", "direct": {
+  "available": true, "error": null, "models_count": 7, "threads": 6,
+  "runtime": {"path": ".../llama.cpp-linux-x86_64-avx2-2.64.0/llama-server",
+              "label": "LM Studio's llama.cpp 2.64.0 (CPU)", "kind": "cpu", "source": "lmstudio"},
+  "runtimes": [{"path": "...", "label": "..."}],
+  "model_dirs": ["/home/you/.lmstudio/models"],
+  "servers": [{"model": "bartowski/spark-x2.6-4b", "pid": 123, "port": 45885,
+               "context_length": 32768, "parallel": 4, "threads": 6,
+               "runtime": "...", "started_at": 1793018131, "busy": false}]}}
+```
+In direct mode every model endpoint above keeps its shape: `lmstudio` means "the engine
+can list models", models come from the GGUF files on disk (`state: loaded` while a
+server runs), and `/api/models/context` restarts the server with the new window.
+`/health` and `/api/bootstrap` include `engine`.
+
+### `POST /api/engine/stop`
+Stops every direct-engine server (frees its memory; the next message starts one again).
+`{"ok": true, "direct": {...}}`; `409 busy` while a reply runs.
+
 ### `GET /api/models/ready`
 `{"ok": true, "readiness": {"model", "phase", "detail", "context_length"}}`. `phase` is
 `idle | loading | warming | ready | error`. Opening Kiwibro, selecting a model, opening a
@@ -275,6 +297,7 @@ content makes the memory the user's (origin `you`).
   "workspace": "/home/you/Kiwibro", "user_name": "",
   "tool_profile": "auto", "reasoning": "auto", "max_tool_rounds": 16,
   "autonomy": "smart", "sandbox": "auto", "remote_hosts": [],
+  "engine": "lmstudio", "direct_runtime": "", "direct_models_dir": "", "direct_threads": 0,
   "permissions": {"web_search":"auto", "...every tool, see config.permission_defaults()":"…"}
 }}
 ```
@@ -285,7 +308,12 @@ tool_profile in {auto, full, minimal, coding, research, desktop}, reasoning in
 strict, off}, remote_hosts a list of ≤32 ssh aliases or `user@host`, max_tool_rounds
 1–32, workspace must be creatable inside `$HOME` (no root paths), lmstudio_url
 http(s), permissions modes in {auto, ask, deny} for any known tool (built-in or
-extension), lmstudio_token a single token ≤ 512 chars (`""` removes it). Returns merged
+extension), lmstudio_token a single token ≤ 512 chars (`""` removes it), engine in
+{lmstudio, direct}, direct_runtime `""` or an absolute path to an executable
+`llama-server`, direct_models_dir `""` or an existing absolute folder, direct_threads
+0–256 (0 = every physical core). Switching to `direct` unloads the models Kiwibro loaded
+in LM Studio; switching away, or changing a `direct_*` value, stops the direct servers
+(the next request starts one with the new values). Returns merged
 settings. Changing workspace does not move files; a conversation bound to its own
 folder (`conversation.workspace`, set by the `workspace` tool) keeps using that folder.
 

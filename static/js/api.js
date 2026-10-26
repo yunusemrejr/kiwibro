@@ -142,6 +142,9 @@ export const api = {
   resizeContext: (id, contextLength) =>
     request("/api/models/context", { method: "POST", body: { id, context_length: contextLength } }),
 
+  engine: () => request("/api/engine"),
+  engineStop: () => request("/api/engine/stop", { method: "POST" }),
+
   conversations: () => request("/api/conversations"),
   searchConversations: (q, { signal } = {}) =>
     request(`/api/conversations/search?q=${encodeURIComponent(q)}`, { signal }),

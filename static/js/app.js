@@ -172,6 +172,11 @@ function applyBootstrap(data) {
   applyReadiness(data.readiness);
 }
 
+// Models run through LM Studio's API, or directly with llama.cpp (Settings → Models → Engine).
+function directEngine() {
+  return state.settings?.engine === "direct";
+}
+
 async function boot() {
   window.clearTimeout(bootRetryTimer);
   try {
@@ -248,13 +253,13 @@ function renderHeaderModel() {
     tone = "warn";
     title = "Kiwibro server is unreachable";
   } else if (!state.lmstudio) {
-    name = "LM Studio offline";
+    name = directEngine() ? "Engine offline" : "LM Studio offline";
     tone = "warn";
-    title = "Start LM Studio to chat";
+    title = directEngine() ? "The direct engine couldn't start" : "Start LM Studio to chat";
   } else if (!state.models.length) {
     name = "No model";
     tone = "amber";
-    title = "No chat model loaded in LM Studio";
+    title = directEngine() ? "No downloaded models were found" : "No chat model loaded in LM Studio";
   } else if (state.currentModel) {
     name = state.currentModel;
     tone = "loaded";
@@ -273,7 +278,7 @@ function renderHeaderModel() {
   els.sidebarModelName.textContent = state.unreachable
     ? "Offline"
     : !state.lmstudio
-      ? "LM Studio off"
+      ? directEngine() ? "Engine off" : "LM Studio off"
       : state.currentModel || "No model";
   els.sidebarDot.dataset.tone = tone;
 }
@@ -286,8 +291,8 @@ function buildModelMenu(menu) {
     menu.append(
       el("div", { class: "menu-empty" }, [
         icon("alert"),
-        el("div", { text: "LM Studio isn't running." }),
-        el("div", { text: "Start it, then refresh." }),
+        el("div", { text: directEngine() ? "The direct engine couldn't start." : "LM Studio isn't running." }),
+        el("div", { text: directEngine() ? "Check Settings → Models, then refresh." : "Start it, then refresh." }),
       ]),
     );
   } else if (!state.models.length) {
@@ -897,8 +902,8 @@ function updateComposerState() {
 
   let hint = "";
   if (state.unreachable) hint = "Can't reach the Kiwibro server. Is it running?";
-  else if (!state.lmstudio) hint = "LM Studio isn't running. Start it to chat.";
-  else if (!state.models.length) hint = "No chat model loaded in LM Studio.";
+  else if (!state.lmstudio) hint = directEngine() ? "The direct engine couldn't start. Check Settings → Models." : "LM Studio isn't running. Start it to chat.";
+  else if (!state.models.length) hint = directEngine() ? "No downloaded models were found. Download one in LM Studio." : "No chat model loaded in LM Studio.";
 
   els.dockHint.hidden = !hint;
   if (hint) els.dockHintText.textContent = hint;
@@ -1243,7 +1248,8 @@ function stopStreaming() {
 }
 
 function toastNotReady() {
-  toast(!state.lmstudio ? "LM Studio isn't running" : "No model is available", { tone: "error", iconName: "alert" });
+  const offline = directEngine() ? "The direct engine couldn't start" : "LM Studio isn't running";
+  toast(!state.lmstudio ? offline : "No model is available", { tone: "error", iconName: "alert" });
 }
 
 function retryLastSend() {
@@ -1471,7 +1477,7 @@ async function reconnect() {
     if (state.lmstudio) await refreshModels({ quiet: true });
     renderHeaderModel();
     updateComposerState();
-    if (state.lmstudio) toast("LM Studio connected");
+    if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
   } catch (error) {
     toast(error?.message || "Still offline", { tone: "error" });
   } finally {
@@ -1535,7 +1541,7 @@ async function maybeCheckHealth() {
       if (state.lmstudio) await refreshModels({ quiet: true });
       renderHeaderModel();
       updateComposerState();
-      if (state.lmstudio) toast("LM Studio connected");
+      if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
     }
     refreshMemoryCount();
   } catch {
