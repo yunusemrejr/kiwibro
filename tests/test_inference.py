@@ -250,6 +250,47 @@ def test_reasoning_payload_empty_for_model_without_toggle():
     assert inf.reasoning_payload(profile, think=False) == {}
 
 
+# --- 5b. thinking budgets (direct engine) ---------------------------------------------------
+
+
+def test_budgets_apply_only_to_thinking_models_on_the_direct_engine():
+    spark = inf.model_profile(SPARK_RAW["key"], SPARK_RAW)
+    assert inf.uses_budgets(spark, direct=True)
+    assert not inf.uses_budgets(spark, direct=False)
+    assert not inf.uses_budgets(inf.model_profile(QWEN_27B_RAW["key"], QWEN_27B_RAW), direct=True)
+
+
+def test_budget_payload_keeps_the_template_in_thinking_mode_whatever_the_decision():
+    """The prompt never changes with the decision: 'no thinking' is a budget of 0."""
+    spark = inf.model_profile(SPARK_RAW["key"], SPARK_RAW)
+    off = inf.budget_payload(spark, think=False, must_act=False)
+    acting = inf.budget_payload(spark, think=True, must_act=True)
+    opening = inf.budget_payload(spark, think=True, must_act=False)
+    assert off == {"chat_template_kwargs": {"enable_thinking": True}, "thinking_budget_tokens": 0}
+    assert acting["thinking_budget_tokens"] == inf.THINK_BUDGET_TOKENS
+    assert opening["thinking_budget_tokens"] == inf.OPEN_THINK_BUDGET_TOKENS > inf.THINK_BUDGET_TOKENS
+    assert {k: v for k, v in off.items() if k not in inf.BUDGET_KEYS} == \
+        {k: v for k, v in acting.items() if k not in inf.BUDGET_KEYS}
+    assert "reasoning_effort" not in acting
+    # a cut-off thought is closed in the model's own voice; never with a budget of 0 (it leaked)
+    assert "act on it" in acting["reasoning_budget_message"] and "answer" in opening["reasoning_budget_message"]
+    assert "reasoning_budget_message" not in off
+
+
+def test_budget_payload_for_a_model_that_always_thinks_sets_only_the_budget():
+    always = inf.model_profile("x-1b", {"key": "x-1b", "capabilities": {"reasoning": {"allowed_options": ["on"]}}})
+    assert inf.budget_payload(always, think=False, must_act=False) == {"thinking_budget_tokens": 0}
+
+
+def test_server_reuse_counts_exactly_from_llama_cpp_timings():
+    assert inf.server_reuse({"cache_n": 3416.0, "prompt_n": 104.0}) == {
+        "prompt_tokens_est": 3520, "reused_tokens_est": 3416, "reuse_percent": 97,
+    }
+    assert inf.server_reuse({"cache_n": 0.0, "prompt_n": 0.0})["reuse_percent"] == 0
+    assert inf.server_reuse(None) is None
+    assert inf.server_reuse({"prompt_n": 5.0}) is None  # LM Studio-style partial data: keep the estimate
+
+
 # --- 10. PrefixTracker -------------------------------------------------------------------
 
 

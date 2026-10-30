@@ -471,6 +471,61 @@ def test_extraction_watermark_retries_after_failure(env, monkeypatch: pytest.Mon
     }
 
 
+def test_questions_and_requests_wait_for_something_memorable(env, monkeypatch: pytest.MonkeyPatch):
+    """No background model call for a window of questions: it stays pending and is read
+    together with the next memorable message."""
+    svc, fake = env
+    calls: list[str] = []
+
+    def capture(**kwargs):
+        calls.append(kwargs["messages"][-1]["content"])
+        return {"ops": [{"op": "add", "kind": "fact", "content": "User uses Arch Linux"}]}
+
+    monkeypatch.setattr(svc.llm, "complete_json", capture)
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "What is a KV cache? How does prompt caching work?")
+    svc.db.add_message(conversation["id"], "assistant", "It stores attention keys and values.")
+    svc.db.add_message(conversation["id"], "user", "Write a short Python function for Fibonacci numbers.")
+    svc.db.add_message(conversation["id"], "assistant", "def fib(n): ...")
+    assert svc.memory.extract_and_apply(conversation["id"], "fake-1").get("deferred") == 1
+    assert calls == [] and svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == 0
+
+    svc.db.add_message(conversation["id"], "user", "By the way, I use Arch Linux on this laptop.")
+    assert svc.memory.extract_and_apply(conversation["id"], "fake-1")["added"] == 1
+    assert len(calls) == 1 and "What is a KV cache?" in calls[0]  # the waiting messages came along
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == svc.db.last_message_seq(
+        conversation["id"]
+    )
+
+
+def test_a_full_window_is_read_even_without_a_signal(env, monkeypatch: pytest.MonkeyPatch):
+    svc, _fake = env
+    calls: list[int] = []
+    monkeypatch.setattr(svc.llm, "complete_json", lambda **kwargs: calls.append(1) or {"ops": []})
+    conversation = svc.db.create_conversation()
+    for n in range(6):
+        svc.db.add_message(conversation["id"], "user", f"Explain topic {n} in detail, please.")
+        svc.db.add_message(conversation["id"], "assistant", "A long answer. " * 20)
+    svc.memory.extract_and_apply(conversation["id"], "fake-1")
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(("text", "memorable"), [
+    ("I live in Lisbon.", True),
+    ("My editor is Helix", True),
+    ("Please always answer in Turkish.", True),
+    ("Don't use semicolons in our project.", True),
+    ("How do I install numpy?", False),
+    ("Can you tell me what a KV cache is?", False),
+    ("Write a function that returns the n-th Fibonacci number.", False),
+    ("```\nmy_var = 1  # I set this\n```\nFix this code.", False),
+])
+def test_worth_extracting_reads_statements_not_questions_or_code(text: str, memorable: bool):
+    from kiwibro.memory import worth_extracting
+
+    assert worth_extracting([{"role": "user", "content": text}]) is memorable
+
+
 def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 
@@ -479,7 +534,7 @@ def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(svc.llm, "complete_json", boom)
     conversation = svc.db.create_conversation()
-    svc.db.add_message(conversation["id"], "user", "hello there")
+    svc.db.add_message(conversation["id"], "user", "hello there, I live in Lisbon")
     assert svc.memory.extract_and_apply(conversation["id"], "fake-1") == {
         "added": 0,
         "updated": 0,

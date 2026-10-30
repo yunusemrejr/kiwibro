@@ -9,15 +9,19 @@ as a child process on a private localhost port. It speaks the same
 OpenAI-compatible protocol, so :class:`kiwibro.llm.LMStudioClient` uses it
 unchanged once ``engine`` is set to ``direct``.
 
-Why it is faster on a laptop CPU (measured, Ryzen 5 7530U, spark-x2.6-4b
-IQ2_M, a fresh 3.9k-token prompt, same load on both): LM Studio launched the
-model with 4 threads and flash attention off and prefilled at 27–34 tok/s;
-the direct engine uses every physical core and prefilled at ~39 tok/s. It
-also turns on what LM Studio leaves off: KV chunk reuse (``--cache-reuse``)
-for prompts whose middle changed, a unified KV pool shared by the slots, and
-host-RAM prompt caching sized to free memory, so switching between chats
-restores a cached prefix instead of prefilling it again. The LM Studio app
-does not have to run at all, which frees its memory too.
+Why it is faster (measured, Ryzen 5 7530U, spark-x2.6-4b IQ2_M): LM Studio
+launched the model on the CPU with 4 threads and prefilled at 27–34 tok/s. The
+direct engine puts the model on the GPU when a GPU build of llama.cpp finds
+one, the integrated Radeon here too (Vulkan: prefill 85–107 tok/s, decode
+8.9–11.7 tok/s, 0.04 CPU-seconds per generated token, up to a third less energy
+per token), and otherwise uses every physical core (prefill 54 tok/s, decode
+7.4; fewer threads were slower and cost more energy per token). It also turns
+on what LM Studio leaves off: KV chunk reuse (``--cache-reuse``) for prompts
+whose middle changed, a unified KV pool shared by the slots, host-RAM prompt
+caching, and per-request thinking budgets (``thinking_budget_tokens``), so a
+thought is ended inside the request instead of by a retry that re-reads the
+chat. The LM Studio app does not have to run at all, which frees its memory
+too.
 """
 
 from __future__ import annotations
@@ -53,9 +57,15 @@ DEFAULT_CONTEXT = 32768
 DEFAULT_PARALLEL = 4  # one slot for the chat, others for background calls (one shared KV pool)
 MAX_RESIDENT = 2  # chat model + one helper; a third evicts the least recently used idle one
 START_TIMEOUT_S = 300.0
-RUNTIME_TRIES = 3  # runtimes tried in order when one exits while loading
+RUNTIME_TRIES = 4  # runtimes tried in order when one exits while loading (GPU builds, then CPU)
 SCAN_TTL_S = 30.0
 CACHE_REUSE_CHUNK = 256
+# Sliding-window and hybrid models (spark-x2.6, qwen3.8, lfm2) can only rewind to a saved
+# "context checkpoint"; llama.cpp saves ~2 per request (54 MB each for spark-x2.6) and keeps
+# 32 per slot, so a long chat grew host memory by ~110 MB a turn up to ~1.7 GB per slot.
+# With 4, a turn after six tool rounds re-read 445 tokens more (~5 s on the iGPU) and memory
+# stayed flat; 8 keeps most of that saving for longer tool turns.
+CTX_CHECKPOINTS = 8
 SPEC_TYPE = "ngram-mod"
 LMSTUDIO_ONLY_KEYS = frozenset({"ttl", "draft_model"})
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
@@ -247,6 +257,9 @@ class ModelScanner:
 # --- discovery: runtimes ------------------------------------------------------------
 
 
+GPU_KINDS = frozenset({"vulkan", "cuda", "rocm", "metal"})
+
+
 @dataclass(frozen=True)
 class Runtime:
     path: str  # the llama-server executable
@@ -258,6 +271,66 @@ class Runtime:
     def label(self) -> str:
         where = {"lmstudio": "LM Studio's llama.cpp", "custom": "custom llama.cpp", "path": "llama.cpp"}[self.source]
         return f"{where} {self.version} ({self.kind.upper() if self.kind != 'unknown' else 'build'})".strip()
+
+    @property
+    def maybe_gpu(self) -> bool:
+        """A build that may offload to a GPU (a custom or system build might: ask it)."""
+        return self.kind in GPU_KINDS or self.kind == "unknown"
+
+
+@dataclass(frozen=True)
+class Device:
+    """A GPU a llama.cpp build can offload to, as its ``--list-devices`` names it."""
+
+    id: str  # Vulkan0, CUDA0, ...
+    name: str
+    total_mb: int
+    free_mb: int
+
+
+_DEVICE_LINE = re.compile(r"^\s*([A-Za-z]+\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB free\)")
+_SOFTWARE_GPU = re.compile(r"llvmpipe|lavapipe|swiftshader|software", re.IGNORECASE)
+_DEVICES: dict[tuple[str, int], tuple[Device, ...]] = {}
+_DEVICES_LOCK = threading.Lock()
+
+
+def parse_devices(text: str) -> tuple[Device, ...]:
+    """Hardware GPUs in ``llama-server --list-devices`` output (software renderers left out)."""
+    found = []
+    for line in text.splitlines():
+        match = _DEVICE_LINE.match(line)
+        if match and not _SOFTWARE_GPU.search(match.group(2)):
+            found.append(Device(match.group(1), match.group(2), int(match.group(3)), int(match.group(4))))
+    return tuple(found)
+
+
+def gpu_devices(runtime: Runtime) -> tuple[Device, ...]:
+    """The GPUs ``runtime`` can use (asked once per build; a CPU build has none).
+
+    Measured on a Ryzen 5 7530U (Radeon Vega 7 iGPU, RADV) with LM Studio's own Vulkan
+    engine and spark-x2.6-4b: prefill 85–107 tok/s against 54 on all six CPU cores,
+    decode 8.9–11.7 against 7.4 tok/s, up to a third less energy per token and 0.04
+    CPU-seconds per generated token instead of 0.81, so the processor stays free and cool."""
+    if not runtime.maybe_gpu:
+        return ()
+    try:
+        key = (runtime.path, int(Path(runtime.path).stat().st_mtime))
+    except OSError:
+        return ()
+    with _DEVICES_LOCK:
+        if key in _DEVICES:
+            return _DEVICES[key]
+    try:
+        result = subprocess.run(
+            [runtime.path, "--list-devices"], capture_output=True, timeout=30, env=_runtime_env(runtime),
+            cwd=str(Path(runtime.path).parent), check=False,
+        )
+        devices = parse_devices((result.stdout + result.stderr).decode("utf-8", errors="replace"))
+    except (OSError, subprocess.TimeoutExpired):
+        devices = ()
+    with _DEVICES_LOCK:
+        _DEVICES[key] = devices
+    return devices
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -277,18 +350,21 @@ def _executable(path: Path) -> bool:
 
 
 def lmstudio_runtimes() -> tuple[list[Runtime], set[tuple[str, str]]]:
-    """LM Studio's bundled llama.cpp engines, plus the (name, version) pairs it prefers."""
+    """LM Studio's bundled llama.cpp engines, plus ``("path", server)`` for the one it is set
+    to use. With two installs (native and Flatpak) only the newer one's choice counts: the
+    other is usually left over, and its choice an engine too old for current models."""
     found: list[Runtime] = []
-    preferred: set[tuple[str, str]] = set()
+    per_root: list[tuple[tuple[int, ...], set[tuple[str, str]], list[tuple[str, str, str]]]] = []
     for root in lmstudio_roots():
         try:
             prefs = json.loads((root / ".internal" / "backend-preferences-v1.json").read_text(encoding="utf-8"))
-            preferred |= {(str(p.get("name")), str(p.get("version"))) for p in prefs if isinstance(p, dict)}
+            chosen = {(str(p.get("name")), str(p.get("version"))) for p in prefs if isinstance(p, dict)}
         except (OSError, ValueError, TypeError):
-            pass
+            chosen = set()
         backends = root / "extensions" / "backends"
         if not backends.is_dir():
             continue
+        engines: list[tuple[str, str, str]] = []
         for engine in sorted(backends.iterdir()):
             server = engine / "llama-server"
             if not engine.name.startswith("llama.cpp-") or not _executable(server):
@@ -300,8 +376,13 @@ def lmstudio_runtimes() -> tuple[list[Runtime], set[tuple[str, str]]]:
             name = str(manifest.get("name") or engine.name.rsplit("-", 1)[0])
             version = str(manifest.get("version") or engine.name.rsplit("-", 1)[-1])
             found.append(Runtime(str(server), version, _kind(name), "lmstudio"))
-            if (name, version) in preferred:
-                preferred.add(("path", str(server)))
+            engines.append((name, version, str(server)))
+        newest = max((_version_key(version) for _name, version, _server in engines), default=(0,))
+        per_root.append((newest, chosen, engines))
+    preferred: set[tuple[str, str]] = set()
+    if per_root:
+        _newest, chosen, engines = max(per_root, key=lambda item: item[0])
+        preferred = chosen | {("path", server) for name, version, server in engines if (name, version) in chosen}
     return found, preferred
 
 
@@ -309,9 +390,10 @@ def _has_nvidia() -> bool:
     return Path("/dev/nvidia0").exists() or Path("/proc/driver/nvidia").exists()
 
 
-def find_runtimes(custom: str | None = None) -> list[Runtime]:
-    """Usable llama.cpp servers, best first: a custom build, the engine LM Studio is set to
-    use, LM Studio's newest CPU engine, its other engines, then ``llama-server`` on PATH."""
+def find_runtimes(custom: str | None = None, *, gpu: bool = False) -> list[Runtime]:
+    """Usable llama.cpp servers, best first: a custom build, then (with ``gpu``) LM Studio's
+    GPU engines that find a GPU here, then the engine LM Studio is set to use, its newest
+    engines, and ``llama-server`` on PATH. Without ``gpu`` its CPU engines come first."""
     out: list[Runtime] = []
     for raw in (custom, os.environ.get("KIWIBRO_LLAMA_SERVER")):
         if raw and _executable(Path(raw).expanduser()):
@@ -319,9 +401,13 @@ def find_runtimes(custom: str | None = None) -> list[Runtime]:
     bundled, preferred = lmstudio_runtimes()
     usable = [r for r in bundled if r.kind != "cuda" or _has_nvidia()]
 
-    def rank(runtime: Runtime) -> tuple[int, tuple[int, ...], int]:
+    def rank(runtime: Runtime) -> tuple[int, int, tuple[int, ...], int]:
+        placed = 0 if runtime.kind == "cpu" else 1  # a GPU build without a GPU is a slower CPU build
+        if gpu and runtime.kind in GPU_KINDS and gpu_devices(runtime):
+            placed = -1
         chosen = ("path", runtime.path) in preferred
-        return (0 if chosen else 1, tuple(-n for n in _version_key(runtime.version)), 0 if runtime.kind == "cpu" else 1)
+        return (placed, 0 if chosen else 1, tuple(-n for n in _version_key(runtime.version)),
+                0 if runtime.kind == "cpu" else 1)
 
     out += sorted(usable, key=rank)
     system = shutil.which("llama-server")
@@ -391,6 +477,11 @@ def adapt_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     out = {k: v for k, v in payload.items() if k not in LMSTUDIO_ONLY_KEYS}
     out.setdefault("cache_prompt", True)
+    if out.get("tools"):
+        # Kiwibro asks for independent calls in one reply (fewer rounds, fewer prefills);
+        # llama.cpp allows only one per reply unless asked (it turns this off by itself for
+        # templates that cannot express several).
+        out.setdefault("parallel_tool_calls", True)
     effort = out.get("reasoning_effort")
     kwargs = dict(out.get("chat_template_kwargs") or {})
     if effort == "none":
@@ -459,6 +550,7 @@ class Server:
     parallel: int
     threads: int
     log_path: str
+    gpu: str = ""  # the GPU it offloads to ("" on the CPU)
     started_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.monotonic)
     in_flight: int = 0
@@ -475,6 +567,7 @@ class Server:
             "model": self.model.id, "pid": self.process.pid, "port": self.port,
             "context_length": self.context_length, "parallel": self.parallel, "threads": self.threads,
             "runtime": self.runtime.label, "started_at": int(self.started_at), "busy": self.in_flight > 0,
+            "gpu": self.gpu,
         }
 
 
@@ -501,8 +594,12 @@ def _runtime_env(runtime: Runtime) -> dict[str, str]:
 def server_args(
     runtime: Runtime, flags: frozenset[str], model: LocalModel, *, port: int, api_key: str,
     context_length: int, parallel: int, threads: int, cache_ram_mb: int | None, speculative: bool = True,
+    offload: bool | None = None,
 ) -> list[str]:
-    """The llama-server command line for one model (flags the runtime lacks are left out)."""
+    """The llama-server command line for one model (flags the runtime lacks are left out).
+
+    ``offload``: True puts every layer that fits on the GPU, False keeps a GPU build on
+    the CPU, None (a CPU build) says nothing about devices."""
     def has(flag: str) -> bool:
         return not flags or flag in flags  # unknown help output: assume a current build
 
@@ -512,6 +609,11 @@ def server_args(
         args += ["--threads-batch", str(threads)]
     if has("--api-key"):
         args += ["--api-key", api_key]
+    if offload and has("--gpu-layers"):
+        # "auto" fits as many layers as the GPU holds (older builds take only a number).
+        args += ["--gpu-layers", "auto" if has("--fit") else "999"]
+    elif offload is False:
+        args += ["--device", "none"] if has("--device") else ["--gpu-layers", "0"]
     if model.embeddings:
         return args + ["--embeddings", "--parallel", "1"]
     args += ["--parallel", str(parallel)]
@@ -527,6 +629,15 @@ def server_args(
         args += ["--cache-reuse", str(CACHE_REUSE_CHUNK)]
     if cache_ram_mb is not None and has("--cache-ram"):
         args += ["--cache-ram", str(cache_ram_mb)]
+    if has("--ctx-checkpoints"):
+        args += ["--ctx-checkpoints", str(CTX_CHECKPOINTS)]
+    if parallel > 1 and has("--no-cache-idle-slots"):
+        # By default every new request copies idle slots out to the RAM prompt cache and
+        # clears them, so a memory or title call between two chat turns moved the chat's
+        # whole state out and back (and with a small cache lost it: a 3.5k-token re-read).
+        # Kept in place, the chat stays resident; when the pool is full llama.cpp purges
+        # the least recently used idle slot, which is the background one.
+        args.append("--no-cache-idle-slots")
     if has("--no-webui"):
         args.append("--no-webui")
     if has("--metrics"):
@@ -570,6 +681,12 @@ class DirectEngine:
     def _custom_models_dir(self) -> str | None:
         return str(self._settings().get("direct_models_dir") or "").strip() or None
 
+    def _gpu_on(self) -> bool:
+        return self._settings().get("direct_gpu", "auto") != "off"
+
+    def _runtimes(self) -> list[Runtime]:
+        return find_runtimes(self._custom_runtime(), gpu=self._gpu_on())
+
     # --- catalog ---
 
     def models(self, force: bool = False) -> list[LocalModel]:
@@ -606,7 +723,7 @@ class DirectEngine:
         return model.id if model else None
 
     def runtime(self) -> Runtime | None:
-        runtimes = find_runtimes(self._custom_runtime())
+        runtimes = self._runtimes()
         return runtimes[0] if runtimes else None
 
     def raw_entries(self) -> list[dict[str, Any]]:
@@ -719,9 +836,11 @@ class DirectEngine:
         return max(512, min(int(requested or DEFAULT_CONTEXT), trained))
 
     def _cache_ram_mb(self) -> int | None:
-        """Host-RAM prompt cache: a quarter of free memory, 1–8 GiB (llama.cpp's default is 8)."""
+        """Host-RAM prompt cache for chats pushed out of the KV pool: a sixth of free memory,
+        1–4 GiB (llama.cpp's default is 8). It fills only as slots are purged, and one long
+        spark-x2.6 chat with its checkpoints is about 1.2 GB there."""
         free = available_memory_mb()
-        return None if free is None else max(1024, min(8192, free // 4))
+        return None if free is None else max(1024, min(4096, free // 6))
 
     def _make_room(self, model: LocalModel) -> None:
         """Stop idle servers until this model fits: least recently used first."""
@@ -739,7 +858,7 @@ class DirectEngine:
                 return  # it just took a request: leave it, the new model loads beside it
 
     def _start(self, model: LocalModel, context_length: int, parallel: int) -> Server:
-        runtimes = find_runtimes(self._custom_runtime())
+        runtimes = self._runtimes()
         if not runtimes:
             raise EngineError(
                 "No llama.cpp runtime was found. Install LM Studio's llama.cpp engine once, "
@@ -773,14 +892,17 @@ class DirectEngine:
             self._flags[runtime.path] = _flags_of(runtime)
         threads = int(self._settings().get("direct_threads") or 0) or physical_cores()
         port = _free_port()
+        devices = gpu_devices(runtime)
+        offload = self._gpu_on() if devices else None
         args = server_args(
             runtime, self._flags[runtime.path], model, port=port, api_key=self.api_key,
             context_length=context_length, parallel=parallel, threads=threads, cache_ram_mb=self._cache_ram_mb(),
-            speculative=speculative,
+            speculative=speculative, offload=offload,
         )
         log_path = self._log_path(model)
-        log.info("direct engine: starting %s (%s, ctx %d, %d slots, %d threads)",
-                 model.id, runtime.label, context_length, parallel, threads)
+        gpu = devices[0].name if offload else ""
+        log.info("direct engine: starting %s (%s, ctx %d, %d slots, %d threads%s)",
+                 model.id, runtime.label, context_length, parallel, threads, f", GPU {gpu}" if gpu else "")
 
         def spawn() -> subprocess.Popen[bytes]:
             handle = open(log_path, "ab")  # noqa: SIM115 - the child owns it from here
@@ -797,7 +919,7 @@ class DirectEngine:
             process = _SPAWNER.run(spawn)
         except OSError as exc:
             raise _Crashed(f"Could not start llama.cpp: {exc}") from exc
-        server = Server(model, runtime, process, port, context_length, parallel, threads, log_path)
+        server = Server(model, runtime, process, port, context_length, parallel, threads, log_path, gpu)
         self._write_pid(server)
         try:
             self._wait_ready(server)
@@ -920,12 +1042,13 @@ class DirectEngine:
             pidfile.unlink(missing_ok=True)
 
     def status(self) -> dict[str, Any]:
-        runtimes = find_runtimes(self._custom_runtime())
+        runtimes = self._runtimes()
         with self._lock:
             servers = [s.describe() for s in self._servers.values() if s.alive()]
         models = self.models()
         dirs = [str(p) for p in model_dirs(self._custom_models_dir())]
         used = [d for d in dirs if any(m.path.startswith(d + os.sep) for m in models)]
+        devices = gpu_devices(runtimes[0]) if runtimes else ()
         return {
             "available": bool(runtimes) and bool(models),
             "runtime": ({"path": runtimes[0].path, "label": runtimes[0].label, "kind": runtimes[0].kind,
@@ -934,6 +1057,9 @@ class DirectEngine:
             "model_dirs": used + [d for d in dirs if d not in used],  # folders holding models first
             "models_count": sum(1 for m in models if not m.embeddings),
             "threads": int(self._settings().get("direct_threads") or 0) or physical_cores(),
+            # The GPU the next model would run on ("" = CPU), and whether any build here has one.
+            "gpu": devices[0].name if devices and self._gpu_on() else "",
+            "gpu_available": any(r.kind in GPU_KINDS and gpu_devices(r) for r in runtimes),
             "servers": servers,
             "error": self._last_error,
         }

@@ -575,7 +575,7 @@ def test_memory_dedupes_near_duplicate_on_extraction(env: Env):
         "ops": [{"op": "add", "kind": "preference", "content": "User prefers dark theme"}]
     }
     conversation = env.svc.db.create_conversation()
-    env.svc.db.add_message(conversation["id"], "user", "dark mode please")
+    env.svc.db.add_message(conversation["id"], "user", "I'd like dark mode please")
     counts = env.svc.memory.extract_and_apply(conversation["id"], "fake-1")
     assert counts["added"] == 0
     assert counts["updated"] == 1
@@ -598,7 +598,7 @@ def test_memory_never_raises_when_llm_fails(env: Env, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(env.svc.llm, "complete_json", boom)
     conversation = env.svc.db.create_conversation()
-    env.svc.db.add_message(conversation["id"], "user", "hello")
+    env.svc.db.add_message(conversation["id"], "user", "hello, I'm Ada")
     counts = env.svc.memory.extract_and_apply(conversation["id"], "fake-1")
     assert counts == {"added": 0, "updated": 0, "removed": 0}
 

@@ -265,6 +265,44 @@ def reasoning_payload(profile: ModelProfile, *, think: bool) -> dict[str, Any]:
     return {"reasoning_effort": "none"}
 
 
+# --- thinking budgets (direct engine) ---------------------------------------------
+#
+# llama.cpp ends a thought itself once a request's ``thinking_budget_tokens`` run out:
+# it forces the end-of-thinking tag and the model answers or acts in the same request.
+# So with the direct engine a thinking decision never touches the prompt: the template
+# stays in thinking mode for every turn of every chat (spark-x2.6 renders that switch
+# into the system block, where flipping it re-prefilled the whole chat: 190 s for a
+# 6k-token conversation) and "no thinking" is a budget of 0. LM Studio's API has no
+# budget, so there an acting round that thinks past THINK_BUDGET_CHARS is cut off and
+# retried with thinking off instead.
+TEMPLATE_THINKING = {"chat_template_kwargs": {"enable_thinking": True}}
+THINK_BUDGET_TOKENS = 1000  # acting rounds (≈ THINK_BUDGET_CHARS)
+OPEN_THINK_BUDGET_TOKENS = 2500  # a turn's first round, where the work is worked out
+# Written into the thought just before llama.cpp closes it, in the model's own voice. Without
+# it a cut-off model kept reasoning in its visible answer (spark-x2.6, 40-token budget: 400
+# tokens of answer-side reasoning); with it the answer came straight away (112 tokens). Never
+# sent with a budget of 0: there it leaked a stray "</think>" into the answer.
+BUDGET_MESSAGES = {
+    True: "\n\nI have thought about this enough. Now I act on it, without more deliberation.\n",
+    False: "\n\nI have thought about this enough. Now I answer, directly and clearly.\n",
+}
+BUDGET_KEYS = frozenset({"thinking_budget_tokens", "reasoning_budget_message"})  # never rendered
+
+
+def uses_budgets(profile: ModelProfile, direct: bool) -> bool:
+    """True when thinking is steered by token budgets: the direct engine and a thinking model."""
+    return direct and bool(profile.reasoning)
+
+
+def budget_payload(profile: ModelProfile, *, think: bool, must_act: bool) -> dict[str, Any]:
+    """Direct-engine request fields for a thinking decision (see TEMPLATE_THINKING)."""
+    budget = 0 if not think else THINK_BUDGET_TOKENS if must_act else OPEN_THINK_BUDGET_TOKENS
+    base = TEMPLATE_THINKING if profile.reasoning_toggle else {}
+    if not budget:
+        return {**base, "thinking_budget_tokens": 0}
+    return {**base, "thinking_budget_tokens": budget, "reasoning_budget_message": BUDGET_MESSAGES[must_act]}
+
+
 # --- per-turn context ---------------------------------------------------------------
 
 
@@ -344,6 +382,20 @@ class PrefixTracker:
                 self._recent.clear()
             else:
                 self._recent.pop(model, None)
+
+
+def server_reuse(timings: Mapping[str, float] | None) -> dict[str, int] | None:
+    """Prompt reuse as llama.cpp counted it (the direct engine's ``timings``), in the shape
+    :meth:`PrefixTracker.observe` returns; None when the server sent no counts (LM Studio)."""
+    if not timings or "cache_n" not in timings or "prompt_n" not in timings:
+        return None
+    cached, fresh = int(timings["cache_n"]), int(timings["prompt_n"])
+    total = cached + fresh
+    return {
+        "prompt_tokens_est": total,
+        "reused_tokens_est": cached,
+        "reuse_percent": round(100 * cached / total) if total else 0,
+    }
 
 
 # --- degeneration guard -----------------------------------------------------------
@@ -527,6 +579,11 @@ class SpeedBook:
 
     def _update(self, book: dict[str, float], model: str, value: float) -> None:
         book[model] = value if model not in book else (1 - self._ALPHA) * book[model] + self._ALPHA * value
+
+    def prefill_tps(self, model: str) -> float:
+        """Measured prompt-processing speed (pessimistic CPU default until measured)."""
+        with self._lock:
+            return self._prefill.get(model, self.DEFAULT_PREFILL_TPS)
 
     def budget_s(self, model: str, *, prompt_tokens: int, max_tokens: int,
                  floor: float = 8.0, ceiling: float = 180.0) -> float:

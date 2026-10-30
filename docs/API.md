@@ -79,14 +79,20 @@ Which engine serves models and what the direct engine found:
 ```json
 {"ok": true, "engine": "lmstudio|direct", "direct": {
   "available": true, "error": null, "models_count": 7, "threads": 6,
-  "runtime": {"path": ".../llama.cpp-linux-x86_64-avx2-2.64.0/llama-server",
-              "label": "LM Studio's llama.cpp 2.64.0 (CPU)", "kind": "cpu", "source": "lmstudio"},
+  "gpu": "AMD Radeon Graphics (RADV RENOIR)", "gpu_available": true,
+  "runtime": {"path": ".../llama.cpp-linux-x86_64-vulkan-avx2-2.54.0/llama-server",
+              "label": "LM Studio's llama.cpp 2.54.0 (VULKAN)", "kind": "vulkan", "source": "lmstudio"},
   "runtimes": [{"path": "...", "label": "..."}],
   "model_dirs": ["/home/you/.lmstudio/models"],
   "servers": [{"model": "bartowski/spark-x2.6-4b", "pid": 123, "port": 45885,
                "context_length": 32768, "parallel": 4, "threads": 6,
+               "gpu": "AMD Radeon Graphics (RADV RENOIR)",
                "runtime": "...", "started_at": 1793018131, "busy": false}]}}
 ```
+`gpu` is the GPU the next model would run on (`""` = CPU only, or graphics acceleration
+off); `gpu_available` says whether any llama.cpp build found here sees a hardware GPU. A
+server's `gpu` is `""` when it runs on the CPU.
+
 In direct mode every model endpoint above keeps its shape: `lmstudio` means "the engine
 can list models", models come from the GGUF files on disk (`state: loaded` while a
 server runs), and `/api/models/context` restarts the server with the new window.
@@ -298,6 +304,7 @@ content makes the memory the user's (origin `you`).
   "tool_profile": "auto", "reasoning": "auto", "max_tool_rounds": 16,
   "autonomy": "smart", "sandbox": "auto", "remote_hosts": [],
   "engine": "lmstudio", "direct_runtime": "", "direct_models_dir": "", "direct_threads": 0,
+  "direct_gpu": "auto",
   "permissions": {"web_search":"auto", "...every tool, see config.permission_defaults()":"…"}
 }}
 ```
@@ -311,8 +318,8 @@ http(s), permissions modes in {auto, ask, deny} for any known tool (built-in or
 extension), lmstudio_token a single token ≤ 512 chars (`""` removes it), engine in
 {lmstudio, direct}, direct_runtime `""` or an absolute path to an executable
 `llama-server`, direct_models_dir `""` or an existing absolute folder, direct_threads
-0–256 (0 = every physical core). Switching to `direct` unloads the models Kiwibro loaded
-in LM Studio; switching away, or changing a `direct_*` value, stops the direct servers
+0–256 (0 = every physical core), direct_gpu in {auto, off}. Switching to `direct`
+unloads the models Kiwibro loaded in LM Studio; switching away, or changing a `direct_*` value, stops the direct servers
 (the next request starts one with the new values). Returns merged
 settings. Changing workspace does not move files; a conversation bound to its own
 folder (`conversation.workspace`, set by the `workspace` tool) keeps using that folder.

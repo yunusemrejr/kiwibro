@@ -4,6 +4,81 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-10-30
+
+The optimized engine: LM Studio's models on the GPU (the integrated one too), thinking that
+never makes the model re-read the chat, memory that stays flat through long sessions, and
+background work only when it is worth it. Measured on a Ryzen 5 7530U laptop (Radeon Vega 7
+iGPU, 38 GB) with `spark-x2.6-4b` IQ2_M; package power from the APU's own sensor.
+
+### Added
+
+- **Graphics acceleration** for the direct engine, now called the *Optimized engine* (a
+  switch in Settings → Models; new setting `direct_gpu`: `auto` | `off`, default `auto`).
+  Kiwibro asks each GPU build of llama.cpp LM Studio installed (Vulkan, CUDA, ROCm) which
+  GPUs it sees (`--list-devices`, once per build; software renderers ignored) and runs the
+  model on one with every layer that fits (`--gpu-layers auto`). LM Studio itself ran this
+  laptop's models on the CPU. Vulkan on the iGPU against all six CPU cores:
+
+  | | CPU | iGPU |
+  |---|---|---|
+  | prompt processing, spark-x2.6-4b | 54 tok/s | 85–107 tok/s |
+  | decode, spark-x2.6-4b | 7.4 tok/s | 8.9–11.7 tok/s |
+  | energy per generated token | 3.3 J | 2.4–2.9 J |
+  | CPU time per generated token | 0.81 s | 0.04 s |
+  | prompt processing / decode, qwen3.8-2b | 112 / 13.6 tok/s | 249 / 17.3 tok/s |
+
+  A Kiwibro chat (3.5k-token prompt) answered its first message in 38 s instead of 67 s,
+  and every later turn in 5–7 s instead of 10–15 s; five turns on the iGPU used 14
+  CPU-seconds, four on the CPU 601. A build that cannot load a model falls back to the
+  next one, ending on the CPU. The settings card names the GPU in use.
+- **Thinking budgets** (direct engine). llama.cpp ends a thought itself when a request's
+  `thinking_budget_tokens` run out, and the model answers or acts in the same request. The
+  template now stays in thinking mode on every turn and each decision is a budget: 0 (no
+  thinking), 1,000 tokens for rounds that must act, 2,500 for a turn's first round. Before,
+  turning thinking off re-rendered spark-x2.6's system block (measured: 466 of 466 tokens
+  re-read, against 1 with a budget of 0), and an acting round that overthought was cut off
+  and retried, re-reading the whole chat (190 s for a 6k-token chat on the CPU). A short
+  sentence in the model's voice closes a cut-off thought (`reasoning_budget_message`): with
+  it the model answered at once (112 tokens), without it it kept reasoning in its answer
+  until the cap (400). "Auto" thinking may now switch per turn at no cost.
+- **Exact cache telemetry**: llama.cpp's per-request `timings` (`cache_n`, `prompt_n`,
+  prompt time, decode speed) replace the estimates in the reply footer ("98% cached"), the
+  log and the speed book that sizes background timeouts.
+- **Several tool calls per reply** with the direct engine (`parallel_tool_calls`): the
+  prompt already asks for batched independent calls; llama.cpp allowed one per reply.
+
+### Changed
+
+- **Long sessions stay flat in memory** (direct engine). Sliding-window and hybrid models
+  (spark-x2.6, qwen3.8, lfm2) can only rewind to saved checkpoints; llama.cpp kept 32 per
+  slot at 54 MB each, so host memory grew ~110 MB a turn up to ~1.7 GB per slot. Now 8
+  (`--ctx-checkpoints 8`): with 4, eight turns stayed at 0.4 GB instead of 1.1 GB, and a
+  turn after six tool rounds re-read 445 tokens more (~5 s on the iGPU). The RAM prompt
+  cache is a sixth of free memory, 1–4 GiB (was a quarter, up to 8).
+- **Background calls no longer move the chat out of the KV cache**
+  (`--no-cache-idle-slots`). llama.cpp copied idle slots to the RAM prompt cache and cleared
+  them on every new request, so each memory or summary call between two turns moved the
+  chat's state out and back, and with a small cache lost it (a full 3.5k-token re-read,
+  40 s). Now the chat stays resident; when the KV pool is full llama.cpp drops the least
+  recently used idle slot, which in testing was the background one.
+- **Memory is learned in the background only when something memorable was said.** An
+  extraction is a fresh ~3k-token prompt plus up to 400 tokens of output: on the CPU a
+  minute or two of every core after nearly every reply. It now runs when the user states
+  something about themselves, their work or a standing preference (a first-person sentence
+  that is not a question, or "remember", "prefer", "always", "never", "from now on", …), or
+  once a full window has gathered; questions and plain requests wait and are read together
+  with the next memorable message. Clear facts are still saved before every reply by code.
+- **Opening an old chat prefills at most ~3 minutes of it** ahead of time, at the model's
+  measured speed (6k–24k tokens), instead of always up to 24k tokens: on the CPU that was up
+  to 7 minutes of every core, wasted when the chat was only read.
+- Runtime choice: only the newest LM Studio install's engine preference counts (a left-over
+  native install preferred a 2.17 engine that cannot load current models), CPU builds come
+  before GPU builds when acceleration is off, and four runtimes are tried before giving up.
+- Measured and left off: KV-cache quantization (q8_0 decoded 13% slower on the iGPU), MTP
+  drafting for qwen3.8 (no gain), fewer CPU threads (slower and more energy per token),
+  `--poll 0` (no change).
+
 ## [2.4.0] — 2026-10-26
 
 A direct engine: LM Studio's downloaded models run with llama.cpp itself, without the

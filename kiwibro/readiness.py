@@ -41,7 +41,18 @@ MIN_CONTEXT = 16384  # a loaded model below this is reloaded larger while nothin
 LOAD_LADDER = (32768, 16384, 8192)  # tried in order when LM Studio's memory guardrails refuse
 PARALLEL_SLOTS = 4  # one slot for the chat, others for background calls (shared KV pool)
 WARM_HISTORY_TOKENS = 24000  # longer chats are not prefilled ahead of time
+# Warming an opened chat is speculative: it is wasted when the chat is only read. So it
+# may take at most this long at the model's measured prefill speed (a 24k-token chat is
+# ~7 minutes of every CPU core at 54 tok/s; on an iGPU at ~95 tok/s about 4).
+WARM_MAX_S = 180.0
+WARM_MIN_TOKENS = 6000
 _WARM_MEMO = 32
+
+
+def warm_limit(model: str) -> int:
+    """The longest chat (in tokens) worth prefilling before the user sends anything."""
+    tokens = int(inference.SPEEDS.prefill_tps(model) * WARM_MAX_S)
+    return max(WARM_MIN_TOKENS, min(WARM_HISTORY_TOKENS, tokens))
 
 PHASES = ("idle", "loading", "warming", "ready", "error")
 

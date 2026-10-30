@@ -70,6 +70,7 @@ class ChatResult:
     usage: dict[str, int] | None = None
     tools_disabled: bool = False
     leaked_reasoning: bool = False  # the model "thought" in plain content (moved to reasoning)
+    timings: dict[str, float] | None = None  # llama.cpp's own counts (direct engine): see _timings
 
 
 @dataclass
@@ -99,6 +100,19 @@ def _usage(raw: Any) -> dict[str, int] | None:
         "completion_tokens": completion or 0,
         "total_tokens": total if total is not None else (prompt or 0) + (completion or 0),
     }
+
+
+_TIMING_KEYS = ("cache_n", "prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "predicted_per_second")
+
+
+def _timings(raw: Any) -> dict[str, float] | None:
+    """llama-server's per-request ``timings``: tokens served from the KV cache (``cache_n``),
+    tokens prefilled (``prompt_n``) and their times. Exact where Kiwibro otherwise estimates."""
+    if not isinstance(raw, dict):
+        return None
+    out = {key: float(raw[key]) for key in _TIMING_KEYS
+           if isinstance(raw.get(key), (int, float)) and not isinstance(raw.get(key), bool) and raw[key] >= 0}
+    return out if "prompt_n" in out else None
 
 
 def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -660,6 +674,9 @@ class LMStudioClient:
         usage = _usage(chunk.get("usage"))
         if usage:
             result.usage = usage
+        timings = _timings(chunk.get("timings"))
+        if timings:
+            result.timings = timings
         choices = chunk.get("choices")
         if not isinstance(choices, list) or not choices:
             return

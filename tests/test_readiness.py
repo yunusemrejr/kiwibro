@@ -225,3 +225,16 @@ def test_models_kiwibro_did_not_load_are_never_unloaded():
         time.sleep(0.01)
     time.sleep(0.05)
     assert llm.unloads == []
+
+
+def test_warm_limit_follows_the_measured_prefill_speed(monkeypatch) -> None:
+    """Warming an opened chat is speculative: it may take minutes, not a quarter of an hour."""
+    from kiwibro import inference
+
+    book = inference.SpeedBook()
+    monkeypatch.setattr(inference, "SPEEDS", book)
+    assert readiness.warm_limit("m") == readiness.WARM_MIN_TOKENS  # unmeasured: pessimistic CPU default
+    book.note("m", new_tokens=3500, ttft_ms=36_000, tokens_per_s=None)  # ~97 tok/s (an iGPU)
+    assert readiness.warm_limit("m") == int(book.prefill_tps("m") * readiness.WARM_MAX_S)
+    book.note("fast", new_tokens=3000, ttft_ms=3_000, tokens_per_s=None)  # a discrete GPU
+    assert readiness.warm_limit("fast") == readiness.WARM_HISTORY_TOKENS

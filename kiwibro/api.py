@@ -39,10 +39,10 @@ def error_body(code: str, message: str) -> dict[str, Any]:
 # Settings that change the prompt prefix (message 0 or the tool list): a change re-warms.
 PREFIX_SETTINGS = frozenset({
     "user_name", "workspace", "agent_enabled", "tool_profile", "reasoning", "lmstudio_url", "lmstudio_token",
-    "autonomy", "engine", "direct_runtime", "direct_models_dir", "direct_threads",
+    "autonomy", "engine", "direct_runtime", "direct_models_dir", "direct_threads", "direct_gpu",
 })
 # Settings that change how the direct engine launches llama.cpp: running servers restart.
-DIRECT_LAUNCH_SETTINGS = frozenset({"direct_runtime", "direct_models_dir", "direct_threads"})
+DIRECT_LAUNCH_SETTINGS = frozenset({"direct_runtime", "direct_models_dir", "direct_threads", "direct_gpu"})
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:

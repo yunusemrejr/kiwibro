@@ -231,22 +231,44 @@ processes Kiwibro runs itself; `LMStudioClient` switches per request, so nothing
   `normalize_model`/`merge_native_metadata` stay the only normalisers. LM Studio ids
   that differ (`liquid/lfm2.5-1.2b` for lmstudio-community's upload) resolve through
   aliases and the name part.
-- **Runtimes**: Settings' `direct_runtime` / `KIWIBRO_LLAMA_SERVER`, then LM Studio's
-  bundled `extensions/backends/llama.cpp-*/llama-server` (the one in its
-  `backend-preferences-v1.json` first, then newest, CPU before GPU; CUDA only with an
-  NVIDIA device), then `llama-server` on PATH. Each is started with its own folder on
-  `LD_LIBRARY_PATH`; its `--help` is read once so flags an older build lacks are left
-  out. A runtime that exits while loading (e.g. an architecture it does not know) is
-  retried without speculative decoding, then the next runtime is tried (three at most).
+- **Runtimes**: Settings' `direct_runtime` / `KIWIBRO_LLAMA_SERVER` first, then LM Studio's
+  bundled `extensions/backends/llama.cpp-*/llama-server`, then `llama-server` on PATH.
+  Among the bundled ones, with `direct_gpu: "auto"` (the default) LM Studio's GPU builds
+  (Vulkan, CUDA only with an NVIDIA device, ROCm) that list a hardware GPU in
+  `llama-server --list-devices` come first (asked once per build; software renderers
+  such as llvmpipe are ignored); then CPU builds, the engine LM Studio is set to use
+  first, then newest; GPU builds that found no GPU come last (with `direct_gpu: "off"`
+  CPU builds come first). Only the newest LM Studio install's `backend-preferences-v1.json`
+  counts: a left-over native install here preferred a 2.17 Vulkan engine that cannot load
+  current models. Each is started with its own folder on `LD_LIBRARY_PATH`; its `--help`
+  is read once so flags an older build lacks are left out. A runtime that exits while
+  loading (e.g. an architecture it does not know) is retried without speculative
+  decoding, then the next runtime is tried (four at most).
 - **Launch**: `--ctx-size` (32K by default, capped by the trained context), `--parallel
   4 --kv-unified` (one KV pool for the chat slot and background slots), `--threads` =
   `--threads-batch` = physical cores (measured: 12 batch threads on this 6-core SMT CPU
   prefilled at 27 tok/s vs 37 with 6), `--flash-attn auto`, `--jinja`,
-  `--reasoning-format deepseek`, `--cache-reuse 256`, `--cache-ram` = a quarter of free
-  memory (1–8 GiB), `--spec-type ngram-mod` (no draft model; measured 4.7 → 6.8 tok/s
+  `--reasoning-format deepseek`, `--cache-reuse 256`, `--cache-ram` = a sixth of free
+  memory (1–4 GiB), `--spec-type ngram-mod` (no draft model; measured 4.7 → 6.8 tok/s
   on a reply that copies its input, unchanged on free text), `--no-webui`, a random
   `--api-key`, `127.0.0.1` on a free port. LM Studio itself started the same binary
   with 4 threads and flash attention off.
+  On a GPU build with acceleration on: `--gpu-layers auto` (llama.cpp's fit puts every
+  layer that fits on the GPU; `999` on builds without `--fit`); with acceleration off a
+  GPU build gets `--device none`. `--ctx-checkpoints 8`: sliding-window and hybrid models
+  (spark-x2.6, qwen3.8, lfm2) rewind only to saved checkpoints; llama.cpp's default 32 per
+  slot grew host memory ~110 MB per turn up to ~1.7 GB per slot (54 MB per checkpoint for
+  spark-x2.6); with 4 a turn after six tool rounds re-read 445 more tokens (~5 s on the
+  iGPU) and memory stayed flat. `--no-cache-idle-slots` (with more than one slot):
+  llama.cpp otherwise copies idle slots out to the RAM prompt cache and clears them on
+  every new request, so a memory or title call between two chat turns moved the chat's
+  state out and back (with a small cache it was lost: a full 3.5k-token re-read); kept in
+  place, when the KV pool is full llama.cpp purges the least recently used idle slot,
+  which was the background one in testing. Measured on the Ryzen 5 7530U with its Radeon
+  iGPU (Vulkan, spark-x2.6-4b IQ2_M): prompt processing ~100 tok/s vs 54 on six CPU cores,
+  decode ~10 vs 7.4 tok/s, 0.04 vs 0.81 CPU-seconds per generated token; qwen3.8-2b 249 vs
+  112 tok/s prefill. KV quantisation (q8_0) and MTP drafting were measured and left off
+  (slower on this GPU / no gain).
 - **Lifecycle**: a request `acquire`s its model's server (JIT start, like LM Studio)
   and `release`s it when done; eviction and `unload` only stop servers with no request
   in flight. At most two servers run (a third stops the least recently used idle one,
@@ -257,7 +279,26 @@ processes Kiwibro runs itself; `LMStudioClient` switches per request, so nothing
 - **Requests**: `adapt_payload` sets `cache_prompt`, drops LM Studio-only keys (`ttl`,
   `draft_model`), keeps `reasoning_effort: "none"` (llama.cpp turns thinking off) and
   turns other effort words into `chat_template_kwargs.enable_thinking: true` (templates
-  disagree on effort vocabulary: spark-x2.6 raises on "medium").
+  disagree on effort vocabulary: spark-x2.6 raises on "medium"). It also sets
+  `parallel_tool_calls: true` when tools are sent (llama.cpp otherwise allows one call per
+  reply; it switches this off itself for templates that cannot express several), and
+  passes thinking budgets through.
+- **Thinking budgets**: with the direct engine and a thinking model, the agent keeps the
+  template in thinking mode on every turn (`chat_template_kwargs.enable_thinking: true`,
+  `TEMPLATE_THINKING`) and expresses each decision as `thinking_budget_tokens` — 0 for no
+  thinking, 1000 for rounds that must act, 2500 for a turn's first round — plus
+  `reasoning_budget_message` (a short sentence in the model's voice written into the
+  thought before llama.cpp closes it; never sent with a budget of 0, where it leaked a
+  stray `</think>`). Flipping the template switch re-reads the whole prompt (measured: 466
+  of 466 tokens re-read, against 1 with a budget of 0), so thinking decisions never change
+  the prompt and `"auto"` may switch per turn. If a runtime ignores budgets, a thought
+  longer than 8 characters per budget token (250-token minimum) is cut off and retried
+  once with thinking off in the template. LM Studio has no budget: there an acting round
+  is cut off at a flat 4,000 characters instead.
+- **Telemetry**: llama.cpp's per-request `timings` (`cache_n`, `prompt_n`, `prompt_ms`,
+  `predicted_n`, `predicted_per_second`) are kept on `ChatResult.timings`; with them the
+  reply's reuse percentage, prefill speed and decode speed are exact instead of estimated
+  (`inference.server_reuse`).
 
 ### 4.1 Local inference engine (`inference.py`, `routing.py`, `media.py`)
 
@@ -310,9 +351,11 @@ default); a background request in between did not evict a chat's warm prefix.
   Kiwibro a new chat's first token came after 7.3 s with 97 % prefix reuse. A turn that
   starts mid-job waits for it when the prefix is its own (status *Getting the model
   ready*) and cancels it otherwise: `prefill` shuts the socket down, because LM Studio
-  sends nothing until the first token. Chats estimated above 24k tokens are not
-  prefilled ahead. **Switching models** unloads the model Kiwibro loaded for the
-  previous selection before loading the new one (two resident 4B models made this
+  sends nothing until the first token. A chat's history is warmed ahead of time only
+  while that takes at most 180 s at the model's measured prefill speed
+  (`readiness.warm_limit`: between 6,000 and 24,000 tokens), because warming an opened
+  chat is wasted when the chat is only read. **Switching models** unloads the model
+  Kiwibro loaded for the previous selection before loading the new one (two resident 4B models made this
   laptop swap); models the user loaded in LM Studio and helper leases are never
   touched. The header's model dot pulses amber while a job runs
   (`GET /api/models/ready`).
@@ -427,12 +470,14 @@ and links back to the chat it came from.
   enabled, the chat is queued for one background worker. It runs once no reply has
   streamed for `MEMORY_IDLE_S` (20 s) and no warm-up runs, one chat at a time, and a reply
   starting cancels it mid-request (the chat is re-queued; the watermark is untouched).
+  It runs only when the pending window holds a memorable user statement or is full
+  (`memory.worth_extracting`; see `docs/MEMORY.md`); otherwise the watermark stays put.
   On a CPU-only laptop an extraction beside the next reply slowed its first token from
   2.8 s to 8.4 s and stored a fact that reply had just changed. The worker asks the
   selected model for strict JSON operations
   (`{"ops":[{"op":"add|update|delete","id?":"...","kind":"...","content":"..."}]}`)
   given the last few turns plus a compact list of existing memories (top ~40).
-  Validate: content 3–300 chars, kind whitelist, no duplicates, max 3 ops applied
+  Validate: content 3–300 chars, kind whitelist, no duplicates, max 5 ops applied
   per turn; cap 400 memories total (prune oldest low-confidence non-pinned).
 - **Dedupe**: normalise (lowercase, collapse whitespace, strip punctuation) and
   compare with `difflib.SequenceMatcher` ≥ 0.86 or token Jaccard ≥ 0.72; merge by

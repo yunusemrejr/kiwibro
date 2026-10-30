@@ -486,6 +486,17 @@ def test_adapt_payload_keeps_existing_template_kwargs():
     assert out["chat_template_kwargs"] == {"foo": 1, "enable_thinking": False}
 
 
+def test_adapt_payload_lets_a_reply_make_several_tool_calls():
+    assert adapt_payload({"model": "m", "tools": [{"type": "function"}]})["parallel_tool_calls"] is True
+    assert "parallel_tool_calls" not in adapt_payload({"model": "m"})  # no tools, nothing to say
+
+
+def test_adapt_payload_passes_thinking_budgets_through():
+    out = adapt_payload({"model": "m", "chat_template_kwargs": {"enable_thinking": True},
+                         "thinking_budget_tokens": 0})
+    assert out["thinking_budget_tokens"] == 0 and out["chat_template_kwargs"] == {"enable_thinking": True}
+
+
 # --- 5. server_args -------------------------------------------------------------------------
 
 RUNTIME = Runtime(path="/opt/llama/llama-server", version="2.10.0", kind="cpu", source="lmstudio")
@@ -548,6 +559,31 @@ def test_server_args_adds_mmproj_for_a_projector():
     assert value_after(args, "--mmproj") == "/models/pub/mmproj-some.gguf"
 
 
+def test_server_args_offload_fits_every_layer_on_the_gpu():
+    assert value_after(build(flags=ALL_OPTIONAL_FLAGS | {"--gpu-layers", "--fit"}, offload=True), "--gpu-layers") == "auto"
+    # an older build without --fit only takes a number
+    assert value_after(build(flags=ALL_OPTIONAL_FLAGS | {"--gpu-layers"}, offload=True), "--gpu-layers") == "999"
+
+
+def test_server_args_gpu_off_keeps_a_gpu_build_on_the_cpu():
+    assert value_after(build(flags=ALL_OPTIONAL_FLAGS | {"--device"}, offload=False), "--device") == "none"
+    assert value_after(build(flags=ALL_OPTIONAL_FLAGS, offload=False), "--gpu-layers") == "0"
+
+
+def test_server_args_keep_chats_resident_with_few_checkpoints():
+    flags = ALL_OPTIONAL_FLAGS | {"--ctx-checkpoints", "--no-cache-idle-slots"}
+    args = build(flags=flags)
+    assert value_after(args, "--ctx-checkpoints") == str(engine.CTX_CHECKPOINTS)
+    assert "--no-cache-idle-slots" in args
+    assert "--no-cache-idle-slots" not in build(flags=flags, parallel=1)  # one slot: nothing to keep apart
+    assert "--ctx-checkpoints" not in build(flags=ALL_OPTIONAL_FLAGS)  # an older build without the flag
+
+
+def test_server_args_for_a_cpu_build_mentions_no_devices():
+    args = build(flags=ALL_OPTIONAL_FLAGS | {"--gpu-layers", "--device"})
+    assert "--gpu-layers" not in args and "--device" not in args
+
+
 def test_server_args_for_embeddings_is_single_slot_embedding_server():
     args = build(chat_model(embeddings=True), ALL_OPTIONAL_FLAGS)
 
@@ -584,11 +620,11 @@ def fake_lmstudio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, models_root: 
     return root
 
 
-def test_find_runtimes_newest_version_first_without_preferences(fake_lmstudio: Path):
+def test_find_runtimes_cpu_engines_first_newest_first_without_gpu(fake_lmstudio: Path):
     runtimes = find_runtimes()
 
-    assert [r.version for r in runtimes] == ["2.30.0", "2.20.0", "2.10.0"]
-    assert runtimes[0].kind == "vulkan"
+    assert [r.version for r in runtimes] == ["2.20.0", "2.10.0", "2.30.0"]
+    assert runtimes[-1].kind == "vulkan"  # still a fallback: it runs on the CPU too
     assert all(r.source == "lmstudio" for r in runtimes)
 
 
@@ -602,7 +638,7 @@ def test_find_runtimes_prefers_the_engine_lmstudio_is_set_to_use(fake_lmstudio: 
 
     assert runtimes[0].version == "2.10.0"
     assert runtimes[0].path.endswith("llama.cpp-linux-x86_64-avx2-2.10.0/llama-server")
-    assert [r.version for r in runtimes[1:]] == ["2.30.0", "2.20.0"]
+    assert [r.version for r in runtimes[1:]] == ["2.20.0", "2.30.0"]
 
 
 def test_custom_runtime_ranks_before_lmstudio_engines(fake_lmstudio: Path, tmp_path: Path):
@@ -612,7 +648,60 @@ def test_custom_runtime_ranks_before_lmstudio_engines(fake_lmstudio: Path, tmp_p
 
     assert runtimes[0].path == str(custom)
     assert runtimes[0].source == "custom"
-    assert [r.version for r in runtimes[1:]] == ["2.30.0", "2.20.0", "2.10.0"]
+    assert [r.version for r in runtimes[1:]] == ["2.20.0", "2.10.0", "2.30.0"]
+
+
+LIST_DEVICES = (
+    "Available devices:\n"
+    "  Vulkan0: AMD Radeon Graphics (RADV RENOIR) (20019 MiB, 17662 MiB free)\n"
+    "  Vulkan1: llvmpipe (LLVM 19.1.7, 256 bits) (31000 MiB, 31000 MiB free)\n"
+)
+GPU_SERVER_BODY = f"""
+import sys
+if "--list-devices" in sys.argv:
+    sys.stdout.write({LIST_DEVICES!r})
+sys.exit(0)
+"""
+
+
+def test_parse_devices_keeps_hardware_gpus_only():
+    devices = engine.parse_devices(LIST_DEVICES)
+    assert devices == (engine.Device("Vulkan0", "AMD Radeon Graphics (RADV RENOIR)", 20019, 17662),)
+    assert engine.parse_devices("Available devices:\n") == ()
+
+
+def test_gpu_engine_with_a_device_ranks_first_when_gpu_is_on(fake_lmstudio: Path, tmp_path: Path):
+    source = write_script(tmp_path / "gpu-server", GPU_SERVER_BODY)
+    install_backend(fake_lmstudio, "llama.cpp-linux-x86_64-vulkan-avx2-2.30.0",
+                    "llama.cpp-linux-x86_64-vulkan-avx2", "2.30.0", server_source=source)
+
+    on = find_runtimes(gpu=True)
+    off = find_runtimes(gpu=False)
+
+    assert (on[0].kind, on[0].version) == ("vulkan", "2.30.0")
+    assert engine.gpu_devices(on[0])[0].name == "AMD Radeon Graphics (RADV RENOIR)"
+    assert [r.kind for r in off] == ["cpu", "cpu", "vulkan"]
+    assert engine.gpu_devices(off[0]) == ()  # a CPU build is never asked
+
+
+def test_gpu_engine_without_a_device_does_not_jump_the_queue(fake_lmstudio: Path):
+    assert [r.version for r in find_runtimes(gpu=True)] == ["2.20.0", "2.10.0", "2.30.0"]
+
+
+def test_a_left_over_older_lmstudio_install_does_not_choose_the_engine(tmp_path: Path, monkeypatch, models_root):
+    """Seen here: a native install's preference named a 2.17 engine that cannot load current models."""
+    current, stale = tmp_path / "flatpak", tmp_path / "native"
+    monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", (str(stale), str(current)))
+    install_backend(current, "llama.cpp-linux-x86_64-avx2-2.64.0", "llama.cpp-linux-x86_64-avx2", "2.64.0")
+    install_backend(current, "llama.cpp-linux-x86_64-avx2-2.62.0", "llama.cpp-linux-x86_64-avx2", "2.62.0")
+    install_backend(stale, "llama.cpp-linux-x86_64-avx2-2.17.0", "llama.cpp-linux-x86_64-avx2", "2.17.0")
+    for root, version in ((current, "2.62.0"), (stale, "2.17.0")):
+        (root / ".internal").mkdir()
+        (root / ".internal" / "backend-preferences-v1.json").write_text(json.dumps([
+            {"model_format": "gguf", "name": "llama.cpp-linux-x86_64-avx2", "version": version},
+        ]), encoding="utf-8")
+
+    assert [r.version for r in find_runtimes()] == ["2.62.0", "2.64.0", "2.17.0"]
 
 
 def test_custom_runtime_that_is_not_executable_is_ignored(fake_lmstudio: Path, tmp_path: Path):

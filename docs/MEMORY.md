@@ -51,8 +51,8 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   hypotheticals ("if I…"), reported speech ("my friend said…"), roleplay and code
   never yield a fact. Single-valued facts have a slot with a canonical wording
   ("User lives in …"): a later statement rewrites that memory instead of adding a
-  contradicting one. LLM extraction still runs when the user is idle, for what
-  patterns cannot read.
+  contradicting one. LLM extraction still runs, for what patterns cannot read, when the
+  signal described under "When extraction runs" says so.
 - **What rides along each turn.** Pinned memories and the profile (name, preferred
   reply language) always, plus up to three self-descriptions the user wrote in their
   own words ("I am …", "I'm …", "My name is …", "Call me …"), rendered as `User said: …`
@@ -63,6 +63,15 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   finds "User lives in Istanbul". The 8 recently used ones are no longer injected
   regardless of relevance. Only memories that matched count as used, so `use_count` no
   longer rewards whatever happened to be injected.
+- **When extraction runs**: extraction (a fresh ~3k-token prompt plus up to 400 output
+  tokens, a minute or two of every CPU core on a laptop) runs only when the pending window
+  holds a memorable user statement: a sentence that is not a question and is in the first
+  person (I, my, we, our, us …) or uses a memory or standing-preference word (remember,
+  forget, prefer, always, never, from now on, going forward, call me, don't, do not), or
+  once the window is full (12 messages, or at least three quarters of the 9,000-character
+  transcript budget). Otherwise the watermark stays put and those messages are read later
+  together with the next memorable one; the result then has `deferred: 1`. Code and links
+  are ignored when looking for the signal (`memory.worth_extracting`).
 - **Extraction watermark**: `extracted_through_seq` advances only after a
   successful extraction response, so a timed-out small model retries next
   turn instead of silently skipping facts. The extraction timeout is sized

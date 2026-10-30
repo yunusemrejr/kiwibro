@@ -32,12 +32,37 @@ EXTRACT_WINDOW_MESSAGES = 12
 # reply) is skipped, so one bad window cannot block every later message forever.
 EXTRACT_MAX_ATTEMPTS = 2
 EXTRACT_LINE_CHARS = 1200
+# An extraction is a fresh ~3k-token prompt plus up to 400 tokens of output: a minute or
+# two of every core on a laptop CPU (prefill ~54 tok/s, decode ~7 tok/s with a 4B model).
+# So it runs when the user said something about themselves, their work or a lasting
+# preference, and otherwise only once a full window has gathered (a catch-all for facts
+# the signal misses). Questions and plain requests ("write a function…") are skipped.
+_MEMORABLE_RE = re.compile(
+    r"\b(?:i|i'm|im|i've|i'd|i'll|my|mine|myself|we|we're|we've|we'll|our|ours|us)\b"
+    r"|\b(?:remember|forget|prefer\w*|always|never|from now on|going forward|call me|don't|do not)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_RE = re.compile(r"[^.!?\n]+[.!?]*")
 TARGET_MIN_SCORE = 0.5  # share of a reference's key words a memory must contain to be "the one"
 SINGLE_FACT_TERMS = 4  # more key words than this: a fact that bundles several (kept whole)
 # Facts about the assistant are not memories about the user (small models save "Kiwibro is…").
 _ABOUT_ASSISTANT_RE = re.compile(r"^(?:kiwibro|the assistant|assistant|you are|you're|this ai)\b", re.IGNORECASE)
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def worth_extracting(window: list[dict[str, Any]]) -> bool:
+    """True when a user message in ``window`` states something memorable: a sentence (not
+    a question) in the first person, or a memory or standing-preference word. Code and
+    links are ignored."""
+    for message in window:
+        if message.get("role") != "user":
+            continue
+        text = autofacts._URL_RE.sub(" ", autofacts._FENCE_RE.sub(" ", str(message.get("content") or "")))
+        for sentence in _SENTENCE_RE.findall(autofacts._INLINE_CODE_RE.sub(" ", text)):
+            if not sentence.rstrip().endswith("?") and _MEMORABLE_RE.search(sentence.replace("’", "'")):
+                return True
+    return False
 
 
 def normalize(text: str) -> str:
@@ -828,6 +853,12 @@ class MemoryEngine:
                 # Nothing learnable (tool chatter only): advance without an LLM call.
                 self._advance_watermark(conversation_id, through_seq)
                 return counts
+            full = len(window) >= EXTRACT_WINDOW_MESSAGES or \
+                sum(_transcript_cost(m) for m in window) >= EXTRACT_TRANSCRIPT_CHARS * 3 // 4
+            if not full and not worth_extracting(window):
+                # Questions and requests only: no model call yet. The watermark stays, so a
+                # later turn extracts these messages together with whatever it adds.
+                return {**counts, "deferred": 1}
             raw, outcome = self._bounded_extract(conversation_id, model, window=window, abort=abort)
             if outcome == "cancelled":
                 return {**counts, "cancelled": 1}

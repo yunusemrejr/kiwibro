@@ -82,10 +82,6 @@ const RISKY_STEPS = [
   ["smart", "Ask me first"],
   ["autonomous", "Refuse them"],
 ];
-const ENGINES = [
-  ["lmstudio", "LM Studio API"],
-  ["direct", "Direct · llama.cpp"],
-];
 const TOOL_PERMISSIONS = [
   ["auto", "Auto"],
   ["ask", "Ask"],
@@ -759,6 +755,19 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         ...controls,
       ]);
     const rows = [
+      switchRow({
+        name: "Graphics acceleration",
+        description: direct?.gpu_available
+          ? "Runs models on the GPU, an integrated one too: faster replies, and the processor stays free and cool."
+          : "No GPU build of llama.cpp found a GPU here, so models run on the CPU.",
+        checked: (data.settings.direct_gpu || "auto") !== "off",
+        onChange: async (next, control) => {
+          const ok = await patch({ direct_gpu: next ? "auto" : "off" }, () =>
+            control.setAttribute("aria-checked", String(!next)),
+          );
+          if (ok) await load();
+        },
+      }),
       row("llama.cpp runtime", "Empty uses LM Studio's bundled engine. Set a path to use your own llama-server build.", [runtimeInput]),
       row("Models folder", "Empty scans LM Studio's models folders.", [modelsInput]),
       row("CPU threads", "Auto uses every physical core.", [threadsInput]),
@@ -777,7 +786,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         await load();
       });
       const description = servers
-        .map((server) => `${server.model} · ${Math.round(server.context_length / 1024)}K · ${server.threads} threads`)
+        .map((server) => `${server.model} · ${Math.round(server.context_length / 1024)}K · ${server.gpu || `${server.threads} threads`}`)
         .join("; ");
       rows.push(row("Running", description, [stop]));
     }
@@ -877,37 +886,30 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     const direct = data.direct;
     const directReady = Boolean(direct?.available && direct?.runtime);
 
-    // The engine picker comes first: it decides what the status card below describes.
-    const engineSelect = el("select", { class: "setting-select", "aria-label": "Engine" });
-    for (const [value, label] of ENGINES) {
-      const option = el("option", { value, text: label });
-      if (value === data.engine) option.selected = true;
-      engineSelect.append(option);
-    }
-    engineSelect.addEventListener("change", async () => {
-      const previous = data.engine;
-      if (await patch({ engine: engineSelect.value }, () => (engineSelect.value = previous))) await load();
-    });
+    // The engine switch comes first: it decides what the status card below describes.
     lmSection.append(
-      el("div", { class: "setting-row" }, [
-        el("div", { class: "setting-text" }, [
-          el("div", { class: "setting-name", text: "Engine" }),
-          el("div", {
-            class: "setting-desc",
-            text: "Direct runs LM Studio's downloaded models with llama.cpp itself: faster, and LM Studio doesn't need to be open.",
-          }),
-        ]),
-        engineSelect,
-      ]),
+      switchRow({
+        name: "Optimized engine",
+        description:
+          "Runs LM Studio's downloaded models with Kiwibro's own llama.cpp setup: on the GPU when there is one, " +
+          "thinking capped without re-reading the chat, and LM Studio doesn't need to be open.",
+        checked: directMode,
+        onChange: async (next, control) => {
+          const ok = await patch({ engine: next ? "direct" : "lmstudio" }, () =>
+            control.setAttribute("aria-checked", String(!next)),
+          );
+          if (ok) await load();
+        },
+      }),
     );
 
     let statusName;
     let statusSub;
     if (directMode) {
       const count = direct?.models_count || 0;
-      statusName = directReady ? "Direct engine ready" : "Direct engine unavailable";
+      statusName = directReady ? "Optimized engine ready" : "Optimized engine unavailable";
       statusSub = directReady
-        ? `${direct.runtime.label} · ${count} model${count === 1 ? "" : "s"}`
+        ? [direct.runtime.label, direct.gpu, `${count} model${count === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
         : direct?.error || "No llama.cpp runtime was found.";
     } else {
       statusName = data.lmstudio ? "LM Studio is running" : "LM Studio isn't running";

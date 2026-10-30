@@ -343,6 +343,61 @@ def test_thinking_past_the_budget_acts_with_thinking_off(env: Env, home: Path, m
     assert inference.THINK_BUDGET_CHARS < 200 * 50  # the fake really overran it
 
 
+def test_direct_engine_steers_thinking_with_budgets_and_never_changes_the_template(
+    env: Env, home: Path, monkeypatch
+) -> None:
+    """llama.cpp ends the thought at the budget inside the request: no cut-off, no re-prefill."""
+    from kiwibro import inference
+
+    env.fake.models[0]["reasoning"] = {"allowed_options": ["off", "on"], "default": "on"}
+    env.settings_patch({"reasoning": "auto"})
+    monkeypatch.setattr(env.svc.llm, "direct_on", lambda: True)
+    calls: list[dict] = []
+
+    def stream_chat(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            return tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC})
+        return ChatResult(content="Done.")
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", stream_chat)
+    chat_events(env, "hi there")  # small talk: no thinking, but the same template
+    env.settings_patch({"reasoning": "on"})
+    chat_events(env, "Write a doc about kiwis to ~/Desktop/goal/raspberry.md")  # thinks, and must act
+    templates = [{k: v for k, v in c["extra"].items() if k not in inference.BUDGET_KEYS} for c in calls]
+    assert all(t == {"chat_template_kwargs": {"enable_thinking": True}} for t in templates), templates
+    assert [c["extra"]["thinking_budget_tokens"] for c in calls] == [
+        0, inference.THINK_BUDGET_TOKENS, inference.THINK_BUDGET_TOKENS,
+    ]
+    assert (home / "Desktop" / "goal" / "raspberry.md").read_text() == DOC
+
+
+def test_direct_engine_that_ignores_the_budget_falls_back_to_thinking_off(env: Env, home: Path, monkeypatch) -> None:
+    env.fake.models[0]["reasoning"] = {"allowed_options": ["off", "on"], "default": "on"}
+    env.settings_patch({"reasoning": "on"})
+    monkeypatch.setattr(env.svc.llm, "direct_on", lambda: True)
+    calls: list[dict] = []
+
+    def stream_chat(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:  # an old llama.cpp build: the budget field is ignored
+            for i in range(400):
+                kwargs["on_reasoning"](f"Section {i} could cover kiwi fact {i * 7 % 23}, citing source {i % 5}; ")
+            return ChatResult(reasoning="…")
+        if len(calls) == 2:
+            return tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC})
+        return ChatResult(content="Saved.")
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", stream_chat)
+    chat_events(env, "Write a doc about kiwis to ~/Desktop/goal/raspberry.md")
+    retry = calls[1]["extra"]
+    assert retry["thinking_budget_tokens"] == 0 and retry["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_budget_message" not in retry
+    assert calls[1]["messages"][-1]["content"].startswith("You have thought about this long enough.")
+    assert calls[2]["extra"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert (home / "Desktop" / "goal" / "raspberry.md").read_text() == DOC
+
+
 def test_routing_never_escapes_the_named_place(home: Path, tmp_path: Path) -> None:
     from kiwibro.sandbox import Workspace
 

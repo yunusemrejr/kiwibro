@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.
@@ -122,10 +122,15 @@ DEFAULT_SANDBOX = "auto"
 ENGINES = ("lmstudio", "direct")
 DEFAULT_ENGINE = "lmstudio"
 DIRECT_THREADS_RANGE = (0, 256)  # 0 = every physical core
+# Direct engine graphics acceleration: auto = a GPU build of llama.cpp on the GPU it finds
+# (an integrated one too), off = the CPU only.
+GPU_MODES = ("auto", "off")
+DEFAULT_GPU = "auto"
 
 # Settings whose value must be one of a fixed set.
 SETTING_CHOICES: dict[str, tuple[str, ...]] = {
     "engine": ENGINES,
+    "direct_gpu": GPU_MODES,
     "tool_profile": TOOL_PROFILES,
     "reasoning": REASONING_MODES,
     "autonomy": AUTONOMY_MODES,
@@ -171,6 +176,7 @@ def default_settings(lmstudio_url: str | None = None, workspace: str | None = No
         "direct_runtime": "",
         "direct_models_dir": "",
         "direct_threads": 0,
+        "direct_gpu": DEFAULT_GPU,
         "agent_enabled": True,
         "memory_enabled": True,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,

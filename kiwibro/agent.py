@@ -785,21 +785,27 @@ class AgentManager:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
         max_tokens = self._max_tokens(turn, prepared, settings)
-        if turn.thinking is None:  # decided once per turn: flipping mid-turn re-prefills everything
+        profile = inference.model_profile(model, prepared.model_info)
+        budgets = inference.uses_budgets(profile, self.llm.direct_on())  # thinking never touches the prompt
+        if turn.thinking is None:  # decided once per turn: with LM Studio a flip re-prefills everything
             turn.thinking = inference.turn_reasoning(
                 settings.get("reasoning"),
                 turn.message,
                 previous=self._thinking.get(turn.conversation_id),
-                prompt_tokens=prepared.used,
+                prompt_tokens=0 if budgets else prepared.used,
             )
             self._thinking[turn.conversation_id] = turn.thinking
         think = turn.thinking
-        extra = inference.reasoning_payload(inference.model_profile(model, prepared.model_info), think=think)
+        must_act = round_index > 0 or (turn.plan is not None and bool(turn.plan.remaining()))
+        if budgets:
+            extra = inference.budget_payload(profile, think=think, must_act=must_act)
+        else:
+            extra = inference.reasoning_payload(profile, think=think)
+        prompt_extra = {k: v for k, v in extra.items() if k not in inference.BUDGET_KEYS}  # what renders
         attempts = 0
         collapsed = False  # the reply collapsed once; this request recovers it
         kept = ""  # the good start of a reply that began repeating itself (continued, not redone)
         overthought = False  # thought past the budget without acting; retried with thinking off
-        must_act = round_index > 0 or (turn.plan is not None and bool(turn.plan.remaining()))
         while True:
             self._raise_if_aborted(turn)
             messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
@@ -813,13 +819,20 @@ class AgentManager:
                 request_extra = {**extra, **inference.ANTI_REPEAT}
             if overthought:  # act without thinking this once (also transient)
                 messages = [*messages, {"role": "user", "content": prompts.ACT_NOW.format(step=self._next_step(turn))}]
-                request_extra = {**request_extra, **inference.reasoning_payload(
-                    inference.model_profile(model, prepared.model_info), think=False)}
-            no_thinking = request_extra.get("reasoning_effort") == "none"
-            turn.think_chars, turn.think_budget = 0, (
-                inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
-            )
-            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, extra)  # sampling is not prompt
+                if budgets:  # the runtime ignored the budget: switch thinking off in the template too
+                    request_extra = {k: v for k, v in request_extra.items() if k != "reasoning_budget_message"}
+                    request_extra["thinking_budget_tokens"] = 0
+                    if profile.reasoning_toggle:
+                        request_extra["chat_template_kwargs"] = {"enable_thinking": False}
+                else:
+                    request_extra = {**request_extra, **inference.reasoning_payload(profile, think=False)}
+            if budgets:  # llama.cpp ends the thought at its budget; this only catches a runtime that doesn't
+                limit = 8 * max(250, int(request_extra.get("thinking_budget_tokens") or 0))
+            else:
+                no_thinking = request_extra.get("reasoning_effort") == "none"
+                limit = inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
+            turn.think_chars, turn.think_budget = 0, limit
+            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, prompt_extra)  # sampling is not prompt
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked = "", 0
@@ -904,6 +917,10 @@ class AgentManager:
     ) -> None:
         """Fold one round's inference telemetry into the turn's ``done.inference``."""
         timing = turn.timer.stats((result.usage or {}).get("completion_tokens")) if turn.timer else {}
+        counted = result.timings or {}
+        reuse = inference.server_reuse(counted) or reuse  # the direct engine counts exactly
+        if counted.get("predicted_per_second") and counted.get("predicted_n", 0) >= 8:
+            timing["tokens_per_s"] = round(counted["predicted_per_second"], 1)
         if round_index == 0:
             turn.inference.update(reuse, thinking=think)
             if "ttft_ms" in timing:
@@ -911,10 +928,11 @@ class AgentManager:
         if "tokens_per_s" in timing:
             turn.inference["tokens_per_s"] = timing["tokens_per_s"]
         if turn.model:  # measured speeds size background-call timeouts (memory extraction)
+            exact = "prompt_ms" in counted
             inference.SPEEDS.note(
                 turn.model,
                 new_tokens=int(reuse.get("prompt_tokens_est", 0)) - int(reuse.get("reused_tokens_est", 0)),
-                ttft_ms=timing.get("ttft_ms"),
+                ttft_ms=round(counted["prompt_ms"]) if exact else timing.get("ttft_ms"),
                 tokens_per_s=timing.get("tokens_per_s"),
             )
         log.info(
@@ -1091,15 +1109,18 @@ class AgentManager:
         if history:
             _ctx, budget, _info = self.context.budget_for(model)
             used = self.context.used_tokens(messages, model)
-            if used > int(budget * COMPACT_TRIGGER) or used > readiness.WARM_HISTORY_TOKENS:
+            if used > int(budget * COMPACT_TRIGGER) or used > readiness.warm_limit(model):
                 return None
         info = model_info or {}
         tool_list = self._tool_list(model, settings, model_info)
         if settings.get("agent_enabled", True) and not info.get("tools", False):
             messages = toolcall.to_text_protocol(messages)
+        profile = inference.model_profile(model, info)
+        if inference.uses_budgets(profile, self.llm.direct_on()):  # every turn renders thinking on
+            return messages, tool_list, dict(inference.TEMPLATE_THINKING) if profile.reasoning_toggle else {}
         previous = self._thinking.get(conversation_id) if conversation_id else None
         think = previous if previous is not None else inference.wants_reasoning(settings.get("reasoning"), "")
-        extra = inference.reasoning_payload(inference.model_profile(model, info), think=think)
+        extra = inference.reasoning_payload(profile, think=think)
         return messages, tool_list, extra
 
     def _tool_list(

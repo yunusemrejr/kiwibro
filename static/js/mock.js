@@ -291,6 +291,7 @@ export class MockBackend {
       direct_runtime: "",
       direct_models_dir: "",
       direct_threads: 0,
+      direct_gpu: "auto",
     };
     this.directServers = [
       {
@@ -569,6 +570,8 @@ export class MockBackend {
       model_dirs: ["/home/yemre/.lmstudio/models"],
       models_count: this.models.length,
       threads: 8,
+      gpu: this.settings.direct_gpu === "off" ? "" : "AMD Radeon Graphics (RADV RENOIR)",
+      gpu_available: true,
       servers: clone(this.directServers),
       error: available ? null : "No downloaded models were found in LM Studio's models folder.",
     };
