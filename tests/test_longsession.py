@@ -343,6 +343,35 @@ def test_recall_note_returns_exact_early_fact_after_compaction(env):
     assert prepared.used <= prepared.budget
 
 
+def test_recall_finds_an_early_exchange_by_meaning_when_no_word_matches(env):
+    from kiwibro import sense
+
+    if sense.shared() is None:
+        pytest.skip("Kiwi Sense is not available")
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "First, help me plan the week.")
+    svc.db.add_message(conversation["id"], "assistant", "Sure, let us plan it.")
+    svc.db.add_message(conversation["id"], "user", "Can you recommend somewhere in London to buy good cheese?")
+    svc.db.add_message(conversation["id"], "assistant", "Try La Fromagerie on Moxon Street; they age their own comte.")
+    for i in range(50):
+        svc.db.add_message(conversation["id"], "user", f"Filler sailing topic {i} " + "chat " * 30)
+        svc.db.add_message(conversation["id"], "assistant", f"Filler reply {i} " + "talk " * 30)
+    asked = svc.db.add_message(conversation["id"], "user", "where was that dairy shop again")
+    assert svc.db.search_messages("where was that dairy shop again", conversation_id=conversation["id"],
+                                  before_seq=asked["seq"]) == []  # no word of it was said before
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    newest_user = [m for m in prepared.messages if m["role"] == "user"][-1]
+    assert prepared.recalled == 2  # the question it matched and the reply that answered it
+    assert "La Fromagerie on Moxon Street" in newest_user["content"]
+    assert prepared.used <= prepared.budget
+
+    svc.db.add_message(conversation["id"], "assistant", "La Fromagerie, on Moxon Street.")
+    svc.db.add_message(conversation["id"], "user", "write me a poem about autumn")
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    assert "La Fromagerie on Moxon Street" not in [m for m in prepared.messages if m["role"] == "user"][-1]["content"]
+
+
 def test_prepare_prefix_is_stable_across_turns(env):
     """KV rule: older rendered messages never change when a new turn arrives."""
     svc, _fake = env
