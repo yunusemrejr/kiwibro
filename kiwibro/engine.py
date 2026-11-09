@@ -767,6 +767,10 @@ class DirectEngine:
     def _runtimes(self) -> list[Runtime]:
         return find_runtimes(self._custom_runtime(), gpu=self._gpu_on(), data_dir=self._data_dir)
 
+    def has_runtime(self) -> bool:
+        """Whether there is a llama.cpp build to run models with."""
+        return bool(self._runtimes())
+
     # --- task adapters ---
 
     def adapters(self, force: bool = False) -> list[Any]:

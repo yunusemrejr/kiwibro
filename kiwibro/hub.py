@@ -260,7 +260,9 @@ class Hub:
     # Hugging Face API
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"filter": "gguf", "sort": "downloads", "direction": -1,
+        # "conversational" keeps this to chat models: GGUF files also hold speech, music and
+        # embedding models, which this engine cannot talk to.
+        params: dict[str, Any] = {"filter": ["gguf", "conversational"], "sort": "downloads", "direction": -1,
                                   "limit": max(1, min(int(limit), 100))}
         text = (query or "").strip()
         if text:

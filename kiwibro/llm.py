@@ -391,6 +391,8 @@ class LLMClient:
     def resolve_model(self, requested: str | None = None) -> str:
         ok, models, error = self.models_status()
         if not ok:
+            if self.direct_on():
+                raise LLMError("no_engine", error or NO_MODELS)
             raise LLMError("connection", self._connection_message(self.server_url()))
         if not models:
             raise LLMError("no_model", NO_MODELS if self.direct_on() else NO_MODELS_ATTACHED)
@@ -849,7 +851,12 @@ class LLMClient:
 
     def _fetch_raw_models(self) -> list[dict[str, Any]]:
         if self.direct_on():
-            return self.direct_engine().raw_entries()
+            engine = self.direct_engine()
+            if not engine.has_runtime():
+                from .engine import NO_RUNTIME
+
+                raise LLMError("no_engine", NO_RUNTIME)
+            return engine.raw_entries()
         base = self.server_url()
         try:
             response = requests.get(f"{base}/v1/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers())

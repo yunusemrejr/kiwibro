@@ -831,3 +831,26 @@ def test_direct_models_dir_must_be_an_existing_folder(tmp_path: Path):
     }
     with pytest.raises(ValueError):
         config.validate_settings_patch({"direct_models_dir": str(tmp_path / "missing")}, {})
+
+
+# --- No engine installed yet -------------------------------------------------------------
+
+
+def test_models_on_disk_without_an_engine_report_the_missing_engine(tmp_path: Path, models_root: Path):
+    add_tiny_model(models_root)
+    client = LLMClient(lambda: {"model": None}, data_dir=tmp_path / "data")
+
+    ok, models, error = client.models_status(force=True)
+
+    assert (ok, models, error) == (False, [], engine.NO_RUNTIME)
+    assert client.direct_engine().models(force=True)  # the Models panel still lists the file
+    with pytest.raises(LLMError) as caught:
+        client.resolve_model()
+    assert caught.value.kind == "no_engine" and caught.value.message == engine.NO_RUNTIME
+
+
+def test_an_installed_engine_lists_the_models(direct_client: LLMClient):
+    ok, models, error = direct_client.models_status(force=True)
+
+    assert ok is True and error is None
+    assert [model["id"] for model in models] == ["pub/tiny"]

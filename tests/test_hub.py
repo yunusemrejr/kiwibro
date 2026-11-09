@@ -34,7 +34,7 @@ class _Handler(BaseHTTPRequestHandler):
         fake: FakeHub = self.server.fake
         parts = urlsplit(self.path)
         path = unquote(parts.path)
-        query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+        query = {key: values[0] if len(values) == 1 else values for key, values in parse_qs(parts.query).items()}
         headers = {key.lower(): value for key, value in self.headers.items()}
         fake.calls.append({"path": path, "query": query, "headers": headers})
         if path == "/api/models":
@@ -215,7 +215,8 @@ def test_search_maps_fields_skips_private_and_gated(hf, hub):
     assert call["path"] == "/api/models"
     assert call["headers"]["user-agent"] == "kiwibro"
     assert "authorization" not in call["headers"]
-    assert call["query"] == {"search": "qwen", "filter": "gguf", "sort": "downloads", "direction": "-1", "limit": "5"}
+    assert call["query"] == {"search": "qwen", "filter": ["gguf", "conversational"], "sort": "downloads",
+                             "direction": "-1", "limit": "5"}
 
 
 def test_empty_search_omits_the_query(hf, hub):
