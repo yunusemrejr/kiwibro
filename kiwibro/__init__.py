@@ -131,7 +131,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     memory = MemoryEngine(db, llm, settings_provider)
     notes = Notebook(db)
     search = SearchEngine()
-    agent = AgentManager(db, llm, context, memory, search, settings_provider)
+    agent = AgentManager(db, llm, context, memory, search, settings_provider, notes=notes)
     # Load + KV warm-up of the selected model ahead of the first message. Off in tests:
     # scripted fakes would answer the warm-up request instead of the turn.
     warmup = app.config.get("KIWIBRO_WARMUP")

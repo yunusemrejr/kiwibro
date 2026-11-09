@@ -26,11 +26,14 @@ from .context import (
 from .db import Database
 from .llm import ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
 from .memory import MemoryEngine
+from .notes import Notebook
 from .sandbox import SandboxError, Workspace
 from .search import SearchEngine
 from .tools import ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
+
+NOTES_HEADER = "Notes the user kept that may bear on this message (use the note tool for the full text):"
 
 
 # Shares of the message budget: the tool schemas may take at most this much of it (else
@@ -331,12 +334,14 @@ class AgentManager:
         memory: MemoryEngine,
         search: SearchEngine,
         settings_provider: Callable[[], dict[str, Any]],
+        notes: Notebook | None = None,
     ) -> None:
         self.db = db
         self.llm = llm
         self.context = context
         self.memory = memory
         self.search = search
+        self.notes = notes
         self._settings = settings_provider
         self.data_dir = Path(db.path).resolve().parent  # checkpoints + document library live here
         self._locks: dict[str, threading.Lock] = {}
@@ -1235,12 +1240,25 @@ class AgentManager:
             plan_steps=len(steps),
         ))
         blocks = [
-            inference.time_line(), memory_block, self._earlier_chats_note(turn),
+            inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
             _directives_note(self.db, turn.conversation_id), plan_note, guidance_note,
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
+    def _notes_block(self, turn: Turn) -> str:
+        """The user's notes that bear on this message (never in a private chat, never for small talk)."""
+        if self.notes is None or plan.is_small_talk(turn.message):
+            return ""
+        try:
+            if self.memory.is_private(turn.conversation_id):
+                return ""
+            found = self.notes.relevant(turn.message, limit=2)
+            return f"{NOTES_HEADER}\n{Notebook.render_block(found, max_chars=600)}" if found else ""
+        except Exception:  # notes must never break a turn
+            log.warning("turn %s: notes lookup failed", turn.conversation_id, exc_info=True)
+            return ""
 
     # --- Kiwi Sense: facts of the turn, corrections, what a model tends to get wrong ---
 
@@ -1521,6 +1539,7 @@ class AgentManager:
                 conversation_id=turn.conversation_id,
                 llm=self.llm,
                 current_model=turn.model,
+                notes=self.notes,
             )
             if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)

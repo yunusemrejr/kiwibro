@@ -48,6 +48,10 @@ SNIPPETS: dict[str, str] = {
         "(action \"update\", old = the outdated fact) or remove one (action \"forget\"); use recall to "
         "look up earlier conversations instead of asking the user to repeat themselves."
     ),
+    "notes": (
+        "The user wants a note kept or looked up: call the `note` tool (save, append, read or search) "
+        "instead of answering from memory."
+    ),
     "visual": (
         "Rich output: the chat renders markdown tables, ```csv blocks as tables, and one self-contained "
         "```html or ```svg block (inline CSS/JS, no external links) as a live preview — use it for a "
@@ -58,7 +62,7 @@ SNIPPETS: dict[str, str] = {
         "a vision model or by code). Treat it as what you see; use the path with your tools for more."
     ),
 }
-TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "desktop", "memory"})
+TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "desktop", "memory", "notes"})
 HEADER = "## Guidance for this turn"
 
 _CAPABILITIES = re.compile(
@@ -93,6 +97,11 @@ _MEMORY = re.compile(
     r"\b(?:remember|forget|memory|memories|recall|last\s+time|earlier|previously|"
     r"we\s+(?:talked|discussed|spoke|said)|did\s+i\s+(?:tell|say|mention)|i\s+(?:told|said|mentioned)|"
     r"you\s+know\s+(?:that\s+)?my|what\s+do\s+you\s+know\s+about\s+me|my\s+name)\b",
+    re.I,
+)
+_NOTES = re.compile(
+    r"\b(?:take|make|write|jot|add|keep|save)\b[^.?!]{0,40}\bnotes?\b|\bnote\s+(?:this|that|it)\s+down\b|"
+    r"\bmy\s+notes?\b|\bnotebook\b",
     re.I,
 )
 _VISUAL = re.compile(
@@ -132,6 +141,8 @@ def select(
         keys.add("desktop")
     if _MEMORY.search(text):
         keys.add("memory")
+    if _NOTES.search(text):
+        keys.add("notes")
     if _VISUAL.search(text):
         keys.add("visual")
     if not tools:
