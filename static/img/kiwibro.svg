@@ -21,28 +21,28 @@
     <path d="M33 55v5.2M33 60.2l-3.4 1.5M33 60.2l3.4 1.6"/>
   </g>
   <!-- body and head: one fuzzy kiwi -->
-  <path d="M8.5 40C8.5 26.5 18.5 17.2 31 17.2c3 0 5-1.6 7-3.4 4.3-3.8 11.6-2.9 14.3 2.2 2.2 4.2 .7 9-3.3 11.200-1.8 1-2.3 3.300-2.3 6.300.2 1.800.5 3.700.5 5.800C47.2 50 39.2 57.5 28 57.5 17 57.5 8.5 50.5 8.5 40Z" fill="url(#kbSkin)"/>
-  <path d="M12.6 31.500c2.600-6 8.200-10.3 15.200-11.300" stroke="#F3DCA8" stroke-width="1.800" stroke-linecap="round" opacity=".42" fill="none"/>
+  <path d="M8.5 40C8.5 26.5 18.5 17.2 31 17.2c3 0 5-1.6 7-3.4 4.3-3.8 11.6-2.9 14.3 2.2 2.2 4.2 .7 9-3.3 11.2-1.8 1-2.3 3.3-2.3 6.3.2 1.8.5 3.7.5 5.8C47.2 50 39.2 57.5 28 57.5 17 57.5 8.5 50.5 8.5 40Z" fill="url(#kbSkin)"/>
+  <path d="M12.6 31.5c2.6-6 8.2-10.3 15.2-11.3" stroke="#F3DCA8" stroke-width="1.8" stroke-linecap="round" opacity=".42" fill="none"/>
   <!-- the cut fruit: flesh, pale core, seeds -->
-  <circle cx="27.500" cy="39" r="13.500" fill="url(#kbFlesh)"/>
-  <circle cx="27.500" cy="39" r="13.500" fill="none" stroke="#5F9628" stroke-width="1.200" opacity=".7"/>
+  <circle cx="27.5" cy="39" r="13.5" fill="url(#kbFlesh)"/>
+  <circle cx="27.5" cy="39" r="13.5" fill="none" stroke="#5F9628" stroke-width="1.2" opacity=".7"/>
   <g stroke="#E4F4A8" stroke-width=".9" stroke-linecap="round" opacity=".55">
-    <path d="M27.5 31.200v-3.400M33 33.500l2.400-2.400M35.3 39h3.400M33 44.500l2.4 2.400M27.5 46.800v3.400M22 44.500l-2.4 2.400M19.7 39h-3.400M22 33.500l-2.400-2.400"/>
+    <path d="M27.5 31.2v-3.4M33 33.5l2.4-2.4M35.3 39h3.4M33 44.5l2.4 2.4M27.5 46.8v3.4M22 44.5l-2.4 2.4M19.7 39h-3.4M22 33.5l-2.4-2.4"/>
   </g>
-  <ellipse cx="27.500" cy="39" rx="4.300" ry="4.700" fill="#F6F3CE"/>
+  <ellipse cx="27.5" cy="39" rx="4.3" ry="4.7" fill="#F6F3CE"/>
   <g fill="#1B1D12">
-    <ellipse cx="27.500" cy="31.600" rx=".95" ry="1.550"/>
-    <ellipse cx="27.500" cy="46.400" rx=".95" ry="1.550"/>
-    <ellipse cx="20.100" cy="39" rx="1.550" ry=".95"/>
-    <ellipse cx="34.900" cy="39" rx="1.550" ry=".95"/>
-    <ellipse cx="22.270" cy="33.770" rx=".95" ry="1.550" transform="rotate(-45 22.270 33.770)"/>
-    <ellipse cx="32.730" cy="33.770" rx=".95" ry="1.550" transform="rotate(45 32.730 33.770)"/>
-    <ellipse cx="22.270" cy="44.230" rx=".95" ry="1.550" transform="rotate(45 22.270 44.230)"/>
-    <ellipse cx="32.730" cy="44.230" rx=".95" ry="1.550" transform="rotate(-45 32.730 44.230)"/>
+    <ellipse cx="27.5" cy="31.6" rx=".95" ry="1.55"/>
+    <ellipse cx="27.5" cy="46.4" rx=".95" ry="1.55"/>
+    <ellipse cx="20.1" cy="39" rx="1.55" ry=".95"/>
+    <ellipse cx="34.9" cy="39" rx="1.55" ry=".95"/>
+    <ellipse cx="22.27" cy="33.77" rx=".95" ry="1.55" transform="rotate(-45 22.27 33.77)"/>
+    <ellipse cx="32.73" cy="33.77" rx=".95" ry="1.55" transform="rotate(45 32.73 33.77)"/>
+    <ellipse cx="22.27" cy="44.23" rx=".95" ry="1.55" transform="rotate(45 22.27 44.23)"/>
+    <ellipse cx="32.73" cy="44.23" rx=".95" ry="1.55" transform="rotate(-45 32.73 44.23)"/>
   </g>
   <!-- long beak -->
-  <path d="M51.6 16.900c4.9 2.3 9.3 6.9 11.8 12.900-4.900-2-9.600-4.900-13.300-8.400-.300-1.700.300-3.4 1.500-4.500Z" fill="url(#kbBeak)"/>
+  <path d="M51.6 16.9c4.9 2.3 9.3 6.9 11.8 12.9-4.9-2-9.6-4.9-13.3-8.4-.3-1.7.3-3.4 1.5-4.5Z" fill="url(#kbBeak)"/>
   <!-- eye -->
-  <circle cx="45.700" cy="18.600" r="2.250" fill="#1B1D12"/>
-  <circle cx="46.400" cy="17.800" r=".75" fill="#FBF8EC"/>
+  <circle cx="45.7" cy="18.6" r="2.25" fill="#1B1D12"/>
+  <circle cx="46.4" cy="17.8" r=".75" fill="#FBF8EC"/>
 </svg>

@@ -1,0 +1,488 @@
+/* ==========================================================================
+   Shell: sidebar places, the home screen, wide panels and the small parts
+   the Models, Notes and How-it-works panels share.
+   ========================================================================== */
+
+/* ---------- Sidebar places ---------------------------------------------- */
+.places {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.place {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background var(--dur), color var(--dur);
+}
+
+.place .icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--green-soft);
+}
+
+.place[data-tone="tan"] .icon {
+  color: var(--tan);
+}
+
+.place-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.place-count {
+  flex: none;
+  color: var(--faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.place:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+}
+
+.place:active {
+  transform: translateY(1px);
+}
+
+.sidebar-top .conv-filter {
+  margin-top: 8px;
+}
+
+/* Footer: which model answers, and what runs it. */
+.sidebar-footer .sidebar-model {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.sidebar-engine {
+  flex: none;
+  max-width: 44%;
+  overflow: hidden;
+  padding-right: 4px;
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Home screen -------------------------------------------------- */
+.empty {
+  padding: 16px 0 32px;
+}
+
+.hero-bird {
+  position: relative;
+  width: 176px;
+  height: 176px;
+}
+
+.hero-slice {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hero-slice-flesh {
+  fill: rgba(166, 216, 92, 0.055);
+  stroke: rgba(166, 216, 92, 0.16);
+  stroke-width: 1;
+}
+
+.hero-slice-seeds {
+  fill: rgba(166, 216, 92, 0.3);
+  transform-origin: 100px 100px;
+  animation: hero-turn 90s linear infinite;
+}
+
+.hero-kiwi {
+  position: absolute;
+  top: 31px;
+  left: 30px;
+  width: 124px;
+  height: 116px;
+  overflow: visible;
+}
+
+.hero-kiwi-body {
+  transform-origin: 28px 56px;
+  animation: hero-breathe 4.6s ease-in-out infinite;
+}
+
+.hero-kiwi-eye {
+  transform-origin: 45.7px 18.6px;
+  animation: hero-blink 5.2s ease-in-out infinite;
+}
+
+.hero-bird:hover .hero-kiwi-body {
+  animation: hero-peck 0.7s var(--ease-out);
+}
+
+@keyframes hero-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hero-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-1.1px) scale(1.012, 0.992);
+  }
+}
+
+@keyframes hero-blink {
+  0%,
+  45%,
+  49%,
+  100% {
+    transform: scaleY(1);
+  }
+  47% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes hero-peck {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35% {
+    transform: rotate(13deg);
+  }
+  60% {
+    transform: rotate(-3deg);
+  }
+}
+
+.empty-title {
+  margin-top: 14px;
+  font-size: 30px;
+}
+
+.empty-sub {
+  font-size: 14px;
+}
+
+.hero-setup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  margin-top: 20px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--green);
+  color: var(--green-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: background var(--dur), transform 0.08s;
+}
+
+.hero-setup[hidden] {
+  display: none;
+}
+
+.hero-setup .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.hero-setup:hover {
+  background: var(--green-bright);
+}
+
+.hero-setup:active {
+  transform: scale(0.98);
+}
+
+.starters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: min(560px, 100%);
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+
+.starter {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  column-gap: 11px;
+  row-gap: 1px;
+  align-items: center;
+  padding: 12px 12px 12px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background var(--dur);
+}
+
+.starter:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+.starter .icon {
+  grid-row: 1 / span 2;
+  width: 17px;
+  height: 17px;
+  color: var(--green);
+  transition: transform 0.2s var(--ease-out);
+}
+
+.starter[data-tone="tan"] .icon {
+  color: var(--tan);
+}
+
+.starter-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.starter-ask {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.starter:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.starter:hover .icon {
+  transform: translateX(2px);
+}
+
+.starter:hover .starter-ask {
+  color: var(--text-2);
+}
+
+/* ---------- Wide panels --------------------------------------------------- */
+.sheet.sheet-wide {
+  inset: 0;
+  width: min(1040px, calc(100vw - 48px));
+  max-width: none;
+  height: min(780px, calc(100dvh - 48px));
+  max-height: none;
+  margin: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 18px;
+  box-shadow: var(--shadow-pop);
+}
+
+.sheet.sheet-wide[open] {
+  animation: panel-in 0.24s var(--ease-out);
+}
+
+.sheet.sheet-wide.is-closing {
+  animation: panel-out 0.16s ease forwards;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes panel-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+/* A panel body that lays out its own scrolling regions. */
+.sheet-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.sheet-wide .sheet-scroll {
+  padding: 20px 24px 28px;
+}
+
+@media (max-width: 860px) {
+  .sheet.sheet-wide {
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .sheet-wide .sheet-scroll {
+    padding: 14px 14px 24px;
+  }
+}
+
+/* ---------- Shared parts --------------------------------------------------- */
+.panel-section + .panel-section {
+  margin-top: 28px;
+}
+
+.panel-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.panel-title small {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.bar {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 0.3s var(--ease-out);
+}
+
+.bar[data-tone="tan"] > span {
+  background: var(--tan);
+}
+
+.bar[data-tone="warn"] > span {
+  background: var(--orange);
+}
+
+.panel-empty {
+  padding: 28px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.panel-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(233, 84, 32, 0.3);
+  border-radius: 10px;
+  background: var(--orange-dim);
+  color: var(--orange-soft);
+  font-size: 12.5px;
+}
+
+.panel-error .icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+}
+
+.btn-danger {
+  border-color: rgba(239, 107, 97, 0.35);
+  background: transparent;
+  color: var(--red);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 107, 97, 0.12);
+}
+
+.btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A reply Kiwi Sense corrected. */
+.chip-sense {
+  border-color: var(--tan-line);
+  background: var(--tan-dim);
+  color: var(--tan-soft);
+}
+
+/* ---------- Phone --------------------------------------------------------- */
+@media (max-width: 560px) {
+  .hero-bird {
+    width: 140px;
+    height: 140px;
+  }
+
+  .hero-kiwi {
+    top: 25px;
+    left: 24px;
+    width: 98px;
+    height: 92px;
+  }
+
+  .empty-title {
+    font-size: 26px;
+  }
+
+  .starters {
+    grid-template-columns: 1fr;
+  }
+
+  .starter:nth-child(odd) {
+    border-right: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-slice-seeds,
+  .hero-kiwi-body,
+  .hero-kiwi-eye,
+  .hero-bird:hover .hero-kiwi-body {
+    animation: none;
+  }
+}

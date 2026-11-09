@@ -4,6 +4,9 @@
  * exercised without Flask or a real engine. It has no effect in normal mode.
  */
 
+import { mockModels } from "./mock_models.js";
+import { mockNotes } from "./mock_notes.js";
+
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const nowIso = () => new Date().toISOString();
@@ -604,6 +607,15 @@ export class MockBackend {
     const route = url.pathname;
     const verb = method.toUpperCase();
 
+    // The model manager and the notes panel keep their fake data in their own files.
+    const fail = (status, code, message) => {
+      throw new MockApiError(status, code, message);
+    };
+    for (const part of [mockModels, mockNotes]) {
+      const answer = part(this, { route, verb, body, url, fail });
+      if (answer !== undefined) return clone(answer);
+    }
+
     if (route === "/health" && verb === "GET") return clone(this._health());
 
     if (route === "/api/bootstrap" && verb === "GET") {
@@ -614,6 +626,7 @@ export class MockBackend {
         current_model: this.currentModel,
         conversations: this._list(),
         memories_count: this.memories.length,
+        notes_count: (this.notes || []).length,
         workspace: this.settings.workspace,
       };
     }

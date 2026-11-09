@@ -217,6 +217,29 @@ export const api = {
     request(`/api/memories/${encodeURIComponent(id)}`, { method: "DELETE" }),
   forgetMemories: () => request("/api/memories", { method: "DELETE" }),
 
+  // Models on this computer, the Hugging Face catalogue, downloads and the engine build.
+  library: () => request("/api/library"),
+  deleteModel: (id) => request("/api/library/models", { method: "DELETE", body: { id } }),
+  hubSearch: (q, { limit = 20, signal } = {}) => request(`/api/hub/search${query({ q, limit })}`, { signal }),
+  hubFiles: (repo) => request(`/api/hub/files${query({ repo })}`),
+  downloads: () => request("/api/hub/downloads"),
+  startDownload: (repo, file) => request("/api/hub/downloads", { method: "POST", body: { repo, file } }),
+  cancelDownload: (id) =>
+    request(`/api/hub/downloads/${encodeURIComponent(id)}/cancel`, { method: "POST", body: {} }),
+  clearDownloads: () => request("/api/hub/downloads/clear", { method: "POST", body: {} }),
+  runtime: () => request("/api/runtime"),
+  installRuntime: (kind = "auto") => request("/api/runtime/install", { method: "POST", body: { kind } }),
+  cancelRuntimeInstall: () => request("/api/runtime/cancel", { method: "POST", body: {} }),
+  useRuntime: (name) => request("/api/runtime/use", { method: "POST", body: { name } }),
+  deleteRuntime: (name) => request(`/api/runtime/${encodeURIComponent(name)}`, { method: "DELETE" }),
+
+  notes: ({ q = "", tag = "" } = {}) => request(`/api/notes${query({ q, tag })}`),
+  note: (id) => request(`/api/notes/${encodeURIComponent(id)}`),
+  createNote: ({ title = "", body, tags = [] }) =>
+    request("/api/notes", { method: "POST", body: { title, body, tags } }),
+  patchNote: (id, patch) => request(`/api/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: patch }),
+  deleteNote: (id) => request(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
   settings: () => request("/api/settings"),
   patchSettings: (patch) => request("/api/settings", { method: "PATCH", body: patch }),
   workspace: () => request("/api/workspace"),

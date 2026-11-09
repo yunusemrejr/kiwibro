@@ -203,6 +203,7 @@ def bootstrap() -> Response:
         "readiness": _prepare_model(svc) if ok and models else svc.agent.readiness.status(),
         "conversations": [_conversation_list_item(c) for c in svc.db.list_conversations()],
         "memories_count": svc.db.count_memories(),
+        "notes_count": svc.db.count_notes(),
         "workspace": settings.get("workspace"),
     }
     if error:

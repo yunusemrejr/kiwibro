@@ -9,6 +9,9 @@ import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
 import { conversationMarkdown, exportFilename } from "./export.js";
+import { createModelsView } from "./models.js";
+import { createNotesView } from "./notes.js";
+import { createHowView } from "./how.js";
 import {
   $,
   $$,
@@ -43,8 +46,16 @@ const els = {
   convSearch: $("#conv-search"),
   convList: $("#conv-list"),
   convEmpty: $("#conv-empty"),
-  sidebarMemory: $("#sidebar-memory"),
-  sidebarMemoryCount: $("#sidebar-memory-count"),
+  sidebarMemory: $("#place-memory"),
+  sidebarMemoryCount: $("#place-memory-count"),
+  placeNotes: $("#place-notes"),
+  placeNotesCount: $("#place-notes-count"),
+  placeModels: $("#place-models"),
+  placeModelsCount: $("#place-models-count"),
+  placeHow: $("#place-how"),
+  emptyTitle: $("#empty-title"),
+  heroSetup: $("#hero-setup"),
+  heroSetupText: $("#hero-setup-text"),
   sidebarModel: $("#sidebar-model"),
   sidebarModelName: $("#sidebar-model-name"),
   sidebarDot: $("#sidebar-dot"),
@@ -66,6 +77,9 @@ const els = {
   stopBtn: $("#stop-btn"),
   memorySheet: $("#memory-sheet"),
   settingsSheet: $("#settings-sheet"),
+  modelsSheet: $("#models-sheet"),
+  notesSheet: $("#notes-sheet"),
+  howSheet: $("#how-sheet"),
 };
 
 const STORAGE = {
@@ -100,6 +114,7 @@ const state = {
   conversationId: null,
   conversation: null,
   memoriesCount: 0,
+  notesCount: 0,
   readiness: null,
   workspace: "",
   dataDir: "",
@@ -120,6 +135,9 @@ let healthCheckAt = 0;
 let memoryRefreshTimer = 0;
 let memorySheet = null;
 let settingsSheet = null;
+let modelsView = null;
+let notesView = null;
+let howView = null;
 
 /* -------------------------------------------------------------------------- */
 /* Chat view                                                                  */
@@ -169,6 +187,7 @@ function applyBootstrap(data) {
     null;
   state.conversations = Array.isArray(data.conversations) ? data.conversations : [];
   state.memoriesCount = Number(data.memories_count) || 0;
+  state.notesCount = Number(data.notes_count) || 0;
   state.workspace = data.workspace || state.settings?.workspace || "";
   applyEngineHealth(state.health);
   state.unreachable = false;
@@ -228,6 +247,7 @@ async function restoreConversation() {
 }
 
 function renderAll() {
+  renderHome();
   renderHeaderModel();
   renderSidebar();
   renderMemoryCounts();
@@ -237,11 +257,36 @@ function renderAll() {
 }
 
 function renderOfflineState() {
+  renderHome();
   renderHeaderModel();
   renderSidebar();
   renderMemoryCounts();
   updateComposerState();
   updateContext(null);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Home screen                                                                */
+/* -------------------------------------------------------------------------- */
+
+// What stands between the user and a first answer, if anything.
+function setupStep() {
+  if (state.unreachable || !state.booted) return null;
+  if (!state.engineOk) {
+    return state.engineMode === "attached"
+      ? { text: "Check the model server", open: () => settingsSheet?.open() }
+      : { text: "Set up the engine", open: () => modelsView?.open() };
+  }
+  if (!state.models.length) return { text: "Get a model", open: () => modelsView?.open() };
+  return null;
+}
+
+function renderHome() {
+  const name = (state.settings?.user_name || "").trim().split(/\s+/)[0];
+  els.emptyTitle.textContent = name ? `Hi ${name}` : "Kiwibro";
+  const step = setupStep();
+  els.heroSetup.hidden = !step;
+  if (step) els.heroSetupText.textContent = step.text;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -288,6 +333,8 @@ function renderHeaderModel() {
       ? state.engineMode === "attached" ? "Server off" : "Engine off"
       : state.currentModel || "No models";
   els.sidebarDot.dataset.tone = tone;
+  els.placeModelsCount.textContent = state.models.length ? String(state.models.length) : "";
+  renderHome();
 }
 
 function buildModelMenu(menu) {
@@ -299,8 +346,8 @@ function buildModelMenu(menu) {
     menu.append(
       el("div", { class: "menu-empty" }, [
         icon("alert"),
-        el("div", { text: attached ? "The model server isn't reachable." : "The engine isn't installed yet." }),
-        el("div", { text: attached ? "Check Settings → Models, then refresh." : "Open Settings → Models to install it." }),
+        el("div", { text: attached ? "The model server isn't reachable." : "Kiwibro has no engine to run models yet." }),
+        el("div", { text: state.engineError || (attached ? "Check its address in Settings." : "Install it under Models.") }),
       ]),
     );
   } else if (!state.models.length) {
@@ -371,6 +418,16 @@ function buildModelMenu(menu) {
       ]),
     );
   }
+
+  const manage = el("button", { class: "menu-item menu-manage", type: "button", role: "menuitem" }, [
+    icon("cube"),
+    el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: "Manage models" })]),
+  ]);
+  manage.addEventListener("click", () => {
+    closePopover({ restoreFocus: false });
+    modelsView?.open();
+  });
+  menu.append(manage);
 
   menu.addEventListener("keydown", moveMenuFocus);
 }
@@ -457,7 +514,7 @@ async function selectModel(id) {
     applyReadiness(result.readiness);
     watchReadiness();
     renderHeaderModel();
-    toast(`Using ${state.currentModel}`, { iconName: "sparkles" });
+    toast(`Using ${state.currentModel}`, { iconName: "cube" });
     announce(`Model switched to ${state.currentModel}`);
     return true;
   } catch (error) {
@@ -1150,7 +1207,10 @@ function handleStreamEvent(event, data, activeStream) {
       if (data.id && data.title) updateConversationTitle(data.id, data.title);
       break;
     case "done":
-      chatView.finishDone({ aborted: Boolean(data.aborted) });
+      chatView.finishDone({
+        aborted: Boolean(data.aborted),
+        steered: Array.isArray(data.inference?.steered) ? data.inference.steered : [],
+      });
       inferenceUI.onDone(data);
       scheduleConversationRefresh();
       break;
@@ -1395,7 +1455,7 @@ async function refreshMemoryCount({ announce = false } = {}) {
     renderMemoryCounts();
     memorySheet?.refreshIfOpen();
     if (announce && gained > 0) {
-      toast(gained === 1 ? "Remembered something new" : `Remembered ${gained} new things`, { iconName: "sparkles" });
+      toast(gained === 1 ? "Remembered something new" : `Remembered ${gained} new things`, { iconName: "bookmark" });
     }
     return true;
   } catch {
@@ -1408,7 +1468,8 @@ function renderMemoryCounts() {
   const count = state.memoriesCount;
   els.memoryBadge.hidden = count <= 0;
   els.memoryBadge.textContent = count > 99 ? "99+" : String(count);
-  els.sidebarMemoryCount.textContent = count === 1 ? "1 memory" : `${count} memories`;
+  els.sidebarMemoryCount.textContent = count > 0 ? String(count) : "";
+  els.placeNotesCount.textContent = state.notesCount > 0 ? String(state.notesCount) : "";
 }
 
 function updateContext(context) {
@@ -1600,8 +1661,46 @@ function initSheets() {
     },
   });
 
-  wireDialog(els.memorySheet);
-  wireDialog(els.settingsSheet);
+  modelsView = createModelsView({
+    dialog: els.modelsSheet,
+    api,
+    getState: () => state,
+    actions: {
+      selectModel,
+      // The set of models or the engine changed: refresh what the rest of the app shows.
+      modelsChanged: async () => {
+        try {
+          state.health = await api.health();
+          applyEngineHealth(state.health);
+        } catch {
+          /* the next health check catches up */
+        }
+        await refreshModels({ quiet: true });
+        updateComposerState();
+      },
+      openSettings: () => settingsSheet?.open(),
+    },
+  });
+
+  notesView = createNotesView({
+    dialog: els.notesSheet,
+    api,
+    onCount: (count) => {
+      if (!Number.isFinite(count)) return;
+      state.notesCount = count;
+      renderMemoryCounts();
+    },
+    onOpenConversation: async (id) => {
+      closeSheet(els.notesSheet);
+      if (!(await openConversation(id))) toast("That chat no longer exists", { tone: "error" });
+    },
+  });
+
+  howView = createHowView({ dialog: els.howSheet });
+
+  for (const dialog of [els.memorySheet, els.settingsSheet, els.modelsSheet, els.notesSheet, els.howSheet]) {
+    wireDialog(dialog);
+  }
 }
 
 function initComposer() {
@@ -1656,6 +1755,11 @@ function searchConversationText(text) {
   }, 220);
 }
 
+function openPlace(view) {
+  closeDrawer();
+  view?.open();
+}
+
 function initChrome() {
   els.sidebarToggle.addEventListener("click", toggleSidebar);
   els.brandHome.addEventListener("click", newChat);
@@ -1676,9 +1780,13 @@ function initChrome() {
     }
   });
   els.memoryBtn.addEventListener("click", () => memorySheet?.open());
-  els.sidebarMemory.addEventListener("click", () => memorySheet?.open());
+  els.sidebarMemory.addEventListener("click", () => openPlace(memorySheet));
   els.settingsBtn.addEventListener("click", () => settingsSheet?.open());
-  els.sidebarModel.addEventListener("click", () => settingsSheet?.open());
+  els.sidebarModel.addEventListener("click", () => openPlace(modelsView));
+  els.placeNotes.addEventListener("click", () => openPlace(notesView));
+  els.placeModels.addEventListener("click", () => openPlace(modelsView));
+  els.placeHow.addEventListener("click", () => openPlace(howView));
+  els.heroSetup.addEventListener("click", () => setupStep()?.open());
   els.modelPill.addEventListener("click", toggleModelPopover);
   els.dockRetry.addEventListener("click", reconnect);
   els.scrim.addEventListener("click", closeDrawer);

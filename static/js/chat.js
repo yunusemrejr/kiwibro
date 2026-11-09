@@ -21,6 +21,17 @@ import {
   summarizeArgs,
 } from "./ui.js";
 
+const SENSE_LABELS = {
+  other_identity: "spoke as another assistant",
+  adopted_user: "spoke as you",
+  denial: "said it could not use a tool it has",
+  unbacked_claim: "claimed an action that did not happen",
+  unkept_promise: "announced a step without taking it",
+  meta_leak: "talked about its instructions",
+  off_topic: "answered something else",
+  loop: "went in circles",
+};
+
 const ASSISTANT_PHRASE = {
   web_search: "search the web",
   fetch_page: "fetch a web page",
@@ -586,6 +597,15 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     return turn.chips;
   }
 
+  // Kiwi Sense caught this reply drifting and Kiwibro corrected it (server: steer.py).
+  function senseChip(kinds) {
+    const what = [...new Set(kinds)].map((kind) => SENSE_LABELS[kind] || "drifted").join(", ");
+    return el("span", { class: "chip chip-sense", title: `The first draft ${what}. Kiwi Sense caught it and Kiwibro answered again.` }, [
+      icon("refresh"),
+      el("span", { text: "Corrected by Kiwi Sense" }),
+    ]);
+  }
+
   function appendChip(turn, chip) {
     const chips = ensureChips(turn);
     chips.append(chip);
@@ -936,10 +956,11 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (added && !updated && !removed) label = added === 1 ? "Memory saved" : `${added} memories saved`;
       else if (updated && !added) label = updated === 1 ? "Memory updated" : `${updated} memories updated`;
       else if (removed && !added && !updated) label = removed === 1 ? "Memory removed" : `${removed} memories removed`;
-      const chip = el("span", { class: "chip chip-memory" }, [icon("sparkles"), el("span", { text: label })]);
+      const chip = el("span", { class: "chip chip-memory" }, [icon("bookmark"), el("span", { text: label })]);
       appendChip(turn, chip);
     },
-    finishDone({ aborted = false } = {}) {
+    finishDone({ aborted = false, steered = [] } = {}) {
+      if (current && steered.length) appendChip(current, senseChip(steered));
       finishTurn({ aborted });
     },
     prepareRetry() {

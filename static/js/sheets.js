@@ -321,7 +321,7 @@ export function createMemorySheet({ dialog, api, onChange, onOpenConversation })
     if (!state.memories.length) {
       listEl.append(
         emptyState(
-          "sparkles",
+          "bookmark",
           state.q || state.kind ? "No matches" : "Nothing remembered yet",
           state.q || state.kind
             ? "Try a different search or filter."
