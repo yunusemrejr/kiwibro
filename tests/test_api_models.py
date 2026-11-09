@@ -138,7 +138,8 @@ class FakeEngine:
         return True
 
     def status(self) -> dict[str, Any]:
-        return {"runtime": self.runtime, "sources": list(self.sources), "servers": list(self.servers)}
+        return {"runtime": self.runtime, "sources": list(self.sources), "servers": list(self.servers),
+                "adapters": [], "adapters_dir": "/data/adapters"}
 
 
 @dataclass

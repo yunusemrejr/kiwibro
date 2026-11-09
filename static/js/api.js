@@ -220,6 +220,8 @@ export const api = {
   // Models on this computer, the Hugging Face catalogue, downloads and the engine build.
   library: () => request("/api/library"),
   deleteModel: (id) => request("/api/library/models", { method: "DELETE", body: { id } }),
+  resetAdapter: (path) => request("/api/library/adapters/reset", { method: "POST", body: { path } }),
+  deleteAdapter: (path) => request("/api/library/adapters", { method: "DELETE", body: { path } }),
   hubSearch: (q, { limit = 20, signal } = {}) => request(`/api/hub/search${query({ q, limit })}`, { signal }),
   hubFiles: (repo) => request(`/api/hub/files${query({ repo })}`),
   downloads: () => request("/api/hub/downloads"),

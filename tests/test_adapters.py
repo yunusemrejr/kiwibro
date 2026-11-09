@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiwibro import adapters
+import pytest
+
+from kiwibro import adapters, sense
 from kiwibro.engine import DirectEngine, LocalModel, Runtime, find_runtimes, model_dirs, server_args
 from tests.test_engine import T_STRING, write_gguf, write_script
 
@@ -95,3 +97,70 @@ def test_kiwibro_owns_a_models_and_a_runtime_folder(tmp_path: Path, monkeypatch)
     assert [a.path for a in engine.adapters_for(model)] == [str(data / 'adapters' / 'tiny-code.gguf')]
     assert engine.lora_for(model.id, [{"role": "user", "content": "fix this code"}]) is None  # not running
     engine.shutdown()
+
+
+# --- adapters that adjust themselves ---------------------------------------------------
+
+
+@pytest.mark.skipif(sense.shared() is None, reason="Kiwi Sense is not available")
+def test_a_message_without_task_words_is_read_by_meaning():
+    assert adapters.classify("why does my loop never end") == "code"
+    assert adapters.classify("make this paragraph sound friendlier") == "writing"
+    for small_talk in ("hello", "how are you doing today", "thanks a lot", "I feel tired", "tell me a joke"):
+        assert adapters.classify(small_talk) == ""  # a wrong adapter is worse than none
+
+
+def test_an_adapter_that_spoils_replies_is_turned_down_then_off(tmp_path: Path):
+    coder = adapters.Adapter("/a", "coder", "x", tasks=("code",), scale=0.8)
+    house = adapters.Adapter("/b", "house style", "x", tasks=("*",))
+    health = adapters.Health(tmp_path / "health.json")
+    scales = lambda: [s["scale"] for s in adapters.request_scales((coder, house), "code", health.counts())]  # noqa: E731
+    assert scales() == [0.8, 1.0]
+    health.note("/a")
+    assert scales() == [0.8, 1.0]  # once can be chance
+    assert health.note("/a") == adapters.TROUBLE_HALF
+    assert scales() == [0.4, 1.0]
+    health.note("/a")
+    assert health.note("/a") == adapters.TROUBLE_OFF
+    assert scales() == [0.0, 1.0]
+    assert adapters.Health(tmp_path / "health.json").trouble("/a") == 4  # kept across restarts
+    health.reset("/a")
+    assert scales() == [0.8, 1.0] and adapters.Health(tmp_path / "health.json").counts() == {}
+    assert [s["scale"] for s in adapters.request_scales((coder, house), "code", off=True)] == [0.0, 0.0]
+
+
+def test_adapter_trouble_ages_out(tmp_path: Path, monkeypatch):
+    health = adapters.Health(tmp_path / "health.json")
+    health.note("/a")
+    health.note("/a")
+    assert health.trouble("/a") == 2
+    later = adapters.time.time() + (adapters.TROUBLE_DAYS + 1) * 86400
+    monkeypatch.setattr(adapters.time, "time", lambda: later)
+    assert health.trouble("/a") == 0 and health.counts() == {}
+    assert health.note("/a") == 1  # the old ones are dropped, not carried
+
+
+def test_library_lists_adapters_and_can_reset_and_delete_them(env, monkeypatch):
+    svc = env.svc
+    monkeypatch.setattr(svc.llm, "direct_on", lambda: True)
+    engine = svc.llm.direct_engine()
+    own = lora(svc.data_dir / "adapters" / "tiny-code.gguf", name="Tiny coder")
+    (svc.data_dir / "adapters" / "tiny-code.json").write_text(json.dumps({"tasks": ["code"], "scale": 0.8}))
+    engine.adapters(force=True)
+    listed = env.client.get("/api/library").get_json()["adapters"]
+    assert [(a["name"], a["tasks"], a["scale"], a["strength"], a["deletable"]) for a in listed] == [
+        ("Tiny coder", ["code"], 0.8, 1.0, True)]
+    assert listed[0]["size_bytes"] == own.stat().st_size
+
+    engine.adapter_health.note(str(own))
+    engine.adapter_health.note(str(own))
+    turned_down = env.client.get("/api/library").get_json()["adapters"][0]
+    assert (turned_down["trouble"], turned_down["strength"]) == (2, 0.5)
+    assert env.client.post("/api/library/adapters/reset", json={"path": str(own)}).get_json() == {"ok": True}
+    assert env.client.get("/api/library").get_json()["adapters"][0]["strength"] == 1.0
+
+    assert env.client.delete("/api/library/adapters", json={"path": "/etc/passwd"}).status_code == 404
+    removed = env.client.delete("/api/library/adapters", json={"path": str(own)})
+    assert removed.get_json() == {"ok": True, "freed_bytes": listed[0]["size_bytes"]}
+    assert not own.exists() and not (svc.data_dir / "adapters" / "tiny-code.json").exists()
+    assert env.client.get("/api/library").get_json()["adapters"] == []

@@ -579,7 +579,7 @@ const STOPS = [
     question: "Can one model be good at different jobs?",
     lines:
       "A [[LoRA adapter]] is a small add-on file that nudges a model toward one kind of work, such as code or translation, without changing the model itself. Kiwibro reads the task from your message and switches the matching adapter on for that one request.",
-    fact: "Adapters are optional: drop them into Kiwibro's adapters folder, and without any the model runs as it is.",
+    fact: "Adapters adjust themselves: when a reply goes wrong with one and comes out right without it, Kiwibro turns that adapter down, then off.",
     build: adapters,
   },
 ];

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
+    adapters, checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
     sessions, steer, terms, toolcall, tools, workspaces,
 )
 from .context import (
@@ -24,7 +24,7 @@ from .context import (
     estimate_tokens,
 )
 from .db import Database
-from .llm import ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
+from .llm import ADAPTER_TASK, ADAPTERS_OFF, ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
 from .memory import MemoryEngine
 from .notes import Notebook
 from .sandbox import SandboxError, Workspace
@@ -319,6 +319,9 @@ class Turn:
     facts: steer.Facts | None = None  # what is true this turn; replies are checked against it
     steer_left: int = 1  # corrections Kiwi Sense may still ask for in this turn
     steered: list[str] = field(default_factory=list)  # kinds of correction made this turn
+    adapter_task: str | None = None  # the task this turn's adapters follow, read once from the user's words
+    adapters_tried: list[Any] = field(default_factory=list)  # on when a reply went wrong; off from then on
+    adapters_judged: bool = False  # whether that reply was the adapters' doing is settled
     sense_checked: int = 0  # sentences of the streaming reply already read
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
@@ -854,6 +857,7 @@ class AgentManager:
                 no_thinking = request_extra.get("reasoning_effort") == "none"
                 limit = inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
             turn.think_chars, turn.think_budget = 0, limit
+            request_extra = {**request_extra, **self._adapter_extra(turn, model, prepared)}
             reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, prompt_extra)  # sampling is not prompt
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
@@ -888,8 +892,11 @@ class AgentManager:
             except steer.Redirect as redirect:
                 # Cut off after the sentence that went wrong; the next attempt reuses the cached prefix.
                 turn.timer.finish()
-                self._note_steer(turn, redirect.verdict, model)
-                correction = prompts.STEER_NOTE.format(note=redirect.verdict.note)
+                trial = self._try_without_adapters(turn, model, prepared)
+                self._note_steer(turn, redirect.verdict, model, trait=not trial)
+                if not trial:  # the same request without its adapter comes first, uncorrected
+                    self._judge_adapters(turn, spoiled=False)
+                    correction = prompts.STEER_NOTE.format(note=redirect.verdict.note)
                 turn.partial_text = ""
                 turn.emit("rewrite", {"text": "", "reasoning": ""})
                 turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
@@ -1322,12 +1329,60 @@ class AgentManager:
         except Exception:
             log.warning("could not record trait %s for %s", kind, model, exc_info=True)
 
-    def _note_steer(self, turn: Turn, verdict: steer.Verdict, model: str) -> None:
+    def _note_steer(self, turn: Turn, verdict: steer.Verdict, model: str, trait: bool = True) -> None:
         log.info("turn %s: sense verdict %s (%.2f) on %r", turn.conversation_id, verdict.kind, verdict.score,
                  verdict.sentence[:120])
-        turn.steered.append(verdict.kind)
+        if verdict.kind not in turn.steered:
+            turn.steered.append(verdict.kind)
         turn.inference["steered"] = list(turn.steered)
-        self._note_trait(model, verdict.kind)
+        if trait:  # not yet the model's habit while an adapter may be the cause
+            self._note_trait(model, verdict.kind)
+
+    # --- task adapters that adjust themselves (adapters.py) ---
+
+    def _adapter_extra(self, turn: Turn, model: str, prepared: PreparedContext) -> dict[str, Any]:
+        """How this turn's requests use the task adapters: one task for the whole turn, read
+        from the user's own messages (Kiwibro's passing notes must not flip the adapter and
+        with it the server's cache), and none at all once one of them is being tested."""
+        if turn.adapters_tried:
+            return {ADAPTERS_OFF: True}
+        if turn.adapter_task is None:
+            if not self.llm.has_adapters(model):
+                return {}  # none loaded with this model (or it is still starting): nothing to pin
+            turn.adapter_task = adapters.task_of(prepared.messages)
+        return {ADAPTER_TASK: turn.adapter_task}
+
+    def _try_without_adapters(self, turn: Turn, model: str, prepared: PreparedContext) -> bool:
+        """A reply went wrong with a task adapter on: the same request runs once more without
+        it, uncorrected, to see whether the adapter was the cause. False when none was on."""
+        if turn.adapters_tried or turn.adapters_judged:
+            return False
+        turn.adapters_tried = self.llm.adapters_on(model, prepared.messages, turn.adapter_task)
+        if not turn.adapters_tried:
+            turn.adapters_judged = True
+            return False
+        turn.steer_left += 1  # a test, not one of the turn's corrections
+        log.info("turn %s: trying without adapter %s", turn.conversation_id,
+                 ", ".join(a.name for a in turn.adapters_tried))
+        return True
+
+    def _judge_adapters(self, turn: Turn, spoiled: bool) -> None:
+        """Settle the test: right without the adapter counts against it (after a few it runs
+        at half scale, then not at all); wrong either way is the model's own doing."""
+        if not turn.adapters_tried or turn.adapters_judged:
+            return
+        turn.adapters_judged = True
+        if not spoiled:
+            return
+        try:
+            counts = self.llm.blame_adapters(turn.adapters_tried)
+        except Exception:
+            log.warning("turn %s: could not record adapter trouble", turn.conversation_id, exc_info=True)
+            return
+        turn.inference["adapters_turned_down"] = [
+            {"name": name, "trouble": count, "strength": adapters.strength(count)} for name, count in counts.items()]
+        log.info("turn %s: the reply was right without adapter %s", turn.conversation_id,
+                 ", ".join(f"{name} ({count})" for name, count in counts.items()))
 
     def _standing_reminders(self, turn: Turn, settings: dict[str, Any], memory_block: str) -> str:
         """Reminders for a model that needed correcting before (volatile note, never message 0)."""
@@ -1359,26 +1414,34 @@ class AgentManager:
             log.warning("turn %s: sense review failed", turn.conversation_id, exc_info=True)
             return result
         if verdict is None:
+            self._judge_adapters(turn, spoiled=True)  # a reply redone without its adapter came out right
             return result
         if verdict.kind == steer.UNKEPT_PROMISE and self._plan_will_chase(turn, result):
             return result  # the plan's own follow-up names the open steps, which is the better push
-        if turn.steer_left > 0:
+        while turn.steer_left > 0:
             turn.steer_left -= 1
-            self._note_steer(turn, verdict, model)
+            # With a task adapter on, the first new attempt only drops the adapter; the
+            # corrected attempt follows if that was not it.
+            trial = self._try_without_adapters(turn, model, prepared)
+            self._note_steer(turn, verdict, model, trait=not trial)
+            if not trial:
+                self._judge_adapters(turn, spoiled=False)
             self._record_usage(turn, result, prepared)
             turn.partial_text = ""
             turn.emit("rewrite", {"text": "", "reasoning": ""})
             turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
             retry = self._stream_with_recovery(
                 turn, model, prepared, tool_list, round_index, text_mode=text_mode,
-                nudge=prompts.STEER_NOTE.format(note=verdict.note), cool=True,
+                nudge=None if trial else prompts.STEER_NOTE.format(note=verdict.note), cool=not trial,
             )
             if retry.tool_calls or retry.content.strip():
                 again = steer.review(retry.content, facts, final=not retry.tool_calls) if retry.content.strip() else None
+                if again is None:
+                    self._judge_adapters(turn, spoiled=True)
                 if again is None or again.kind != verdict.kind:
                     return retry
                 result, verdict = retry, again
-            else:  # the second attempt came back empty: keep the first, repaired below
+            else:  # the new attempt came back empty: keep the one before, repaired below
                 turn.partial_text = result.content
                 turn.emit("rewrite", {"text": result.content, "reasoning": ""})
         cleaned = steer.repair(result.content, verdict, facts)

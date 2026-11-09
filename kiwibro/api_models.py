@@ -130,6 +130,8 @@ def library() -> Response:
         "disk": hubmod.disk_usage(_own_dir(svc)),
         "ram_bytes": ram,
         "runtime": status["runtime"],
+        "adapters": [_adapter_view(a, svc) for a in status["adapters"]] if local else [],
+        "adapters_dir": status["adapters_dir"],
         "installer": svc.installer.status(),
         "downloads": svc.hub.jobs(),
     })
@@ -157,6 +159,54 @@ def delete_library_model() -> Response:
     freed = hubmod.delete_model(model.path, _own_dir(svc))
     engine.models(force=True)
     svc.llm.clear_cache()
+    return jsonify({"ok": True, "freed_bytes": freed})
+
+
+# --- task adapters ----------------------------------------------------------
+
+
+def _adapter_view(adapter: dict[str, Any], svc: Any) -> dict[str, Any]:
+    """An adapter as the Models panel shows it: what it is for and how strongly it runs now."""
+    own = Path(adapter["path"]).parent == svc.data_dir / "adapters"
+    return {**adapter, "deletable": own}
+
+
+def _adapter(svc: Any) -> dict[str, Any]:
+    path = _text(_json_body(), "path", "path")
+    for adapter in svc.llm.direct_engine().describe_adapters():
+        if adapter["path"] == path:
+            return adapter
+    raise ApiError("not_found", "Kiwibro does not know that adapter.", 404)
+
+
+@bp.post("/api/library/adapters/reset")
+def reset_adapter() -> Response:
+    """Give an adapter that was turned down its full strength back."""
+    svc = services()
+    adapter = _adapter(svc)
+    svc.llm.direct_engine().adapter_health.reset(adapter["path"])
+    return jsonify({"ok": True})
+
+
+@bp.delete("/api/library/adapters")
+def delete_adapter() -> Response:
+    """Delete an adapter from Kiwibro's own adapters folder (models that loaded it keep it until restarted)."""
+    svc = services()
+    adapter = _adapter(svc)
+    path = Path(adapter["path"])
+    if path.parent != svc.data_dir / "adapters":
+        raise ApiError("not_deletable", f"{adapter['name']} is in a folder Kiwibro does not manage. "
+                                        f"Delete the file there: {path}", 409)
+    engine = svc.llm.direct_engine()
+    freed = adapter["size_bytes"]
+    try:
+        path.unlink()
+        for sidecar in (path.with_suffix(".json"), Path(str(path) + ".json")):
+            sidecar.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ApiError("failed", f"Could not delete {path.name}: {exc.strerror or exc}", 409) from None
+    engine.adapter_health.reset(str(path))
+    engine.adapters(force=True)
     return jsonify({"ok": True, "freed_bytes": freed})
 
 

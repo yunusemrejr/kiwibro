@@ -126,6 +126,17 @@ function storeFor(backend) {
       builds: noEngine ? [] : [makeBuild("b6123", true)],
       installer: { state: "idle", startedAt: 0, received: 0, total: 0, error: "", tag: "" },
       jobs: [],
+      adapters: [
+        {
+          name: "Python helper", path: "~/.local/share/kiwibro/adapters/python-helper.gguf", arch: "qwen3",
+          base: "", tasks: ["code"], scale: 1, trouble: 0, strength: 1, size_bytes: 46 * MIB, deletable: true,
+        },
+        {
+          name: "Plain English", path: "~/.local/share/kiwibro/adapters/plain-english.gguf", arch: "qwen3",
+          base: "", tasks: ["writing", "summarize"], scale: 0.8, trouble: 2, strength: 0.5,
+          size_bytes: 31 * MIB, deletable: true,
+        },
+      ],
       installedFiles: new Map(), // "repo|file" -> model id
       nextId: 1,
     };
@@ -339,9 +350,17 @@ function libraryView(backend, store) {
     disk: { free_bytes: FREE_BYTES, models_bytes: modelBytes, partial_bytes: partial },
     ram_bytes: RAM_BYTES,
     runtime: runtimeView(activeBuild(store)),
+    adapters: store.adapters.map((adapter) => ({ ...adapter })),
+    adapters_dir: "~/.local/share/kiwibro/adapters",
     installer: installerView(store),
     downloads: store.jobs.map(jobView),
   };
+}
+
+function adapterAt(store, path, fail) {
+  const adapter = store.adapters.find((item) => item.path === path);
+  if (!adapter) fail(404, "not_found", "Kiwibro does not know that adapter.");
+  return adapter;
 }
 
 function fileView(entry, repo, store) {
@@ -459,6 +478,15 @@ export function mockModels(backend, { route, verb, body, url, fail }) {
 
   if (route === "/api/library" && verb === "GET") return libraryView(backend, store);
   if (route === "/api/library/models" && verb === "DELETE") return deleteModel(backend, store, body?.id, fail);
+  if (route === "/api/library/adapters/reset" && verb === "POST") {
+    Object.assign(adapterAt(store, body?.path, fail), { trouble: 0, strength: 1 });
+    return { ok: true };
+  }
+  if (route === "/api/library/adapters" && verb === "DELETE") {
+    const adapter = adapterAt(store, body?.path, fail);
+    store.adapters = store.adapters.filter((item) => item !== adapter);
+    return { ok: true, freed_bytes: adapter.size_bytes };
+  }
 
   if (route === "/api/hub/search" && verb === "GET") return searchHub(backend, url, fail);
   if (route === "/api/hub/files" && verb === "GET") return hubFiles(store, url, fail);

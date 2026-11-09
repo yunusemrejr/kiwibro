@@ -33,6 +33,10 @@ MODEL_CACHE_TTL = 5.0
 USER_AGENT = "Kiwibro/1.0 (local)"
 
 _CORE_PAYLOAD_KEYS = frozenset({"model", "messages", "stream", "tools"})
+# Keys in ``extra`` that steer the task adapters of one request and are never sent to the server.
+ADAPTERS_OFF = "_adapters_off"  # run without task adapters
+ADAPTER_TASK = "_adapter_task"  # the task the adapters follow (else read from the messages)
+_ADAPTER_KEYS = frozenset({ADAPTERS_OFF, ADAPTER_TASK})
 _CONTEXT_MARKERS = ("context", "n_ctx", "token", "too long", "too many", "exceeds")
 _TOOL_MARKERS = ("tool",)
 NO_MODELS = "No models yet. Open Models to download one, or drop a GGUF file into Kiwibro's models folder."
@@ -298,6 +302,30 @@ class LLMClient:
                 self._direct = DirectEngine(self._settings, self._data_dir)
             return self._direct
 
+    def has_adapters(self, model: str) -> bool:
+        """Whether ``model`` is running with task adapters loaded."""
+        if not self.direct_on():
+            return False
+        try:
+            server = self.direct_engine().loaded(model)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(server is not None and server.adapters)
+
+    def adapters_on(self, model: str, messages: list[dict[str, Any]], task: str | None = None) -> list[Any]:
+        """The task adapters a request with these messages runs with (none when attached)."""
+        if not self.direct_on():
+            return []
+        try:
+            return self.direct_engine().adapters_on(model, messages, task)
+        except Exception:  # noqa: BLE001 - adapters are optional; never break a turn over them
+            return []
+
+    def blame_adapters(self, found: list[Any]) -> dict[str, int]:
+        """Count a spoiled reply against each adapter; returns {name: count now}."""
+        health = self.direct_engine().adapter_health
+        return {adapter.name: health.note(adapter.path) for adapter in found}
+
     def stop_direct(self) -> None:
         """Stop every llama.cpp server the engine runs (frees their memory at once)."""
         with self._direct_lock:
@@ -443,15 +471,17 @@ class LLMClient:
             payload["tool_choice"] = "auto"
         if response_format:
             payload["response_format"] = response_format
+        adapters_off = bool(extra and extra.get(ADAPTERS_OFF))
+        adapter_task = extra.get(ADAPTER_TASK) if extra else None
         if extra:
             # Server knobs such as reasoning_effort, ttl or draft_model; never the core fields.
-            payload.update({k: v for k, v in extra.items() if k not in _CORE_PAYLOAD_KEYS})
+            payload.update({k: v for k, v in extra.items() if k not in _CORE_PAYLOAD_KEYS and k not in _ADAPTER_KEYS})
         if self.direct_on():
             from .engine import adapt_payload
 
             payload = adapt_payload(payload)
             try:  # task adapters: which LoRA is on for this request (adapters.py)
-                lora = self.direct_engine().lora_for(model, messages)
+                lora = self.direct_engine().lora_for(model, messages, off=adapters_off, task=adapter_task)
             except Exception:  # noqa: BLE001 - an adapter problem must never fail a request
                 lora = None
             if lora is not None:

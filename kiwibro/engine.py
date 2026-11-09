@@ -744,6 +744,8 @@ class DirectEngine:
         self._adapters: list[Any] = []
         self._adapters_at = 0.0
         self._bad_adapters: set[str] = set()  # model ids whose adapters made llama.cpp exit
+        self.adapter_health = adapters_mod.Health(  # which adapters spoiled replies lately
+            self._data_dir / "adapter_health.json" if self._data_dir else None)
         for folder in ("models", "adapters", "runtime"):  # Kiwibro's own folders
             if self._data_dir is not None:
                 try:
@@ -791,13 +793,41 @@ class DirectEngine:
         fit = [a for a in self.adapters() if adapters_mod.fits(a, model.arch, model.name, model.id, model.repo)]
         return tuple(fit[:adapters_mod.MAX_ADAPTERS])
 
-    def lora_for(self, model_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-        """The per-request ``lora`` field for a running model: the adapter for this task on,
-        the others off. None when the model runs without adapters (nothing is sent)."""
+    def lora_for(self, model_id: str, messages: list[dict[str, Any]], off: bool = False,
+                 task: str | None = None) -> list[dict[str, Any]] | None:
+        """The per-request ``lora`` field for a running model: the adapter for this task on
+        (turned down when it spoiled replies lately), the others off; ``off`` switches all
+        of them off. ``task`` is the caller's reading of the task; without it the messages
+        are read. None when the model runs without adapters (nothing is sent)."""
         server = self.loaded(model_id)
         if server is None or not server.adapters:
             return None
-        return adapters_mod.request_scales(server.adapters, adapters_mod.task_of(messages))
+        if off:
+            task = ""
+        elif task is None:
+            task = adapters_mod.task_of(messages)
+        return adapters_mod.request_scales(server.adapters, task, self.adapter_health.counts(), off)
+
+    def adapters_on(self, model_id: str, messages: list[dict[str, Any]], task: str | None = None) -> list[Any]:
+        """The adapters a request with these messages runs with (scale above zero)."""
+        server = self.loaded(model_id)
+        scales = self.lora_for(model_id, messages, task=task)
+        if server is None or not scales:
+            return []
+        return [server.adapters[item["id"]] for item in scales if item["scale"] > 0]
+
+    def describe_adapters(self) -> list[dict[str, Any]]:
+        """Every adapter found, with how much of its scale it runs at now and why."""
+        out = []
+        for adapter in self.adapters():
+            trouble = self.adapter_health.trouble(adapter.path)
+            try:
+                size = os.path.getsize(adapter.path)
+            except OSError:
+                size = 0
+            out.append({**adapter.describe(), "trouble": trouble, "strength": adapters_mod.strength(trouble),
+                        "size_bytes": size})
+        return out
 
     # --- catalog ---
 
@@ -1190,7 +1220,7 @@ class DirectEngine:
             "gpu": devices[0].name if devices and self._gpu_on() else "",
             "gpu_available": any(r.kind in GPU_KINDS and gpu_devices(r) for r in runtimes),
             "servers": servers,
-            "adapters": [a.describe() for a in self.adapters()],
+            "adapters": self.describe_adapters(),
             "adapters_dir": str(self._data_dir / "adapters") if self._data_dir else "",
             "own_models_dir": str(self._data_dir / "models") if self._data_dir else "",
             "own_runtime_dir": str(self._data_dir / "runtime") if self._data_dir else "",

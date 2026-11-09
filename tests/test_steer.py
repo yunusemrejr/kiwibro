@@ -288,3 +288,48 @@ def test_an_empty_turn_never_ends_empty(env: Env, silent_again: bool):
     assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.ANSWER_NOW
     assert _stored_reply(env) == (prompts.NO_ANSWER if silent_again else "Paris.")
     assert _events_of(events, "done")[0]["message_id"] != _events_of(events, "meta")[0]["user_message_id"]
+
+
+# ---- task adapters under test ----
+
+def _with_adapter(env: Env, monkeypatch) -> list:
+    """The model runs with one task adapter on; returns the list blamed adapters land in."""
+    from kiwibro.adapters import Adapter
+
+    coder = Adapter("/adapters/coder.gguf", "coder", "x", tasks=("*",))
+    blamed: list = []
+    monkeypatch.setattr(env.svc.llm, "has_adapters", lambda model: True)
+    monkeypatch.setattr(env.svc.llm, "adapters_on", lambda model, messages, task=None: [coder])
+    monkeypatch.setattr(env.svc.llm, "blame_adapters",
+                        lambda found: blamed.extend(found) or {a.name: len(blamed) for a in found})
+    return blamed
+
+
+def test_a_reply_that_is_right_without_its_adapter_counts_against_the_adapter(env: Env, monkeypatch):
+    from kiwibro.llm import ADAPTER_TASK, ADAPTERS_OFF
+
+    blamed = _with_adapter(env, monkeypatch)
+    env.fake.stream_script = [ChatResult(content=CHATGPT),
+                              ChatResult(content="I'm Kiwibro, an AI agent running on your computer.")]
+    events, _raw = chat_events(env, "who are you?")
+    first, second = env.fake.stream_calls
+    assert ADAPTER_TASK in first["extra"] and ADAPTERS_OFF not in first["extra"]
+    assert second["extra"][ADAPTERS_OFF] is True
+    assert second["messages"] == first["messages"]  # the same request, only the adapter is gone
+    assert [a.name for a in blamed] == ["coder"]
+    done = _events_of(events, "done")[0]["inference"]
+    assert done["adapters_turned_down"] == [{"name": "coder", "trouble": 1, "strength": 1.0}]
+    assert done["steered"] == [steer.OTHER_IDENTITY]
+    assert env.svc.db.traits("fake-1") == {}  # the adapter's doing, not the model's habit
+
+
+def test_wrong_with_and_without_the_adapter_is_the_models_own_doing(env: Env, monkeypatch):
+    blamed = _with_adapter(env, monkeypatch)
+    env.fake.stream_script = [ChatResult(content=CHATGPT), ChatResult(content=CHATGPT),
+                              ChatResult(content="I'm Kiwibro, an AI agent running on your computer.")]
+    events, _raw = chat_events(env, "who are you?")
+    assert len(env.fake.stream_calls) == 3
+    assert env.fake.stream_calls[2]["messages"][-1]["content"].startswith("[Kiwibro: You are Kiwibro")
+    assert blamed == [] and "adapters_turned_down" not in _events_of(events, "done")[0]["inference"]
+    assert env.svc.db.traits("fake-1") == {steer.OTHER_IDENTITY: 1}
+    assert _stored_reply(env) == "I'm Kiwibro, an AI agent running on your computer."

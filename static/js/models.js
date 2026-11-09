@@ -19,6 +19,11 @@ const PHASE_TEXT = {
 };
 const WAIT_FOR_REPLY = "Wait for the current reply to finish.";
 const BUILD_KIND = { vulkan: "Vulkan", cpu: "CPU" };
+const TASK_TEXT = {
+  code: "Code", math: "Math", writing: "Writing", summarize: "Summaries", translate: "Translation",
+  research: "Research", "*": "Every message",
+};
+const STRENGTH_TEXT = { full: "Full strength", half: "Half strength", off: "Switched off" };
 
 /* ---------- Formatting ---------------------------------------------------- */
 
@@ -235,11 +240,12 @@ export function createModelsView({ dialog, api, getState, actions }) {
       library: block("library"),
       downloads: block("downloads"),
       hub: block("hub"),
+      adapters: block("adapters"),
       engine: block("engine"),
     };
     state.slots = slots;
     slots.hub.replaceChildren(hubSection());
-    body.replaceChildren(slots.setup, slots.library, slots.downloads, slots.hub, slots.engine);
+    body.replaceChildren(slots.setup, slots.library, slots.downloads, slots.hub, slots.adapters, slots.engine);
     runSearch("");
   }
 
@@ -251,6 +257,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
     renderSetup();
     renderLibrary();
     renderJobs();
+    renderAdapters();
     renderEngine();
   }
 
@@ -644,6 +651,101 @@ export function createModelsView({ dialog, api, getState, actions }) {
       await api.engineStop();
       await reload();
       notify();
+    });
+  }
+
+  /* ---------- Adapters ----------------------------------------------------- */
+
+  function renderAdapters() {
+    if (!state.slots) return;
+    const list = state.library.adapters || [];
+    const children = [el("div", { class: "panel-title", text: "Adapters" })];
+    if (list.length) {
+      children.push(el("div", { class: "mdl-list" }, list.map(adapterRow)));
+    } else {
+      const folder = state.library.adapters_dir;
+      children.push(
+        el("p", { class: "mdl-hint" }, [
+          "Small add-on files (LoRA, .gguf) that tune a model for one kind of work. Kiwibro picks them up from ",
+          folder ? el("code", { text: folder }) : "its adapters folder",
+          ".",
+        ]),
+      );
+    }
+    state.slots.adapters.replaceChildren(el("section", { class: "panel-section" }, children));
+  }
+
+  function strengthLevel(adapter) {
+    return adapter.strength >= 1 ? "full" : adapter.strength > 0 ? "half" : "off";
+  }
+
+  function adapterMeta(adapter) {
+    const tasks = (adapter.tasks || []).map((task) => TASK_TEXT[task] || task);
+    const what = tasks.length ? tasks.join(", ") : "No task named, so it stays off";
+    return [what, adapter.size_bytes ? formatBytes(adapter.size_bytes) : ""].filter(Boolean).join(" · ");
+  }
+
+  function adapterRow(adapter) {
+    const level = strengthLevel(adapter);
+    const main = [
+      el("div", { class: "mdl-name", text: adapter.name }),
+      el("div", { class: "mdl-meta", text: adapterMeta(adapter) }),
+    ];
+    if (level !== "full") {
+      main.push(
+        el("div", {
+          class: "mdl-meta mdl-adapter-why",
+          text: `${adapter.trouble} ${adapter.trouble === 1 ? "reply" : "replies"} came out right only without it`,
+        }),
+      );
+    }
+    const end = el("div", { class: "mdl-end" }, adapterEnd(adapter, level));
+    return el("div", { class: "mdl-row mdl-adapter" }, [el("div", { class: "mdl-main" }, main), end]);
+  }
+
+  function adapterEnd(adapter, level) {
+    const nodes = [
+      el("span", { class: "mdl-strength", dataset: { level } }, [
+        el("span", { class: "mdl-strength-bar", "aria-hidden": "true" }, [el("i")]),
+        STRENGTH_TEXT[level],
+      ]),
+    ];
+    if (level !== "full") {
+      nodes.push(actionButton("Restore", "text-btn", (button) => restoreAdapter(adapter, button)));
+    }
+    if (adapter.deletable) {
+      nodes.push(
+        actionButton(icon("trash"), "icon-btn", (button) => askDeleteAdapter(adapter, button), {
+          title: "Delete",
+          "aria-label": `Delete ${adapter.name}`,
+        }),
+      );
+    }
+    return nodes;
+  }
+
+  function askDeleteAdapter(adapter, button) {
+    const end = button.closest(".mdl-end");
+    end.replaceChildren(
+      el("span", { class: "mdl-confirm-text", text: `Delete? Frees ${formatBytes(adapter.size_bytes)}` }),
+      actionButton("Delete", "btn btn-danger", (confirm) => deleteAdapter(adapter, confirm)),
+      actionButton("Keep", "btn btn-ghost mdl-keep", () => renderAdapters()),
+    );
+    end.querySelector(".mdl-keep").focus();
+  }
+
+  async function restoreAdapter(adapter, button) {
+    await attempt(button, async () => {
+      await api.resetAdapter(adapter.path);
+      await reload();
+    });
+  }
+
+  async function deleteAdapter(adapter, button) {
+    await attempt(button, async () => {
+      await api.deleteAdapter(adapter.path);
+      toast(`Deleted ${adapter.name}`);
+      await reload();
     });
   }
 
