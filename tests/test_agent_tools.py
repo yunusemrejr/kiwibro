@@ -304,3 +304,84 @@ def test_echo_last_expression_prints_like_a_repl(code: str, printed: str) -> Non
 
 def test_echo_last_expression_keeps_invalid_code_for_the_interpreter() -> None:
     assert codebase.echo_last_expression("def f(:") == "def f(:"
+
+
+# --- Follow-up searches name their subject ------------------------------------------------
+
+
+def _said(role: str, content: str) -> dict[str, str]:
+    return {"role": role, "content": content}
+
+
+@pytest.mark.parametrize(("query", "message", "earlier", "expected"), [
+    ("how old is he", "how old is he?",
+     [_said("user", "Who directed Inception?"), _said("assistant", "Inception was directed by Christopher Nolan.")],
+     "how old is he Inception Christopher Nolan"),
+    ("their latest album", "what's their latest album",
+     [_said("user", "Tell me about Radiohead"), _said("assistant", "Radiohead are an English rock band formed in Abingdon.")],
+     "their latest album Radiohead"),
+    ("his wife", "and his wife?", [_said("user", "who is barack obama"), _said("assistant", "The 44th US president. " * 20)],
+     "his wife barack obama"),
+    ("weather there tomorrow", "what's the weather there tomorrow", [_said("user", "I'm going to Izmir next week")],
+     "weather there tomorrow Izmir"),
+    ("how old is he", "How old is Tom Hanks?", [], "how old is he Tom Hanks"),
+])
+def test_a_pointing_search_gets_the_name_it_points_at(query, message, earlier, expected):
+    assert research.anchor_query(query, message, earlier) == expected
+
+
+@pytest.mark.parametrize(("query", "message", "earlier"), [
+    ("python sort list of dicts by key", "how do I sort it", [_said("user", "I have a list of dicts")]),
+    ("weather in Izmir tomorrow", "what's the weather there tomorrow", [_said("user", "I'm going to Izmir")]),
+    ("how does it scale kubernetes horizontal autoscaling", "how does it scale", [_said("user", "Tell me about Radiohead")]),
+    ("what is this", "what is this", []),
+])
+def test_a_search_that_names_its_subject_is_left_alone(query, message, earlier):
+    assert research.anchor_query(query, message, earlier) == query
+
+
+def test_names_are_runs_of_capitalised_words_not_sentence_openers():
+    text = "Who directed Inception? It was Christopher Nolan. The Eiffel Tower is in Paris."
+    assert research.names_in(text) == ["Inception", "Christopher Nolan", "Eiffel Tower", "Paris"]
+
+
+def test_merged_results_lead_with_the_one_that_answers_the_query():
+    from kiwibro.search import best_first
+
+    results = [
+        {"title": "Python (programming language) - history", "url": "https://a.example/1",
+         "snippet": "Python was created by Guido van Rossum and first released in 1991."},
+        {"title": "How to sort a list of dictionaries by a value in Python", "url": "https://b.example/2",
+         "snippet": "Use sorted() with a key function such as itemgetter to sort a list of dicts by a key."},
+        {"title": "Python list methods", "url": "https://c.example/3", "snippet": "append, extend, insert, remove, pop."},
+    ]
+
+    ranked = best_first("python sort list of dicts by key", results)
+
+    assert ranked[0]["url"] == "https://b.example/2"
+    assert sorted(item["url"] for item in ranked) == sorted(item["url"] for item in results)
+    assert best_first("anything", results[:1]) == results[:1]
+
+
+def test_a_follow_up_search_reaches_the_web_naming_its_subject(env, monkeypatch) -> None:
+    from test_backend import chat_events, tool_call_result
+
+    from kiwibro.llm import ChatResult
+
+    asked: list[str] = []
+
+    def web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+        asked.append(query)
+        return [{"title": "Christopher Nolan - age and biography", "url": "https://example.org/nolan",
+                 "snippet": "Christopher Nolan was born on 30 July 1970 in London."}]
+
+    monkeypatch.setattr(env.svc.search, "web_search", web_search)
+    env.fake.stream_script = [ChatResult(content="Inception was directed by Christopher Nolan.")]
+    events, _raw = chat_events(env, "Who directed Inception?")
+    conversation_id = events[0][1]["conversation_id"]
+    env.fake.stream_script = [tool_call_result("web_search", {"query": "how old is he"}),
+                              ChatResult(content="He was born on 30 July 1970.")]
+    chat_events(env, "how old is he?", conversation_id=conversation_id)
+    assert len(asked) == 1 and asked[0].startswith("how old is he") and "Christopher Nolan" in asked[0]
+    tool_message = [m for m in env.svc.db.list_messages(conversation_id) if m["role"] == "tool"][-1]
+    assert "[Kiwibro fixed this call: searched for" in tool_message["content"]

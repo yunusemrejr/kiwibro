@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
+from . import sense
+
 log = logging.getLogger(__name__)
 
 USER_AGENT = (
@@ -467,6 +469,38 @@ def rerank_results(query: str, results: list[dict[str, str]]) -> list[dict[str, 
     return sorted(results, key=score, reverse=True)
 
 
+PROMOTE_MARGIN = 0.15  # how much better a result must score to pass the one a provider ranked above it
+
+
+def best_first(query: str, results: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The merged list with the result that answers the query first: small models read the
+    top of the list and little else. Each result is scored by the share of the query's
+    words it holds and, through Kiwi Sense, by how close its meaning is. The providers'
+    own order stands unless a result is clearly better than the one above it."""
+    if len(results) < 2:
+        return list(results)
+    reader = sense.shared()
+
+    def score(result: dict[str, str]) -> float:
+        words = relevance(query, result)
+        if reader is None:
+            return words
+        try:
+            meaning = reader.closeness(query, f"{result.get('title') or ''}. {result.get('snippet') or ''}")
+        except Exception:  # pragma: no cover - defensive
+            return words
+        return 0.6 * words + 0.4 * max(0.0, meaning)
+
+    ranked: list[tuple[float, dict[str, str]]] = []
+    for result in results:
+        value = score(result)
+        at = len(ranked)
+        while at > 0 and value > ranked[at - 1][0] + PROMOTE_MARGIN:
+            at -= 1
+        ranked.insert(at, (value, result))
+    return [result for _value, result in ranked]
+
+
 def dedupe_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
     """Drop duplicate URLs (normalised), keeping the first occurrence."""
     seen: set[str] = set()
@@ -558,7 +592,7 @@ class SearchEngine:
             merged = dedupe_results([item for index in sorted(collected) for item in collected[index]])
             if len(merged) >= wanted:
                 break
-        return merged[:max_results]
+        return best_first(query, merged)[:max_results]
 
     def _enrich_snippets(self, results: list[dict[str, str]], limit: int = 3) -> list[dict[str, str]]:
         """Fill empty snippets from page metadata, fetched in parallel (bounded, SSRF-guarded)."""

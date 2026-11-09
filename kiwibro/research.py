@@ -15,6 +15,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from . import terms
 from .search import SearchEngine, SearchError, dedupe_results, rerank_results
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,74 @@ NO_RESULTS = (
     "No relevant web results were found. Search again with fewer, more specific keywords "
     "(names, versions, error text), or answer from what you know and say it is unverified."
 )
+
+
+# Words that point at something named earlier instead of naming it.
+_POINTERS = frozenset("he she him his her hers it its they them their theirs this that these those there".split())
+_CAPITAL_WORD = re.compile(r"[^\W\d_][\w'’.-]*|\d[\w.-]*")
+_JOINERS = frozenset({"of", "the", "de", "van", "von", "da", "del", "la", "le", "bin", "and"})
+_SHORT_REPLY = 300  # a reply this short is an answer whose names the next question can point at
+
+
+def names_in(text: str) -> list[str]:
+    """Proper names in a text, in order: runs of capitalised words ("Barack Obama", "Eiffel
+    Tower"). A word capitalised only because it opens a sentence is not a name."""
+    found: list[str] = []
+    for sentence in re.split(r"(?<=[.!?:;])\s+|\n+", text or ""):
+        tokens = _CAPITAL_WORD.findall(sentence)
+        run: list[str] = []
+        runs: list[list[str]] = []
+        for index, token in enumerate(tokens):
+            capital = token[0].isupper() and token.lower() not in terms.STOPWORDS
+            if capital and index == 0 and not (len(tokens) > 1 and tokens[1][0].isupper()):
+                capital = False  # sentence opener
+            if capital or (run and token.lower() in _JOINERS):
+                run.append(token)
+            else:
+                runs.append(run)
+                run = []
+        runs.append(run)
+        for run in runs:
+            while run and run[-1].lower() in _JOINERS:
+                run.pop()
+            name = " ".join(run).strip(".'’-")
+            if len(name) > 1 and name not in found:
+                found.append(name)
+    return found
+
+
+def _subject(message: str, earlier: list[dict[str, Any]]) -> list[str]:
+    """What a pointing question is about: the names in the user's own message, else those of
+    the question before it, plus the person or place a short answer to it introduced."""
+    own = names_in(message)
+    if own:
+        return own[:2]
+    answered = ""
+    for item in reversed(earlier[-6:]):
+        content = str(item.get("content") or "")
+        if item.get("role") == "assistant":
+            if not answered and content.strip() and len(content) <= _SHORT_REPLY:
+                # One-word capitals in a reply are mostly adjectives ("English"); a full name is two words or more.
+                answered = next((name for name in names_in(content) if " " in name), "")
+        elif item.get("role") == "user":
+            named = names_in(content)[:2]
+            if not named and not set(terms.words(content)) & _POINTERS:
+                named = [" ".join(terms.content_words(content)[:4])]  # typed without capitals
+            named = [name for name in named if name]
+            if named:
+                return named + ([answered] if answered and answered not in named else [])
+    return [answered] if answered else []
+
+
+def anchor_query(query: str, message: str, earlier: list[dict[str, Any]]) -> str:
+    """A follow-up search made to stand alone. Small models search for "how old is he" as
+    typed; when the query points at something without naming it, the name the conversation
+    is about is added. ``earlier`` holds the messages before ``message``, oldest first."""
+    if not set(terms.words(query)) & _POINTERS or len(terms.content_words(query)) > 3:
+        return query
+    lowered = query.lower()
+    missing = [name for name in _subject(message, earlier) if name.lower() not in lowered]
+    return f"{query} {' '.join(missing)}" if missing else query
 
 
 def multi_search(

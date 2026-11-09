@@ -1612,6 +1612,28 @@ class AgentManager:
         turn.emit("plan", {"steps": turn.plan.statuses()})
         return turn.plan.progress_line(turn.reply_text)
 
+    def _anchor_searches(self, turn: Turn, item: dict[str, Any]) -> None:
+        """Complete a search that points at the conversation ("how old is he") with what it is about."""
+        if item["name"] not in ("web_search", "multi_search"):
+            return
+        try:
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=8)
+                       if m.get("id") != turn.user_message_id and m.get("role") in ("user", "assistant")]
+        except Exception:  # pragma: no cover - defensive
+            return
+        args = item["args"]
+        if item["name"] == "web_search":
+            fixed = research.anchor_query(args["query"], turn.message, earlier)
+            changed = fixed != args["query"]
+            item["args"] = {**args, "query": fixed}
+        else:
+            queries = [research.anchor_query(query, turn.message, earlier) for query in args["queries"]]
+            changed = queries != args["queries"]
+            fixed = "; ".join(queries)
+            item["args"] = {**args, "queries": queries}
+        if changed:
+            item["notes"] = [*item["notes"], f"searched for \"{fixed}\" so the query names its subject"]
+
     def _prepare_tool_call(
         self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False
     ) -> dict[str, Any]:
@@ -1639,6 +1661,7 @@ class AgentManager:
             if rescued.error or spec is None:
                 raise ValueError(rescued.error or f"unknown tool: {name}")
             item["args"] = tools.validate_args(name, rescued.args)
+            self._anchor_searches(turn, item)
         except ValueError as exc:
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
