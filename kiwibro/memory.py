@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import autofacts, config, inference, prompts, terms
+from . import autofacts, config, inference, prompts, sense, terms
 from .context import estimate_tokens
 from .db import Database
 from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 DEDUPE_SEQ_RATIO = 0.86
 DEDUPE_JACCARD = 0.72
+MEANING_MATCH = 0.41  # cosine from Kiwi Sense at which a memory rides along without a shared word
 MEMORY_PROMPT_TOKEN_CAP = 800
 MAX_OPS_PER_TURN = 5
 MIN_CONTENT = 3
@@ -521,6 +522,10 @@ class MemoryEngine:
         query_keys = terms.key_terms(query or "")
         relevant = [m for m in candidates if query_keys & _memory_keys(m)]
         relevant_ids = {m["id"] for m in relevant}
+        if not relevant:
+            for memory in self._meaning_matches(query):
+                relevant_ids.add(memory["id"])
+                add([memory])
         kept = [m for m in candidates if m.get("pinned") or is_profile(m) or m["id"] in relevant_ids]
         result = self._rank(kept, query)[:limit]
         # Only a memory that matched counts as used; counting every injected one made the
@@ -532,6 +537,25 @@ class MemoryEngine:
             except Exception:  # pragma: no cover - defensive
                 log.warning("could not mark memories as used", exc_info=True)
         return result
+
+    def _meaning_matches(self, query: str) -> list[dict[str, Any]]:
+        """When no memory shares a word with the message: the one that answers it in other
+        words ("my wife" finds "married to Selin"). Read by Kiwi Sense; nothing when it is
+        unavailable. One-line memories give it little to read, so only the closest one rides."""
+        asked = terms.gist(query or "")
+        if not asked or _small_talk(query):
+            return []
+        reader = sense.shared()
+        if reader is None:
+            return []
+        try:
+            memories = self.db.all_memories()
+            hits = reader.nearest(asked, [terms.gist(str(m.get("content") or "")) for m in memories], limit=1,
+                                  floor=MEANING_MATCH)
+        except Exception:  # pragma: no cover - defensive
+            log.warning("meaning search over memories failed", exc_info=True)
+            return []
+        return [memories[index] for index, _score in hits]
 
     def _profile(self, brief: bool = False) -> list[dict[str, Any]]:
         """Who the user is and how to reply: useful on every turn (PROFILE_SLOTS, plus the

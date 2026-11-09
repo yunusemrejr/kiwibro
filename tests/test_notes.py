@@ -262,6 +262,13 @@ def test_relevant_puts_pinned_first_and_excludes_unrelated(notebook: Notebook, d
     assert [n["title"] for n in notebook.relevant("dentist appointment")] == ["Wifi password"]
 
 
+def test_relevant_finds_a_note_by_meaning_when_no_word_matches(notebook: Notebook) -> None:
+    notebook.save("Fry an onion in olive oil. Add cumin, carrot and red lentils.", "Lentil soup", ["cooking"])
+    notebook.save("rsync -av --ignore-existing photos/ /media/backup/photos/", "Command to remember", ["tools"])
+    assert [n["title"] for n in notebook.relevant("give me a recipe for tonight")] == ["Lentil soup"]
+    assert notebook.relevant("what is the capital of France") == []
+
+
 def test_relevant_caps_pinned_and_avoids_duplicates(notebook: Notebook, db: Database) -> None:
     for title in ("Dinner rota", "Dinner menu", "Dinner budget"):
         db.create_note(title, "dinner", pinned=True)

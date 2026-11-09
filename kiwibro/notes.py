@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import terms
+from . import sense, terms
 from .db import Database
 
 MAX_TITLE = 120
@@ -188,9 +188,11 @@ class Notebook:
         return self.db.delete_note(note_id)
 
     def relevant(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
-        """Notes worth showing the model for this message: up to two pinned notes, then
-        the notes whose title, body or tags share a meaningful word with the message."""
-        chosen = [note for note in self.db.list_notes(limit=50) if note["pinned"]][:2]
+        """Notes worth showing the model for this message: up to two pinned notes, the notes
+        whose title, body or tags share a meaningful word with the message, then the notes
+        that are about the same thing in other words."""
+        recent = self.db.list_notes(limit=50)
+        chosen = [note for note in recent if note["pinned"]][:2]
         seen = {note["id"] for note in chosen}
         keys = terms.key_terms(query)
         if keys:
@@ -198,7 +200,22 @@ class Notebook:
                 if hit["id"] not in seen and keys & _note_keys(hit):
                     chosen.append(hit)
                     seen.add(hit["id"])
+        if len(chosen) < limit and keys:
+            others = [note for note in recent if note["id"] not in seen]
+            chosen += self._meaning_matches(query, others, limit - len(chosen))
         return chosen[:limit]
+
+    @staticmethod
+    def _meaning_matches(query: str, notes: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        """Read by Kiwi Sense; nothing when it is unavailable."""
+        reader = sense.shared()
+        if reader is None or not notes:
+            return []
+        texts = [terms.gist(f"{note['title']} {' '.join(note['tags'])} {note['body'][:300]}") for note in notes]
+        try:
+            return [notes[index] for index, _score in reader.nearest(terms.gist(query), texts, limit=limit)]
+        except Exception:  # pragma: no cover - defensive
+            return []
 
     def _candidates(self, query: str, keys: set[str]) -> list[dict[str, Any]]:
         """Full-text hits for the query and for the words of any everyday topic it names."""

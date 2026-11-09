@@ -102,6 +102,12 @@ def content_words(text: str) -> list[str]:
     return seen
 
 
+def gist(text: str) -> str:
+    """The content words alone, for comparing what two texts are about: function words and
+    the "User" every memory starts with would otherwise make unrelated lines look alike."""
+    return " ".join(word for word in content_words(text) if word not in ("user", "users"))
+
+
 def key_terms(text: str) -> set[str]:
     """Stems of the content words plus concept tags (``#food``) — the matching key."""
     keys: set[str] = set()

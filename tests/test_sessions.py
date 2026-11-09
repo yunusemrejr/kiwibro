@@ -204,6 +204,25 @@ def test_function_words_pull_in_no_memories(memory: MemoryEngine, query: str):
     assert memory.retrieve(query) == []
 
 
+@pytest.mark.parametrize(("query", "expected"), [
+    ("what's my wife's name", "User is married to Selin"),
+    ("which vehicle do I own", "User drives a 2014 Honda Civic"),
+    ("when do I harvest honey", "User keeps bees in the garden"),
+])
+def test_memory_found_by_meaning_when_no_word_matches(memory: MemoryEngine, db: Database, query: str, expected: str):
+    db.create_memory("fact", expected, normalize(expected))
+    assert not terms.key_terms(query) & terms.key_terms(expected)  # a word search cannot find it
+
+    assert [m["content"] for m in memory.retrieve(query)] == [expected]
+
+
+def test_meaning_search_is_skipped_without_kiwi_sense(memory: MemoryEngine, db: Database, monkeypatch: pytest.MonkeyPatch):
+    db.create_memory("fact", "User is married to Selin", normalize("User is married to Selin"))
+    monkeypatch.setattr("kiwibro.memory.sense.shared", lambda: None)
+
+    assert memory.retrieve("what's my wife's name") == []
+
+
 SELF = "I am Yunus Emre Vurgun. I am a developer and IT specialist from Istanbul."
 
 

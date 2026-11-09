@@ -31,7 +31,11 @@ from .pyengine import PyEngine
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "static" / "sense"
 MAX_CHARS = 4000
-CACHE_SIZE = 512
+CACHE_SIZE = 1024
+# Cosine at or above which two texts are about the same thing. Measured on content words
+# (terms.gist): a question and the note that answers it score 0.43 and up, unrelated pairs
+# 0.40 or less.
+MEANING_MATCH = 0.42
 
 _ASCII_PUNCT = frozenset(range(33, 48)) | frozenset(range(58, 65)) | frozenset(range(91, 97)) | frozenset(range(123, 127))
 _CJK_RANGES = (
@@ -161,6 +165,25 @@ class Sense:
         meaning = self.similarity(a, b)
         wording = self.lexical(a, b)
         return wording if meaning is None else max(meaning, 0.6 * wording)
+
+    def nearest(self, query: str, texts: list[str], limit: int = 3,
+                floor: float = MEANING_MATCH) -> list[tuple[int, float]]:
+        """The texts that mean something close to the query, in other words or the same:
+        (index, cosine) at or above ``floor``, closest first. Empty when the embeddings
+        cannot read the query (another language, no known word)."""
+        asked = self._vector(query)
+        if asked is None or asked[1] < 0.5:
+            return []
+        hits: list[tuple[int, float]] = []
+        for index, text in enumerate(texts):
+            entry = self._vector(text)
+            if entry is None or entry[1] < 0.5:
+                continue
+            score = sum(x * y for x, y in zip(asked[0], entry[0]))
+            if score >= floor:
+                hits.append((index, score))
+        hits.sort(key=lambda item: -item[1])
+        return hits[:limit]
 
     def rank(self, query: str, texts: list[str]) -> list[tuple[int, float]]:
         """(index, closeness) for every text, closest first."""
