@@ -274,3 +274,37 @@ def test_wasmtime_host_matches_the_python_twin_exactly():
     blob = (DATA / "sense.bin").read_bytes()
     assert _python_results(WasmEngine(DATA / "sense.wasm", blob)) == _python_results(PyEngine(blob))
     assert sense.Sense(engine="wasm").engine == "wasm"
+
+
+# ---- the browser's reader (static/js/sense.js) agrees with the server's ----
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node.js to run the browser module")
+def test_browser_reader_matches_the_python_reader(tmp_path, reader):
+    texts = [text for text in TEXTS if text.strip()] + ["Ünïcödé “quotes” — and… dashes", "  spaced\tout text here "]
+    texts_file = tmp_path / "texts.json"
+    texts_file.write_text(json.dumps(texts), encoding="utf-8")
+    done = subprocess.run(
+        ["node", str(ROOT / "tests" / "sense_browser.mjs"), str(ROOT / "static" / "js" / "sense.js"),
+         str(DATA / "sense.wasm"), str(DATA / "sense.bin"), str(texts_file)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    assert seen["labels"] == reader.labels
+    assert seen["threshold"] == reader.meta["probe"]["threshold"]
+    for text, got in zip(texts, seen["texts"]):
+        assert got["normalized"] == sense.normalize(text), text
+        wanted = reader.probe(text)
+        assert set(got["probe"]) == set(wanted)
+        for label, value in wanted.items():
+            assert got["probe"][label] == pytest.approx(value, abs=1e-9), (text, label)
+        vector = reader.embed(text)
+        if vector is None:
+            assert got["vector"] is None
+        else:
+            assert got["vector"] == pytest.approx(list(vector), abs=1e-12)
+        closeness = reader.similarity(text, texts[0])
+        if closeness is None:
+            assert got["similarity"] is None
+        else:
+            assert got["similarity"] == pytest.approx(closeness, abs=1e-9)

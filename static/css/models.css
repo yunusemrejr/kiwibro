@@ -1,0 +1,434 @@
+/* ==========================================================================
+   Models panel: what is on this computer, the engine, and downloads.
+   A plain list with hairlines. Colour only where it carries meaning:
+   green = in use or an action, tan = Kiwibro's own, orange = a problem.
+   ========================================================================== */
+
+/* ---------- Layout ------------------------------------------------------- */
+.mdl-block:empty {
+  display: none;
+}
+
+.mdl-block:not(:empty) ~ .mdl-block:not(:empty) {
+  margin-top: 28px;
+}
+
+.mdl-panel .panel-title {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.mdl-title-end {
+  margin-left: auto;
+}
+
+.mdl-text {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mdl-muted {
+  color: var(--muted);
+}
+
+.mdl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mdl-address {
+  margin-bottom: 10px;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.mdl-panel .panel-error {
+  margin-bottom: 12px;
+}
+
+.mdl-panel .btn {
+  height: 32px;
+}
+
+.mdl-panel .text-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.mdl-loading {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+}
+
+.mdl-loading .spinner {
+  width: 18px;
+  height: 18px;
+}
+
+.mdl-state {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0;
+}
+
+.mdl-state .spinner {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- Storage bar and legend --------------------------------------- */
+.mdl-storage {
+  margin-bottom: 14px;
+}
+
+.mdl-disk {
+  display: flex;
+  height: 8px;
+  margin-bottom: 9px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.mdl-seg {
+  flex: none;
+  min-width: 3px;
+  height: 100%;
+  background: var(--faint);
+}
+
+.mdl-seg[data-source="kiwibro"],
+.mdl-swatch[data-source="kiwibro"] {
+  background: var(--green);
+}
+
+.mdl-seg[data-source="lmstudio"],
+.mdl-swatch[data-source="lmstudio"] {
+  background: var(--tan);
+}
+
+.mdl-seg[data-source="other"],
+.mdl-swatch[data-source="other"] {
+  background: var(--faint);
+}
+
+.mdl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mdl-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mdl-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.mdl-free {
+  margin-left: auto;
+  color: var(--faint);
+}
+
+/* ---------- Rows (models, downloads, engine builds, files) --------------- */
+.mdl-list {
+  border-top: 1px solid var(--line);
+}
+
+.mdl-row,
+.mdl-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.mdl-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mdl-name {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mdl-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mdl-lock {
+  display: inline-flex;
+  margin-right: 3px;
+  vertical-align: -2px;
+  color: var(--faint);
+}
+
+.mdl-lock .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.mdl-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mdl-end .icon-btn {
+  width: 32px;
+  height: 32px;
+}
+
+.mdl-inuse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mdl-inuse .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.mdl-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green-soft);
+  font-size: 12.5px;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.mdl-done .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.mdl-confirm-text {
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* Storage fit: how much of the computer's memory the model takes. */
+.mdl-fit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mdl-fit .bar {
+  flex: none;
+  width: 44px;
+}
+
+.mdl-fit[data-fit="tight"] {
+  color: var(--tan-soft);
+}
+
+.mdl-fit[data-fit="too_big"] {
+  color: var(--orange-soft);
+}
+
+/* ---------- Downloads ---------------------------------------------------- */
+.mdl-job-state {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mdl-job-state[data-tone="ok"] {
+  color: var(--green);
+}
+
+.mdl-job-state[data-tone="error"] {
+  color: var(--orange-soft);
+}
+
+.mdl-job .bar {
+  margin-top: 6px;
+}
+
+/* ---------- Setup and engine progress ------------------------------------ */
+.mdl-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.mdl-progress-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.mdl-progress-label {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.mdl-progress .bar {
+  width: 100%;
+}
+
+.mdl-engine-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  min-height: 32px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.mdl-builds {
+  margin-top: 8px;
+}
+
+/* ---------- Get a model -------------------------------------------------- */
+.mdl-hub {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.mdl-hub-item {
+  border-bottom: 1px solid var(--line);
+}
+
+.mdl-hub-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 2px 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background var(--dur);
+}
+
+.mdl-hub-head:hover {
+  background: var(--surface);
+}
+
+.mdl-hub-name {
+  grid-column: 1;
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.mdl-hub-meta {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mdl-chev {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  width: 16px;
+  height: 16px;
+  color: var(--faint);
+  transition: transform 0.2s var(--ease-out);
+}
+
+.mdl-hub-head[aria-expanded="true"] .mdl-chev {
+  transform: rotate(180deg);
+}
+
+.mdl-files {
+  margin: 0 0 10px 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line-2);
+}
+
+.mdl-file-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mdl-file-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.mdl-quant {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mdl-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- Narrow screens: actions drop under the text ------------------ */
+@media (max-width: 560px) {
+  .mdl-row,
+  .mdl-file {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mdl-end {
+    justify-content: flex-start;
+  }
+
+  .mdl-files {
+    margin-left: 4px;
+    padding-left: 8px;
+  }
+}
