@@ -1,7 +1,7 @@
 /**
  * Child-process helpers for the Kiwibro browser rig:
  *  - startApp(): real Flask app on a scratch port/data dir
- *  - startFakeLm(): deterministic fake LM Studio (python tests/e2e/fake_lm.py)
+ *  - startFakeLm(): deterministic fake model server (python tests/e2e/fake_lm.py)
  *  - stopAll(): kill both on exit
  */
 
@@ -64,7 +64,7 @@ function freshDir(dir) {
 }
 
 /** Start `python3 app.py` with isolated data dir/workspace. */
-export async function startApp({ label = "app", lmstudioUrl = null } = {}) {
+export async function startApp({ label = "app", serverUrl = null } = {}) {
   const port = await freePort();
   const runDir = freshDir(path.join(RUNTIME, label));
   const dataDir = path.join(runDir, "data");
@@ -82,7 +82,7 @@ export async function startApp({ label = "app", lmstudioUrl = null } = {}) {
     PYTHONUNBUFFERED: "1",
     PYTHONDONTWRITEBYTECODE: "1",
   };
-  if (lmstudioUrl) env.KIWIBRO_SERVER_URL = lmstudioUrl;
+  if (serverUrl) env.KIWIBRO_SERVER_URL = serverUrl;
   const proc = spawn(pythonBin(), ["app.py"], {
     cwd: REPO_ROOT,
     env,
@@ -113,7 +113,7 @@ export async function startApp({ label = "app", lmstudioUrl = null } = {}) {
   };
 }
 
-/** Start the deterministic fake LM Studio server; returns its URL. */
+/** Start the deterministic fake model server; returns its URL. */
 export async function startFakeLm({ models = "default" } = {}) {
   const proc = spawn(pythonBin(), ["tests/e2e/fake_lm.py", "--port", "0", "--models", models, "--print-url"], {
     cwd: REPO_ROOT,

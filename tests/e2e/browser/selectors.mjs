@@ -85,7 +85,7 @@ export const SEL = {
 
 /** Labels used for text-based waits (kept separate from CSS selectors). */
 export const TEXT = {
-  lmOfflineHints: ["LM Studio isn't running", "No chat model loaded", "Can't reach the Kiwibro server"],
+  engineOfflineHints: ["No engine yet", "No models yet", "The model server isn't reachable", "Can't reach the Kiwibro server"],
   send: "Send",
 };
 

@@ -6,8 +6,8 @@
  *   --mode mock   drive the UI against its in-browser mock backend (?mock=1).
  *                 No backend state needed; used to validate the rig and UI.
  *   --mode fake   drive the real Flask app against tests/e2e/fake_lm.py
- *                 (deterministic streaming + approval, no LM Studio).
- *   --mode live   drive the real Flask app against the real LM Studio
+ *                 (deterministic streaming + approval, no real engine).
+ *   --mode live   drive the real Flask app against a real llama.cpp-compatible model server
  *                 (slow: first call can JIT-load for 30–120 s).
  *   --base URL    attach to an already-running server instead of spawning one.
  *
@@ -709,9 +709,9 @@ async function main() {
         app = await startApp({ label: "browser-mock" });
       } else if (options.mode === "fake") {
         fake = await startFakeLm({ models: "default" });
-        app = await startApp({ label: "browser-fake", lmstudioUrl: fake.url });
+        app = await startApp({ label: "browser-fake", serverUrl: fake.url });
       } else {
-        app = await startApp({ label: "browser-live", lmstudioUrl: process.env.KIWIBRO_SERVER_URL || "http://127.0.0.1:1234" });
+        app = await startApp({ label: "browser-live", serverUrl: process.env.KIWIBRO_SERVER_URL || "http://127.0.0.1:8080" });
       }
       baseUrl = app.baseUrl;
     }

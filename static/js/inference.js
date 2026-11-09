@@ -46,7 +46,7 @@ export function createInferenceUI({ agentToggle, contextRing, transcript, getSta
 
   function applySettings(settings = {}) {
     const mode = MODES.includes(settings.reasoning) ? settings.reasoning : "auto";
-    // Only models that LM Studio can switch thinking off for get the control.
+    // Only models whose engine can switch thinking off get the control.
     thinkButton.hidden = !currentModel()?.reasoning?.includes?.("off");
     thinkButton.dataset.mode = mode;
     thinkButton.querySelector(".think-mode").textContent = mode;
@@ -73,8 +73,8 @@ export function createInferenceUI({ agentToggle, contextRing, transcript, getSta
     const stats = el("div", { class: "msg-stats" });
     stats.textContent = line;
     stats.title =
-      "Measured for this reply on this machine. Cached: share of the prompt LM Studio " +
-      "could reuse from its KV cache (estimate).";
+      "Measured for this reply on this machine. Cached: share of the prompt the engine " +
+      "reused from its cache (estimate).";
     (article.querySelector(".assistant-flow") || article).append(stats);
   }
 
@@ -158,7 +158,7 @@ export function createInferenceUI({ agentToggle, contextRing, transcript, getSta
     } catch (error) {
       buttons.forEach((button) => (button.disabled = false));
       row.removeAttribute("aria-busy");
-      toast(error?.message || "LM Studio couldn't reload the model", { tone: "error", iconName: "alert" });
+      toast(error?.message || "The engine couldn't reload the model", { tone: "error", iconName: "alert" });
     }
   }
 

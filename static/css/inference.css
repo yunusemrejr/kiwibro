@@ -15,7 +15,7 @@
 .think-toggle[data-mode="on"] {
   border-color: rgba(155, 206, 107, 0.22);
   background: var(--green-dim);
-  color: #b7d995;
+  color: var(--green-soft);
 }
 
 .think-toggle[data-mode="off"] .icon {

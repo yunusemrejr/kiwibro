@@ -87,6 +87,9 @@ const mobileQuery = window.matchMedia("(max-width: 860px)");
 const state = {
   booted: false,
   unreachable: false,
+  engineOk: false, // health.engine_ok / models engine_ok
+  engineMode: "local", // "local" (Kiwibro runs models) or "attached" (model server at server_url)
+  engineError: null,
   health: null,
   settings: null,
   models: [],
@@ -167,14 +170,17 @@ function applyBootstrap(data) {
   state.conversations = Array.isArray(data.conversations) ? data.conversations : [];
   state.memoriesCount = Number(data.memories_count) || 0;
   state.workspace = data.workspace || state.settings?.workspace || "";
-  state.lmstudio = Boolean(state.health?.lmstudio);
+  applyEngineHealth(state.health);
   state.unreachable = false;
   applyReadiness(data.readiness);
 }
 
-// Models run through LM Studio's API, or directly with llama.cpp (Settings → Models → Engine).
-function directEngine() {
-  return state.settings?.engine === "direct";
+// "local": Kiwibro runs models itself (the default). "attached": a llama.cpp-compatible
+// server at settings.server_url answers instead.
+function applyEngineHealth(health) {
+  state.engineOk = Boolean(health?.engine_ok);
+  state.engineMode = health?.engine === "attached" ? "attached" : "local";
+  state.engineError = health?.engine_error || null;
 }
 
 async function boot() {
@@ -192,7 +198,7 @@ async function boot() {
   } catch (error) {
     state.booted = false;
     state.unreachable = true;
-    state.lmstudio = false;
+    state.engineOk = false;
     state.models = [];
     renderOfflineState();
     if (!state.retryNotified) {
@@ -252,14 +258,15 @@ function renderHeaderModel() {
     name = "Offline";
     tone = "warn";
     title = "Kiwibro server is unreachable";
-  } else if (!state.lmstudio) {
-    name = directEngine() ? "Engine offline" : "LM Studio offline";
+  } else if (!state.engineOk) {
+    const attached = state.engineMode === "attached";
+    name = attached ? "Server offline" : "No engine";
     tone = "warn";
-    title = directEngine() ? "The direct engine couldn't start" : "Start LM Studio to chat";
+    title = attached ? "The model server isn't reachable" : "Kiwibro needs its engine";
   } else if (!state.models.length) {
-    name = "No model";
+    name = "No models";
     tone = "amber";
-    title = directEngine() ? "No downloaded models were found" : "No chat model loaded in LM Studio";
+    title = "No models yet";
   } else if (state.currentModel) {
     name = state.currentModel;
     tone = "loaded";
@@ -277,9 +284,9 @@ function renderHeaderModel() {
   els.modelPill.title = title;
   els.sidebarModelName.textContent = state.unreachable
     ? "Offline"
-    : !state.lmstudio
-      ? directEngine() ? "Engine off" : "LM Studio off"
-      : state.currentModel || "No model";
+    : !state.engineOk
+      ? state.engineMode === "attached" ? "Server off" : "Engine off"
+      : state.currentModel || "No models";
   els.sidebarDot.dataset.tone = tone;
 }
 
@@ -287,12 +294,13 @@ function buildModelMenu(menu) {
   clear(menu);
   menu.append(el("div", { class: "menu-label", text: "Model" }));
 
-  if (!state.lmstudio) {
+  if (!state.engineOk) {
+    const attached = state.engineMode === "attached";
     menu.append(
       el("div", { class: "menu-empty" }, [
         icon("alert"),
-        el("div", { text: directEngine() ? "The direct engine couldn't start." : "LM Studio isn't running." }),
-        el("div", { text: directEngine() ? "Check Settings → Models, then refresh." : "Start it, then refresh." }),
+        el("div", { text: attached ? "The model server isn't reachable." : "The engine isn't installed yet." }),
+        el("div", { text: attached ? "Check Settings → Models, then refresh." : "Open Settings → Models to install it." }),
       ]),
     );
   } else if (!state.models.length) {
@@ -463,7 +471,8 @@ async function refreshModels({ quiet = false } = {}) {
     const data = await api.models();
     state.models = Array.isArray(data.models) ? data.models : [];
     state.currentModel = data.current || state.currentModel;
-    state.lmstudio = Boolean(data.lmstudio);
+    state.engineOk = Boolean(data.engine_ok);
+    state.engineError = data.engine_error || null;
     renderHeaderModel();
     updateComposerState();
     return true;
@@ -891,7 +900,7 @@ function newChat() {
 /* -------------------------------------------------------------------------- */
 
 function composerReady() {
-  return !state.unreachable && state.lmstudio && state.models.length > 0;
+  return !state.unreachable && state.engineOk && state.models.length > 0;
 }
 
 function updateComposerState() {
@@ -902,8 +911,8 @@ function updateComposerState() {
 
   let hint = "";
   if (state.unreachable) hint = "Can't reach the Kiwibro server. Is it running?";
-  else if (!state.lmstudio) hint = directEngine() ? "The direct engine couldn't start. Check Settings → Models." : "LM Studio isn't running. Start it to chat.";
-  else if (!state.models.length) hint = directEngine() ? "No downloaded models were found. Download one in LM Studio." : "No chat model loaded in LM Studio.";
+  else if (!state.engineOk) hint = state.engineMode === "attached" ? "The model server isn't reachable. Check Settings → Models." : "No engine yet. Open Models to install it.";
+  else if (!state.models.length) hint = "No models yet. Open Models to download one.";
 
   els.dockHint.hidden = !hint;
   if (hint) els.dockHintText.textContent = hint;
@@ -1248,8 +1257,9 @@ function stopStreaming() {
 }
 
 function toastNotReady() {
-  const offline = directEngine() ? "The direct engine couldn't start" : "LM Studio isn't running";
-  toast(!state.lmstudio ? offline : "No model is available", { tone: "error", iconName: "alert" });
+  const attached = state.engineMode === "attached";
+  const message = state.engineOk ? "No model is available" : attached ? "The model server isn't reachable" : "The engine isn't installed yet";
+  toast(message, { tone: "error", iconName: "alert" });
 }
 
 function retryLastSend() {
@@ -1330,6 +1340,17 @@ async function patchSettingsAndSync(patch) {
   if (next.workspace) state.workspace = next.workspace;
   applySettingsUI();
   updateComposerState();
+  if ("server_url" in patch) {
+    // The address decides which engine answers: refresh what the header and composer say.
+    const health = await api.health().catch(() => null);
+    if (health) {
+      state.health = health;
+      applyEngineHealth(health);
+      await refreshModels({ quiet: true });
+      renderHeaderModel();
+      updateComposerState();
+    }
+  }
   watchReadiness(); // prompt-shaping settings re-warm the model
   return next;
 }
@@ -1473,11 +1494,11 @@ async function reconnect() {
     }
     const health = await api.health();
     state.health = health;
-    state.lmstudio = Boolean(health.lmstudio);
-    if (state.lmstudio) await refreshModels({ quiet: true });
+    applyEngineHealth(health);
+    if (state.engineOk) await refreshModels({ quiet: true });
     renderHeaderModel();
     updateComposerState();
-    if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
+    if (state.engineOk) toast(state.engineMode === "attached" ? "Server connected" : "Engine ready");
   } catch (error) {
     toast(error?.message || "Still offline", { tone: "error" });
   } finally {
@@ -1534,14 +1555,14 @@ async function maybeCheckHealth() {
   healthCheckAt = Date.now();
   try {
     const health = await api.health();
-    const wasOnline = state.lmstudio;
+    const wasOnline = state.engineOk;
     state.health = health;
-    state.lmstudio = Boolean(health.lmstudio);
-    if (state.lmstudio !== wasOnline) {
-      if (state.lmstudio) await refreshModels({ quiet: true });
+    applyEngineHealth(health);
+    if (state.engineOk !== wasOnline) {
+      if (state.engineOk) await refreshModels({ quiet: true });
       renderHeaderModel();
       updateComposerState();
-      if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
+      if (state.engineOk) toast(state.engineMode === "attached" ? "Server connected" : "Engine ready");
     }
     refreshMemoryCount();
   } catch {
