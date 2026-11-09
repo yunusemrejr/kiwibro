@@ -1,6 +1,6 @@
 """Read the metadata header of a GGUF model file (no tensors, no dependencies).
 
-The direct engine needs a few facts LM Studio would otherwise report: the
+The engine needs a few facts a model server would otherwise report: the
 architecture, the trained context length, the parameter label, the file type and
 the chat template (whether it takes tools and a thinking switch). They sit in
 the key/value section at the start of the file; the big arrays there (the

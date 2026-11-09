@@ -38,7 +38,7 @@ def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "TESTING": True,
             "KIWIBRO_DATA_DIR": str(data_dir),
             "KIWIBRO_WORKSPACE": str(ws_dir),
-            "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9999",
+            "KIWIBRO_SERVER_URL": "http://127.0.0.1:9999",
         }
     )
     svc = app.extensions["kiwibro"]

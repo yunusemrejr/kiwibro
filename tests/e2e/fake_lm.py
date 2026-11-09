@@ -1,15 +1,15 @@
-"""Deterministic fake LM Studio server for Kiwibro end-to-end tests.
+"""Deterministic fake llama.cpp-compatible model server for Kiwibro end-to-end tests.
 
-It speaks the same OpenAI-compatible wire format the real LM Studio server does
-(``GET /api/v0/models``, ``POST /v1/chat/completions`` with SSE streaming), but
-the model's behaviour is scripted by markers in the test prompt:
+It speaks the OpenAI-compatible wire format of a llama.cpp server
+(``GET /v1/models`` with the model facts Kiwibro reads, ``POST /v1/chat/completions``
+with SSE streaming), but the model's behaviour is scripted by markers in the test prompt:
 
     "hello [[scenario:plain]]"        -> a canned streamed answer
     "[[scenario:tool_write]]"         -> streams a write_file tool call,
                                          then a final answer after the result
     "[[scenario:context_400_once]]"   -> first stream returns an HTTP 400 that
-                                         looks like an LM Studio context-limit
-                                         error, the retry succeeds
+                                         looks like a context-limit error, the
+                                         retry succeeds
 
 Non-streaming requests (title generation, memory extraction, summarisation) are
 answered by inspecting the system prompt, like a well-behaved model would.
@@ -198,7 +198,7 @@ def _tool_stage(payload: dict[str, Any]) -> int:
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "FakeLMStudio/1.0"
+    server_version = "FakeModelServer/1.0"
 
     # these are set by the factory
     fake: "FakeLM"
@@ -210,10 +210,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
-        if path == "/api/v0/models":
+        if path == "/v1/models":
             self._json(200, {"object": "list", "data": self.fake.models})
-        elif path == "/v1/models":
-            self._json(200, {"object": "list", "data": [{"id": m["id"]} for m in self.fake.models]})
         elif path == "/health":
             self._json(200, {"ok": True})
         else:
@@ -259,7 +257,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _sse_start(self) -> None:
         self.send_response(200)
-        # Deliberately no charset, exactly like LM Studio's event stream.
+        # Deliberately no charset, like a llama.cpp server's event stream.
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
@@ -554,7 +552,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class FakeLM:
-    """Threaded fake LM Studio server. ``url`` is usable as KIWIBRO_LMSTUDIO_URL."""
+    """Threaded fake model server. ``url`` is usable as KIWIBRO_SERVER_URL."""
 
     def __init__(
         self,
@@ -659,7 +657,7 @@ class FakeLM:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a fake LM Studio server for Kiwibro e2e tests.")
+    parser = argparse.ArgumentParser(description="Run a fake llama.cpp-compatible server for Kiwibro e2e tests.")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
@@ -679,7 +677,7 @@ def main() -> None:
     if args.print_url:
         print(json.dumps({"url": fake.url, "port": fake.port}), flush=True)
     else:
-        print(f"fake LM Studio on {fake.url}", flush=True)
+        print(f"fake model server on {fake.url}", flush=True)
     try:
         while True:
             time.sleep(3600)

@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from . import config, media, prompts
 from .db import Database
-from .llm import LMStudioClient, LMStudioError
+from .llm import LLMClient, LLMError
 
 log = logging.getLogger(__name__)
 
@@ -382,7 +382,7 @@ class ContextEngine:
     def __init__(
         self,
         db: Database,
-        llm: LMStudioClient,
+        llm: LLMClient,
         settings_provider: Callable[[], dict[str, Any]],
     ) -> None:
         self.db = db
@@ -787,7 +787,7 @@ class ContextEngine:
                 max_tokens=max_out,
                 temperature=0.0,
             )
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.warning("summary call failed: %s", exc.message)
             return None
         return (completion.text or "").strip() or None

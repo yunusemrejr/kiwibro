@@ -13,7 +13,7 @@ from typing import Any, Callable
 from . import autofacts, config, inference, prompts, terms
 from .context import estimate_tokens
 from .db import Database
-from .llm import LMStudioClient, LMStudioError, TurnAborted, parse_json_loose
+from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
 
 log = logging.getLogger(__name__)
 
@@ -341,7 +341,7 @@ class MemoryEngine:
     def __init__(
         self,
         db: Database,
-        llm: LMStudioClient,
+        llm: LLMClient,
         settings_provider: Callable[[], dict[str, Any]],
     ) -> None:
         self.db = db
@@ -900,7 +900,7 @@ class MemoryEngine:
             floor=config.MEMORY_EXTRACTION_TIMEOUT_S,
         )
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kiwibro-mem")
-        stop = threading.Event()  # set on timeout too, so LM Studio stops working on it
+        stop = threading.Event()  # set on timeout too, so the server stops working on it
         watcher = None
         if abort is not None:
             watcher = threading.Thread(target=_relay, args=(abort, stop), daemon=True)
@@ -926,7 +926,7 @@ class MemoryEngine:
         except TimeoutError:
             log.info("memory extraction timed out")
             return None, "failed"
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.debug("memory extraction LLM error: %s", exc.message)
             return None, "failed"
         finally:

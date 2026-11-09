@@ -15,7 +15,7 @@ import pytest
 
 from kiwibro import create_app
 from kiwibro.context import estimate_tokens
-from kiwibro.llm import Completion, LMStudioError
+from kiwibro.llm import Completion, LLMError
 from kiwibro.memory import is_similar, normalize
 
 MODEL = {
@@ -58,7 +58,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "TESTING": True,
             "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
             "KIWIBRO_WORKSPACE": str(workspace),
-            "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9",
+            "KIWIBRO_SERVER_URL": "http://127.0.0.1:9",
         }
     )
     svc = app.extensions["kiwibro"]
@@ -421,7 +421,7 @@ def test_conversation_api_pagination_is_opt_in(tmp_path: Path, monkeypatch: pyte
     workspace.mkdir()
     app = create_app(
         {"TESTING": True, "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
-         "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9"}
+         "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_SERVER_URL": "http://127.0.0.1:9"}
     )
     svc = app.extensions["kiwibro"]
     fake = FakeLLM()
@@ -453,7 +453,7 @@ def test_extraction_watermark_retries_after_failure(env, monkeypatch: pytest.Mon
     svc.db.add_message(conversation["id"], "assistant", "Congrats on the move!")
 
     def boom(**kwargs):
-        raise LMStudioError("timeout", "slow model")
+        raise LLMError("timeout", "slow model")
 
     monkeypatch.setattr(svc.llm, "complete_json", boom)
     assert svc.memory.extract_and_apply(conversation["id"], "fake-1")["added"] == 0
@@ -530,7 +530,7 @@ def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 
     def boom(**kwargs):
-        raise LMStudioError("timeout", "slow model")
+        raise LLMError("timeout", "slow model")
 
     monkeypatch.setattr(svc.llm, "complete_json", boom)
     conversation = svc.db.create_conversation()
@@ -648,9 +648,9 @@ def test_recall_matches_singular_and_plural(env):
 
 
 def test_complete_json_ignores_reasoning_and_truncated_replies(monkeypatch: pytest.MonkeyPatch):
-    from kiwibro.llm import LMStudioClient
+    from kiwibro.llm import LLMClient
 
-    client = LMStudioClient(lambda: {})
+    client = LLMClient(lambda: {})
     reply = Completion("")
     monkeypatch.setattr(client, "complete", lambda **kwargs: reply)
 

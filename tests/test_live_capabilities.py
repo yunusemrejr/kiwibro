@@ -1,4 +1,4 @@
-"""Opt-in LIVE checks against a running LM Studio (skipped unless KIWIBRO_LIVE=1).
+"""Opt-in LIVE checks against a running model server (skipped unless KIWIBRO_LIVE=1).
 
 Exercises the real capability-delegation path end to end: catalog discovery,
 smallest-capable helper selection, JIT load, vision inference, lease release.
@@ -16,7 +16,7 @@ import zlib
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("KIWIBRO_LIVE") != "1", reason="live LM Studio checks are opt-in (KIWIBRO_LIVE=1)"
+    os.environ.get("KIWIBRO_LIVE") != "1", reason="live model-server checks are opt-in (KIWIBRO_LIVE=1)"
 )
 
 
@@ -46,10 +46,10 @@ def _png_data_uri() -> str:
 
 @pytest.fixture(scope="module")
 def client():
-    from kiwibro.llm import LMStudioClient
+    from kiwibro.llm import LLMClient
 
-    url = os.environ.get("KIWIBRO_LMSTUDIO_URL", "http://127.0.0.1:1234")
-    return LMStudioClient(lambda: {"lmstudio_url": url, "model": None})
+    url = os.environ.get("KIWIBRO_SERVER_URL", "http://127.0.0.1:1234")
+    return LLMClient(lambda: {"server_url": url, "model": None})
 
 
 def test_live_catalog_has_capabilities(client):

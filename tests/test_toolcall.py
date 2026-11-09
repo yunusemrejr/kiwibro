@@ -422,7 +422,7 @@ def test_phantom_roots_in_path_lists():
 
 
 def test_glm_pairs_leaked_into_a_value_are_split():
-    # Seen live: LM Studio half-parsed a GLM-style call into one string value.
+    # Seen live: a server half-parsed a GLM-style call into one string value.
     raw = '{"action": "update<arg_key>task_id</arg_key><arg_value>file-ops", "status": "in_progress"}'
     args, notes = tc.parse_arguments(raw)
     assert args == {"action": "update", "task_id": "file-ops", "status": "in_progress"}

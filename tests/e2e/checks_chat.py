@@ -1,4 +1,4 @@
-"""Chat / SSE / tools / approvals / security checks against the fake LM server."""
+"""Chat / SSE / tools / approvals / security checks against the fake model server."""
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def plain_stream(env: "Any") -> str:
 
 
 def utf8_stream(env: "Any") -> str:
-    """Regression: LM Studio SSE has no charset; characters must not turn to mojibake."""
+    """Regression: a llama.cpp event stream has no charset; characters must not turn to mojibake."""
     stream = chat(env, "[[scenario:utf8]]")
     finish(stream)
     text = stream.text()
@@ -141,7 +141,7 @@ def no_usage_stream(env: "Any") -> str:
     stream = chat(env, "[[scenario:no_usage]]")
     finish(stream)
     done = stream.of("done")[0]
-    assert_eq(done["usage"], None, "done.usage is null when LM reports none")
+    assert_eq(done["usage"], None, "done.usage is null when the server reports none")
     return "graceful when the model reports no usage"
 
 
@@ -562,7 +562,7 @@ def model_swap_preserves_state(env: "Any") -> str:
         second = chat(env, "hello spark [[scenario:plain]]", conversation_id=conversation_id)
         finish(second)
         assert_eq(second.of("meta")[0]["model"], "spark-x2.6-4b", "new turn uses the new model")
-        assert_eq(env.fake.last_chat_request().get("model"), "spark-x2.6-4b", "LM request model")
+        assert_eq(env.fake.last_chat_request().get("model"), "spark-x2.6-4b", "request model")
         detail = conversation(env, conversation_id)
         assistant_models = [
             message["model"] for message in detail["messages"] if message["role"] == "assistant"

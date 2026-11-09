@@ -1,7 +1,7 @@
-"""Live LM Studio + real-server checks for Kiwibro (task-3).
+"""Live model-server + real-server checks for Kiwibro (task-3).
 
 These hit the real model (`qwen3.8-2b` by default) and the real Flask app. They
-are intentionally *serialized*: one model call at a time, because LM Studio is
+are intentionally *serialized*: one model call at a time, because the model server is
 slow when several agents talk to it at once.
 
 Checks are written as functions taking an ``Env`` (see ``run_live.py``) and
@@ -46,7 +46,7 @@ def _timed_chat(env: Any, message: str, *, timeout: float = 240.0, conversation_
                 ttft = time.monotonic() - started
             continue
         if name == "error":
-            raise AssertionError(f"LM Studio error event: {data}")
+            raise AssertionError(f"model error event: {data}")
         break
     stream.wait_closed(timeout=30)
     total = time.monotonic() - started
@@ -73,7 +73,7 @@ def _chat_until_tool(
             stream.close()
             raise
         if name == "error":
-            raise AssertionError(f"LM Studio error event: {data}")
+            raise AssertionError(f"model error event: {data}")
         if name == "tool_call":
             return stream, data
         stream.wait_closed(timeout=60)
@@ -98,20 +98,20 @@ def live_health(env: Any) -> str:
     health = env.client.get("/health")
     expect_status(health, 200, "GET /health")
     data = health.data
-    assert_eq(data["lmstudio"], True, "LM Studio reachable")
+    assert_eq(data["engine_ok"], True, "model server reachable")
     assert_eq(data["ok"], True, "health ok")
     assert_eq(data["version"], config.VERSION, "version")
     models = env.client.get("/api/models?refresh=1")
     expect_status(models, 200, "GET /api/models")
     payload = models.data
-    assert_eq(payload["lmstudio"], True, "models.lmstudio")
+    assert_eq(payload["engine_ok"], True, "models.engine_ok")
     assert_true(payload["models"], "at least one model listed")
     for model in payload["models"]:
         for key in ("id", "name", "type", "state", "context", "max_context", "tools"):
             assert_in(key, model, f"model field {key}")
     current = payload["current"]
     assert_true(current in {model["id"] for model in payload["models"]}, f"current model {current!r} listed")
-    return f"LM Studio up, {len(payload['models'])} chat models, current={current}"
+    return f"model server up, {len(payload['models'])} chat models, current={current}"
 
 
 def live_plain_stream(env: Any) -> str:
@@ -372,7 +372,7 @@ def live_memory_roundtrip(env: Any) -> str:
     # the model may answer without the tool; accept either (remember tool or extraction)
     name, _data = stream.wait_any(("tool_call", "done", "error"), timeout=300)
     if name == "error":
-        raise AssertionError(f"LM Studio error event: {_data}")
+        raise AssertionError(f"model error event: {_data}")
     if name == "tool_call":
         stream.wait_done(timeout=300)
     stream.wait_closed(timeout=60)
@@ -388,18 +388,18 @@ def live_memory_roundtrip(env: Any) -> str:
 def live_context_compaction(env: Any) -> str:
     """Two-phase compaction proof.
 
-    Seeding uses the deterministic fake LM configured with a tiny 2 K context (a
+    Seeding uses the deterministic fake server configured with a tiny 2 K context (a
     fake hook, allowed by the Lead) so the test is fast and deterministic; the
     continuation after compaction is a real qwen3.8-2b call, proving the summary
     path works end to end on the live model.
     """
     from fake_lm import FakeLM, MODELS_TINY_CONTEXT
 
-    real_url = getattr(env, "real_lm_url", "http://127.0.0.1:1234")
+    real_url = getattr(env, "real_server_url", "http://127.0.0.1:1234")
     original_model = (env.client.get("/api/settings").data["settings"].get("model")) or "qwen3.8-2b"
     fake = FakeLM(MODELS_TINY_CONTEXT).start()
     try:
-        env.client.patch("/api/settings", {"lmstudio_url": fake.url})
+        env.point_at(fake.url)  # the server is chosen at launch, so the app restarts on the fake one
         models = env.client.get("/api/models?refresh=1").data
         assert "tiny-context" in [model["id"] for model in models["models"]], "fake tiny model not listed"
         env.client.post("/api/models/select", {"id": "tiny-context"})
@@ -433,7 +433,7 @@ def live_context_compaction(env: Any) -> str:
         assert_true(turns <= 5, f"compaction needed {turns} seed turns")
 
         # real model continues the compacted conversation
-        env.client.patch("/api/settings", {"lmstudio_url": real_url})
+        env.point_at(real_url)
         env.client.get("/api/models?refresh=1")
         env.client.post("/api/models/select", {"id": original_model})
         before = len(detail["messages"])
@@ -452,7 +452,7 @@ def live_context_compaction(env: Any) -> str:
             f"live {original_model} continued ({before}->{len(after['messages'])} messages), no context error"
         )
     finally:
-        env.client.patch("/api/settings", {"lmstudio_url": real_url})
+        env.point_at(real_url)
         try:
             env.client.get("/api/models?refresh=1")
             env.client.post("/api/models/select", {"id": original_model})
@@ -478,15 +478,15 @@ def live_restart_persistence(env: Any) -> str:
 
 
 def live_offline_state(env: Any) -> str:
-    """Point a second app instance at a closed LM port and verify the calm state."""
+    """Point a second app instance at a closed model-server port and verify the calm state."""
     from harness import AppServer, free_port
 
     closed = free_port()
-    with AppServer("live-offline", lmstudio_url=f"http://127.0.0.1:{closed}") as app:
+    with AppServer("live-offline", server_url=f"http://127.0.0.1:{closed}") as app:
         client = app.client()
         health = client.get("/health")
         expect_status(health, 200, "offline health")
-        assert_eq(health.data["lmstudio"], False, "offline health.lmstudio")
+        assert_eq(health.data["engine_ok"], False, "offline health.engine_ok")
         chat_stream = client.chat({"message": "hello"})
         chat_stream.wait_done(timeout=20)
         chat_stream.wait_closed(timeout=10)
@@ -495,7 +495,7 @@ def live_offline_state(env: Any) -> str:
         assert_eq(len(errors), 1, "one error event")
         assert_eq(errors[0]["code"], "connection", "connection error code")
         assert_eq(errors[0]["recoverable"], True, "recoverable connection error")
-    return "offline app: health lmstudio=false, chat meta -> connection error, no crash"
+    return "offline app: health engine_ok=false, chat meta -> connection error, no crash"
 
 
 LIVE_CHECKS: list[tuple[str, Any]] = [

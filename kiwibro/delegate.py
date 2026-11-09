@@ -1,4 +1,4 @@
-"""Capability-aware delegation to other local LM Studio models (agent-facing).
+"""Capability-aware delegation to other installed local models (agent-facing).
 
 The selected (main) model stays in charge of the conversation. When a task
 needs a capability it lacks — vision, say — a small, bounded side-question goes
@@ -23,7 +23,7 @@ from typing import Any
 
 from . import media, routing
 from .inference import model_profile
-from .llm import LMStudioClient, LMStudioError
+from .llm import LLMClient, LLMError
 from .routing import capabilities_of, pick_helper  # noqa: F401 - the delegation API
 from .sandbox import SandboxError, Workspace
 
@@ -41,13 +41,13 @@ class DelegateError(Exception):
     """No suitable helper model, or the helper call failed (user-facing)."""
 
 
-def list_model_capabilities(llm: LMStudioClient) -> list[dict[str, Any]]:
+def list_model_capabilities(llm: LLMClient) -> list[dict[str, Any]]:
     """All local chat models with capability labels (for the model_info tool)."""
     ok, models, error = llm.models_status()
     if not ok:
-        raise DelegateError(error or "LM Studio is not reachable.")
+        raise DelegateError(error or "The model engine is not available.")
     if not models:
-        raise DelegateError("No chat models are installed in LM Studio.")
+        raise DelegateError("No chat models are installed.")
     return [
         {
             "id": model["id"],
@@ -62,7 +62,7 @@ def list_model_capabilities(llm: LMStudioClient) -> list[dict[str, Any]]:
 
 
 def run_helper(
-    llm: LMStudioClient,
+    llm: LLMClient,
     need: str,
     messages: list[dict[str, Any]],
     *,
@@ -81,7 +81,7 @@ def run_helper(
             llm, need, messages, current_model=current_model, model=model,
             max_tokens=max(64, min(int(max_tokens or 600), 2048)),
         )
-    except LMStudioError as exc:
+    except LLMError as exc:
         if exc.kind in ("no_model", "no_memory"):
             raise DelegateError(
                 f"{exc.message} Solve it another way (code execution, files, web) or tell "
@@ -115,7 +115,7 @@ def image_data_url(workspace: Workspace, path: str) -> tuple[str, str]:
 
 
 def describe_image(
-    llm: LMStudioClient,
+    llm: LLMClient,
     workspace: Workspace,
     path: str,
     question: str = "",
@@ -147,7 +147,7 @@ _SEE_PROMPT = (
 
 
 def see_attachment(
-    llm: LMStudioClient,
+    llm: LLMClient,
     workspace: Workspace,
     attachment: dict[str, Any],
     *,
@@ -182,7 +182,7 @@ def see_attachment(
                     current_model=current_model, max_tokens=800,
                 )
                 return {"model": result["model"], "text": result["text"]}
-    except (DelegateError, LMStudioError, SandboxError) as exc:
+    except (DelegateError, LLMError, SandboxError) as exc:
         log.info("no model could look at %s (%s); using measured facts", resolved.name, exc)
     return {"model": None, "text": media.facts_text(media.media_facts(resolved))}
 
@@ -217,7 +217,7 @@ def chunk_text(
 
 
 def study_text(
-    llm: LMStudioClient,
+    llm: LLMClient,
     text: str,
     question: str,
     *,
@@ -315,7 +315,7 @@ def focus_text(text: str, question: str) -> tuple[str, int, int]:
 
 
 def study_file(
-    llm: LMStudioClient,
+    llm: LLMClient,
     workspace: Workspace,
     path: str,
     question: str,

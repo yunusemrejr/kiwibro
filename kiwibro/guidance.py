@@ -1,6 +1,6 @@
 """Situational guidance: the right instructions for this turn, chosen by code.
 
-Message 0 has to stay byte-identical between turns (LM Studio reuses its KV cache), and
+Message 0 has to stay byte-identical between turns (the server reuses its KV cache), and
 on a CPU every prompt token costs prefill time, so it carries only what every turn
 needs. How to research, code, use the desktop, render a chart or handle memory is
 picked here from the user's message (plus attachments and the turn plan) with cheap

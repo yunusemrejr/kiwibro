@@ -1,7 +1,7 @@
 """pytest adapter for the standalone e2e suite.
 
-``python3 -m pytest tests/e2e -q`` runs the whole fake-LM end-to-end suite.
-It needs no LM Studio and no network: the app talks to tests/e2e/fake_lm.py.
+``python3 -m pytest tests/e2e -q`` runs the whole fake-server end-to-end suite.
+It needs no model app and no network: the app talks to tests/e2e/fake_lm.py.
 Set ``KIWIBRO_E2E=0`` to skip (e.g. on a machine where binding loopback ports is
 forbidden).
 """

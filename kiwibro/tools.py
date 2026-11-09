@@ -17,7 +17,7 @@ from typing import Any, Callable
 from . import codebase, config, delegate, desktop, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
-from .llm import LMStudioClient
+from .llm import LLMClient
 from .memory import MemoryEngine
 from .sandbox import TERMINALS, SandboxError, Workspace
 from .search import SearchEngine, SearchError
@@ -31,7 +31,7 @@ class ToolContext:
     memory: MemoryEngine
     search: SearchEngine
     conversation_id: str
-    llm: LMStudioClient | None = None
+    llm: LLMClient | None = None
     current_model: str | None = None
 
 
@@ -690,7 +690,7 @@ _SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="model_info",
         description=(
-            "List every model installed in the local LM Studio with its capabilities "
+            "List every installed model with its capabilities "
             "(vision, tools, coding, reasoning, long context…), load state and context "
             "size. Use before delegate when unsure what is available."
         ),
@@ -912,7 +912,7 @@ _MINIMAL = (
     "write_file", "replace_in_file", "run_command", "remember",
 )
 # The tool list renders into the prompt ahead of every message, so a list that
-# changes between turns forces LM Studio to re-prefill the whole conversation
+# changes between turns forces the server to re-prefill the whole conversation
 # (measured on this CPU: 0% reuse and 152 s, against 1-4 s with a stable list).
 # "auto" is therefore ONE fixed set, identical for every turn and conversation,
 # sized for 1-4B models; the rest of the catalog still runs when called by its
@@ -1501,7 +1501,7 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             caps = ", ".join(entry["capabilities"]) if entry["capabilities"] else "general chat"
             size = f" ~{entry['size_hint_b']}B" if entry["size_hint_b"] else ""
             lines.append(f"- {entry['id']} ({entry['state']}, ctx {entry['context']}{size}): {caps}")
-        content = "Installed LM Studio models:\n" + "\n".join(lines)
+        content = "Installed models:\n" + "\n".join(lines)
         if ctx.current_model:
             content += f"\nCurrent main model: {ctx.current_model}"
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"models": models})
@@ -1562,7 +1562,7 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     raise ValueError(f"unknown tool: {name}")
 
 
-def _require_llm(ctx: ToolContext) -> LMStudioClient:
+def _require_llm(ctx: ToolContext) -> LLMClient:
     if ctx.llm is None:
         raise DelegateError("model delegation is unavailable in this context")
     return ctx.llm

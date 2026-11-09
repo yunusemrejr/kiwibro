@@ -1,8 +1,8 @@
-"""LM Studio client: model discovery, streaming chat, non-streaming JSON helpers.
+"""Model client: discovery, streaming chat, non-streaming JSON helpers.
 
-With the ``engine`` setting on ``direct`` the same client serves LM Studio's
-downloaded models through :mod:`kiwibro.engine` (llama.cpp run by Kiwibro)
-instead of the LM Studio API; everything above this module is unchanged."""
+Kiwibro runs llama.cpp itself (:mod:`kiwibro.engine`) and this client talks to the
+servers it starts. With ``KIWIBRO_SERVER_URL`` set it attaches to an llama.cpp-compatible
+server that is already running instead; everything above this module is the same."""
 
 from __future__ import annotations
 
@@ -35,10 +35,12 @@ USER_AGENT = "Kiwibro/1.0 (local)"
 _CORE_PAYLOAD_KEYS = frozenset({"model", "messages", "stream", "tools"})
 _CONTEXT_MARKERS = ("context", "n_ctx", "token", "too long", "too many", "exceeds")
 _TOOL_MARKERS = ("tool",)
+NO_MODELS = "No models yet. Open Models to download one, or drop a GGUF file into Kiwibro's models folder."
+NO_MODELS_ATTACHED = "The attached model server lists no chat models."
 
 
-class LMStudioError(Exception):
-    """Recoverable/expected LM Studio failure with a calm, user-facing message."""
+class LLMError(Exception):
+    """Recoverable/expected model-server failure with a calm, user-facing message."""
 
     def __init__(self, kind: str, message: str, status: int | None = None) -> None:
         super().__init__(message)
@@ -47,12 +49,12 @@ class LMStudioError(Exception):
         self.status = status
 
 
-class ContextLimitError(LMStudioError):
+class ContextLimitError(LLMError):
     def __init__(self, message: str = "The conversation is too long for the model's context window.") -> None:
         super().__init__("context", message)
 
 
-class ToolsUnsupportedError(LMStudioError):
+class ToolsUnsupportedError(LLMError):
     def __init__(self, message: str = "This model does not support tools.") -> None:
         super().__init__("tools", message)
 
@@ -116,7 +118,8 @@ def _timings(raw: Any) -> dict[str, float] | None:
 
 
 def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalise one /api/v0/models entry for the UI. Returns None for embeddings."""
+    """Normalise one model entry for the UI (the engine's, or an attached server's
+    ``/v1/models`` item). Returns None for embeddings."""
     model_id = raw.get("id")
     if not isinstance(model_id, str) or not model_id:
         return None
@@ -155,11 +158,9 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def merge_native_metadata(models: list[dict[str, Any]], native: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Add LM Studio ``/api/v1/models`` facts to model records (additive; returns copies).
-
-    v1 adds what v0 lacks: reasoning toggle options, parameter count, file size,
-    architecture and the loaded instance's config. A v0 id is either a v1
-    ``key`` or one of its ``loaded_instances[].id``.
+    """Add the engine's file facts to model records (additive; returns copies): reasoning
+    toggle options, parameter count, file size, architecture and the running server's
+    config. A record id is either an entry ``key`` or one of its ``loaded_instances[].id``.
     """
     by_id: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for entry in native:
@@ -192,6 +193,9 @@ def merge_native_metadata(models: list[dict[str, Any]], native: list[dict[str, A
             "reasoning_default": reasoning.get("default"),
             "vision": bool(model.get("vision") or caps_v1.get("vision")),
             "tools": bool(model.get("tools") or caps_v1.get("trained_for_tool_use")),
+            # Where the file lives; only Kiwibro's own downloads can be deleted from the app.
+            "source": str(entry.get("source") or ""),
+            "deletable": bool(entry.get("deletable")),
         })
         if loaded_config and model.get("state") == "loaded":
             merged["loaded_config"] = {
@@ -202,19 +206,19 @@ def merge_native_metadata(models: list[dict[str, Any]], native: list[dict[str, A
     return out
 
 
-def classify_http_error(status: int, body: str) -> LMStudioError:
-    """Map a non-200 response from LM Studio to a typed error."""
+def classify_http_error(status: int, body: str) -> LLMError:
+    """Map a non-200 response from the model server to a typed error."""
     text = (body or "").lower()
     if status >= 500:
-        return LMStudioError("server", "LM Studio had a server error. Try again.", status)
+        return LLMError("server", "The model server had an error. Try again.", status)
     if status in (400, 413, 422):
         if any(marker in text for marker in _TOOL_MARKERS):
             return ToolsUnsupportedError()
         if any(marker in text for marker in _CONTEXT_MARKERS):
             return ContextLimitError()
     if status in (401, 403):
-        return LMStudioError("http", "LM Studio rejected the request (check its server settings).", status)
-    return LMStudioError("http", "LM Studio could not handle that request.", status)
+        return LLMError("http", "The model server rejected the request (check its API key).", status)
+    return LLMError("http", "The model could not handle that request.", status)
 
 
 def parse_json_loose(text: str) -> Any:
@@ -251,8 +255,8 @@ def _socket_of(response: requests.Response) -> socket.socket | None:
     return sock if isinstance(sock, socket.socket) else None
 
 
-class LMStudioClient:
-    """Small, synchronous LM Studio client shared by all request threads."""
+class LLMClient:
+    """Small, synchronous client for the model servers, shared by all request threads."""
 
     def __init__(
         self,
@@ -270,19 +274,23 @@ class LMStudioClient:
         self._cache_ttl = cache_ttl
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
-        self._load_api_supported: bool | None = None
-        self._instances: dict[str, str] = {}  # model key -> instance id we loaded
+        self._props: dict[str, dict[str, Any]] = {}  # attached server: /props per model id
 
     # --- engine switch -----------------------------------------------------
 
+    def server_url(self) -> str:
+        """The already-running server Kiwibro is attached to ('' when it runs its own)."""
+        return str(self._settings().get("server_url") or "").strip().rstrip("/")
+
     def engine_mode(self) -> str:
-        return "direct" if self._settings().get("engine") == "direct" else "lmstudio"
+        return "attached" if self.server_url() else "local"
 
     def direct_on(self) -> bool:
-        return self.engine_mode() == "direct"
+        """Kiwibro starts and stops the llama.cpp servers itself (the normal case)."""
+        return not self.server_url()
 
     def direct_engine(self) -> Any:
-        """The direct engine (created lazily: LM Studio mode never touches it)."""
+        """The engine that runs llama.cpp (created lazily: an attached client never needs it)."""
         with self._direct_lock:
             if self._direct is None:
                 from .engine import DirectEngine
@@ -291,7 +299,7 @@ class LMStudioClient:
             return self._direct
 
     def stop_direct(self) -> None:
-        """Stop every llama.cpp server the direct engine runs (switching back to LM Studio)."""
+        """Stop every llama.cpp server the engine runs (frees their memory at once)."""
         with self._direct_lock:
             engine = self._direct
         if engine is not None:
@@ -300,10 +308,10 @@ class LMStudioClient:
 
     @contextmanager
     def _serving(self, model: str) -> Iterator[str]:
-        """The base URL that serves ``model``: LM Studio's, or a direct server held busy
-        for the request (started just in time, the way LM Studio JIT-loads)."""
+        """The base URL that serves ``model``: a server of our own held busy for the
+        request (started just in time), or the attached one."""
         if not self.direct_on():
-            yield self.base_url()
+            yield self.server_url()
             return
         from .engine import EngineError
 
@@ -311,7 +319,7 @@ class LMStudioClient:
         try:
             server = engine.acquire(model)
         except EngineError as exc:
-            raise LMStudioError("engine", str(exc)) from exc
+            raise LLMError("engine", str(exc)) from exc
         try:
             yield server.url
         finally:
@@ -320,17 +328,16 @@ class LMStudioClient:
     # --- model discovery ---------------------------------------------------
 
     def base_url(self) -> str:
-        url = self._settings().get("lmstudio_url") or config.DEFAULT_LMSTUDIO_URL
-        return str(url).rstrip("/")
+        return self.server_url()
 
     def _headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
-        """Request headers; a server with authentication on (e.g. another machine's
-        LM Studio) gets the API token from Settings or ``KIWIBRO_LMSTUDIO_TOKEN``."""
+        """Request headers; our own servers take the engine's key, an attached one the
+        key in ``KIWIBRO_SERVER_KEY`` (when it has authentication on)."""
         headers = {"User-Agent": USER_AGENT, **(extra or {})}
         if self.direct_on():
             headers["Authorization"] = f"Bearer {self.direct_engine().api_key}"
             return headers
-        token = str(self._settings().get("lmstudio_token") or os.environ.get("KIWIBRO_LMSTUDIO_TOKEN") or "").strip()
+        token = str(os.environ.get("KIWIBRO_SERVER_KEY") or "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
@@ -339,6 +346,7 @@ class LMStudioClient:
         with self._lock:
             self._cache = None
             self._cache_at = 0.0
+            self._props.clear()
 
     def list_models(self, force: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -356,68 +364,13 @@ class LMStudioClient:
             return [dict(item) for item in models]
 
     def _fetch_models(self) -> list[dict[str, Any]]:
-        if self.direct_on():
-            engine = self.direct_engine()
-            models = [m for m in (normalize_model(raw) for raw in engine.raw_entries()) if m]
-            return merge_native_metadata(models, engine.native_entries())
-        base = self.base_url()
-        try:
-            response = requests.get(
-                f"{base}/api/v0/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers()
-            )
-        except requests.ConnectionError as exc:
-            raise LMStudioError("connection", self._connection_message(base)) from exc
-        except requests.Timeout as exc:
-            raise LMStudioError("timeout", "LM Studio did not answer in time.") from exc
-        except requests.RequestException as exc:  # pragma: no cover - defensive
-            raise LMStudioError("connection", self._connection_message(base)) from exc
-
-        if response.status_code == 200:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(data, list):
-                models = [m for m in (normalize_model(raw) for raw in data if isinstance(raw, dict)) if m]
-                return merge_native_metadata(models, self._native_models())
-        # Older LM Studio builds: fall back to the OpenAI-style list.
-        try:
-            fallback = requests.get(
-                f"{base}/v1/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers()
-            )
-        except requests.RequestException as exc:
-            raise LMStudioError("connection", self._connection_message(base)) from exc
-        if fallback.status_code != 200:
-            raise LMStudioError("http", "LM Studio did not return a model list.", fallback.status_code)
-        try:
-            payload = fallback.json()
-        except ValueError as exc:
-            raise LMStudioError("bad_response", "LM Studio returned an invalid model list.") from exc
-        data = payload.get("data") if isinstance(payload, dict) else None
-        models = []
-        for raw in data or []:
-            if not isinstance(raw, dict) or not raw.get("id"):
-                continue
-            models.append(normalize_model(raw) or {
-                "id": raw["id"],
-                "name": raw["id"],
-                "type": "llm",
-                "state": "not-loaded",
-                "context": 32768,
-                "max_context": 32768,
-                "tools": False,
-                "vision": False,
-                "capabilities": [],
-                "publisher": "",
-                "quantization": "",
-            })
-        return models
+        models = [m for m in (normalize_model(raw) for raw in self._fetch_raw_models()) if m]
+        return merge_native_metadata(models, self._native_models())
 
     def models_status(self, force: bool = False) -> tuple[bool, list[dict[str, Any]], str | None]:
         try:
             return True, self.list_models(force=force), None
-        except LMStudioError as exc:
+        except LLMError as exc:
             return False, [], exc.message
 
     def pick_model(self, models: list[dict[str, Any]], requested: str | None = None) -> str | None:
@@ -426,7 +379,7 @@ class LMStudioClient:
         if preferred and preferred in ids:
             return preferred
         if preferred and self.direct_on():
-            # An id saved under LM Studio (e.g. liquid/lfm2.5-1.2b) names the same file here.
+            # An id saved by an older version (e.g. liquid/lfm2.5-1.2b) names the same file here.
             canonical = self.direct_engine().canonical(preferred)
             if canonical in ids:
                 return canonical
@@ -437,22 +390,19 @@ class LMStudioClient:
 
     def resolve_model(self, requested: str | None = None) -> str:
         ok, models, error = self.models_status()
-        base = self.base_url()
         if not ok:
-            raise LMStudioError("connection", self._connection_message(base))
+            raise LLMError("connection", self._connection_message(self.server_url()))
         if not models:
-            if self.direct_on():
-                raise LMStudioError("no_model", "No downloaded models were found. Download one in LM Studio first.")
-            raise LMStudioError("no_model", "No chat model is available in LM Studio. Load a model to start.")
+            raise LLMError("no_model", NO_MODELS if self.direct_on() else NO_MODELS_ATTACHED)
         model = self.pick_model(models, requested)
         if not model:  # pragma: no cover - guarded by models check
-            raise LMStudioError("no_model", error or "No chat model is available in LM Studio.")
+            raise LLMError("no_model", error or NO_MODELS)
         return model
 
     def model_info(self, model_id: str) -> dict[str, Any] | None:
         try:
             models = self.list_models()
-        except LMStudioError:
+        except LLMError:
             return None
         for model in models:
             if model["id"] == model_id:
@@ -461,8 +411,8 @@ class LMStudioClient:
 
     def _connection_message(self, base: str) -> str:
         if self.direct_on():
-            return "The built-in llama.cpp server stopped responding. Try again."
-        return f"LM Studio is not reachable at {base}. Open LM Studio and load a model."
+            return "The model engine stopped responding. Try again."
+        return f"The model server at {base} is not reachable."
 
     # --- streaming chat ----------------------------------------------------
 
@@ -540,7 +490,7 @@ class LMStudioClient:
                     headers=self._headers({"Accept": "text/event-stream"}),
                 ) as response:
                     if abort is not None:
-                        # Stop must work during prefill too, when LM Studio sends nothing for
+                        # Stop must work during prefill too, when the server sends nothing for
                         # minutes: closing the socket makes it drop the request at its next
                         # batch (measured: a 75 s prefill stopped ~20 s after the abort).
                         threading.Thread(
@@ -550,7 +500,7 @@ class LMStudioClient:
                     if response.status_code != 200:
                         body = self._read_body(response)
                         raise classify_http_error(response.status_code, body)
-                    # LM Studio streams UTF-8 but requests would decode SSE text as
+                    # The server streams UTF-8 but requests would decode SSE text as
                     # ISO-8859-1; iterate raw bytes and decode explicitly so non-ASCII
                     # content survives (fixes mojibake such as emoji and em-dashes).
                     response.encoding = "utf-8"
@@ -582,10 +532,10 @@ class LMStudioClient:
                 if abort is not None and abort.is_set():
                     raise TurnAborted() from exc  # our own watcher closed the connection
                 if isinstance(exc, requests.ConnectionError):
-                    raise LMStudioError("connection", self._connection_message(base)) from exc
+                    raise LLMError("connection", self._connection_message(base)) from exc
                 if isinstance(exc, requests.Timeout):
-                    raise LMStudioError("timeout", "LM Studio stopped responding. Try again.") from exc
-                raise LMStudioError("stream", "The connection to LM Studio was interrupted.") from exc
+                    raise LLMError("timeout", "The model stopped responding. Try again.") from exc
+                raise LLMError("stream", "The connection to the model was interrupted.") from exc
             finally:
                 finished.set()
             result.tool_calls = self._finish_tool_calls(tool_acc)
@@ -614,7 +564,7 @@ class LMStudioClient:
     ) -> None:
         """Process a prompt and stop at its first token (KV-cache warm-up).
 
-        LM Studio sends nothing while it prefills, so an abort flag checked per stream
+        The server sends nothing while it prefills, so an abort flag checked per stream
         line would wait minutes; a watcher shuts the socket down instead, which ends
         the request mid-prefill."""
         with self._serving(model) as base:
@@ -639,7 +589,7 @@ class LMStudioClient:
             except requests.RequestException as exc:
                 if abort is not None and abort.is_set():
                     raise TurnAborted() from exc
-                raise LMStudioError("connection", self._connection_message(base)) from exc
+                raise LLMError("connection", self._connection_message(base)) from exc
             finally:
                 finished.set()
             if abort is not None and abort.is_set():
@@ -698,7 +648,7 @@ class LMStudioClient:
             if on_delta:
                 on_delta(content)
             if not result.leaked_reasoning and "</think>" in result.content:
-                LMStudioClient._split_leaked_reasoning(result, on_rewrite)
+                LLMClient._split_leaked_reasoning(result, on_rewrite)
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
             result.reasoning += reasoning
@@ -737,7 +687,7 @@ class LMStudioClient:
         """Move reasoning a model wrote into plain content (ending in a bare ``</think>``).
 
         With thinking switched off, the template pre-fills an empty think block and
-        some small models think anyway, closing a tag LM Studio never saw opened.
+        some small models think anyway, closing a tag the server never saw opened.
         """
         before, _sep, after = result.content.partition("</think>")
         opened = before.lstrip().startswith("<think>")
@@ -799,7 +749,7 @@ class LMStudioClient:
                 model, messages, None, temperature, max_tokens, stream=False,
                 response_format=response_format, extra=extra,
             )
-            last_error: LMStudioError | None = None
+            last_error: LLMError | None = None
             for attempt in range(retries + 1):
                 try:
                     response = requests.post(
@@ -809,18 +759,18 @@ class LMStudioClient:
                         headers=self._headers(),
                     )
                 except requests.ConnectionError as exc:
-                    last_error = LMStudioError("connection", self._connection_message(base))
+                    last_error = LLMError("connection", self._connection_message(base))
                     if attempt < retries:
                         time.sleep(0.4)
                         continue
                     raise last_error from exc
                 except requests.Timeout as exc:
-                    last_error = LMStudioError("timeout", "LM Studio did not answer in time.")
+                    last_error = LLMError("timeout", "The model did not answer in time.")
                     if attempt < retries:
                         continue
                     raise last_error from exc
                 except requests.RequestException as exc:  # pragma: no cover - defensive
-                    last_error = LMStudioError("connection", self._connection_message(base))
+                    last_error = LLMError("connection", self._connection_message(base))
                     if attempt < retries:
                         continue
                     raise last_error from exc
@@ -836,10 +786,10 @@ class LMStudioClient:
                 try:
                     data = response.json()
                 except ValueError as exc:
-                    raise LMStudioError("bad_response", "LM Studio returned an invalid response.") from exc
+                    raise LLMError("bad_response", "The model server returned an invalid response.") from exc
                 choices = data.get("choices") if isinstance(data, dict) else None
                 if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                    raise LMStudioError("bad_response", "LM Studio returned an empty response.")
+                    raise LLMError("bad_response", "The model server returned an empty response.")
                 message = choices[0].get("message") or {}
                 content = message.get("content") or message.get("reasoning_content") or ""
                 return Completion(
@@ -847,7 +797,7 @@ class LMStudioClient:
                     usage=_usage(data.get("usage")),
                     finish_reason=str(choices[0].get("finish_reason") or "") or None,
                 )
-            raise last_error or LMStudioError("http", "LM Studio could not handle that request.")
+            raise last_error or LLMError("http", "The model could not handle that request.")
 
     def complete_json(
         self,
@@ -875,7 +825,7 @@ class LMStudioClient:
                 extra=extra,
                 **({"abort": abort} if abort is not None else {}),
             )
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.debug("complete_json failed: %s", exc.message)
             return None
         text = strip_reasoning(completion.text)
@@ -894,42 +844,67 @@ class LMStudioClient:
     # (which helper model to run) is NOT here; see routing.py.
 
     def _native_models(self) -> list[dict[str, Any]]:
-        """``/api/v1/models`` entries, or [] on builds/servers without it (optional metadata)."""
-        if self.direct_on():
-            return self.direct_engine().native_entries()
-        try:
-            response = requests.get(
-                f"{self.base_url()}/api/v1/models", timeout=(CONNECT_TIMEOUT, 5),
-                headers=self._headers(),
-            )
-            payload = response.json() if response.status_code == 200 else None
-        except Exception:  # metadata is optional: never fail the model list over it
-            return []
-        native = payload.get("models") if isinstance(payload, dict) else None
-        return [entry for entry in native if isinstance(entry, dict)] if isinstance(native, list) else []
+        """File facts for the engine's models; [] for an attached server (optional metadata)."""
+        return self.direct_engine().native_entries() if self.direct_on() else []
 
     def _fetch_raw_models(self) -> list[dict[str, Any]]:
         if self.direct_on():
             return self.direct_engine().raw_entries()
-        base = self.base_url()
-        for path in ("/api/v0/models", "/v1/models"):
-            try:
-                response = requests.get(
-                    f"{base}{path}", timeout=(CONNECT_TIMEOUT, 15),
-                    headers=self._headers(),
-                )
-            except requests.RequestException as exc:
-                raise LMStudioError("connection", self._connection_message(base)) from exc
-            if response.status_code != 200:
-                continue
-            try:
-                payload = response.json()
-            except ValueError:
-                continue
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(data, list):
-                return [raw for raw in data if isinstance(raw, dict)]
-        raise LMStudioError("http", "LM Studio did not return a model list.")
+        base = self.server_url()
+        try:
+            response = requests.get(f"{base}/v1/models", timeout=(CONNECT_TIMEOUT, 15), headers=self._headers())
+        except requests.Timeout as exc:
+            raise LLMError("timeout", "The model server did not answer in time.") from exc
+        except requests.RequestException as exc:
+            raise LLMError("connection", self._connection_message(base)) from exc
+        if response.status_code != 200:
+            raise LLMError("http", "The model server did not return a model list.", response.status_code)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LLMError("bad_response", "The model server returned an invalid model list.") from exc
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return [self._described(base, raw) for raw in data or [] if isinstance(raw, dict) and raw.get("id")]
+
+    def _described(self, base: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """What a plain llama.cpp ``/v1/models`` item leaves out (window, tools, vision),
+        read from ``/props``. An item that already describes itself is used as it is."""
+        if "max_context_length" in raw or "capabilities" in raw:
+            return raw
+        entry = dict(raw)
+        status = raw.get("status") if isinstance(raw.get("status"), dict) else {}
+        entry.setdefault("state", "not-loaded" if status.get("value") == "unloaded" else "loaded")
+        props = self._server_props(base, str(raw["id"]))
+        generation = props.get("default_generation_settings")
+        meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+        window = _int((generation or {}).get("n_ctx") if isinstance(generation, dict) else None) or _int(meta.get("n_ctx_train"))
+        if window:
+            entry["max_context_length"] = entry["loaded_context_length"] = window
+        template = str(props.get("chat_template") or "").lower()
+        capabilities = ["tool_use"] if "tools" in template or "tool_call" in template else []
+        modalities = props.get("modalities") if isinstance(props.get("modalities"), dict) else {}
+        if modalities.get("vision"):
+            entry["type"] = "vlm"
+            capabilities.append("vision")
+        entry["capabilities"] = capabilities
+        return entry
+
+    def _server_props(self, base: str, model_id: str) -> dict[str, Any]:
+        with self._lock:
+            cached = self._props.get(model_id)
+        if cached is not None:
+            return cached
+        try:
+            response = requests.get(
+                f"{base}/props", params={"model": model_id}, timeout=(CONNECT_TIMEOUT, 5), headers=self._headers()
+            )
+            props = response.json() if response.status_code == 200 else {}
+        except (requests.RequestException, ValueError):  # optional facts: never fail the list over them
+            props = {}
+        props = props if isinstance(props, dict) else {}
+        with self._lock:
+            self._props[model_id] = props
+        return props
 
     def catalog(self, force: bool = False) -> list[dict[str, Any]]:
         """ALL installed models (chat + vision + embeddings), capability-annotated.
@@ -969,9 +944,9 @@ class LMStudioClient:
         """One non-streaming vision call. ``image_data_uris``: ``data:image/...;base64,...``."""
         uris = [u for u in image_data_uris if isinstance(u, str) and u.startswith("data:image/")]
         if not uris:
-            raise LMStudioError("bad_request", "No valid image data was provided.")
+            raise LLMError("bad_request", "No valid image data was provided.")
         if len(uris) > 4 or sum(len(u) for u in uris) > 12_000_000:
-            raise LMStudioError("bad_request", "Too much image data for one request.")
+            raise LLMError("bad_request", "Too much image data for one request.")
         parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         parts += [{"type": "image_url", "image_url": {"url": uri}} for uri in uris]
         messages: list[dict[str, Any]] = []
@@ -1002,94 +977,41 @@ class LMStudioClient:
                     headers=self._headers(),
                 )
             except requests.ConnectionError as exc:
-                raise LMStudioError("connection", self._connection_message(base)) from exc
+                raise LLMError("connection", self._connection_message(base)) from exc
             except requests.RequestException as exc:
-                raise LMStudioError("timeout", "LM Studio did not answer in time.") from exc
+                raise LLMError("timeout", "The model did not answer in time.") from exc
             if response.status_code != 200:
                 raise classify_http_error(response.status_code, self._read_body(response))
             try:
                 payload = response.json()
             except ValueError as exc:
-                raise LMStudioError("bad_response", "LM Studio returned an invalid embedding response.") from exc
+                raise LLMError("bad_response", "The model server returned an invalid embedding response.") from exc
             data = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(data, list):
-                raise LMStudioError("bad_response", "LM Studio returned no embeddings.")
+                raise LLMError("bad_response", "The model server returned no embeddings.")
             ordered = sorted(
                 (d for d in data if isinstance(d, dict)),
                 key=lambda d: d.get("index") if isinstance(d.get("index"), int) else 0,
             )
             return [[float(v) for v in d.get("embedding") or []] for d in ordered]
 
-    def _load_api_call(
-        self, action: str, model: str, context_length: int | None = None, parallel: int | None = None
-    ) -> bool:
-        """LM Studio's v1 load control: ``POST /api/v1/models/load|unload``.
-
-        ``load`` takes ``{"model", "context_length"?}`` and answers
-        ``{"instance_id", "status": "loaded", ...}``; ``unload`` takes that
-        ``instance_id`` (remembered here; it can differ from the model key).
-        Builds without the API answer ``Unexpected endpoint``; that is cached.
-        """
-        if self._load_api_supported is False:
-            return False
-        if action == "load":
-            body: dict[str, Any] = {"model": model}
-            if context_length:
-                body["context_length"] = int(context_length)
-            if parallel:
-                body["parallel"] = int(parallel)  # honoured by LM Studio 0.4 though undocumented
-        else:
-            with self._lock:
-                body = {"instance_id": self._instances.get(model, model)}
-        try:
-            response = requests.post(
-                f"{self.base_url()}/api/v1/models/{action}",
-                json=body,
-                timeout=(CONNECT_TIMEOUT, 180),
-                headers=self._headers(),
-            )
-        except requests.RequestException:
-            return False
-        text = self._read_body(response)
-        if response.status_code == 404 or "Unexpected endpoint" in text:
-            self._load_api_supported = False
-            return False
-        if response.status_code != 200:
-            return False
-        self._load_api_supported = True
-        instance = None
-        if action == "load":
-            try:
-                instance = (response.json() or {}).get("instance_id")
-            except (ValueError, AttributeError):
-                instance = None
-        with self._lock:
-            if action == "load":
-                self._instances[model] = str(instance or model)
-            else:
-                self._instances.pop(model, None)
-        self.clear_cache()
-        return True
-
     def load_model(self, model: str, context_length: int | None = None, parallel: int | None = None) -> bool:
-        """Best-effort explicit load; False means rely on LM Studio JIT loading."""
-        if self.direct_on():
-            loaded = self.direct_engine().load(model, context_length, parallel)
-            self.clear_cache()
-            return loaded
-        return self._load_api_call("load", model, context_length, parallel)
+        """Start ``model`` now (optionally with a window size). False for an attached
+        server, which loads what it was started with."""
+        if not self.direct_on():
+            return False
+        loaded = self.direct_engine().load(model, context_length, parallel)
+        self.clear_cache()
+        return loaded
 
     def loaded_instance(self, model: str) -> str | None:
-        """Instance id LM Studio assigned when this client loaded ``model``."""
-        if self.direct_on():
-            return self.direct_engine().canonical(model)
-        with self._lock:
-            return self._instances.get(model)
+        """The id requests should use for ``model`` once it is loaded."""
+        return self.direct_engine().canonical(model) if self.direct_on() else None
 
     def unload_model(self, model: str) -> bool:
-        """Best-effort explicit unload of a model this client loaded (or a loaded instance id)."""
-        if self.direct_on():
-            unloaded = self.direct_engine().unload(model)
-            self.clear_cache()
-            return unloaded
-        return self._load_api_call("unload", model)
+        """Stop ``model``'s server and free its memory (False for an attached server)."""
+        if not self.direct_on():
+            return False
+        unloaded = self.direct_engine().unload(model)
+        self.clear_cache()
+        return unloaded

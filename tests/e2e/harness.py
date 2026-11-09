@@ -87,7 +87,7 @@ class AppServer:
         self,
         label: str,
         *,
-        lmstudio_url: str | None = None,
+        server_url: str | None = None,
         port: int | None = None,
         data_dir: Path | None = None,
         workspace: Path | None = None,
@@ -108,7 +108,7 @@ class AppServer:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.log_path = run_dir / "app.log"
-        self.lmstudio_url = lmstudio_url
+        self.server_url = server_url
         self.extra_env = dict(extra_env or {})
         self.boot_timeout = boot_timeout
         self._proc: subprocess.Popen[bytes] | None = None
@@ -135,13 +135,13 @@ class AppServer:
                 "KIWIBRO_WORKSPACE": str(self.workspace),
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
-                # Scripted fake-LM answers must go to turns, not to background warm-ups.
+                # Scripted fake-server answers must go to turns, not to background warm-ups.
                 "KIWIBRO_WARMUP": "0",
                 "KIWIBRO_MEMORY_IDLE_S": "0.5",  # the extraction check polls for 12 s
             }
         )
-        if self.lmstudio_url:
-            env["KIWIBRO_LMSTUDIO_URL"] = self.lmstudio_url
+        if self.server_url:
+            env["KIWIBRO_SERVER_URL"] = self.server_url
         env.update(self.extra_env)
         self._log_handle = open(self.log_path, "wb")
         self._proc = subprocess.Popen(

@@ -132,7 +132,7 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
     def stream_chat(**kwargs):
         calls.append(kwargs)
         text = good + loop if len(calls) == 1 else "Patch to PHP 8.5.12 or later today."
-        for start in range(0, len(text), 9):  # streamed in small pieces, as LM Studio does
+        for start in range(0, len(text), 9):  # streamed in small pieces, as a model server does
             kwargs["on_delta"](text[start:start + 9])
         return ChatResult(content=text)
 

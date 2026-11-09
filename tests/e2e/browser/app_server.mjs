@@ -82,7 +82,7 @@ export async function startApp({ label = "app", lmstudioUrl = null } = {}) {
     PYTHONUNBUFFERED: "1",
     PYTHONDONTWRITEBYTECODE: "1",
   };
-  if (lmstudioUrl) env.KIWIBRO_LMSTUDIO_URL = lmstudioUrl;
+  if (lmstudioUrl) env.KIWIBRO_SERVER_URL = lmstudioUrl;
   const proc = spawn(pythonBin(), ["app.py"], {
     cwd: REPO_ROOT,
     env,

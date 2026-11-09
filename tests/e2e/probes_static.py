@@ -140,7 +140,7 @@ def ssrf_guard(env: Any = None) -> str:
     # fetch_page refuses without touching the network (would raise immediately)
     engine = search.SearchEngine()
     for url in (
-        "http://127.0.0.1:1234/api/v0/models",
+        "http://127.0.0.1:1234/v1/models",
         "http://169.254.169.254/latest/meta-data/",
         "file:///etc/passwd",
         "http://[::1]/",
@@ -254,8 +254,8 @@ def database_units(env: Any = None) -> str:
 
 
 def settings_units(env: Any = None) -> str:
-    defaults = config.default_settings(lmstudio_url="http://127.0.0.1:1234/", workspace="/tmp/ws")
-    assert_eq(defaults["lmstudio_url"], "http://127.0.0.1:1234", "trailing slash trimmed")
+    defaults = config.default_settings(server_url="http://127.0.0.1:1234/", workspace="/tmp/ws")
+    assert_eq(defaults["server_url"], "http://127.0.0.1:1234", "trailing slash trimmed")
     cleaned = config.validate_settings_patch(
         {"temperature": 0.3, "max_output_tokens": 1024, "permissions": {"write_file": "auto"}},
         defaults,
@@ -267,7 +267,7 @@ def settings_units(env: Any = None) -> str:
         {"max_output_tokens": 100},
         {"permissions": {"write_file": "maybe"}},
         {"workspace": "/"},
-        {"lmstudio_url": "file:///etc/passwd"},
+        {"server_url": "file:///etc/passwd"},  # not a stored setting
         {"surprise": True},
     ]
     for patch in failures:

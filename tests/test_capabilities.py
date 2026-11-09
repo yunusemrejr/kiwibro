@@ -1,8 +1,7 @@
-"""Capability catalog + LM Studio serving primitives (session 01a16089-71d5).
+"""Capability catalog + model-server primitives.
 
-Model payloads mirror a live LM Studio instance captured 2026-10-22:
-``capabilities`` only ever lists ``tool_use``; vision is ``type == "vlm"``;
-the load/unload endpoints do not exist on that build.
+Model payloads use the fields a llama.cpp-compatible ``GET /v1/models`` entry carries:
+``capabilities`` only ever lists ``tool_use``; vision is ``type == "vlm"``.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from kiwibro.capabilities import (
     quant_bits,
     size_key,
 )
-from kiwibro.llm import LMStudioClient, LMStudioError
+from kiwibro.llm import LLMClient, LLMError
 
 RAW_MODELS = [
     {"id": "spark-x2.6-4b", "type": "llm", "state": "loaded", "capabilities": ["tool_use"],
@@ -45,8 +44,8 @@ class FakeResponse:
         return self._payload
 
 
-def make_client() -> LMStudioClient:
-    return LMStudioClient(lambda: {"lmstudio_url": "http://127.0.0.1:1234", "model": None})
+def make_client() -> LLMClient:
+    return LLMClient(lambda: {"server_url": "http://127.0.0.1:1234", "model": None})
 
 
 def test_parse_params_and_quant():
@@ -127,7 +126,7 @@ def test_complete_vision_builds_image_parts(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_complete_vision_rejects_missing_images():
-    with pytest.raises(LMStudioError):
+    with pytest.raises(LLMError):
         make_client().complete_vision(model="m", prompt="?", image_data_uris=["http://x/y.png"])
 
 
@@ -136,20 +135,6 @@ def test_embed_orders_by_index(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(llm_module.requests, "post", lambda *a, **k: FakeResponse(payload))
     assert make_client().embed(model="e", texts=["a", "b"]) == [[0.1, 0.2], [0.3]]
     assert make_client().embed(model="e", texts=[]) == []
-
-
-def test_load_unload_feature_detects_missing_endpoint(monkeypatch: pytest.MonkeyPatch):
-    calls: list[str] = []
-
-    def fake_post(url, json=None, timeout=None, headers=None, **kw):
-        calls.append(url)
-        return FakeResponse({}, text='{"error":"Unexpected endpoint or method. (POST /api/v0/models/load)"}')
-
-    monkeypatch.setattr(llm_module.requests, "post", fake_post)
-    client = make_client()
-    assert client.load_model("x") is False
-    assert client.unload_model("x") is False
-    assert len(calls) == 1  # support flag cached: no second doomed request
 
 
 def test_complete_passes_response_format(monkeypatch: pytest.MonkeyPatch):

@@ -14,7 +14,7 @@ from kiwibro.llm import ChatResult
 def _assert_prefix(warm, sent) -> None:
     messages, tool_list, extra = warm
     # The warm-up ends on a placeholder user message; everything before it must be
-    # exactly what the turn sends, or LM Studio cannot reuse the cache.
+    # exactly what the turn sends, or the server cannot reuse the cache.
     assert sent["messages"][: len(messages) - 1] == messages[:-1]
     assert sent["messages"][len(messages) - 1]["role"] == "user"
     assert sent["tools"] == tool_list
@@ -283,13 +283,13 @@ def test_related_needs_the_same_subject():
 
 
 def test_stop_works_while_lm_studio_is_still_prefilling():
-    """LM Studio answers a streaming request with headers at once and sends nothing until the
+    """A llama.cpp server answers a streaming request with headers at once and sends nothing until the
     first token (75 s for a 6k-token prompt on a laptop CPU); Stop must not wait for it."""
     import http.server
     import threading
     import time
 
-    from kiwibro.llm import LMStudioClient, TurnAborted
+    from kiwibro.llm import LLMClient, TurnAborted
 
     class Silent(http.server.BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
@@ -305,7 +305,7 @@ def test_stop_works_while_lm_studio_is_still_prefilling():
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Silent)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    client = LMStudioClient(lambda: {"lmstudio_url": f"http://127.0.0.1:{server.server_port}"})
+    client = LLMClient(lambda: {"server_url": f"http://127.0.0.1:{server.server_port}"})
     abort = threading.Event()
     threading.Timer(0.3, abort.set).start()
     started = time.monotonic()

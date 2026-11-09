@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from kiwibro import readiness
-from kiwibro.llm import LMStudioError, TurnAborted
+from kiwibro.llm import LLMError, TurnAborted
 
 
 class FakeLLM:
@@ -21,7 +21,6 @@ class FakeLLM:
         self.unloads: list[str] = []
         self.prefills: list[dict[str, Any]] = []
         self.refuse_above: int | None = None
-        self._load_api_supported: bool | None = None
         self.gate: threading.Event | None = None
         self.started = threading.Event()
 
@@ -91,6 +90,22 @@ def test_load_falls_back_to_smaller_windows_when_refused():
     ready.request()
     wait_phase(ready, "ready")
     assert [size for _model, size, _parallel in llm.loads] == [32768, 16384, 8192]
+
+
+class AttachedLLM(FakeLLM):
+    """A client attached to a server Kiwibro did not start: direct_on() is False."""
+
+    def direct_on(self) -> bool:
+        return False
+
+
+def test_attached_server_that_refuses_a_load_is_not_retried_smaller():
+    llm = AttachedLLM()
+    llm.refuse_above = 8192
+    ready = make(llm)
+    ready.request()
+    wait_phase(ready, "ready")
+    assert [size for _model, size, _parallel in llm.loads] == [32768]
 
 
 def test_load_ladder_never_exceeds_the_model_maximum():
@@ -179,11 +194,11 @@ def test_no_prefix_means_ready_without_prefilling():
     assert llm.prefills == []
 
 
-def test_lm_studio_errors_surface_as_status():
+def test_model_server_errors_surface_as_status():
     llm = FakeLLM(state="loaded")
 
     def broken(**_kwargs: Any) -> None:
-        raise LMStudioError("connection", "LM Studio is not reachable.")
+        raise LLMError("connection", "The model server at http://127.0.0.1:9 is not reachable.")
 
     llm.prefill = broken  # type: ignore[method-assign]
     ready = make(llm)
@@ -214,7 +229,7 @@ def test_switching_models_unloads_the_one_kiwibro_loaded_before():
 
 
 def test_models_kiwibro_did_not_load_are_never_unloaded():
-    llm = FakeLLM(state="loaded")  # loaded by the user in LM Studio
+    llm = FakeLLM(state="loaded")  # loaded by someone else (not by Kiwibro)
     ready = make(llm)
     ready.request("m")
     wait_phase(ready, "ready")

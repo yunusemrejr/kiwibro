@@ -24,7 +24,7 @@ from .context import (
     estimate_tokens,
 )
 from .db import Database
-from .llm import ChatResult, ContextLimitError, LMStudioError, LMStudioClient, TurnAborted
+from .llm import ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
 from .memory import MemoryEngine
 from .sandbox import SandboxError, Workspace
 from .search import SearchEngine
@@ -322,7 +322,7 @@ class AgentManager:
     def __init__(
         self,
         db: Database,
-        llm: LMStudioClient,
+        llm: LLMClient,
         context: ContextEngine,
         memory: MemoryEngine,
         search: SearchEngine,
@@ -500,7 +500,7 @@ class AgentManager:
             self._execute(turn)
         except TurnAborted:
             self._finish_aborted(turn)
-        except LMStudioError as exc:
+        except LLMError as exc:
             self._finish_error(turn, exc.kind, exc.message)
         except Exception:  # never leak a traceback into the stream
             if self.db.get_conversation(turn.conversation_id) is None:
@@ -549,7 +549,7 @@ class AgentManager:
 
         try:
             model = self.llm.resolve_model(turn.requested_model)
-        except LMStudioError as exc:
+        except LLMError as exc:
             self._emit_meta(turn, conversation, settings, model=None)
             raise exc
         turn.model = model
@@ -565,7 +565,7 @@ class AgentManager:
             # files (a vision helper can take a while); real context stats follow.
             self._emit_meta(turn, conversation, settings, model=model)
             self._see_attachments(turn, model, user_message)
-        # KV-cache rule: message 0 stays byte-identical across turns so LM Studio
+        # KV-cache rule: message 0 stays byte-identical across turns so the server
         # reuses the cached prefix; the clock, retrieved memories and directives
         # ride on the newest user message (fixed for the whole turn).
         system_prompt = self._system_prompt(
@@ -787,7 +787,7 @@ class AgentManager:
         max_tokens = self._max_tokens(turn, prepared, settings)
         profile = inference.model_profile(model, prepared.model_info)
         budgets = inference.uses_budgets(profile, self.llm.direct_on())  # thinking never touches the prompt
-        if turn.thinking is None:  # decided once per turn: with LM Studio a flip re-prefills everything
+        if turn.thinking is None:  # decided once per turn: with the server a flip re-prefills everything
             turn.thinking = inference.turn_reasoning(
                 settings.get("reasoning"),
                 turn.message,
@@ -864,7 +864,7 @@ class AgentManager:
                 overthought = True
                 turn.emit("status", {"phase": "thinking", "label": "Acting on it"})
             except inference.DegenerateOutput as collapse:
-                # Cut off (closing the stream stops LM Studio generating). A reply that began
+                # Cut off (closing the stream stops the server generating). A reply that began
                 # well and then repeated itself keeps its start and is continued with
                 # anti-repetition sampling; a circling one is cleared and redone. Both reuse
                 # the cached prefix. A second collapse ends the round with what is good.

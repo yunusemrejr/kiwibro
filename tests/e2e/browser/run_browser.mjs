@@ -711,7 +711,7 @@ async function main() {
         fake = await startFakeLm({ models: "default" });
         app = await startApp({ label: "browser-fake", lmstudioUrl: fake.url });
       } else {
-        app = await startApp({ label: "browser-live", lmstudioUrl: process.env.KIWIBRO_LMSTUDIO_URL || "http://127.0.0.1:1234" });
+        app = await startApp({ label: "browser-live", lmstudioUrl: process.env.KIWIBRO_SERVER_URL || "http://127.0.0.1:1234" });
       }
       baseUrl = app.baseUrl;
     }
