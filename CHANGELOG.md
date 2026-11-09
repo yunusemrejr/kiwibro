@@ -4,6 +4,37 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-11-10
+
+Task adapters, Kiwibro's own model and runtime folders, and an engine that lets go of the
+model when nothing is asked of it. Covered by unit tests; not yet measured on a live model.
+
+### Added
+
+- **Task adapters** (`adapters.py`, optimized engine). LoRA adapters (GGUF files with
+  `general.type = adapter`) placed in `~/.local/share/kiwibro/adapters/` (or
+  `KIWIBRO_ADAPTERS_DIR`, or next to the models) are loaded with every base model they fit
+  — same architecture, and the base model the adapter names — at scale 0
+  (`--lora … --lora-init-without-apply`). Each request then switches on the adapter for
+  the task the user is on (code, math, writing, summarize, translate, research; llama.cpp's
+  per-request `lora` field). The task is read from the message; a follow-up without a signal
+  of its own keeps the previous task, so the adapter — and the chat's KV cache, which
+  llama.cpp clears when the adapter changes — only changes when the task does. What an
+  adapter is for comes from a sidecar `<file>.json` (`{"tasks": ["code"], "scale": 0.8}`,
+  `"*"` = always on) or from its name; one of unknown purpose is never switched on. A model
+  that does not start with its adapters starts without them. `GET /api/engine` lists the
+  adapters found and the ones each running server holds. Kiwibro ships no adapters.
+- **Kiwibro's own folders, no LM Studio needed**: GGUF models in
+  `~/.local/share/kiwibro/models/` and a `llama-server` build in
+  `~/.local/share/kiwibro/runtime/` (or one folder below) are found before LM Studio's;
+  llama.cpp's own download cache (`~/.cache/llama.cpp`) is scanned too.
+
+### Changed
+
+- **An idle engine holds no model memory**: llama.cpp unloads the model after 30 minutes
+  without a request (`--sleep-idle-seconds`; `KIWIBRO_IDLE_SLEEP_S`, 0 = never) and reloads
+  it on the next one. The first message after such a pause re-reads the chat.
+
 ## [2.5.0] — 2026-10-30
 
 The optimized engine: LM Studio's models on the GPU (the integrated one too), thinking that

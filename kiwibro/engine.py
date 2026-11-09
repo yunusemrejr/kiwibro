@@ -47,12 +47,13 @@ from typing import Any, Callable, Iterator
 
 import requests
 
+from . import adapters as adapters_mod
 from . import gguf
 
 log = logging.getLogger(__name__)
 
 LMSTUDIO_ROOTS = ("~/.lmstudio", "~/.var/app/ai.lmstudio.lm-studio/.lmstudio")  # native, Flatpak
-EXTRA_MODEL_DIRS = ("~/.cache/lm-studio/models",)  # pre-0.3 LM Studio
+EXTRA_MODEL_DIRS = ("~/.cache/lm-studio/models", "~/.cache/llama.cpp")  # pre-0.3 LM Studio; llama.cpp -hf downloads
 DEFAULT_CONTEXT = 32768
 DEFAULT_PARALLEL = 4  # one slot for the chat, others for background calls (one shared KV pool)
 MAX_RESIDENT = 2  # chat model + one helper; a third evicts the least recently used idle one
@@ -66,6 +67,9 @@ CACHE_REUSE_CHUNK = 256
 # With 4, a turn after six tool rounds re-read 445 tokens more (~5 s on the iGPU) and memory
 # stayed flat; 8 keeps most of that saving for longer tool turns.
 CTX_CHECKPOINTS = 8
+# llama-server unloads the model after this long without a request and reloads it on the
+# next one: an idle Kiwibro holds no model memory (KIWIBRO_IDLE_SLEEP_S; 0 = never).
+IDLE_SLEEP_S = 1800
 SPEC_TYPE = "ngram-mod"
 LMSTUDIO_ONLY_KEYS = frozenset({"ttl", "draft_model"})
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
@@ -130,12 +134,15 @@ def _lmstudio_downloads(root: Path) -> Path | None:
     return path
 
 
-def model_dirs(custom: str | None = None) -> list[Path]:
-    """Folders to scan, in priority order (first wins when two hold the same id)."""
+def model_dirs(custom: str | None = None, data_dir: str | Path | None = None) -> list[Path]:
+    """Folders to scan, in priority order (first wins when two hold the same id): a custom
+    folder, Kiwibro's own ``<data>/models`` (no LM Studio needed), then LM Studio's."""
     candidates: list[Path] = []
     for raw in (custom, *os.environ.get("KIWIBRO_MODELS_DIR", "").split(os.pathsep)):
         if raw and raw.strip():
             candidates.append(Path(raw.strip()).expanduser())
+    if data_dir:
+        candidates.append(Path(data_dir).expanduser() / "models")
     for root in lmstudio_roots():
         downloads = _lmstudio_downloads(root)
         if downloads is not None:
@@ -190,7 +197,9 @@ class ModelScanner:
         key = (str(path), stat.st_size, int(stat.st_mtime))
         if key not in self._meta:
             try:
-                self._meta[key] = gguf.summarize(gguf.read_metadata(path))
+                meta = gguf.read_metadata(path)
+                # A LoRA adapter is not a model (see adapters.py).
+                self._meta[key] = {} if meta.get("general.type") == "adapter" else gguf.summarize(meta)
             except (OSError, gguf.GGUFError) as exc:
                 log.info("skipping %s: %s", path, exc)
                 self._meta[key] = {}
@@ -390,7 +399,19 @@ def _has_nvidia() -> bool:
     return Path("/dev/nvidia0").exists() or Path("/proc/driver/nvidia").exists()
 
 
-def find_runtimes(custom: str | None = None, *, gpu: bool = False) -> list[Runtime]:
+def own_runtimes(data_dir: str | Path | None) -> list[Runtime]:
+    """llama-server builds placed in Kiwibro's own ``<data>/runtime`` folder (or one folder below)."""
+    if not data_dir:
+        return []
+    root = Path(data_dir).expanduser() / "runtime"
+    try:
+        found = [root / "llama-server", *sorted(root.glob("*/llama-server")), *sorted(root.glob("*/bin/llama-server"))]
+    except OSError:
+        return []
+    return [Runtime(str(path), "own", "unknown", "custom") for path in found if _executable(path)]
+
+
+def find_runtimes(custom: str | None = None, *, gpu: bool = False, data_dir: str | Path | None = None) -> list[Runtime]:
     """Usable llama.cpp servers, best first: a custom build, then (with ``gpu``) LM Studio's
     GPU engines that find a GPU here, then the engine LM Studio is set to use, its newest
     engines, and ``llama-server`` on PATH. Without ``gpu`` its CPU engines come first."""
@@ -398,6 +419,7 @@ def find_runtimes(custom: str | None = None, *, gpu: bool = False) -> list[Runti
     for raw in (custom, os.environ.get("KIWIBRO_LLAMA_SERVER")):
         if raw and _executable(Path(raw).expanduser()):
             out.append(Runtime(str(Path(raw).expanduser()), "custom", "unknown", "custom"))
+    out += own_runtimes(data_dir)
     bundled, preferred = lmstudio_runtimes()
     usable = [r for r in bundled if r.kind != "cuda" or _has_nvidia()]
 
@@ -551,6 +573,7 @@ class Server:
     threads: int
     log_path: str
     gpu: str = ""  # the GPU it offloads to ("" on the CPU)
+    adapters: tuple[Any, ...] = ()  # LoRA adapters loaded with it, in --lora order (request ids)
     started_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.monotonic)
     in_flight: int = 0
@@ -567,7 +590,7 @@ class Server:
             "model": self.model.id, "pid": self.process.pid, "port": self.port,
             "context_length": self.context_length, "parallel": self.parallel, "threads": self.threads,
             "runtime": self.runtime.label, "started_at": int(self.started_at), "busy": self.in_flight > 0,
-            "gpu": self.gpu,
+            "gpu": self.gpu, "adapters": [a.name for a in self.adapters],
         }
 
 
@@ -591,10 +614,21 @@ def _runtime_env(runtime: Runtime) -> dict[str, str]:
     return env
 
 
+def lora_capable(flags: frozenset[str]) -> bool:
+    return not flags or {"--lora", "--lora-init-without-apply"} <= flags
+
+
+def idle_sleep_seconds() -> int:
+    try:
+        return max(0, int(os.environ.get("KIWIBRO_IDLE_SLEEP_S", IDLE_SLEEP_S)))
+    except ValueError:
+        return IDLE_SLEEP_S
+
+
 def server_args(
     runtime: Runtime, flags: frozenset[str], model: LocalModel, *, port: int, api_key: str,
     context_length: int, parallel: int, threads: int, cache_ram_mb: int | None, speculative: bool = True,
-    offload: bool | None = None,
+    offload: bool | None = None, adapters: tuple[Any, ...] = (), idle_sleep_s: int = 0,
 ) -> list[str]:
     """The llama-server command line for one model (flags the runtime lacks are left out).
 
@@ -614,8 +648,15 @@ def server_args(
         args += ["--gpu-layers", "auto" if has("--fit") else "999"]
     elif offload is False:
         args += ["--device", "none"] if has("--device") else ["--gpu-layers", "0"]
+    if idle_sleep_s > 0 and has("--sleep-idle-seconds"):
+        args += ["--sleep-idle-seconds", str(idle_sleep_s)]
     if model.embeddings:
         return args + ["--embeddings", "--parallel", "1"]
+    if adapters and lora_capable(flags):
+        # Loaded at scale 0; each request then says which one is on (adapters.py).
+        for adapter in adapters:
+            args += ["--lora", adapter.path]
+        args.append("--lora-init-without-apply")
     args += ["--parallel", str(parallel)]
     if has("--kv-unified") and parallel > 1:
         args.append("--kv-unified")  # one KV pool: a long chat may use most of the window
@@ -670,6 +711,15 @@ class DirectEngine:
         self._flags: dict[str, frozenset[str]] = {}
         self._lock = threading.RLock()
         self._last_error: str | None = None
+        self._adapters: list[Any] = []
+        self._adapters_at = 0.0
+        self._bad_adapters: set[str] = set()  # model ids whose adapters made llama.cpp exit
+        for folder in ("models", "adapters", "runtime"):  # Kiwibro's own: usable without LM Studio
+            if self._data_dir is not None:
+                try:
+                    (self._data_dir / folder).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
         self._reap_stale()
         atexit.register(self.shutdown)
 
@@ -685,7 +735,35 @@ class DirectEngine:
         return self._settings().get("direct_gpu", "auto") != "off"
 
     def _runtimes(self) -> list[Runtime]:
-        return find_runtimes(self._custom_runtime(), gpu=self._gpu_on())
+        return find_runtimes(self._custom_runtime(), gpu=self._gpu_on(), data_dir=self._data_dir)
+
+    # --- task adapters ---
+
+    def adapters(self, force: bool = False) -> list[Any]:
+        """Every LoRA adapter found (Kiwibro's adapters folder, then the model folders)."""
+        with self._lock:
+            if not force and self._adapters_at and time.monotonic() - self._adapters_at < SCAN_TTL_S:
+                return list(self._adapters)
+        found = adapters_mod.scan(adapters_mod.adapter_dirs(
+            self._data_dir, model_dirs(self._custom_models_dir(), self._data_dir)))
+        with self._lock:
+            self._adapters, self._adapters_at = found, time.monotonic()
+        return list(found)
+
+    def adapters_for(self, model: LocalModel) -> tuple[Any, ...]:
+        """The adapters that fit ``model`` (same architecture and base), at most MAX_ADAPTERS."""
+        if model.embeddings or model.id in self._bad_adapters:
+            return ()
+        fit = [a for a in self.adapters() if adapters_mod.fits(a, model.arch, model.name, model.id, model.repo)]
+        return tuple(fit[:adapters_mod.MAX_ADAPTERS])
+
+    def lora_for(self, model_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        """The per-request ``lora`` field for a running model: the adapter for this task on,
+        the others off. None when the model runs without adapters (nothing is sent)."""
+        server = self.loaded(model_id)
+        if server is None or not server.adapters:
+            return None
+        return adapters_mod.request_scales(server.adapters, adapters_mod.task_of(messages))
 
     # --- catalog ---
 
@@ -695,7 +773,7 @@ class DirectEngine:
             fresh = time.monotonic() - self._scanned_at < SCAN_TTL_S and key == self._scan_key
             if fresh and not force:
                 return list(self._models)
-        found = self._scanner.scan(model_dirs(self._custom_models_dir()))
+        found = self._scanner.scan(model_dirs(self._custom_models_dir(), self._data_dir))
         with self._lock:
             self._models, self._scanned_at, self._scan_key = found, time.monotonic(), key
             return list(found)
@@ -862,14 +940,23 @@ class DirectEngine:
         if not runtimes:
             raise EngineError(
                 "No llama.cpp runtime was found. Install LM Studio's llama.cpp engine once, "
-                "or set a llama-server path in Settings."
+                "or set a llama-server path in Settings. A llama-server build placed in "
+                f"{(self._data_dir / 'runtime') if self._data_dir else 'the runtime folder'} works without LM Studio."
             )
         self._make_room(model)
         last: EngineError | None = None
         attempts = [(runtime, spec) for runtime in runtimes[:RUNTIME_TRIES] for spec in (True, False)]
-        for runtime, speculative in attempts:
+        loras = self.adapters_for(model)
+        if loras:  # an adapter that does not fit must never keep the model from starting
+            attempts.insert(1, (attempts[0][0], attempts[0][1]))
+        for index, (runtime, speculative) in enumerate(attempts):
+            if index == 1 and loras:
+                log.warning("direct engine: %s did not start with its adapters (%s); starting without them",
+                            model.id, ", ".join(a.name for a in loras))
+                self._bad_adapters.add(model.id)
+                loras = ()
             try:
-                server = self._launch(runtime, model, context_length, parallel, speculative)
+                server = self._launch(runtime, model, context_length, parallel, speculative, loras)
             except _Crashed as exc:  # e.g. an older engine that lacks this architecture
                 log.info("direct engine: %s could not run %s%s: %s", runtime.label, model.id,
                          "" if speculative else " (no speculative decoding)", exc)
@@ -887,6 +974,7 @@ class DirectEngine:
 
     def _launch(
         self, runtime: Runtime, model: LocalModel, context_length: int, parallel: int, speculative: bool = True,
+        loras: tuple[Any, ...] = (),
     ) -> Server:
         if runtime.path not in self._flags:
             self._flags[runtime.path] = _flags_of(runtime)
@@ -897,8 +985,10 @@ class DirectEngine:
         args = server_args(
             runtime, self._flags[runtime.path], model, port=port, api_key=self.api_key,
             context_length=context_length, parallel=parallel, threads=threads, cache_ram_mb=self._cache_ram_mb(),
-            speculative=speculative, offload=offload,
+            speculative=speculative, offload=offload, adapters=loras, idle_sleep_s=idle_sleep_seconds(),
         )
+        if not lora_capable(self._flags[runtime.path]):
+            loras = ()
         log_path = self._log_path(model)
         gpu = devices[0].name if offload else ""
         log.info("direct engine: starting %s (%s, ctx %d, %d slots, %d threads%s)",
@@ -919,7 +1009,7 @@ class DirectEngine:
             process = _SPAWNER.run(spawn)
         except OSError as exc:
             raise _Crashed(f"Could not start llama.cpp: {exc}") from exc
-        server = Server(model, runtime, process, port, context_length, parallel, threads, log_path, gpu)
+        server = Server(model, runtime, process, port, context_length, parallel, threads, log_path, gpu, tuple(loras))
         self._write_pid(server)
         try:
             self._wait_ready(server)
@@ -1046,7 +1136,7 @@ class DirectEngine:
         with self._lock:
             servers = [s.describe() for s in self._servers.values() if s.alive()]
         models = self.models()
-        dirs = [str(p) for p in model_dirs(self._custom_models_dir())]
+        dirs = [str(p) for p in model_dirs(self._custom_models_dir(), self._data_dir)]
         used = [d for d in dirs if any(m.path.startswith(d + os.sep) for m in models)]
         devices = gpu_devices(runtimes[0]) if runtimes else ()
         return {
@@ -1061,5 +1151,10 @@ class DirectEngine:
             "gpu": devices[0].name if devices and self._gpu_on() else "",
             "gpu_available": any(r.kind in GPU_KINDS and gpu_devices(r) for r in runtimes),
             "servers": servers,
+            "adapters": [a.describe() for a in self.adapters()],
+            "adapters_dir": str(self._data_dir / "adapters") if self._data_dir else "",
+            "own_models_dir": str(self._data_dir / "models") if self._data_dir else "",
+            "own_runtime_dir": str(self._data_dir / "runtime") if self._data_dir else "",
+            "idle_sleep_s": idle_sleep_seconds(),
             "error": self._last_error,
         }

@@ -498,6 +498,12 @@ class LMStudioClient:
             from .engine import adapt_payload
 
             payload = adapt_payload(payload)
+            try:  # task adapters: which LoRA is on for this request (adapters.py)
+                lora = self.direct_engine().lora_for(model, messages)
+            except Exception:  # noqa: BLE001 - an adapter problem must never fail a request
+                lora = None
+            if lora is not None:
+                payload["lora"] = lora
         return payload
 
     def stream_chat(
