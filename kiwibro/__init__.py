@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from dataclasses import dataclass
@@ -17,10 +18,12 @@ from .agent import AgentManager, retitle_small_talk_chats
 from .api import bp, error_body
 from .context import ContextEngine
 from .db import Database
+from .hub import Hub
 from .llm import LLMClient
 from .memory import MemoryEngine
 from .notes import Notebook
 from .readiness import Readiness
+from .runtime import Installer
 from .search import SearchEngine
 
 log = logging.getLogger(__name__)
@@ -39,6 +42,8 @@ class Services:
     agent: AgentManager
     settings_provider: Callable[[], dict[str, Any]]
     data_dir: Path
+    hub: Hub
+    installer: Installer
 
 
 def _configure_logging(data_dir: Path) -> None:
@@ -136,6 +141,10 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         llm, agent.warm_prefix, busy_fn=agent.active_turns, on_job=agent._cancel_memory_extraction,
         enabled=bool(warmup),
     )
+    hub = Hub(data_dir / "models")
+    installer = Installer(data_dir)
+    if not app.config.get("TESTING"):
+        atexit.register(hub.shutdown)
     services = Services(
         db=db,
         llm=llm,
@@ -146,6 +155,8 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         agent=agent,
         settings_provider=settings_provider,
         data_dir=data_dir,
+        hub=hub,
+        installer=installer,
     )
     app.extensions["kiwibro"] = services
 

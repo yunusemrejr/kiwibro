@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 
 from . import (
     checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
-    sessions, terms, toolcall, tools, workspaces,
+    sessions, steer, terms, toolcall, tools, workspaces,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -313,6 +313,10 @@ class Turn:
     seen_urls: set[str] = field(default_factory=set)  # search results already shown this turn
     think_chars: int = 0  # reasoning streamed by the current request
     think_budget: int = 0  # reasoning allowed before acting (0: no limit for this request)
+    facts: steer.Facts | None = None  # what is true this turn; replies are checked against it
+    steer_left: int = 1  # corrections Kiwi Sense may still ask for in this turn
+    steered: list[str] = field(default_factory=list)  # kinds of correction made this turn
+    sense_checked: int = 0  # sentences of the streaming reply already read
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -595,6 +599,7 @@ class AgentManager:
         if any(captured.values()):
             turn.emit("memory", captured)
         self._raise_if_aborted(turn)
+        turn.facts = self._facts(turn, settings, tool_list, model_info, captured, prepared)
 
         if self.readiness is not None:
             # A background warm-up of this very prefix is cheaper to wait for than to repeat.
@@ -634,9 +639,9 @@ class AgentManager:
             result = self._stream_with_recovery(
                 turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=review or None
             )
-            if round_index > 0 and not turn.nudged and toolcall.is_empty_reply(result.content, result.tool_calls):
-                # Small models sometimes stop with an empty reply after tool
-                # results; one transient nudge (never stored) gets them going.
+            if not turn.nudged and toolcall.is_empty_reply(result.content, result.tool_calls):
+                # Small models sometimes stop with an empty reply (most often after tool
+                # results); one transient nudge (never stored) gets them going.
                 turn.nudged = True
                 self._record_usage(turn, result, prepared)
                 log.info("turn %s round %s: empty reply, nudging once", turn.conversation_id, round_index)
@@ -653,6 +658,7 @@ class AgentManager:
             )
             if result.tools_disabled:
                 tool_list = None
+            result = self._steer_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
             self._record_usage(turn, result, prepared)
             assistant_message = None
             if result.content or result.reasoning or result.tool_calls:
@@ -701,6 +707,9 @@ class AgentManager:
                 turn.last_message_id = note_message["id"]
                 turn.emit("delta", {"text": "\n\n" + note})
                 break
+
+        if not turn.reply_text.strip():
+            self._answer_anyway(turn, model, prepared, tool_list, text_mode)
 
         # Final answer phase. Title is deterministic-first so `done` stays fast; memory
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
@@ -781,9 +790,12 @@ class AgentManager:
         *,
         text_mode: bool = False,
         nudge: str | None = None,
+        cool: bool = False,
     ) -> ChatResult:
         settings = self._settings()
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
+        if cool:  # a corrected attempt: less chance, same prompt prefix
+            temperature = min(temperature, steer.RETRY_TEMPERATURE)
         max_tokens = self._max_tokens(turn, prepared, settings)
         profile = inference.model_profile(model, prepared.model_info)
         budgets = inference.uses_budgets(profile, self.llm.direct_on())  # thinking never touches the prompt
@@ -806,6 +818,9 @@ class AgentManager:
         collapsed = False  # the reply collapsed once; this request recovers it
         kept = ""  # the good start of a reply that began repeating itself (continued, not redone)
         overthought = False  # thought past the budget without acting; retried with thinking off
+        correction = ""  # Kiwi Sense cut the reply off; the next attempt is told why (transient)
+        if self._trait(model, steer.LOOP) >= steer.LOOP_HABIT:  # this model keeps circling: sample against it
+            extra = {**extra, **inference.ANTI_REPEAT}
         while True:
             self._raise_if_aborted(turn)
             messages = toolcall.to_text_protocol(prepared.messages) if text_mode else prepared.messages
@@ -817,6 +832,8 @@ class AgentManager:
                             if kept else [{"role": "user", "content": prompts.DEGENERATE_NUDGE}])
                 messages = [*messages, *recovery]
                 request_extra = {**extra, **inference.ANTI_REPEAT}
+            if correction:
+                messages = [*messages, {"role": "user", "content": correction}]
             if overthought:  # act without thinking this once (also transient)
                 messages = [*messages, {"role": "user", "content": prompts.ACT_NOW.format(step=self._next_step(turn))}]
                 if budgets:  # the runtime ignored the budget: switch thinking off in the template too
@@ -835,13 +852,13 @@ class AgentManager:
             reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, prompt_extra)  # sampling is not prompt
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
-            turn.stream_tail, turn.loop_checked = "", 0
+            turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
             try:
                 result = self.llm.stream_chat(
                     model=model,
                     messages=messages,
                     tools=tool_list,
-                    temperature=temperature,
+                    temperature=min(temperature, steer.RETRY_TEMPERATURE) if correction else temperature,
                     max_tokens=max_tokens,
                     on_delta=self._delta_callback(turn),
                     on_reasoning=self._reasoning_callback(turn),
@@ -863,7 +880,16 @@ class AgentManager:
                     return ChatResult(content=turn.partial_text, finish_reason="overthinking")
                 overthought = True
                 turn.emit("status", {"phase": "thinking", "label": "Acting on it"})
+            except steer.Redirect as redirect:
+                # Cut off after the sentence that went wrong; the next attempt reuses the cached prefix.
+                turn.timer.finish()
+                self._note_steer(turn, redirect.verdict, model)
+                correction = prompts.STEER_NOTE.format(note=redirect.verdict.note)
+                turn.partial_text = ""
+                turn.emit("rewrite", {"text": "", "reasoning": ""})
+                turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
             except inference.DegenerateOutput as collapse:
+                self._note_trait(model, steer.LOOP)
                 # Cut off (closing the stream stops the server generating). A reply that began
                 # well and then repeated itself keeps its start and is continued with
                 # anti-repetition sampling; a circling one is cleared and redone. Both reuse
@@ -970,8 +996,26 @@ class AgentManager:
             if visible:
                 turn.partial_text += visible
                 turn.emit("delta", {"text": visible})
+                if turn.steer_left > 0 and turn.facts is not None and any(mark in visible for mark in ".!?\n"):
+                    self._read_opening(turn)
 
         return on_delta
+
+    @staticmethod
+    def _read_opening(turn: Turn) -> None:
+        """Kiwi Sense reads each finished sentence of the reply's opening; a wrong one stops the stream."""
+        if len(turn.partial_text) > steer.EARLY_CHARS:
+            return
+        try:
+            facts = replace(turn.facts, tools_ran=turn.tool_calls_made)
+            verdict, turn.sense_checked = steer.early(turn.partial_text, facts, turn.sense_checked)
+        except Exception:  # reading must never break a reply
+            log.warning("turn %s: sense check failed", turn.conversation_id, exc_info=True)
+            turn.steer_left = 0
+            return
+        if verdict is not None:
+            turn.steer_left -= 1
+            raise steer.Redirect(verdict)
 
     @staticmethod
     def _rewrite_callback(turn: Turn) -> Callable[[str, str], None]:
@@ -1193,9 +1237,183 @@ class AgentManager:
         blocks = [
             inference.time_line(), memory_block, self._earlier_chats_note(turn),
             _directives_note(self.db, turn.conversation_id), plan_note, guidance_note,
+            self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
+    # --- Kiwi Sense: facts of the turn, corrections, what a model tends to get wrong ---
+
+    def _user_names(self, settings: dict[str, Any], memory_block: str = "") -> tuple[str, ...]:
+        names = [str(settings.get("user_name") or "").strip()]
+        names += re.findall(r"(?:[Uu]ser(?:'s|’s)? name is|[Uu]ser is called|The user is)\s+([A-Z][\w'’-]+)", memory_block or "")
+        return tuple(dict.fromkeys(name for name in names if name))
+
+    def _facts(
+        self, turn: Turn, settings: dict[str, Any], tool_list: list[dict[str, Any]] | None,
+        model_info: dict[str, Any] | None, captured: dict[str, int], prepared: PreparedContext,
+    ) -> steer.Facts | None:
+        """What is true this turn, for judging the reply (None switches the checks off)."""
+        if not settings.get("sense_enabled", True):
+            return None
+        if tool_list:
+            names = {str((tool.get("function") or {}).get("name") or "") for tool in tool_list}
+        elif settings.get("agent_enabled", True) and not (model_info or {}).get("tools"):
+            names = {spec.name for spec in _text_mode_specs(settings)}
+        else:
+            names = set()
+        recent: list[str] = []
+        asked: list[str] = []
+        for message in prepared.messages[1:-1][-6:]:
+            content = message.get("content")
+            if message.get("role") in ("user", "assistant") and isinstance(content, str) and content.strip():
+                text = content.split(prompts.TURN_CONTEXT_HEADER, 1)[0].strip()[:1500]
+                recent.append(text)
+                if message.get("role") == "user":
+                    asked.append(text)
+        return steer.Facts(
+            question=turn.message,
+            user_names=self._user_names(settings, turn.turn_context),
+            tools=frozenset(name for name in names if name),
+            memory_on=bool(settings.get("memory_enabled", True)),
+            memory_saved=any(captured.values()),
+            recent=tuple(recent[-4:]),
+            asked_before=tuple(asked),
+            small_talk=plan.is_small_talk(turn.message),
+            model=turn.model or "",
+        )
+
+    def _trait(self, model: str | None, kind: str) -> int:
+        """How often ``model`` needed this correction in the last weeks."""
+        if not model:
+            return 0
+        try:
+            return self._traits(model).get(kind, 0)
+        except Exception:  # traits are advice; never break a turn
+            return 0
+
+    def _traits(self, model: str) -> dict[str, int]:
+        since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - steer.TRAIT_DAYS * 86400))
+        return self.db.traits(model, since=since)
+
+    def _note_trait(self, model: str | None, kind: str) -> None:
+        if not model:
+            return
+        try:
+            self.db.note_trait(model, kind)
+        except Exception:
+            log.warning("could not record trait %s for %s", kind, model, exc_info=True)
+
+    def _note_steer(self, turn: Turn, verdict: steer.Verdict, model: str) -> None:
+        log.info("turn %s: sense verdict %s (%.2f) on %r", turn.conversation_id, verdict.kind, verdict.score,
+                 verdict.sentence[:120])
+        turn.steered.append(verdict.kind)
+        turn.inference["steered"] = list(turn.steered)
+        self._note_trait(model, verdict.kind)
+
+    def _standing_reminders(self, turn: Turn, settings: dict[str, Any], memory_block: str) -> str:
+        """Reminders for a model that needed correcting before (volatile note, never message 0)."""
+        if not turn.model or not settings.get("sense_enabled", True):
+            return ""
+        try:
+            traits = self._traits(turn.model)
+        except Exception:
+            return ""
+        if not traits:
+            return ""
+        tools_on = bool(settings.get("agent_enabled", True))
+        facts = steer.Facts(user_names=self._user_names(settings, memory_block),
+                            tools=frozenset({"web_search"}) if tools_on else frozenset())
+        return "\n".join(f"- {line}" for line in steer.reminders(traits, facts))
+
+    def _steer_reply(
+        self, turn: Turn, model: str, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
+        round_index: int, result: ChatResult, text_mode: bool,
+    ) -> ChatResult:
+        """Check a finished reply against the turn's facts. One corrected attempt; if that
+        fails the same way, the sentences that are wrong are removed."""
+        if turn.facts is None or not (result.content or "").strip() or turn.abort.is_set():
+            return result
+        try:
+            facts = replace(turn.facts, tools_ran=turn.tool_calls_made)
+            verdict = steer.review(result.content, facts, final=not result.tool_calls)
+        except Exception:  # reading must never break a reply
+            log.warning("turn %s: sense review failed", turn.conversation_id, exc_info=True)
+            return result
+        if verdict is None:
+            return result
+        if verdict.kind == steer.UNKEPT_PROMISE and self._plan_will_chase(turn, result):
+            return result  # the plan's own follow-up names the open steps, which is the better push
+        if turn.steer_left > 0:
+            turn.steer_left -= 1
+            self._note_steer(turn, verdict, model)
+            self._record_usage(turn, result, prepared)
+            turn.partial_text = ""
+            turn.emit("rewrite", {"text": "", "reasoning": ""})
+            turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
+            retry = self._stream_with_recovery(
+                turn, model, prepared, tool_list, round_index, text_mode=text_mode,
+                nudge=prompts.STEER_NOTE.format(note=verdict.note), cool=True,
+            )
+            if retry.tool_calls or retry.content.strip():
+                again = steer.review(retry.content, facts, final=not retry.tool_calls) if retry.content.strip() else None
+                if again is None or again.kind != verdict.kind:
+                    return retry
+                result, verdict = retry, again
+            else:  # the second attempt came back empty: keep the first, repaired below
+                turn.partial_text = result.content
+                turn.emit("rewrite", {"text": result.content, "reasoning": ""})
+        cleaned = steer.repair(result.content, verdict, facts)
+        if not cleaned and verdict.kind in (steer.OTHER_IDENTITY, steer.ADOPTED_USER):
+            cleaned = prompts.IDENTITY_LINE
+        if cleaned and cleaned != result.content:
+            log.info("turn %s: removed what %s", turn.conversation_id, steer.LABELS.get(verdict.kind, verdict.kind))
+            result.content = cleaned
+            turn.partial_text = cleaned
+            turn.emit("rewrite", {"text": cleaned, "reasoning": ""})
+        return result
+
+    @staticmethod
+    def _plan_will_chase(turn: Turn, result: ChatResult) -> bool:
+        """Whether the turn's plan will send its own follow-up for work left undone."""
+        current = turn.plan
+        if current is None or result.tool_calls or current.followups >= plan.MAX_FOLLOWUPS:
+            return False
+        try:
+            return any(step.kind != "answer" for step, _why in current.unmet(f"{turn.reply_text}\n{result.content}"))
+        except Exception:
+            return False
+
+    def _answer_anyway(
+        self, turn: Turn, model: str, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
+        text_mode: bool,
+    ) -> None:
+        """The turn produced no words at all: ask once more for a plain answer, and if the
+        model still says nothing, say so honestly instead of leaving an empty reply."""
+        text = ""
+        try:
+            prepared = self.context.extend(
+                prepared, turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
+            )
+            turn.emit("status", {"phase": "thinking", "label": "Putting the answer together"})
+            result = self._stream_with_recovery(
+                turn, model, prepared, tool_list, 1, text_mode=text_mode, nudge=prompts.ANSWER_NOW, cool=True
+            )
+            self._record_usage(turn, result, prepared)
+            text = (result.content or "").strip()
+        except (TurnAborted, LLMError):
+            raise
+        except Exception:
+            log.warning("turn %s: could not force an answer", turn.conversation_id, exc_info=True)
+        meta = None
+        if not text:
+            text = prompts.NO_ANSWER_WITH_TOOLS if turn.tool_calls_made else prompts.NO_ANSWER
+            meta = {"fallback": True}
+            turn.emit("rewrite", {"text": "", "reasoning": ""})
+            turn.emit("delta", {"text": text})
+        message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta=meta)
+        turn.last_message_id = message["id"]
+        turn.reply_text = text
 
     def _earlier_chats_note(self, turn: Turn) -> str:
         """Other recent chats, only when the message refers back to one (sessions.py)."""

@@ -950,3 +950,5 @@ def handle_unexpected(exc: Exception) -> Response:
 
 
 __all__ = ["bp", "services", "error_body", "ApiError"]
+
+from . import api_models  # noqa: E402,F401

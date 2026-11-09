@@ -697,11 +697,19 @@ def test_extraction_only_saves_facts_grounded_in_the_conversation(env):
 def test_model_written_first_person_memories_name_the_user(env):
     from kiwibro.memory import third_person
 
-    assert third_person("I always use Neovim") == "User said: I always use Neovim"
-    assert third_person("My cat is Pamuk") == "User said: My cat is Pamuk"
+    assert third_person("I always use Neovim") == "The user always uses Neovim"
+    assert third_person("My cat is Pamuk") == "The user's cat is Pamuk"
+    assert third_person("I'm Sam. I am a nurse and my shift ends at 7.") == (
+        "The user is Sam. They are a nurse and their shift ends at 7.")
+    assert third_person("Call me Em") == "The user wants to be called Em"
+    assert third_person("I don't eat meat") == "The user does not eat meat"
+    assert third_person("I can't stand long emails") == "The user can't stand long emails"
+    assert third_person("I moved to Berlin in 2021") == "The user moved to Berlin in 2021"
+    assert third_person("User said: I always use Neovim") == "The user always uses Neovim"  # stored by older releases
+    assert third_person("I kind of zigzag through tasks") == "The user said: “I kind of zigzag through tasks”"
     assert third_person("Israel trip planned") == "Israel trip planned"
     svc, _fake = env
     conversation = svc.db.create_conversation()
     saved = svc.memory.remember("I always use Neovim", source_conversation_id=conversation["id"])
-    assert saved["content"] == "User said: I always use Neovim"
+    assert saved["content"] == "The user always uses Neovim"
     assert svc.memory.remember("I like tea")["content"] == "I like tea"  # typed by the user in the UI

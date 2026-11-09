@@ -188,7 +188,10 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
 
 
 def _scenario(payload: dict[str, Any]) -> str:
-    match = SCENARIO_RE.search(_last_user_text(payload.get("messages") or []))
+    messages = payload.get("messages") or []
+    if any("[[scenario:mute]]" in str(message.get("content") or "") for message in messages):
+        return "empty"  # a model that stays silent however often it is asked
+    match = SCENARIO_RE.search(_last_user_text(messages))
     return match.group(1) if match else "plain"
 
 

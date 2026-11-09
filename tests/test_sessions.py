@@ -207,18 +207,26 @@ def test_function_words_pull_in_no_memories(memory: MemoryEngine, query: str):
 SELF = "I am Yunus Emre Vurgun. I am a developer and IT specialist from Istanbul."
 
 
-@pytest.mark.parametrize("query", ["what's my name?", "who am I?", "how old am I?", "hi"])
+@pytest.mark.parametrize("query", ["what's my name?", "who am I?", "how old am I?", "what should I cook?"])
 def test_users_own_self_description_rides_on_every_turn(db: Database, query: str):
     db.create_memory("person", SELF, normalize(SELF))
     block, _memories = MemoryEngine(db, None, lambda: {}).build_block(query)
-    assert "User said: I am Yunus Emre Vurgun" in block  # the user's words, never the assistant's "I"
+    # Told about the user, never in the user's "I" (a small model reads that "I" as itself).
+    assert "The user is Yunus Emre Vurgun. They are a developer" in block
+    assert "I am" not in block
+
+
+@pytest.mark.parametrize("greeting", ["hi", "hello!", "thanks"])
+def test_a_greeting_does_not_get_the_users_life_story(db: Database, greeting: str):
+    db.create_memory("person", SELF, normalize(SELF))
+    assert MemoryEngine(db, None, lambda: {}).build_block(greeting)[0] == ""
 
 
 def test_other_first_person_notes_stay_relevance_gated(db: Database):
     note = "My sister is a doctor in Ankara"
     db.create_memory("person", note, normalize(note))
     engine = MemoryEngine(db, None, lambda: {})
-    assert "User said: My sister is a doctor" in engine.build_block("what does my sister do?")[0]
+    assert "The user's sister is a doctor" in engine.build_block("what does my sister do?")[0]
     assert engine.build_block("is the build passing")[0] == ""
 
 

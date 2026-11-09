@@ -206,9 +206,18 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
 
 # A migration is either a SQL script or a callable taking the connection
 # (for steps that must inspect the live schema, e.g. guarded ALTERs).
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """Schema v8: per-model behaviour traits (what Kiwi Sense had to correct, and how often)."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS model_traits ("
+        "model TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, "
+        "last_at TEXT NOT NULL, PRIMARY KEY (model, kind))"
+    )
+
+
 _MIGRATIONS: list[tuple[int, Any]] = [
     (1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4), (5, _migrate_v5),
-    (6, _migrate_v6), (7, _migrate_v7),
+    (6, _migrate_v6), (7, _migrate_v7), (8, _migrate_v8),
 ]
 
 MEMORY_ORIGINS = ("you", "chat", "learned")
@@ -1388,6 +1397,41 @@ class Database:
             merged[row["key"]] = value
         merged["permissions"] = self.get_permissions()
         return merged
+
+    # --- behaviour traits ---
+
+    def note_trait(self, model: str, kind: str) -> int:
+        """Count one more correction of ``kind`` for ``model``; returns the new count."""
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO model_traits(model, kind, count, last_at) VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(model, kind) DO UPDATE SET count = count + 1, last_at = excluded.last_at",
+                (model, kind, config.now_iso()),
+            )
+            row = conn.execute(
+                "SELECT count FROM model_traits WHERE model = ? AND kind = ?", (model, kind)
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def traits(self, model: str, since: str | None = None) -> dict[str, int]:
+        """{kind: count} for ``model``; with ``since`` (ISO time) only kinds seen at or after it."""
+        query, values = "SELECT kind, count FROM model_traits WHERE model = ?", [model]
+        if since:
+            query += " AND last_at >= ?"
+            values.append(since)
+        with self.connect() as conn:
+            return {row["kind"]: int(row["count"]) for row in conn.execute(query, values)}
+
+    def all_traits(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT model, kind, count, last_at FROM model_traits ORDER BY model, kind")
+            return [dict(row) for row in rows]
+
+    def clear_traits(self, model: str | None = None) -> int:
+        with self.connect() as conn:
+            if model:
+                return conn.execute("DELETE FROM model_traits WHERE model = ?", (model,)).rowcount
+            return conn.execute("DELETE FROM model_traits").rowcount
 
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as conn:

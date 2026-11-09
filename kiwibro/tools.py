@@ -1704,8 +1704,14 @@ _PRIVATE_CHAT = (
 )
 
 
+_NOT_ASKED = (
+    "Not saved: the user did not ask you to remember this and did not say it about themselves. "
+    "Memory is only for facts about the user. Carry on with what they asked."
+)
+
+
 def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    from .memory import grounded  # local: memory imports this package's db/llm layers
+    from .memory import grounded, worth_saving  # local: memory imports this package's db/llm layers
 
     action, content = args.get("action") or "save", args["content"]
     said = _user_words(ctx)
@@ -1730,6 +1736,8 @@ def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             content, old = old, content
     if ctx.memory.about_assistant(content) or (said and not grounded(content, said)):
         return ToolResult(ok=False, content=_UNGROUNDED, preview="Not saved")
+    if said and not worth_saving(_user_words(ctx, latest=True) or said):
+        return ToolResult(ok=False, content=_NOT_ASKED, preview="Not saved")
     if action == "update":
         memory, replaced = ctx.memory.revise(
             old, content, args.get("kind"), source_conversation_id=ctx.conversation_id

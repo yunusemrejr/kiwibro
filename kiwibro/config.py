@@ -178,6 +178,7 @@ def default_settings(server_url: str | None = None, workspace: str | None = None
         "direct_gpu": DEFAULT_GPU,
         "agent_enabled": True,
         "memory_enabled": True,
+        "sense_enabled": True,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
         "temperature": DEFAULT_TEMPERATURE,
         "workspace": str(Path(ws).expanduser()),
@@ -279,7 +280,7 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError("model must be a non-empty string or null")
             cleaned["model"] = value.strip() if isinstance(value, str) else None
-        elif key in ("agent_enabled", "memory_enabled"):
+        elif key in ("agent_enabled", "memory_enabled", "sense_enabled"):
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean")
             cleaned[key] = value

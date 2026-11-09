@@ -148,11 +148,23 @@ def no_usage_stream(env: "Any") -> str:
 def empty_stream(env: "Any") -> str:
     stream = chat(env, "[[scenario:empty]]")
     finish(stream)
-    assert_eq(stream.of("delta"), [], "no delta events")
+    text = "".join(event["text"] for event in stream.of("delta"))
+    assert_true(text.strip(), "the model is asked once more and its answer is shown")
     done = stream.of("done")[0]
     meta = stream.of("meta")[0]
-    assert_eq(done["message_id"], meta["user_message_id"], "done falls back to the user message id")
-    return "empty model output terminates cleanly"
+    assert_true(done["message_id"] != meta["user_message_id"], "the answer is stored as its own message")
+    return "an empty model output is asked again and answered"
+
+
+def mute_model(env: "Any") -> str:
+    stream = chat(env, "[[scenario:mute]]")
+    finish(stream)
+    text = "".join(event["text"] for event in stream.of("delta"))
+    assert_in("didn't manage to put an answer into words", text, "an honest line replaces the empty reply")
+    done = stream.of("done")[0]
+    meta = stream.of("meta")[0]
+    assert_true(done["message_id"] != meta["user_message_id"], "the fallback is stored as the assistant's message")
+    return "a silent model ends the turn with an honest line, never an empty bubble"
 
 
 # ---------------------------------------------------------------------------

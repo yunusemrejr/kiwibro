@@ -82,6 +82,7 @@ CHAT_CHECKS = [
     ("chat", "reasoning_stream", checks_chat.reasoning_stream),
     ("chat", "no_usage_stream", checks_chat.no_usage_stream),
     ("chat", "empty_stream", checks_chat.empty_stream),
+    ("chat", "mute_model", checks_chat.mute_model),
     ("chat", "title_event", checks_chat.title_event),
     ("chat", "title_echo_rejected", checks_chat.title_echo_rejected),
     ("chat", "memory_extraction", checks_chat.memory_extraction),

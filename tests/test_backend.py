@@ -1120,8 +1120,9 @@ def test_system_prompt_identity_and_capabilities(env: Env):
     settings = env.svc.settings_provider()
     prompt = env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": True})
     assert "You are Kiwibro" in prompt
-    assert "local AI agent" in prompt
-    assert "LM Studio" in prompt
+    assert "AI agent that lives on the user's own computer" in prompt
+    assert "you are never the user" in prompt and "only your engine" in prompt
+    assert "LM Studio" not in prompt
     assert "fake-1" in prompt
     assert "## Workspace" in prompt
     assert "web_search" in prompt and "run_command" in prompt
