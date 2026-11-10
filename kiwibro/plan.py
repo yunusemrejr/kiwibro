@@ -619,6 +619,25 @@ class TurnPlan:
         return f"Not finished: {listed}."
 
 
+_ABOUT_KIWIBRO = re.compile(
+    r"^(?:(?:hi|hello|hey|so|ok|okay|and|also|kiwi(?:bro)?|please)\b[\s,]*)*(?:"
+    r"(?:who|what)\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|what\s+(?:can|could)\s+you\s+do(?:\s+for\s+me)?|"
+    r"what\s+are\s+you\s+(?:able|capable)\s+(?:to\s+do|of)|what\s+are\s+your\s+(?:capabilities|features|abilities|skills)|"
+    r"how\s+can\s+you\s+help(?:\s+me)?|tell\s+me\s+about\s+yourself|introduce\s+yourself|describe\s+yourself|"
+    r"are\s+you\s+(?:an?\s+)?(?:ai|bot|robot|human|person|machine|real|program|assistant|language\s+model|llm)"
+    r")$",
+    re.I,
+)
+
+
+def is_about_kiwibro(message: str) -> bool:
+    """Every part of the message asks who or what the assistant is, or what it can do: the
+    answer is in its own instructions, and no tool has it."""
+    parts = [part.strip(" \t,") for part in re.split(r"[?.!\n]+|\band\b", (message or "").replace("\u2019", "'"))]
+    parts = [part for part in parts if part]
+    return bool(parts) and len(parts) <= 4 and all(_ABOUT_KIWIBRO.match(part) for part in parts)
+
+
 def is_small_talk(message: str) -> bool:
     """A greeting or thanks: the reply needs no tools."""
     return bool(_SMALL_TALK.match((message or "").strip()))

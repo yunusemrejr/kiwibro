@@ -1173,6 +1173,9 @@ function handleStreamEvent(event, data, activeStream) {
     case "rewrite":
       if (typeof data.text === "string") chatView.rewriteText(data.text, data.reasoning || "");
       break;
+    case "retract":
+      if (typeof data.text === "string") chatView.retractText(data.text);
+      break;
     case "tool_call":
       chatView.addToolCall(data);
       break;

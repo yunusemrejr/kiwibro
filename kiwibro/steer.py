@@ -105,7 +105,20 @@ _DID_IT = re.compile(
     r"deleted|sent)\b[^.!?]{0,60}\b(?:notes?|files?|reminders?)\b",
     re.IGNORECASE,
 )
-_BEFORE_NOW = re.compile(r"\b(?:already|earlier|before|previously|last time)\b", re.IGNORECASE)
+_WAS_DONE = re.compile(
+    r"\b(?:notes?|files?|reminders?)\b[^.!?]{0,30}\b(?:has been|have been|was|were|is now)\s+(?:successfully\s+)?"
+    r"(?:saved|added|stored|created|recorded|updated|deleted|sent)\b",
+    re.IGNORECASE,
+)
+# "I don't have a memory", "I can't remember earlier chats": the ability itself denied, in so many
+# words. Not "I don't have your birthday yet", which may be true.
+_NO_MEMORY = re.compile(
+    r"\bI\s+(?:do\s+not|don['’]t)\s+have\s+(?:a\s+|any\s+|persistent\s+|long[- ]term\s+)*(?:memory|memories)\b|"
+    r"\bI\s+(?:cannot|can['’]t|can\s+not|am\s+unable\s+to|am\s+not\s+able\s+to)\s+(?:remember|recall|retain)\b|"
+    r"\bI\s+have\s+no\s+(?:memory|memories|recollection)\b",
+    re.IGNORECASE,
+)
+_BEFORE_NOW = re.compile(r"\b(?:already|earlier|previously|last time)\b", re.IGNORECASE)
 # A list under a line such as "What I can't do:" denies an ability in every item, without
 # repeating the "I can't". Each item is read with those words put back.
 _CANNOT_LEAD = re.compile(r"\b(?:can(?:['’]|no)t|can not|unable to|not able to|limitations?)\b", re.IGNORECASE)
@@ -332,10 +345,18 @@ def _identity(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
     )
 
 
+_HAS_MEMORY = (
+    "That is not true here: you have a memory. What you know about the user is in your context "
+    "note, and you can save new facts. Answer again without saying you cannot remember."
+)
+
+
 def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> Verdict | None:
     label, score = _probe(reader, sentence)
     if label != DENIAL or score < _threshold(reader):
-        return None
+        if not (facts.memory_on and _NO_MEMORY.search(sentence)):
+            return None
+        return Verdict(DENIAL, _HAS_MEMORY, sentence, 1.0)
     if facts.tools and not facts.tools_ran:
         for _capability, pattern, tool_names in _CAPABILITIES:
             usable = [tool for tool in tool_names if tool in facts.tools]
@@ -347,12 +368,7 @@ def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> V
                     sentence, score,
                 )
     if facts.memory_on and _MEMORY_WORDS.search(sentence):
-        return Verdict(
-            DENIAL,
-            "That is not true here: you have a memory. What you know about the user is in your context "
-            "note, and you can save new facts. Answer again without saying you cannot remember.",
-            sentence, score,
-        )
+        return Verdict(DENIAL, _HAS_MEMORY, sentence, score)
     if _CLOCK_WORDS.search(sentence) and not _MEMORY_WORDS.search(sentence):
         return Verdict(
             DENIAL,
@@ -516,7 +532,7 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
     for sentence in parts:
         label, score = _probe(reader, sentence)
         claimed = (label == "action_claim" and score >= threshold) or (
-            _DID_IT.search(sentence) is not None and not _BEFORE_NOW.search(sentence)
+            (_DID_IT.search(sentence) or _WAS_DONE.search(sentence)) is not None and not _BEFORE_NOW.search(sentence)
         )
         if not claimed or facts.tools_ran or not _OUTSIDE_WORLD.search(sentence):
             continue

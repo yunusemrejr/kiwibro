@@ -183,3 +183,15 @@ def test_save_that_with_nothing_said_before_says_so_instead_of_pretending(env: E
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert shown == ["There is nothing earlier in this chat to save yet. Tell me what the note should say and I'll keep it."]
+
+
+def test_a_dictated_note_is_saved_when_the_model_reaches_for_the_wrong_tool(env: Env):
+    env.fake.stream_script = [tool_call_result("remember", {"content": "renew passport before March", "kind": "preference"}),
+                              ChatResult(content="Your note has been saved successfully."),
+                              ChatResult(content="It is in your notes now.")]
+    events, _raw = chat_events(env, "save a note: renew passport before March")
+    assert [note["body"] for note in env.svc.db.list_notes()] == ["renew passport before March"]
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "note"
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant" and m["content"]]
+    assert shown == ["It is in your notes now."]

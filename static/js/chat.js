@@ -544,6 +544,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       activity,
       activityLabel,
       segment: null,
+      texts: [],
       tools: new Map(),
       chips: null,
       error: null,
@@ -866,11 +867,18 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         scheduleRender(turn);
       }
     },
+    retractText(text) {
+      // The final reply says again what was written before a tool call: keep it once.
+      const turn = ensureTurn();
+      const repeated = turn.texts.find((part) => part !== turn.segment && part.text.trim() === text.trim());
+      if (repeated) repeated.element.remove();
+    },
     appendDelta(text) {
       const turn = ensureTurn();
       if (!turn.segment) {
         turn.segment = { element: el("div", { class: "md" }), text: "" };
         turn.flow.append(turn.segment.element);
+        turn.texts.push(turn.segment);
       }
       if (turn.reasoningActive) finishReasoning(turn);
       turn.activity.hidden = true;

@@ -166,3 +166,25 @@ def test_a_reply_that_only_starts_like_a_wrapper_keeps_its_tag(env: Env):
     conversation_id = events[0][1]["conversation_id"]
     assert [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"] == [text]
     assert [payload["text"] for event, payload in events if event == "rewrite"][-1] == text
+
+
+def test_an_answer_given_before_one_more_tool_call_and_then_again_is_kept_once(env: Env):
+    early = ("The latest stable Python version is 3.15.2, released on 25 October 2026. It is the second "
+             "maintenance release of the 3.15 series.")
+    final = "The latest stable Python version is **3.15.2**, released on 25 October 2026 (second maintenance release of 3.15)."
+    again = tool_call_result("list_files", {"path": "."})
+    again.content = early
+    env.fake.stream_script = [again, ChatResult(content=final)]
+    events, _raw = chat_events(env, "tell me about Python 3.15.2")
+    assert [payload["text"] for event, payload in events if event == "retract"] == [early]
+    conversation_id = events[0][1]["conversation_id"]
+    texts = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert texts == ["", final]
+
+
+def test_a_short_preface_before_a_tool_call_stays(env: Env):
+    preface = tool_call_result("list_files", {"path": "."})
+    preface.content = "Let me look at the files first."
+    env.fake.stream_script = [preface, ChatResult(content="There are no files in the workspace yet.")]
+    events, _raw = chat_events(env, "what files do I have?")
+    assert not [event for event, _ in events if event == "retract"]

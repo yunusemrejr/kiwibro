@@ -176,6 +176,16 @@ _SMALL_TALK = frozenset(
 )
 
 
+REPEAT_MIN_WORDS = 8  # a shorter text is a preface ("Let me look that up"), not an answer
+REPEAT_SHARE = 0.6  # of its content words found again in the final reply
+
+
+def _says_again(earlier: str, final: str) -> bool:
+    """Whether ``final`` covers what ``earlier`` (written in the same turn) already said."""
+    said, now = set(terms.content_words(earlier)), set(terms.content_words(final))
+    return len(said) >= REPEAT_MIN_WORDS and len(said & now) >= REPEAT_SHARE * len(said)
+
+
 def is_small_talk_title(title: str) -> bool:
     """A title that names no topic ("Hi", "How's it going", "Good morning")."""
     return not [word for word in terms.content_words(title) if word not in _SMALL_TALK]
@@ -319,6 +329,8 @@ class Turn:
     think_budget: int = 0  # reasoning allowed before acting (0: no limit for this request)
     facts: steer.Facts | None = None  # what is true this turn; replies are checked against it
     steer_left: int = 1  # corrections Kiwi Sense may still ask for in this turn
+    tools_ok: list[str] = field(default_factory=list)  # tools that ran and succeeded this turn
+    interim: list[tuple[str, str]] = field(default_factory=list)  # (message id, text) written beside tool calls
     acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
     learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
     questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
@@ -686,11 +698,14 @@ class AgentManager:
                     tokens=(result.usage or {}).get("completion_tokens"),
                 )
                 turn.last_message_id = assistant_message["id"]
+                if result.tool_calls and result.content.strip():
+                    turn.interim.append((assistant_message["id"], result.content))
             turn.partial_text = ""
             turn.partial_reasoning = ""
             if result.content:
                 turn.reply_text += "\n" + result.content
             if not result.tool_calls:
+                self._retract_repeats(turn, result.content)
                 last_round = round_index >= max_rounds - 1
                 if last_round:
                     turn.pending_review = ""
@@ -752,10 +767,10 @@ class AgentManager:
 
     def _act_instead(self, turn: Turn, result: ChatResult) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,
-        search the web) and the model replied without a tool call: Kiwibro adds the call
-        itself, once per turn. A small model that only talks still gets the work done, and
+        search the web) and the model replied without having done it, whatever else it
+        called: Kiwibro adds the call itself, once per turn. A small model that only talks still gets the work done, and
         the answer comes from results instead of from what it happens to recall."""
-        if result.tool_calls or turn.acted_instead or turn.tool_calls_made or turn.abort.is_set():
+        if result.tool_calls or turn.acted_instead or turn.abort.is_set():
             return
         if turn.facts is None or turn.facts.small_talk:
             return
@@ -789,7 +804,7 @@ class AgentManager:
 
     def _note_call(self, turn: Turn) -> tuple[str, dict[str, Any], bool, str] | None:
         """A `note` call for a note the user dictated, or for "save that as a note"."""
-        if "note" not in turn.facts.tools:
+        if "note" not in turn.facts.tools or "note" in turn.tools_ok:
             return None
         body = notes_module.dictated(turn.message)
         if body is None:
@@ -805,7 +820,7 @@ class AgentManager:
 
     def _search_call(self, turn: Turn) -> tuple[str, dict[str, Any], bool, str] | None:
         """A `web_search` call for the search the message asks for."""
-        if "web_search" not in turn.facts.tools:
+        if "web_search" not in turn.facts.tools or plan.WEB_TOOLS.intersection(turn.tools_ok):
             return None
         query, borrowed = plan.search_request(turn.message)
         if not query:
@@ -842,6 +857,23 @@ class AgentManager:
         note_message = self.db.add_message(turn.conversation_id, "assistant", left, model=model, meta={"plan_open": True})
         turn.last_message_id = note_message["id"]
         turn.emit("delta", {"text": "\n\n" + left})
+
+    def _retract_repeats(self, turn: Turn, final: str) -> None:
+        """A small model often answers, calls one more tool, and answers again. What it wrote
+        beside its tool calls is taken back when the final reply says it again: the user reads
+        the answer once, and the chat's context carries it once."""
+        kept: list[tuple[str, str]] = []
+        for message_id, text in turn.interim:
+            if not _says_again(text, final):
+                kept.append((message_id, text))
+                continue
+            try:
+                self.db.update_message(message_id, content="")
+            except Exception:  # tidying up; never break a turn
+                log.warning("turn %s: could not retract a repeated text", turn.conversation_id, exc_info=True)
+                continue
+            turn.emit("retract", {"text": text})
+        turn.interim = kept
 
     @staticmethod
     def _unanswered_nudge(turn: Turn) -> str:
@@ -1112,7 +1144,7 @@ class AgentManager:
         if len(turn.partial_text) > steer.EARLY_CHARS:
             return
         try:
-            facts = replace(turn.facts, tools_ran=turn.tool_calls_made)
+            facts = replace(turn.facts, tools_ran=len(turn.tools_ok))
             verdict, turn.sense_checked = steer.early(turn.partial_text, facts, turn.sense_checked)
         except Exception:  # reading must never break a reply
             log.warning("turn %s: sense check failed", turn.conversation_id, exc_info=True)
@@ -1511,7 +1543,7 @@ class AgentManager:
         if turn.facts is None or not (result.content or "").strip() or turn.abort.is_set():
             return result
         try:
-            facts = replace(turn.facts, tools_ran=turn.tool_calls_made)
+            facts = replace(turn.facts, tools_ran=len(turn.tools_ok))
             verdict = steer.review(result.content, facts, final=not result.tool_calls)
         except Exception:  # reading must never break a reply
             log.warning("turn %s: sense review failed", turn.conversation_id, exc_info=True)
@@ -1743,6 +1775,8 @@ class AgentManager:
             else:
                 result, duration = outcomes[item["id"]]
             turn.tool_calls_made += 1
+            if result.ok:
+                turn.tools_ok.append(item["name"])
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
@@ -1908,6 +1942,8 @@ class AgentManager:
         (near-repeats refused; after the plan's tool steps, one more round). '' to run it."""
         if plan.is_small_talk(turn.message):
             return prompts.SMALL_TALK_NO_TOOLS
+        if plan.is_about_kiwibro(turn.message):
+            return prompts.ABOUT_YOU_NO_TOOLS
         if name not in plan.SEARCH_TOOLS:
             return ""
         limit = plan.SEARCH_ROUNDS_MAX

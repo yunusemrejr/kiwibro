@@ -514,3 +514,25 @@ def test_a_skipped_question_gets_one_push(env: Env):
     assert env.fake.stream_calls[1]["messages"][-1]["content"].startswith("[Kiwibro: your reply left part")
     assert "“what am I allergic to?”" in env.fake.stream_calls[1]["messages"][-1]["content"]
     assert len(env.fake.stream_calls) == 2
+
+
+def test_a_question_about_kiwibro_itself_runs_no_tools(env: Env):
+    env.fake.stream_script = [tool_call_result("recall", {"query": "who are you"}),
+                              ChatResult(content="I'm Kiwibro, an AI agent on your computer. I can search, keep notes and work on files.")]
+    chat_events(env, "who are you and what can you do?")
+    assert _tool_messages(env)[0]["content"] == prompts.ABOUT_YOU_NO_TOOLS
+
+
+@pytest.mark.parametrize(
+    "message, about",
+    [
+        ("who are you and what can you do?", True),
+        ("hi, what can you do for me?", True),
+        ("are you an AI?", True),
+        ("who are you and what's the weather?", False),
+        ("what can you do with this file?", False),
+        ("what are you working on?", False),
+    ],
+)
+def test_questions_about_kiwibro_are_told_from_requests(message, about):
+    assert plan.is_about_kiwibro(message) is about

@@ -19,3 +19,20 @@ def hermetic_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that need another app's folders (see test_engine) delete these switches again."""
     monkeypatch.setenv("KIWIBRO_OWN_MODELS_ONLY", "1")
     monkeypatch.setenv("KIWIBRO_OWN_RUNTIME_ONLY", "1")
+
+
+@pytest.fixture(autouse=True)
+def no_search_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test sends a query to a real search engine.
+
+    Kiwibro may run a search the user asked for by itself, so a test message can lead to
+    one. Tests that exercise a provider replace these two functions with their own."""
+    import requests
+
+    from kiwibro import search
+
+    def offline(*_args, **_kwargs):
+        raise requests.ConnectionError("search providers are switched off in tests")
+
+    monkeypatch.setattr(search, "_get", offline)
+    monkeypatch.setattr(search, "_post", offline)

@@ -489,3 +489,28 @@ def test_claiming_a_saved_note_without_saving_one_is_caught():
     verdict = steer.review("I've saved the note **\"User prefers Python\"** in my workspace notes.", facts)
     assert verdict is not None and verdict.kind == steer.UNBACKED_CLAIM
     assert steer.review("I've saved the note for you.", steer.Facts(question="save a note: milk", tools=frozenset({"note"}), tools_ran=1)) is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I don’t have a memory of your personal details or the specifics of this chat.",
+        "I can't remember earlier conversations.",
+        "I have no memory of past chats.",
+    ],
+)
+def test_denying_its_memory_in_so_many_words_is_caught_whatever_the_probe_says(reply):
+    verdict = steer.review(reply, steer.Facts(question="who are you and what can you do?", memory_on=True))
+    assert verdict is not None and verdict.kind == steer.DENIAL
+
+
+def test_not_knowing_one_fact_is_not_denying_memory():
+    facts = steer.Facts(question="when is my birthday?", memory_on=True)
+    verdict = steer.review("I don't have your birthday yet. Tell me and I'll keep it.", facts)
+    assert verdict is None or verdict.kind != steer.DENIAL
+
+
+def test_a_note_reported_saved_in_the_passive_is_a_claim_too():
+    facts = steer.Facts(question="save a note: renew passport before March", tools=frozenset({"note"}))
+    verdict = steer.review('Your note has been saved successfully: **"renew passport before March"**.', facts)
+    assert verdict is not None and verdict.kind == steer.UNBACKED_CLAIM
