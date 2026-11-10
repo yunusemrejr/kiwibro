@@ -536,3 +536,22 @@ def test_a_question_about_kiwibro_itself_runs_no_tools(env: Env):
 )
 def test_questions_about_kiwibro_are_told_from_requests(message, about):
     assert plan.is_about_kiwibro(message) is about
+
+
+@pytest.mark.parametrize("message", [
+    "what's the weather in Istanbul?", "who won the F1 race yesterday?", "bitcoin price",
+    "who is the president of Argentina?", "when is the release date of GTA 6?",
+    "is the new macbook out yet?", "what are the best laptops in 2026?",
+])
+def test_live_world_questions_are_searched(message):
+    query, borrowed = plan.search_request(message)
+    assert query and not borrowed
+
+
+@pytest.mark.parametrize("message", [
+    "how tall is mount everest?", "what time is it?", "what's the date today?", "what should I do today?",
+    "what did we talk about yesterday?", "run the tests and show me the results", "explain recursion",
+    "write a file prices.csv with these prices",
+])
+def test_timeless_own_and_clock_questions_are_not_searched(message):
+    assert plan.search_request(message) == ("", False)

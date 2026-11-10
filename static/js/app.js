@@ -7,7 +7,7 @@ import { api, IS_MOCK, consumeSSE, chatError } from "./api.js";
 import { createChatView } from "./chat.js";
 import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
-import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
+import { createMemorySheet, createSettingsSheet } from "./sheets.js";
 import { conversationMarkdown, exportFilename } from "./export.js";
 import { createModelsView } from "./models.js";
 import { createNotesView } from "./notes.js";
@@ -313,7 +313,7 @@ function renderHeaderModel() {
     tone = "amber";
     title = "No models yet";
   } else if (state.currentModel) {
-    name = state.currentModel;
+    name = modelLabel(state.currentModel);
     tone = "loaded";
     title = `${state.currentModel} — switch model`;
     const ready = state.readiness;
@@ -331,10 +331,23 @@ function renderHeaderModel() {
     ? "Offline"
     : !state.engineOk
       ? state.engineMode === "attached" ? "Server off" : "Engine off"
-      : state.currentModel || "No models";
+      : modelLabel(state.currentModel) || "No models";
   els.sidebarDot.dataset.tone = tone;
   els.placeModelsCount.textContent = state.models.length ? String(state.models.length) : "";
   renderHome();
+}
+
+/* "empero-ai/qwen3.8-2b" reads as "qwen3.8-2b": the publisher is in the tooltip. */
+function modelLabel(id) {
+  return String(id || "").split("/").pop() || String(id || "");
+}
+
+/* One plain line per model: how big it is, and whether it answers at once. */
+function modelPlainLine(model) {
+  const parts = [];
+  if (model.size_bytes) parts.push(`${(model.size_bytes / 1e9).toFixed(1)} GB`);
+  parts.push(model.state === "loaded" ? "ready now" : "loads on first message");
+  return parts.join(" · ");
 }
 
 function buildModelMenu(menu) {
@@ -358,7 +371,11 @@ function buildModelMenu(menu) {
       ]),
     );
   } else {
-    for (const model of state.models) {
+    const ordered = [...state.models].sort((a, b) =>
+      (b.id === state.currentModel) - (a.id === state.currentModel)
+      || (b.state === "loaded") - (a.state === "loaded")
+      || modelLabel(a.id).localeCompare(modelLabel(b.id)));
+    for (const model of ordered) {
       const selected = model.id === state.currentModel;
       const row = el(
         "button",
@@ -376,8 +393,8 @@ function buildModelMenu(menu) {
             "data-tone": model.state === "loaded" ? "loaded" : "idle",
           }),
           el("span", { class: "menu-item-body" }, [
-            el("span", { class: "menu-item-name", text: model.name || model.id }),
-            el("span", { class: "menu-item-meta", text: modelMetaLine(model) }),
+            el("span", { class: "menu-item-name", text: modelLabel(model.id) }),
+            el("span", { class: "menu-item-meta", text: modelPlainLine(model) }),
           ]),
           icon("check", "menu-item-check"),
         ],
@@ -389,39 +406,12 @@ function buildModelMenu(menu) {
       });
       menu.append(row);
     }
-
-    const loaded = state.models.filter((model) => model.state === "loaded").length;
-    const refresh = el(
-      "button",
-      {
-        class: "icon-btn menu-refresh",
-        type: "button",
-        title: "Refresh model list",
-        "aria-label": "Refresh model list",
-      },
-      [icon("refresh")],
-    );
-    refresh.addEventListener("click", async () => {
-      refresh.disabled = true;
-      await refreshModels({ quiet: true });
-      buildModelMenu(menu);
-      menu.querySelector(".menu-item")?.focus({ preventScroll: true });
-    });
-    menu.append(
-      el("div", { class: "menu-sep" }),
-      el("div", { class: "menu-foot" }, [
-        el("span", {
-          class: "menu-foot-text",
-          text: `${loaded} loaded · ${state.models.length} available`,
-        }),
-        refresh,
-      ]),
-    );
+    menu.append(el("div", { class: "menu-sep" }));
   }
 
   const manage = el("button", { class: "menu-item menu-manage", type: "button", role: "menuitem" }, [
     icon("cube"),
-    el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: "Manage models" })]),
+    el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: "Get or remove models" })]),
   ]);
   manage.addEventListener("click", () => {
     closePopover({ restoreFocus: false });
@@ -459,6 +449,9 @@ function toggleModelPopover() {
   }
   const menu = el("div", { class: "menu", role: "menu", "aria-label": "Model" });
   buildModelMenu(menu);
+  refreshModels({ quiet: true }).then((ok) => {
+    if (ok && menu.isConnected && !menu.contains(document.activeElement)) buildModelMenu(menu);
+  });
   els.modelPill.setAttribute("aria-expanded", "true");
   openPopover({
     anchor: els.modelPill,
@@ -514,7 +507,7 @@ async function selectModel(id) {
     applyReadiness(result.readiness);
     watchReadiness();
     renderHeaderModel();
-    toast(`Using ${state.currentModel}`, { iconName: "cube" });
+    toast(`Using ${modelLabel(state.currentModel)}`, { iconName: "cube" });
     announce(`Model switched to ${state.currentModel}`);
     return true;
   } catch (error) {

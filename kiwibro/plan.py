@@ -289,6 +289,9 @@ def _kind(text: str, has_path: bool) -> str:
         return "web"
     if _WEB_WORD.search(core) and not _LOCAL_WORD.search(core):
         return "web"
+    if _LIVE.search(core) and not _LOCAL_WORD.search(core) and not _OWN.search(core.replace("\u2019", "'")) \
+            and not _CLOCK.search(core) and (_QUESTION.match(core) or core.endswith("?") or _is_lookup(core)):
+        return "web"  # weather, prices, scores, today's events: only a search knows
     if has_path and _READ_VERB.match(core):
         return "read"
     if _QUESTION.match(core) or core.endswith("?") or _ANSWER_VERB.match(core):
@@ -324,7 +327,27 @@ _OWN = re.compile(
     re.I,
 )
 _FRESH_LEAD = re.compile(r"(?:(?:tell|give|show|get)\s+me|(?:any|the)?\s*(?:latest|newest|recent|news))\b", re.I)
-_CLOCK = re.compile(r"\b(?:time|date|day|year|month)\b", re.I)
+# The time and the date are in Kiwibro's own context ("what time is it", "today's date"),
+# unlike a date out in the world ("the release date of…").
+_CLOCK = re.compile(
+    r"\b(?:what(?:'s|\s+is)?\s+(?:the\s+)?(?:time|date|day|year|month)(?!\s+(?:of|for|when|did|does|do|will|was|is\s+the))"
+    r"|(?:time|date|day|year|month)\s+is\s+it|today'?s\s+date|current\s+(?:time|date|year))\b",
+    re.I,
+)
+# Things that change out in the world, which no model can know from training: weather,
+# prices, scores, who holds an office, what happened today, anything dated this year or later.
+_LIVE = re.compile(
+    r"\b(?:weather|forecast|temperature\s+in|prices?|cost\s+of|costs?\s+now|stocks?|share\s+price|exchange\s+rate|"
+    r"net\s+worth|scores?|standings|(?:match|game|race|election|cup|league|lottery)\s+results?|fixtures?|"
+    r"who\s+(?:won|is\s+winning|is\s+leading)|elections?|"
+    r"today|tonight|yesterday|tomorrow|last\s+(?:night|week|month)|this\s+(?:morning|evening|weekend|season|year)|"
+    r"release\s+date|released|(?:come|comes|coming|came)\s+out|out\s+yet|happen(?:ed|ing)|"
+    r"(?:president|prime\s+minister|ceo|chancellor|mayor|governor|champions?|owner|richest\s+\w+|"
+    r"(?:head\s+)?coach|manager)\s+(?:of|in)|"
+    r"20(?:2[5-9]|[3-9]\d))\b",
+    re.I,
+)
+LIVE_BARE_WORDS = 6  # "bitcoin price", "weather istanbul": a bare phrase this short is a lookup
 
 
 def _asks_search(step: str) -> bool:
@@ -335,8 +358,18 @@ def _asks_search(step: str) -> bool:
     core = _ASK.sub("", step)
     if _CLOCK.search(core):  # the time and the date are in Kiwibro's own context
         return False
-    return bool(_SEARCH_HINT.search(step)) or bool(
-        _FRESH.search(step) and (_QUESTION.match(core) or _FRESH_LEAD.match(core))
+    if _SEARCH_HINT.search(step):
+        return True
+    asked = bool(_QUESTION.match(core) or _FRESH_LEAD.match(core))
+    if _FRESH.search(step) and asked:
+        return True
+    return bool(_LIVE.search(core)) and (asked or core.endswith("?") or _is_lookup(core))
+
+
+def _is_lookup(core: str) -> bool:
+    """A bare phrase with no instruction in it ("nvidia stock price")."""
+    return len(core.split()) <= LIVE_BARE_WORDS and not (
+        _WRITE_VERB.search(core) or _RUN_VERB.match(core) or _READ_VERB.match(core) or _ANSWER_VERB.match(core)
     )
 
 
