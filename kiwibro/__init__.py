@@ -127,6 +127,10 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             _settings_cache["version"] = db.settings_version
         return {**cached, "permissions": dict(cached.get("permissions") or {})}
 
+    if not app.config.get("TESTING"):
+        from .engine import reap_leftovers
+
+        reap_leftovers()  # servers from before a self-update restart
     llm = LLMClient(settings_provider, data_dir=data_dir)
     context = ContextEngine(db, llm, settings_provider)
     memory = MemoryEngine(db, llm, settings_provider)

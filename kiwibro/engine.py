@@ -549,6 +549,26 @@ def adapt_payload(payload: dict[str, Any]) -> dict[str, Any]:
 # --- processes -----------------------------------------------------------------------
 
 
+def reap_leftovers() -> int:
+    """Collect model servers that died with the image before a self-update ``execv``: the new
+    image never started them, so nothing waits for them and they linger as zombies. Only
+    children that have already exited are touched. Returns how many were collected."""
+    collected = 0
+    me = str(os.getpid())
+    for stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = stat.read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 1 and fields[0] == "Z" and fields[1] == me:
+            try:
+                if os.waitpid(int(stat.parent.name), os.WNOHANG)[0]:
+                    collected += 1
+            except ChildProcessError:
+                pass
+    return collected
+
+
 class _Spawner:
     """Starts child processes from one long-lived thread.
 

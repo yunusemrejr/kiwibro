@@ -189,3 +189,17 @@ def test_stop_idle_stops_only_servers_unused_for_the_window(tmp_path: Path, mode
         assert not busy.alive()
     finally:
         eng.shutdown()
+
+
+def test_a_server_that_died_before_a_restart_is_collected_not_left_a_zombie():
+    import subprocess
+
+    from kiwibro.engine import reap_leftovers
+
+    child = subprocess.Popen(["true"])  # stands in for a server whose waiter is gone
+    stat = Path(f"/proc/{child.pid}/stat")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and stat.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+        time.sleep(0.01)
+    assert reap_leftovers() >= 1 and not stat.exists()
+    child.returncode = 0  # tell Popen it is gone, so it does not wait for it again
