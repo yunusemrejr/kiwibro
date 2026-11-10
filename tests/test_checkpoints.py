@@ -242,3 +242,64 @@ def test_extension_tools_declare_touched_files_for_undo(tmp_path):
     checkpoints.store_for(data).undo("conv")
     assert not (ws.root / "notes-2.html").exists()
     assert (ws.root / "notes.html").read_text(encoding="utf-8") == "<p>existing</p>"
+
+
+# --- shell commands ----------------------------------------------------------------------
+
+
+def _run_checked(ws, data, command, conversation_id="c1"):
+    """What the agent does for a command: classify, copy what it will change, run it."""
+    from kiwibro import safety
+
+    risk = safety.classify_command(command, workspace=ws.root)
+    checkpoints.snapshot_command(data, ws, "run_command", risk.paths, conversation_id)
+    return ws.run_command(command)
+
+
+def test_a_file_removed_by_a_command_can_be_undone(env):
+    ws, data = env
+    (ws.root / "notes").mkdir()
+    (ws.root / "notes" / "plan.md").write_text("my plan")
+    _run_checked(ws, data, "rm notes/plan.md")
+    assert not (ws.root / "notes" / "plan.md").exists()
+    checkpoints.store_for(data).undo("c1")
+    assert (ws.root / "notes" / "plan.md").read_text() == "my plan"
+
+
+def test_a_bulk_sed_edit_by_a_command_can_be_undone(env):
+    ws, data = env
+    (ws.root / "src").mkdir()
+    for name in ("a.py", "b.py", "c.py"):
+        (ws.root / "src" / name).write_text(f"value = 1  # {name}\n")
+    _run_checked(ws, data, "sed -i 's/value = 1/value = 2/' src/*.py")
+    assert "value = 2" in (ws.root / "src" / "b.py").read_text()
+    checkpoints.store_for(data).undo("c1")
+    assert all("value = 1" in (ws.root / "src" / n).read_text() for n in ("a.py", "b.py", "c.py"))
+
+
+def test_a_folder_removed_by_a_command_comes_back_without_build_output(env):
+    ws, data = env
+    (ws.root / "app" / "node_modules" / "dep").mkdir(parents=True)
+    (ws.root / "app" / "node_modules" / "dep" / "index.js").write_text("dep")
+    (ws.root / "app" / "main.py").write_text("main")
+    files = checkpoints._command_files(ws, [str(ws.root / "app")])
+    assert [display for _path, display in files] == ["app/main.py"]  # build output is not copied
+    _run_checked(ws, data, "rm -rf app")
+    checkpoints.store_for(data).undo("c1")
+    assert (ws.root / "app" / "main.py").read_text() == "main"
+
+
+def test_command_copies_never_reach_outside_the_workspace(env, tmp_path):
+    ws, data = env
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    (ws.root / "link").symlink_to(outside)
+    assert checkpoints._command_files(ws, [str(outside), str(ws.root / "link"), str(ws.root / "*")]) == []
+
+
+def test_a_file_a_command_creates_is_removed_by_undo(env):
+    ws, data = env
+    _run_checked(ws, data, "echo hello > made.txt")
+    assert (ws.root / "made.txt").exists()
+    checkpoints.store_for(data).undo("c1")
+    assert not (ws.root / "made.txt").exists()

@@ -82,6 +82,8 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
 # (and again at every multiple): a runaway edit spree gets stopped (ask / deny in
 # autonomous mode) while a legitimate big job, like scaffolding a project, finishes.
 MAX_WRITES_PER_TURN = 30
+# Largest file an undo checkpoint keeps; removing a bigger one needs the user's yes.
+UNDO_FILE_BYTES = 20 * 1024 * 1024
 
 @functools.lru_cache(maxsize=1)
 def _extension_permissions() -> tuple[tuple[str, str], ...]:
@@ -210,6 +212,11 @@ def validate_workspace(value: Any) -> str:
         raise ValueError("workspace must be inside your home directory")
     if target == Path(home) or target == Path("/"):
         raise ValueError("workspace must be a directory inside your home directory")
+    from . import safety  # lazy: safety imports this module
+
+    kind = safety.place_of(str(target))
+    if kind in ("secret", "startup", "kiwibro", "system", "device", "root", "home_root"):
+        raise ValueError(f"workspace cannot be inside {safety.describe_place(kind)}")
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

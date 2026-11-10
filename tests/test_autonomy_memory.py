@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from test_backend import Env, SSEStream, chat_events, tool_call_result
 
 from kiwibro import tools
@@ -74,7 +76,44 @@ def test_allow_in_this_chat_covers_later_risky_steps_of_that_chat_only(env: Env)
     # Nothing persisted: another chat, or a restart, asks again.
     assert env.svc.settings_provider()["permissions"].get("run_command") != "auto"
     conversation_id = next(payload for event, payload in events if event == "meta")["conversation_id"]
-    assert env.svc.agent._chat_allowed == {conversation_id: {"run_command"}}
+    # What is remembered is this kind of step (stopping processes), not the whole tool.
+    assert env.svc.agent._chat_allowed == {conversation_id: {"run_command|`kill` stops processes that may not belong to this task"}}
+
+
+def test_allow_in_this_chat_never_widens_to_another_kind_of_step(env: Env):
+    env.fake.stream_script = [
+        tool_call_result("run_command", {"command": "kill 999999"}),
+        tool_call_result("run_command", {"command": "git push origin main"}, call_id="call_2"),
+        ChatResult(content="Done."),
+    ]
+    response = env.client.post("/api/chat", json={"message": "stop it and push"}, buffered=False)
+    stream = SSEStream(response).start()
+    first = stream.wait_for("approval")
+    env.new_client().post(f"/api/approvals/{first['approval_id']}", json={"decision": "always"})
+    deadline = time.monotonic() + 10  # publishing commits is another kind of step: asked again
+    while time.monotonic() < deadline and sum(event == "approval" for event, _ in list(stream.events)) < 2:
+        time.sleep(0.05)
+    second = [payload for event, payload in list(stream.events) if event == "approval"][-1]
+    assert second["tool"] == "run_command" and second["approval_id"] != first["approval_id"]
+    env.new_client().post(f"/api/approvals/{second['approval_id']}", json={"decision": "deny"})
+    events = stream.finish()
+    assert [event for event, _ in events].count("approval") == 2
+
+
+def test_a_step_that_can_destroy_data_is_never_allowed_for_the_whole_chat(env: Env):
+    (env.workspace / "src").mkdir()
+    (env.workspace / "src" / "a.py").write_text("a", encoding="utf-8")
+    env.fake.stream_script = [
+        tool_call_result("run_command", {"command": "rm -rf src"}),
+        ChatResult(content="Done."),
+    ]
+    response = env.client.post("/api/chat", json={"message": "remove src"}, buffered=False)
+    stream = SSEStream(response).start()
+    approval = stream.wait_for("approval")
+    assert approval["can_always"] is False  # the card offers Allow and Deny only
+    env.new_client().post(f"/api/approvals/{approval['approval_id']}", json={"decision": "always"})
+    stream.finish()
+    assert env.svc.agent._chat_allowed == {}  # a forged "always" counts as a single yes
 
 
 def test_manual_mode_always_still_sets_the_tool_permission(env: Env):
@@ -419,3 +458,18 @@ def test_a_question_about_the_user_answered_as_the_user_is_turned_round(env: Env
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert shown == ["Your dog's name is Biscuit."]
+
+
+def test_a_file_a_command_removed_comes_back_with_undo(env: Env):
+    env.settings_patch({"autonomy": "autonomous"})  # nobody watching: the command runs on its own
+    (env.workspace / "notes.txt").write_text("keep me", encoding="utf-8")
+    env.fake.stream_script = [
+        tool_call_result("run_command", {"command": "rm notes.txt"}),
+        tool_call_result("undo_changes", {}, call_id="call_2"),
+        ChatResult(content="Removed it, then put it back."),
+    ]
+    events, _raw = chat_events(env, "remove notes.txt, then undo that")
+    results = [payload for event, payload in events if event == "tool_result"]
+    assert [r["name"] for r in results] == ["run_command", "undo_changes"] and all(r["ok"] for r in results)
+    assert "notes.txt: restored" in results[1]["preview"]  # it was really gone, and came back
+    assert (env.workspace / "notes.txt").read_text(encoding="utf-8") == "keep me"

@@ -186,8 +186,9 @@ then off. *Models* shows each adapter's strength and can restore it.
 *Automatic* (default): every step is graded. Safe and undoable work in your workspace
 runs on its own, dangerous commands are refused, and risky steps (outside the workspace,
 `git push`, stopping other programs) ask you first. **Allow in this chat** stops repeat
-questions for that tool in that chat. *Manual* shows an Auto / Ask / Deny choice per
-tool.
+questions for that kind of step in that chat; a step that can destroy data (a removal,
+`git reset --hard`, a forced push) is asked about every time. *Manual* shows an Auto /
+Ask / Deny choice per tool.
 
 Files the agent reads and writes live in `~/Kiwibro` by default. "Work on
 ~/Desktop/my-app" switches that chat to the folder.
@@ -206,7 +207,7 @@ Files the agent reads and writes live in `~/Kiwibro` by default. "Work on
 | **Documents** | A local full-text index of PDF, Word, ODT, EPUB, PowerPoint, Excel, HTML, Markdown, text, code, CSV and JSON. Very long tool output is stored there and read in pages. |
 | **Attachments** | Images, audio, video and documents by paste or drop. A vision model describes images when your model cannot see. |
 | **Thinking** | A *Think* control (auto / on / off) spends reasoning tokens only where they help, capped inside the request. |
-| **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first. |
+| **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first, and so are the workspace files a command is about to change or remove (`rm`, `sed -i`, `git reset --hard`). |
 | **Command sandbox** | Commands run sealed with bubblewrap: read-only system, writable workspace, credentials hidden, memory and process caps. |
 | **Servers** | The `remote` tool runs commands and copies files on hosts from your `~/.ssh/config`. |
 | **How it works** | Eight short animated figures inside the app explain the ideas behind Kiwibro, from the context window to adapters, with a live Kiwi Sense you can type into. |
@@ -261,7 +262,14 @@ and [docs/API.md](docs/API.md).
 - File tools are confined to the workspace; page fetching refuses localhost, private and
   link-local addresses.
 - Every tool call is graded. Wiping your home folder, `sudo`, writing shell start-up
-  files or sending credentials off the machine are always refused.
+  files, changing Kiwibro's own code or data, or sending credentials off the machine
+  are always refused, even when those files sit inside the chat's working folder.
+- Removals and bulk edits are held back. A command that removes or rewrites files
+  nobody can name beforehand (`ls | xargs rm`, `find … -exec sed -i`), more than 20
+  existing files at once by any route (globs, brace ranges, loops, one-liners, `zip -m`),
+  a file too large to keep an undo copy of, or more than 24 removals in
+  one chat within an hour asks you first, and is refused when nobody is watching. An
+  approved removal inside the workspace still runs in the sandbox.
 - Secrets found in tool output are replaced with placeholders before the model sees them
   and are never saved in chat history.
 - Text in web pages, documents or files that tries to instruct the AI is fenced as

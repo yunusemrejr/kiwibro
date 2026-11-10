@@ -795,7 +795,10 @@ pipeline that turns near-misses into valid calls and keeps actions reversible
    placeholders (`# ... rest unchanged`) or clobbering binary files, and escalates
    large shrinks, big folder deletes and overwriting moves.
 4. **Checkpoint** (`kiwibro/checkpoints.py`). Before a write-risk call runs, every
-   file it may touch is snapshotted into `<data dir>/checkpoints` (zlib,
+   file it may touch is snapshotted, and before a command runs, the workspace files
+   it was graded to change or remove (`Decision.targets`: globs expanded, folders
+   walked without `.git` and build output, newest 500 first; `git reset --hard` and
+   friends copy the working tree). Snapshots go into `<data dir>/checkpoints` (zlib,
    content-addressed, journaled per conversation; ≤512 MB / 20k rows, pruned oldest
    first). `undo_changes` restores the newest change(s), optionally for one path; a
    restore snapshots the current state first, so undoing never loses data.
@@ -921,22 +924,46 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   scripts it runs (by `#!` line) and statically decodable payloads
   (`echo … | base64 -d | sh`). It knows where paths point: workspace, regenerable
   build output, the rest of `$HOME`, credentials, start-up files, Kiwibro's own
-  data, system files, and grades `safe < low < medium < high < critical`.
+  code and data (`safety.APP_DIR`, the data dir), system files, and grades
+  `safe < low < medium < high < critical`. Credentials, start-up files and
+  Kiwibro's own places are recognised before the workspace, so a working folder
+  that contains them (`~/.config`, a `~/Desktop` holding the checkout) does not
+  unlock them. Removals and in-place edits (`sed -i`, `perl -pi`, `awk -i inplace`)
+  of files only known at run time (`xargs`, `find -exec`, `$(…)`) are high; globs
+  count every file they match and brace ranges expand; one command that changes or
+  removes more than 20 existing files in total is high whatever the route (several
+  globs, a loop, `truncate`, `tee`, `ln -sf`, Ruby or inline code that lists folders,
+  `zip -m`, `7z -sdel`, scripted `vim`/`ex`/`ed`, `git rm -r`); a symlink is graded
+  where it is made, before it is followed; `mv` into `/tmp` is a removal
+  (commands get a private `/tmp`); removing a file larger than an undo copy
+  (`config.UNDO_FILE_BYTES`) is high. Each graded part carries flags: `loss` (can
+  destroy data Kiwibro cannot put back), `outside` (a high part that has to leave
+  the sandbox to work), and `Risk.paths`, the workspace files to copy before it runs.
   File, code, desktop and remote tools are graded by `safety.assess`.
 - **Policy.** `safety.decide` combines the grade with the per-tool permission
   (`deny` always wins), the `autonomy` setting, graded per-turn circuit breakers
-  (mass deletes/edits escalate one level per multiple of the limit), conversation
-  taint from prompt injection, and `guard.inspect_call` (stricter wins). Critical
-  is always denied; autonomous mode turns every "ask" into a deny with reasons.
-  Denials reach the model as `Decision.denial_text()`.
+  (mass deletes/edits escalate one level per multiple of the limit), a
+  conversation-wide breaker over the last hour (`SESSION_DELETE_LIMIT` = 24
+  removals, `SESSION_WRITE_LIMIT` = 120 file changes, so a long unattended session
+  cannot spread a spree over many turns), conversation taint from prompt
+  injection, and `guard.inspect_call` (stricter wins). Critical is always denied;
+  autonomous mode turns every "ask" into a deny with reasons. Denials reach the
+  model as `Decision.denial_text()`. `Decision.allow_key` is what "allow in this
+  chat" remembers: the tool and the kind of step, without its operands;
+  `Decision.can_always` is false for `loss` steps and for anything a breaker,
+  taint or the guard escalated, so those are approved one at a time.
 - **Confinement.** `safety.confine` wraps commands, terminals and
   `run_python`/`run_javascript` in a transient systemd user scope
   (`MemoryMax`, `TasksMax`) and bubblewrap: read-only root, writable workspace
   (snippets: writable scratch only, no network), private `/tmp`, own PID
   namespace, `~/.ssh`/credential dirs and the session bus hidden. Every layer is
   feature-detected and self-tested; the `sandbox` setting picks auto/strict
-  (no network)/off. A high-risk call the user explicitly approved (e.g.
-  `git push`, which needs `~/.ssh`) runs unconfined.
+  (no network)/off. Start-up files and Kiwibro's code and data that lie inside a
+  writable mount are mounted read-only again on top of it, and credential dirs are
+  hidden on top (bubblewrap applies mounts in order). A high-risk call the user
+  explicitly approved runs unconfined only when it has to leave the box
+  (`Decision.escape`: `git push` needs `~/.ssh`, a change outside the workspace);
+  an approved removal or edit inside the workspace stays confined.
 - **Processes.** `sandbox.run_process` puts each command in its own process group
   and kills the whole group on timeout; stdin is EOF; one env builder drops
   code-injection variables (`LD_PRELOAD`, `GIT_EXTERNAL_DIFF`, …) and sets HOME to
@@ -1041,7 +1068,8 @@ Design language:
   A reply Kiwi Sense corrected carries a *Kiwi Sense caught it* line.
 - Approval card inline in the transcript: tool icon + name, one-line summary,
   expandable details (command / file path + preview), risk badge, buttons
-  `Allow`, `Always` (Manual mode) or `Allow in this chat` (automatic modes), `Deny`.
+  `Allow`, `Always` (Manual mode) or `Allow in this chat` (automatic modes), `Deny`;
+  a step that can destroy data (`can_always: false`) offers `Allow` and `Deny` only.
 - Sheets:
   - memory sheet (search, kind chips, rows with pin/edit/delete and an origin
     label — *Added by you*, *Saved in a chat*, *Learned* — that links to its chat, add field);

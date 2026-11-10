@@ -22,16 +22,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import collections
 import contextlib
-import fnmatch
 import contextvars
+import fnmatch
 import functools
+import glob
+import itertools
 import logging
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -59,6 +64,15 @@ MASS_WRITE_LIMIT = config.MAX_WRITES_PER_TURN
 MAX_TARGETS = 20  # operands on one delete command before it counts as "mass"
 _MAX_DEPTH = 4  # nested `bash -c`, `$(…)`, scripts calling scripts
 _SCRIPT_SCAN_BYTES = 64 * 1024
+# Conversation-wide breakers: a long unattended session cannot get round the per-turn
+# limits by spreading removals and edits over many turns.
+SESSION_WINDOW_S = 3600
+SESSION_DELETE_LIMIT = 3 * MASS_DELETE_LIMIT
+SESSION_WRITE_LIMIT = 4 * MASS_WRITE_LIMIT
+_MAX_PATHS = 64  # workspace paths remembered per call for the pre-run undo copy
+# Kiwibro's own code: a session must never rewrite the program that enforces its rules
+# (the server restarts itself onto changed code).
+APP_DIR = Path(__file__).resolve().parents[1]
 
 
 # --------------------------------------------------------------------------
@@ -72,7 +86,10 @@ class Risk:
     kind: str = "read"  # read | web | write | exec — drives breakers and taint
     writes: int = 0
     deletes: int = 0
-    flags: frozenset[str] = frozenset()  # "secret" (reads credentials), "net" (talks to the network)
+    # "secret" (reads credentials), "net" (talks to the network), "loss" (can destroy data
+    # Kiwibro cannot put back), "outside" (a high-risk part that must leave the sandbox to work)
+    flags: frozenset[str] = frozenset()
+    paths: tuple[str, ...] = ()  # workspace paths it changes or removes (copied before it runs)
 
     def __or__(self, other: Risk) -> Risk:
         first, second = (other, self) if _RANK[other.level] > _RANK[self.level] else (self, other)
@@ -83,16 +100,31 @@ class Risk:
             writes=self.writes + other.writes,
             deletes=self.deletes + other.deletes,
             flags=self.flags | other.flags,
+            paths=(self.paths + tuple(p for p in other.paths if p not in self.paths))[:_MAX_PATHS],
         )
 
 
 SAFE = Risk()
 _NET = frozenset({"net"})
 _SECRET = frozenset({"secret"})
+_LOSS = frozenset({"loss"})
 
 
-def _risk(level: str, reason: str, kind: str = "exec", *, flags: frozenset[str] = frozenset(), **counts: int) -> Risk:
-    return Risk(level, (reason,), kind, flags=flags, **counts)
+def _risk(
+    level: str,
+    reason: str,
+    kind: str = "exec",
+    *,
+    flags: frozenset[str] = frozenset(),
+    inside: bool = False,
+    paths: tuple[str, ...] = (),
+    **counts: int,
+) -> Risk:
+    """One graded effect. A high one may leave the sandbox once the user approves it
+    (``git push`` needs ~/.ssh) unless ``inside``: it only touches what the box allows."""
+    if _RANK[level] >= _RANK["high"] and not inside:
+        flags = flags | {"outside"}
+    return Risk(level, (reason,), kind, flags=flags, paths=paths, **counts)
 
 
 def _bump(level: str, steps: int = 1) -> str:
@@ -106,10 +138,19 @@ class Decision:
     level: str
     reasons: tuple[str, ...] = ()
     source: str = "permission"  # permission | policy | guard
+    # May an approved call run outside the sandbox? Only when it has to (a push needs
+    # ~/.ssh); removals and edits inside the workspace stay in the box even when approved.
+    escape: bool = True
+    # May "allow in this chat" cover later calls like this one? Never for anything that
+    # can destroy data, nor for steps that were escalated by a breaker or by taint.
+    can_always: bool = True
+    allow_key: str = ""  # what "allow in this chat" remembers: the tool and this kind of step
+    targets: tuple[str, ...] = ()  # workspace paths to copy before the call runs (undo)
 
     def payload(self) -> dict[str, Any]:
         """Additive fields for the `tool_call` / `approval` SSE events."""
-        return {"level": self.level, "reasons": list(self.reasons), "source": self.source}
+        return {"level": self.level, "reasons": list(self.reasons), "source": self.source,
+                "can_always": self.can_always}
 
     def denial_text(self) -> str:
         """Tool-result text for a denied call, written for the model to act on."""
@@ -191,7 +232,7 @@ _WRITE_LEVEL = {
 _PLACE = {
     "root": "the filesystem root", "system": "system files", "home_root": "your whole home folder",
     "secret": "credential files", "startup": "shell/login start-up files", "device": "a raw device",
-    "kiwibro": "Kiwibro's own memory and data", "home": "files outside the workspace",
+    "kiwibro": "Kiwibro's own code, memory and data", "home": "files outside the workspace",
     "outside": "files outside the workspace", "git": "git internals (.git)",
     "workspace_root": "the whole workspace folder", "tmp": "temporary files",
     "regenerable": "regenerable build output", "workspace": "workspace files",
@@ -308,7 +349,7 @@ def _glob_hits(pattern: str, ctx: _Ctx) -> list[str]:
     candidates = [p for p in _SYSTEM_PREFIXES] + [home]
     candidates += [f"{home}/{rel}" for rel in (*SECRET_PATHS, *STARTUP_PATHS)]
     if not ctx.remote:
-        candidates.append(_data_dir(os.environ.get("KIWIBRO_DATA_DIR", "")))
+        candidates += _kiwibro_places()
     parts = pattern.strip("/").split("/")
     hits = []
     for candidate in candidates:
@@ -320,6 +361,25 @@ def _glob_hits(pattern: str, ctx: _Ctx) -> list[str]:
             rest = ["x" if any(ch in p for ch in "*?[") else p for p in parts[len(cparts) :]]
             hits.append(_classify_path("/" + "/".join(cparts[: len(parts)] + rest), ctx))
     return hits
+
+
+def _kiwibro_places() -> list[str]:
+    """Kiwibro's data folder and its own code: never changed by a session."""
+    return [_data_dir(os.environ.get("KIWIBRO_DATA_DIR", "")), str(APP_DIR)]
+
+
+def _in_kiwibro(path: str, ctx: _Ctx) -> bool:
+    workspace = str(ctx.workspace) if ctx.workspace else None
+    for place in _kiwibro_places():
+        if not _under(path, [place]):
+            continue
+        # A workspace that contains Kiwibro (~/Desktop) never unlocks it. One the operator put
+        # inside Kiwibro's folder on purpose (the test harness's .dev/qa/runtime/…/workspace;
+        # chats and Settings cannot pick such a folder) is still a workspace.
+        if workspace and workspace != place and _under(workspace, [place]) and _under(path, [workspace]):
+            continue
+        return True
+    return False
 
 
 _OTHER_HOME_SECRET = re.compile(r"^/home/[^/]+/(?:" + "|".join(re.escape(p) for p in SECRET_PATHS) + r")(?:/|$)")
@@ -336,10 +396,19 @@ def _classify_path(path: str, ctx: _Ctx) -> str:
         return "null"
     if path.startswith("/dev/"):
         return "device"
-    if not ctx.remote and _under(path, [_data_dir(os.environ.get("KIWIBRO_DATA_DIR", ""))]):
+    if not ctx.remote and _in_kiwibro(path, ctx):
         return "kiwibro"
     if not ctx.remote and (_under(path, _SYSTEM_SECRETS) or _OTHER_HOME_SECRET.match(path)):
         return "secret"
+    home = str(ctx.home)
+    if not ctx.remote and path.startswith(home + "/"):
+        # Credentials and start-up files stay protected even inside a workspace that
+        # contains them (~/.config, ~/.local): there they would run code at log-in.
+        rel = path[len(home) + 1 :]
+        if _under(rel, SECRET_PATHS):
+            return "secret"
+        if _under(rel, STARTUP_PATHS):
+            return "startup"
     workspace = str(ctx.workspace) if ctx.workspace else None
     if workspace and _under(path, [workspace]):
         rel = path[len(workspace) + 1 :]
@@ -352,7 +421,6 @@ def _classify_path(path: str, ctx: _Ctx) -> str:
     base = path[:-2] if path.endswith("/*") else path
     if workspace and workspace.startswith(base.rstrip("/") + "/") and base != str(ctx.home):
         return "outside"  # an ancestor: touching it touches the workspace and its neighbours
-    home = str(ctx.home)
     if path in (home, home + "/*"):
         return "home_root"
     if path.startswith(home + "/"):
@@ -387,12 +455,48 @@ def _mentioned(path: str, message: str) -> bool:
     return any(len(form) >= 3 and form.lower() in text for form in forms)
 
 
+# Places the sandbox itself lets a command change: an approved step that only touches
+# these keeps running in the box. Removing anything else cannot be undone by Kiwibro.
+_BOX_KINDS = frozenset({"workspace", "workspace_root", "regenerable", "git", "tmp", "null", "dynamic"})
+_UNDOABLE_KINDS = ("workspace", "workspace_root")  # copied before a command changes them
+_EXPENDABLE_KINDS = frozenset({"tmp", "null", "regenerable"})  # losing these loses nothing
+
+
+def _matches(scope: _Scope, ctx: _Ctx) -> int:
+    """How many existing paths a workspace glob matches (bounded), at least 1."""
+    if not scope.wildcard or ctx.remote:
+        return 1
+    return max(1, sum(1 for _ in itertools.islice(glob.iglob(scope.path), MAX_TARGETS + 1)))
+
+
+def _existing(paths: tuple[str, ...]) -> int:
+    """How many existing files these workspace paths and globs name (stops counting past MAX_TARGETS)."""
+    total = 0
+    for path in paths:
+        total += sum(1 for _ in itertools.islice(glob.iglob(path), MAX_TARGETS + 1)) if glob.has_magic(path) else os.path.lexists(path)
+        if total > MAX_TARGETS:
+            break
+    return total
+
+
+def _undo_paths(scope: _Scope) -> tuple[str, ...]:
+    return (scope.path,) if scope.kind in _UNDOABLE_KINDS else ()
+
+
+def _too_big_to_undo(scope: _Scope) -> bool:
+    try:
+        return scope.kind in _UNDOABLE_KINDS and not scope.wildcard and os.path.getsize(scope.path) > config.UNDO_FILE_BYTES
+    except OSError:
+        return False
+
+
 def _delete_risk(targets: list[str], ctx: _Ctx, *, recursive: bool, verb: str) -> Risk:
-    risk = Risk(kind="write", deletes=len(targets))
+    scopes = [_scope(target, ctx) for target in targets]
+    count = sum(_matches(scope, ctx) if scope.kind in _UNDOABLE_KINDS else 1 for scope in scopes)
+    risk = Risk(kind="write", deletes=count)
     if len(targets) > MAX_TARGETS:
-        risk |= _risk("high", f"{verb} removes {len(targets)} paths at once", "write")
-    for target in targets:
-        scope = _scope(target, ctx)
+        risk |= _risk("high", f"{verb} removes {len(targets)} paths at once", "write", inside=True)
+    for target, scope in zip(targets, scopes):
         level = _DELETE_LEVEL[scope.kind]
         if recursive and scope.kind in ("workspace", "dynamic"):
             level = "high"
@@ -401,11 +505,23 @@ def _delete_risk(targets: list[str], ctx: _Ctx, *, recursive: bool, verb: str) -
         if scope.wildcard and scope.kind == "workspace" and not _REGENERABLE_GLOB.match(scope.path.rsplit("/", 1)[-1]):
             level = "high"
         what = "recursively deletes" if recursive else "deletes"
-        risk |= _risk(level, f"{verb} {what} {_PLACE[scope.kind]} ({target})", "write")
+        reason = f"{verb} {what} {_PLACE[scope.kind]} ({target})"
+        if _too_big_to_undo(scope) and _RANK[level] < _RANK["high"]:
+            level = "high"
+            reason = f"{verb} {what} a file too large to keep an undo copy of ({target})"
+        if scope.kind == "dynamic" and not ctx.remote:
+            # `ls | xargs rm`, `rm "$f"`: nobody can tell beforehand what goes, or keep a copy.
+            level = _bump(level) if _RANK[level] < _RANK["high"] else level
+            reason = f"{verb} {what} files that are only known when it runs ({target})"
+        risk |= _risk(
+            level, reason, "write", inside=scope.kind in _BOX_KINDS,
+            flags=frozenset() if scope.kind in _EXPENDABLE_KINDS else _LOSS, paths=_undo_paths(scope),
+        )
     return risk
 
 
-def _write_risk(targets: list[str], ctx: _Ctx, *, verb: str, create: bool = False) -> Risk:
+def _write_risk(targets: list[str], ctx: _Ctx, *, verb: str, create: bool = False, bulk: bool = False) -> Risk:
+    """`bulk`: the verb rewrites existing files in place (sed -i, perl -pi, awk inplace)."""
     risk = Risk(kind="write")
     for target in targets:
         if not target or target.isdigit() or target == "-":
@@ -416,7 +532,21 @@ def _write_risk(targets: list[str], ctx: _Ctx, *, verb: str, create: bool = Fals
             level = "low"
         if ctx.remote and scope.kind in ("dynamic", "outside", "home"):
             level = "medium"
-        risk |= _risk(level, f"{verb} {_PLACE[scope.kind]} ({target})", "write", writes=1)
+        reason = f"{verb} {_PLACE[scope.kind]} ({target})"
+        matches = _matches(scope, ctx) if scope.kind in _UNDOABLE_KINDS else 1
+        flags: frozenset[str] = frozenset()
+        if scope.kind not in _BOX_KINDS and (scope.wildcard or os.path.lexists(scope.path)):
+            flags = _LOSS  # overwrites a file outside the workspace: no undo copy is kept there
+        if bulk and not ctx.remote:
+            if scope.kind == "dynamic":
+                level = "high"
+                reason = f"{verb} files that are only known when it runs ({target}): no undo copy can be kept"
+                flags = _LOSS
+            elif matches > MAX_TARGETS:
+                level = _bump(level) if _RANK[level] < _RANK["high"] else level
+                reason = f"{verb} more than {MAX_TARGETS} files at once ({target})"
+        risk |= _risk(level, reason, "write", inside=scope.kind in _BOX_KINDS, flags=flags,
+                      paths=_undo_paths(scope), writes=matches)
     return risk
 
 
@@ -860,7 +990,7 @@ def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
     if any(marker in word for marker in ("$", "`", _SUBST, _PROCSUB)) or (
         word not in ("[", "[[") and any(ch in word for ch in "*?[")
     ):
-        return risk | _risk("high", f"the program to run (`{word}`) is only known at run time")
+        return risk | _risk("high", f"the program to run (`{word}`) is only known at run time", flags=_LOSS)
     name = _prog(word)
     handler = _HANDLERS.get(name)
     if handler is not None:
@@ -898,6 +1028,21 @@ def _argv_risk(argv: list[str], ctx: _Ctx) -> Risk:
 
 _SAFE_HOOK_VALUES = frozenset({"", "cat", "less", "more", "head", "tail", "true", "false", "less -R", "cat -v"})
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+_BRACE_RANGE = re.compile(r"\{(-?\d{1,4}|[A-Za-z])\.\.(-?\d{1,4}|[A-Za-z])\}")
+
+
+def _brace_parts(found: re.Match[str]) -> list[str]:
+    if found.re is _BRACE:
+        return found.group(1).split(",")
+    start, end = found.group(1), found.group(2)
+    if start.lstrip("-").isdigit() and end.lstrip("-").isdigit():
+        low, high = int(start), int(end)
+        step = 1 if high >= low else -1
+        return [str(n) for n in range(low, high + step, step)][:64]
+    if start.isalpha() and end.isalpha():
+        step = 1 if ord(end) >= ord(start) else -1
+        return [chr(n) for n in range(ord(start), ord(end) + step, step)][:64]
+    return [found.group(0)]
 _WORD_VAR = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$")
 
 
@@ -925,19 +1070,19 @@ def _expand_words(argv: list[str], ctx: _Ctx) -> list[str]:
         if name and name in ctx.vars:
             out.extend(ctx.vars[name].split() or [""])
             continue
-        if "{" in word and "," in word and not any(ch in word for ch in " \"'():=;"):
+        if "{" in word and ("," in word or ".." in word) and not any(ch in word for ch in " \"'():=;"):
             words = [word]
             for _ in range(4):  # nesting depth
                 nxt = []
                 for item in words:
-                    found = _BRACE.search(item)
+                    found = _BRACE.search(item) or _BRACE_RANGE.search(item)
                     nxt.extend(
-                        [item[: found.start()] + part + item[found.end() :] for part in found.group(1).split(",")]
+                        [item[: found.start()] + part + item[found.end() :] for part in _brace_parts(found)]
                         if found else [item]
                     )
                 if nxt == words:
                     break
-                words = nxt[:32]
+                words = nxt[:64]
             out.extend(w for w in words if w)
             continue
         out.append(word)
@@ -990,6 +1135,12 @@ def _wrapper_risk(name: str, argv: list[str], ctx: _Ctx) -> Risk:
         return SAFE
     if name == "xargs":
         # Arguments arrive on stdin at run time; the command never sees the pipe as input.
+        own = argv[: len(argv) - len(rest)]  # xargs' own options, not those of the command it runs
+        replace_with = _option_values(own, "-I") + [a.split("=", 1)[1] or "{}" for a in own if a.startswith("--replace=")]
+        if "-i" in own or "--replace" in own:
+            replace_with.append("{}")
+        if replace_with:  # `xargs -I{} sh -c 'rm {}'`: every {} is a file named at run time
+            return _argv_risk([word.replace(replace_with[0], _SUBST) for word in rest], ctx.child())
         extra = ctx.stdin_text.split() if ctx.stdin == "text" and ctx.stdin_text.strip() else [_SUBST]
         return _argv_risk([*rest, *extra[:64]], ctx.child())
     if name == "parallel":  # `parallel CMD ::: ARGS` runs CMD once per argument
@@ -1051,7 +1202,7 @@ def _shell_string(values: list[str], ctx: _Ctx) -> Risk:
     if not values:
         return SAFE
     if _SUBST in values[0] or _PROCSUB in values[0] or values[0].strip().startswith("$"):
-        return _risk("high", "runs shell code that is only known at run time (e.g. a download)")
+        return _risk("high", "runs shell code that is only known at run time (e.g. a download)", flags=_LOSS)
     return _classify(values[0], ctx.nested())
 
 
@@ -1133,8 +1284,11 @@ _SPAWNED = re.compile(
     r"passthru|\bexec|IO\.popen|Command)\s*\(?\s*(\[[^\]]*\]|(['\"`]).*?\2)"
 )
 _LITERAL_TREE_TARGET = re.compile(r"(?:rmtree|rimraf|rm_rf|remove_tree)\s*\(\s*(?:[rbuf]?)['\"]([^'\"]+)['\"]")
-_CODE_DELETE = re.compile(r"\bunlink|\bos\.remove\b|\.remove\(|\brmdir|\bfs\.rm|\bshred\b|\btruncate\s*\(", re.I)
-_CODE_MANY = re.compile(r"glob|listdir|os\.walk|scandir|iterdir|readdir|<\*>", re.I)
+_CODE_DELETE = re.compile(
+    r"\bunlink|\bos\.remove\b|\.remove\(|\brmdir|\bfs\.rm|\bshred\b|\btruncate\s*\(|File\.delete|FileUtils\.(?:rm|remove)",
+    re.I,
+)
+_CODE_MANY = re.compile(r"glob|listdir|os\.walk|scandir|iterdir|readdir|<\*>|Dir\[|Dir\.(?:children|each_child|entries)", re.I)
 _CODE_SPAWN = re.compile(
     r"os\.system|subprocess|\bpopen|os\.exec|\bexec[lv]p?e?\s*\(|child_process|execSync|"
     r"\b(?:system|exec)\s+['\"]|"
@@ -1154,7 +1308,7 @@ _CODE_NET = re.compile(
 )
 _CODE_WRITE = re.compile(
     r"open\s*\([^)]*['\"][wax]|write_text|write_bytes|writeFile|appendFile|createWriteStream|"
-    r"fs\.write|\.write\(|shutil\.(?:move|copy)|os\.rename|os\.replace|chmod|chown|mkdir",
+    r"fs\.write|\.write\(|shutil\.(?:move|copy)|os\.rename|os\.replace|chmod|chown|mkdir|File\.(?:write|open)|IO\.write",
     re.I,
 )
 
@@ -1162,7 +1316,7 @@ _CODE_WRITE = re.compile(
 def _code_risk(code: str, language: str, *, inline: bool, ctx: _Ctx | None = None) -> Risk:
     where = "inline code" if inline else "the script"
     if inline and (_SUBST in code or _PROCSUB in code or code.strip().startswith("$")):
-        return _risk("high", f"runs {language} code that is only known at run time")
+        return _risk("high", f"runs {language} code that is only known at run time", flags=_LOSS)
     risk = _risk("low" if inline else "medium", f"runs {'inline ' if inline else ''}{language} code")
     code = code + "\n" + re.sub(r"""(['"])\s*[+.]?\s*(['"])""", "", code)  # '/.s' + 'sh' → '/.ssh'
     if _CODE_SECRETS.search(code):
@@ -1178,13 +1332,15 @@ def _code_risk(code: str, language: str, *, inline: bool, ctx: _Ctx | None = Non
         bounded = literal and all(os.path.basename(t.rstrip("/")) in REGENERABLE_DIRS for t in literal) and len(
             literal
         ) == len(_CODE_TREE_DELETE.findall(code))
-        risk |= _risk("medium" if bounded else "high", f"{where} deletes directory trees", "write", deletes=1)
         targets = [_scope(t, ctx).kind for t in literal] if ctx is not None else []
+        risk |= _risk("medium" if bounded else "high", f"{where} deletes directory trees", "write", deletes=1,
+                      inside=all(k in _BOX_KINDS for k in targets), flags=frozenset() if bounded else _LOSS)
         if _CODE_HOME_OR_ROOT.search(code) or any(k in ("root", "home_root", "system", "secret", "startup") for k in targets):
             risk |= _risk("critical", f"{where} deletes your home folder, credentials or system files", "write")
     elif _CODE_DELETE.search(code):
         many = bool(_CODE_MANY.search(code))
-        risk |= _risk("high" if many else "medium", f"{where} deletes {'many ' if many else ''}files", "write", deletes=1)
+        risk |= _risk("high" if many else "medium", f"{where} deletes {'many ' if many else ''}files", "write", deletes=1,
+                      inside=True, flags=_LOSS)
     if _CODE_SPAWN.search(code):
         risk |= _risk("high" if inline else "medium", f"{where} launches other programs")
     if inline and _CODE_HIDDEN.search(code):
@@ -1192,7 +1348,11 @@ def _code_risk(code: str, language: str, *, inline: bool, ctx: _Ctx | None = Non
     if _CODE_NET.search(code):
         risk |= _risk("medium", f"{where} uses the network")
     if _CODE_WRITE.search(code):
-        risk |= _risk("medium", f"{where} writes files", "write", writes=1)
+        if _CODE_MANY.search(code):  # writes what it finds by listing folders: a bulk edit nobody can copy first
+            risk |= _risk("high", f"{where} rewrites files it finds by listing folders", "write", writes=1,
+                          inside=True, flags=_LOSS)
+        else:
+            risk |= _risk("medium", f"{where} writes files", "write", writes=1)
     return risk
 
 
@@ -1208,7 +1368,7 @@ def _interpreter_risk(argv: list[str], ctx: _Ctx, name: str) -> Risk:
             continue
         if name == "python" and token == "-m":
             return _python_module(argv[i + 1 : i + 2], argv[i + 2 :], ctx)
-        if name == "perl" and short and "i" in token[1:]:
+        if name in ("perl", "ruby") and short and "i" in token[1:]:
             in_place = True
         attached = ""
         if name == "python" and short and "c" in token[1:]:
@@ -1219,7 +1379,7 @@ def _interpreter_risk(argv: list[str], ctx: _Ctx, name: str) -> Risk:
             risk = _code_risk(code, name, inline=True, ctx=ctx)
             if in_place:
                 files = [a for a in argv[code_index + 1 :] if not a.startswith("-")]
-                risk |= _write_risk(files, ctx, verb="edits in place")
+                risk |= _write_risk(files, ctx, verb="edits in place", bulk=True)
             return risk
         if name in ("deno", "bun", "node") and token == "eval":
             return _code_risk(argv[i + 1] if i + 1 < len(argv) else "", name, inline=True, ctx=ctx)
@@ -1283,7 +1443,7 @@ def _rmdir(argv: list[str], ctx: _Ctx) -> Risk:
 def _shred(argv: list[str], ctx: _Ctx) -> Risk:
     flags, targets = _split_flags(argv)
     risk = _delete_risk(targets, ctx, recursive=bool(flags & {"-r", "-R"}), verb=_prog(argv[0]))
-    return risk | _risk("high", f"`{_prog(argv[0])}` destroys data beyond recovery", "write")
+    return risk | _risk("high", f"`{_prog(argv[0])}` destroys data beyond recovery", "write", inside=True, flags=_LOSS)
 
 
 def _find(argv: list[str], ctx: _Ctx) -> Risk:
@@ -1324,7 +1484,9 @@ def _find(argv: list[str], ctx: _Ctx) -> Risk:
             elif scope.kind in ("workspace", "workspace_root", "dynamic"):
                 level = "high"
             risk |= _risk(level, f"find deletes every match under {_PLACE[scope.kind]} ({root})",
-                          "write", deletes=1 if level == "medium" else MASS_DELETE_LIMIT)
+                          "write", deletes=1 if level == "medium" else MASS_DELETE_LIMIT,
+                          inside=scope.kind in _BOX_KINDS, flags=frozenset() if regenerable else _LOSS,
+                          paths=() if regenerable else _undo_paths(scope))
     return risk
 
 
@@ -1343,14 +1505,19 @@ def _copy_move(argv: list[str], ctx: _Ctx) -> Risk:
     risk = _read_risk(sources, ctx, verb=name)
     if name == "mv" and dest == "/dev/null":
         return _risk("critical", "moves files into /dev/null (destroys them)", "write", deletes=len(sources))
+    if name == "mv" and _scope(dest, ctx).kind in ("tmp", "null") and not ctx.remote:
+        # Commands get a private /tmp that is thrown away when they end: moving files there deletes them.
+        recursive = any(os.path.isdir(_scope(source, ctx).path) for source in sources)
+        return risk | _delete_risk(sources, ctx, recursive=recursive, verb="mv to a temporary folder")
     risk |= _write_risk([dest], ctx, verb=f"{name} writes into")
     if name == "mv":
         for source in sources:
             scope = _scope(source, ctx)
             if scope.kind == "workspace":
-                risk |= _risk("medium", f"mv moves workspace files ({source})", "write")
+                risk |= _risk("medium", f"mv moves workspace files ({source})", "write", paths=_undo_paths(scope))
             elif scope.kind not in ("regenerable", "tmp", "null", "dynamic"):
-                risk |= _risk(_DELETE_LEVEL[scope.kind], f"mv takes {_PLACE[scope.kind]} away from where they are ({source})", "write")
+                risk |= _risk(_DELETE_LEVEL[scope.kind], f"mv takes {_PLACE[scope.kind]} away from where they are ({source})",
+                              "write", inside=scope.kind in _BOX_KINDS, flags=_LOSS)
     if name == "rsync" and any(f.startswith("--delete") for f in flags):
         risk |= _delete_risk([dest], ctx, recursive=True, verb="rsync --delete")
     if name == "rsync" and "--remove-source-files" in flags:
@@ -1360,12 +1527,15 @@ def _copy_move(argv: list[str], ctx: _Ctx) -> Risk:
 
 def _ln(argv: list[str], ctx: _Ctx) -> Risk:
     flags, operands = _split_flags(argv)
+    # Judge where the link is made before recording it: `ln -sf /tmp/x ~/.bashrc` replaces
+    # ~/.bashrc, it does not write into /tmp.
+    risk = _write_risk(operands[-1:] if len(operands) > 1 else operands, ctx, verb="ln creates a link in", create=True)
     if flags & {"-s", "--symbolic"} and operands:
         target = _scope(operands[0], ctx)
         link = _scope(operands[1], ctx) if len(operands) > 1 else _scope(os.path.basename(operands[0]), ctx)
         if target.kind != "dynamic" and link.kind != "dynamic":
             ctx.links[link.path] = target.path
-    return _write_risk(operands[-1:] if len(operands) > 1 else operands, ctx, verb="ln creates a link in", create=True)
+    return risk
 
 
 def _chmod(argv: list[str], ctx: _Ctx) -> Risk:
@@ -1415,7 +1585,7 @@ def _sed(argv: list[str], ctx: _Ctx) -> Risk:
         risk |= _shell_string([replaced.group(3)], ctx) | _risk("high", "sed s///e runs its replacement as a command")
     if not in_place:
         return risk | _read_risk(files, ctx, verb="sed")
-    return risk | _write_risk(files, ctx, verb="sed -i edits")
+    return risk | _write_risk(files, ctx, verb="sed -i edits", bulk=True)
 
 
 def _awk(argv: list[str], ctx: _Ctx) -> Risk:
@@ -1428,7 +1598,7 @@ def _awk(argv: list[str], ctx: _Ctx) -> Risk:
     if outputs:
         risk |= _write_risk(outputs, ctx, verb="the awk program writes")
     if "inplace" in argv:
-        risk |= _write_risk(files, ctx, verb="awk -i inplace edits")
+        risk |= _write_risk(files, ctx, verb="awk -i inplace edits", bulk=True)
     return risk
 
 
@@ -1585,30 +1755,33 @@ def _git(argv: list[str], ctx: _Ctx) -> Risk:
         return _risk("low", f"git {verb} reads from the remote", "web")
     if verb == "push":
         if flags & {"-f", "--force", "--force-with-lease", "--mirror", "--delete", "-d", "--prune"} or any(o.startswith((":", "+")) for o in operands):
-            return _risk("high", "git push rewrites or deletes history on the remote")
+            return _risk("high", "git push rewrites or deletes history on the remote", flags=_LOSS)
         return _risk("high", "git push publishes commits outside this machine")
+    # Discarding uncommitted work: the working tree is copied first (newest files first).
+    worktree = _undo_paths(_scope(".", ctx))
     if verb == "reset" and flags & {"--hard", "--merge", "--keep"}:
-        return _risk("high", "git reset --hard discards uncommitted work", "write")
+        return _risk("high", "git reset --hard discards uncommitted work", "write", inside=True, flags=_LOSS, paths=worktree)
     if verb == "clean":
         if flags & {"-n", "--dry-run"}:
             return SAFE
-        return _risk("high", "git clean deletes untracked files", "write", deletes=MASS_DELETE_LIMIT)
+        return _risk("high", "git clean deletes untracked files", "write", deletes=MASS_DELETE_LIMIT,
+                     inside=True, flags=_LOSS, paths=worktree)
     if verb == "restore" and "--staged" not in flags and "-S" not in flags or (
         verb == "checkout" and ("--" in rest or "." in operands or flags & {"-f", "--force"})
     ):
-        return _risk("high", f"git {verb} overwrites uncommitted changes", "write")
+        return _risk("high", f"git {verb} overwrites uncommitted changes", "write", inside=True, flags=_LOSS, paths=worktree)
     if verb == "stash":
         sub = operands[0] if operands else "push"
         if sub in ("drop", "clear"):
-            return _risk("high", f"git stash {sub} deletes stashed work", "write")
+            return _risk("high", f"git stash {sub} deletes stashed work", "write", inside=True, flags=_LOSS)
         return SAFE if sub in ("list", "show") else _risk("medium", f"git stash {sub}", "write")
     if verb == "branch":
         if flags & {"-D", "-d", "--delete", "-M", "-m", "-C", "--move", "--force", "-f"}:
-            return _risk("high", "git branch deletes or renames branches", "write")
+            return _risk("high", "git branch deletes or renames branches", "write", inside=True, flags=_LOSS)
         return SAFE if not operands else _risk("medium", "git branch creates a branch", "write")
     if verb == "tag":
         if flags & {"-d", "--delete", "-f", "--force"}:
-            return _risk("high", "git tag deletes or moves tags", "write")
+            return _risk("high", "git tag deletes or moves tags", "write", inside=True, flags=_LOSS)
         return SAFE if not operands or flags & {"-l", "--list"} else _risk("medium", "git tag creates a tag", "write")
     if verb == "remote":
         if not operands or operands[0] in ("-v", "show", "get-url"):
@@ -1625,13 +1798,19 @@ def _git(argv: list[str], ctx: _Ctx) -> Risk:
     if (verb == "reflog" and operands[:1] in (["expire"], ["delete"])) or (
         verb in ("gc", "prune") and any(f.startswith("--prune") for f in flags)
     ) or verb in ("filter-branch", "filter-repo", "update-ref", "replace"):
-        return _risk("high", f"git {verb} removes history or recovery points", "write")
+        return _risk("high", f"git {verb} removes history or recovery points", "write", inside=True, flags=_LOSS)
     if verb == "submodule" and operands[:1] == ["foreach"]:
         return _risk("high", "git submodule foreach runs commands in every submodule")
     if verb.startswith("credential"):
         return _risk("high", "git credential handles stored passwords")
     if verb == "rm":
-        return _risk("medium", "git rm deletes tracked files (recoverable from git)", "write", deletes=len(operands))
+        if flags & {"--cached"}:
+            return _risk("low", "git rm --cached stops tracking files (they stay on disk)", "write")
+        if flags & {"-r", "-f", "--force"}:
+            return _delete_risk(operands, ctx, recursive=True, verb="git rm") | _risk(
+                "high", "git rm -r/-f removes files, uncommitted changes included", "write", inside=True, flags=_LOSS)
+        return _risk("medium", "git rm deletes tracked files (recoverable from git)", "write", deletes=len(operands),
+                     paths=tuple(p for o in operands for p in _undo_paths(_scope(o, ctx))))
     if verb == "clone":
         return _risk("medium", "git clone downloads a repository", "write", writes=1)
     return _risk("medium", f"git {verb} changes the repository", "write")
@@ -1768,7 +1947,7 @@ def _mailer(argv: list[str], ctx: _Ctx) -> Risk:
 _OPTION_EFFECTS: dict[str, tuple[tuple[str, ...], tuple[str, ...], int, str]] = {
     "vim": (("-c", "--cmd", "+"), (), 0, ""), "vi": (("-c", "--cmd", "+"), (), 0, ""),
     "nvim": (("-c", "--cmd", "+"), (), 0, ""), "view": (("-c", "--cmd", "+"), (), 0, ""),
-    "ex": (("-c", "--cmd", "+"), (), 0, ""), "gvim": (("-c", "--cmd", "+"), (), 0, ""),
+    "ex": (("-c", "--cmd", "+"), (), 0, ""), "gvim": (("-c", "--cmd", "+"), (), 0, ""), "ed": ((), (), 0, ""),
     "gdb": (("-ex", "--eval-command", "-iex"), (), 0, ""), "emacs": (("--eval", "-eval"), (), 0, ""),
     "expect": (("-c",), (), 0, ""), "zip": (("-TT", "--unzip-command"), (), 0, ""),
     "less": (("+",), (), 0, ""), "more": (("+",), (), 0, ""), "man": (("-P", "--pager"), (), 0, ""),
@@ -1806,7 +1985,16 @@ def _editor(argv: list[str], ctx: _Ctx) -> Risk:
             if name in ("man", "sort", "rg", "zip"):  # the option value is itself a command line
                 risk |= _shell_string([command], ctx)
     targets = _option_values(argv, *outputs)
-    operands = _split_flags(argv)[1]
+    flags, operands = _split_flags(argv)
+    if name == "zip" and flags & {"-m", "--move"}:
+        risk |= _delete_risk(operands[1:], ctx, recursive=True, verb="zip -m")  # moves the inputs into the archive
+    if name in ("7z", "7za") and "-sdel" in argv:
+        risk |= _delete_risk(operands[2:], ctx, recursive=True, verb="7z -sdel")
+    if name in ("vim", "vi", "nvim", "gvim", "ex", "ed") and operands and (commands or name in ("ex", "ed")):
+        # A scripted editor (`ex -sc '%s/a/b/|wqa' *.py`, `ed -s f < script`) rewrites its files in place.
+        risk |= _write_risk(operands, ctx, verb=f"`{name}` edits in place", bulk=True)
+    if name in ("ed", "ex") and (ctx.stdin == "pipe" or re.search(r"(?m)^\s*!", ctx.stdin_text if ctx.stdin == "text" else "")):
+        risk |= _risk("high", f"`{name}` reads a script from its input that can run commands")
     if positional and len(operands) > positional and not (name == "xxd" and "-r" not in argv):
         targets += operands[-positional:]
     if in_place and any(a == in_place or a.startswith(in_place) for a in argv[1:]):
@@ -1832,7 +2020,7 @@ _HANDLERS: dict[str, Callable[[list[str], _Ctx], Risk]] = {
     "update-alternatives": _desktop_config, "chattr": _desktop_config, "setfacl": _desktop_config,
     "systemd-run": _escape_hatch, "nsenter": _escape_hatch, "unshare": _escape_hatch,
     "bwrap": _escape_hatch, "trap": _trap_alias, "alias": _trap_alias, "ip": _ip,
-    "vim": _editor, "vi": _editor, "nvim": _editor, "view": _editor, "ex": _editor, "gvim": _editor,
+    "vim": _editor, "vi": _editor, "nvim": _editor, "view": _editor, "ex": _editor, "gvim": _editor, "ed": _editor,
     "gdb": _editor, "emacs": _editor, "expect": _editor, "zip": _editor, "less": _editor,
     "more": _editor, "man": _editor, "sort": _editor, "rg": _editor, "fd": _editor, "fdfind": _editor,
     "tree": _editor, "aria2c": _editor, "7z": _editor, "7za": _editor, "yq": _editor, "xxd": _editor,
@@ -1988,6 +2176,12 @@ def classify_command(
             start = (candidate if candidate.is_absolute() else (root or Path.cwd()) / candidate).resolve()
         ctx = _Ctx(workspace=root, cwd=start, home=Path.home().resolve())
     risk = _classify(command, ctx)
+    count = 0 if remote or risk.level == "critical" else _existing(risk.paths)
+    if count > MAX_TARGETS:
+        # Several small globs, a loop over a folder, `truncate`/`tee`/`ln -sf` over many files.
+        # New files do not count: making them destroys nothing.
+        risk |= _risk("high", f"changes or removes more than {MAX_TARGETS} existing files in one command", "write",
+                      inside=True, flags=_LOSS)
     return risk if risk.kind in ("exec", "write") else replace(risk, kind="exec")
 
 
@@ -2133,6 +2327,48 @@ def _policy_mode(perm: str, level: str, autonomy: str, kind: str, *, remote: boo
     return "auto" if not remote and (kind != "exec" or sandbox_status()["active"]) else "ask"
 
 
+class _SessionTally:
+    """Removals and file changes per conversation over the last SESSION_WINDOW_S."""
+
+    def __init__(self, keep: int = 256) -> None:
+        self._events: collections.OrderedDict[str, collections.deque[tuple[float, int, int]]] = collections.OrderedDict()
+        self._lock = threading.Lock()
+        self._keep = keep
+
+    def totals(self, conversation_id: str, now: float) -> tuple[int, int]:
+        with self._lock:
+            events = self._events.get(conversation_id)
+            if not events:
+                return 0, 0
+            while events and now - events[0][0] > SESSION_WINDOW_S:
+                events.popleft()
+            return sum(e[1] for e in events), sum(e[2] for e in events)
+
+    def add(self, conversation_id: str, now: float, writes: int, deletes: int) -> None:
+        if not (writes or deletes):
+            return
+        with self._lock:
+            events = self._events.pop(conversation_id, None) or collections.deque(maxlen=4096)
+            events.append((now, writes, deletes))
+            self._events[conversation_id] = events
+            while len(self._events) > self._keep:
+                self._events.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._events.clear()
+
+
+SESSIONS = _SessionTally()
+
+
+def _allow_key(name: str, reasons: list[str]) -> str:
+    """'This kind of step' for "allow in this chat": the tool and what it does, without
+    the operands (another `kill`, another push), so the allowance never widens to other risks."""
+    kinds = sorted({re.sub(r"\s*\([^()]*\)$", "", reason) for reason in reasons})
+    return "|".join([name, *kinds])
+
+
 def decide(
     settings: dict[str, Any] | None,
     name: str,
@@ -2148,35 +2384,53 @@ def decide(
     configure(settings)
     perm = permission(settings, name)
     if perm == "deny":
-        return Decision("deny", "safe", ("disabled in Settings → Permissions",), "permission")
+        return Decision("deny", "safe", ("disabled in Settings → Permissions",), "permission", escape=False, can_always=False)
     try:
         assessed = assess(name, args, workspace=workspace, spec_risk=risk)
     except Exception:  # an analyser bug must fail closed, never open
         log.exception("safety assessment failed for %s", name)
-        assessed = _risk("high", "the safety check could not analyse this call")
+        assessed = _risk("high", "the safety check could not analyse this call", inside=True, flags=_LOSS)
     state = turn_state if turn_state is not None else {}
     counters = state.setdefault("counters", {"writes": 0, "deletes": 0})
+    conversation = str(state.get("conversation_id") or "")
+    now = time.monotonic()
     level, reasons = assessed.level, list(assessed.reasons)
+    escalated = False
     if level != "critical":
         deletes = counters.get("deletes", 0) + assessed.deletes
         writes = counters.get("writes", 0) + assessed.writes
         if assessed.deletes and deletes > MASS_DELETE_LIMIT:
             level = _bump(level, (deletes - 1) // MASS_DELETE_LIMIT)
             reasons.append(f"mass removal: {deletes} deletions this turn")
+            escalated = True
         if assessed.writes and writes > MASS_WRITE_LIMIT:
             level = _bump(level, (writes - 1) // MASS_WRITE_LIMIT)
             reasons.append(f"mass edit: {writes} file changes this turn")
+            escalated = True
+        if conversation:
+            session_writes, session_deletes = SESSIONS.totals(conversation, now)
+            if assessed.deletes and session_deletes + assessed.deletes > SESSION_DELETE_LIMIT:
+                level = _bump(level)
+                reasons.append(f"{session_deletes + assessed.deletes} removals in this chat within an hour")
+                escalated = True
+            if assessed.writes and session_writes + assessed.writes > SESSION_WRITE_LIMIT:
+                level = _bump(level)
+                reasons.append(f"{session_writes + assessed.writes} file changes in this chat within an hour")
+                escalated = True
         if name == "remote" and args.get("action") != "hosts" and not _remote_host_known(str(args.get("host") or ""), settings):
             level = "high"
             reasons.append(f"{args.get('host')} is not a configured host (add it to ~/.ssh/config or Settings)")
+            escalated = True
         if name == "workspace" and args.get("action") == "switch" and not _mentioned(
             str(args.get("path") or ""), str(state.get("user_message") or "")
         ):
             level = "high"
             reasons.append("the user's message does not mention this folder")
+            escalated = True
         if state.get("tainted") and assessed.kind in ("exec", "write") and level != "safe":
             level = _bump(level)
             reasons.append("content read earlier contained instructions aimed at the AI (possible prompt injection)")
+            escalated = True
     autonomy = settings.get("autonomy") if settings.get("autonomy") in AUTONOMY_MODES else DEFAULT_AUTONOMY
     mode = "deny" if level == "critical" else _policy_mode(perm, level, autonomy, assessed.kind, remote=name == "remote")
     source = "permission" if mode == perm else "policy"
@@ -2184,6 +2438,7 @@ def decide(
     if verdict is not None and getattr(verdict, "mode", None) in _MODE_RANK:
         if _MODE_RANK[verdict.mode] > _MODE_RANK[mode]:
             mode, source = verdict.mode, "guard"
+            escalated = True
         if getattr(verdict, "level", None) in _RANK and _RANK[verdict.level] > _RANK[level]:
             level = verdict.level
         reasons.extend(r for r in getattr(verdict, "reasons", ()) if r not in reasons)
@@ -2194,7 +2449,18 @@ def decide(
         counters["writes"] = counters.get("writes", 0) + assessed.writes
         counters["deletes"] = counters.get("deletes", 0) + assessed.deletes
         counters["actions"] = counters.get("actions", 0) + (assessed.kind in ("write", "exec"))
-    return Decision(mode, level, tuple(reasons[:6]), source)
+        if conversation:
+            SESSIONS.add(conversation, now, assessed.writes, assessed.deletes)
+    return Decision(
+        mode,
+        level,
+        tuple(reasons[:6]),
+        source,
+        escape="outside" in assessed.flags,
+        can_always=not escalated and "loss" not in assessed.flags and level != "critical",
+        allow_key=_allow_key(name, list(assessed.reasons)),
+        targets=assessed.paths,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2228,9 +2494,12 @@ def tool_home() -> Path:
 
 @contextlib.contextmanager
 def applied(decision: Decision | None, *, approved_by_user: bool = False) -> Iterator[None]:
-    """Run a tool call under its decision. A high-risk call that the user
-    explicitly approved runs unconfined (e.g. `git push` needs ~/.ssh)."""
-    unconfined = bool(approved_by_user and decision and _RANK[decision.level] >= _RANK["high"])
+    """Run a tool call under its decision. A high-risk call that the user explicitly
+    approved runs unconfined only when it has to leave the box (`git push` needs
+    ~/.ssh); an approved removal or edit inside the workspace stays confined."""
+    unconfined = bool(
+        approved_by_user and decision and _RANK[decision.level] >= _RANK["high"] and decision.escape
+    )
     token = _UNCONFINED.set(unconfined)
     try:
         yield
@@ -2309,6 +2578,22 @@ def _hidden_paths(writable: list[Path]) -> tuple[list[str], list[str]]:
     return sorted(dirs), sorted(files)
 
 
+def _guarded_paths(writable: list[Path]) -> list[str]:
+    """Start-up files and Kiwibro's own code and data that lie inside a writable mount:
+    mounted read-only again on top of it, so a workspace like ~/.config or ~/Desktop
+    cannot be used to plant a log-in script or rewrite Kiwibro."""
+    home = Path.home().resolve()
+    candidates = [home / rel for rel in STARTUP_PATHS] + [Path(p) for p in _kiwibro_places()]
+    guarded: set[str] = set()
+    for path in candidates:
+        real = Path(os.path.realpath(path))
+        if not real.exists() or any(real == w or w.is_relative_to(real) for w in writable):
+            continue
+        if any(real.is_relative_to(w) for w in writable):
+            guarded.add(str(real))
+    return sorted(guarded)
+
+
 def _bwrap_argv(
     argv: list[str],
     *,
@@ -2326,16 +2611,19 @@ def _bwrap_argv(
     ]
     if not network:
         wrapped.append("--unshare-net")
+    for path in readable:  # e.g. a workspace under the private /tmp
+        wrapped += ["--ro-bind", str(path), str(path)]
+    for path in writable:
+        wrapped += ["--bind", str(path), str(path)]
+    # Later mounts cover earlier ones, so protection goes on top of the writable binds.
+    for path in _guarded_paths(writable):
+        wrapped += ["--ro-bind", path, path]
     if hide:
         dirs, files = _hidden_paths(writable)
         for directory in dirs:
             wrapped += ["--tmpfs", directory]
         for path in files:
             wrapped += ["--ro-bind", "/dev/null", path]
-    for path in readable:  # e.g. a workspace under the private /tmp
-        wrapped += ["--ro-bind", str(path), str(path)]
-    for path in writable:
-        wrapped += ["--bind", str(path), str(path)]
     for key in unset:
         wrapped += ["--unsetenv", key]
     return [*wrapped, "--chdir", str(cwd), "--", *argv]

@@ -281,7 +281,8 @@ function buildApprovalCard(approval, resolve) {
         : null,
       more,
       detail,
-      el("div", { class: "approval-actions" }, [deny, always, allow]),
+      // A step that can destroy data is approved one at a time: no "always" for it.
+      el("div", { class: "approval-actions" }, approval.can_always === false ? [deny, allow] : [deny, always, allow]),
     ],
   );
 

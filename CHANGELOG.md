@@ -4,6 +4,40 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+### Safety
+
+- **Kiwibro's own code, start-up files and credentials stay protected inside a working
+  folder.** A chat working in `~/.config`, `~/.local` or a `~/Desktop` that holds the
+  Kiwibro checkout could write log-in scripts (`~/.config/autostart`, `systemd --user`
+  units, `~/.local/bin`) or rewrite Kiwibro itself, which restarts onto changed code.
+  These places are now judged before the workspace and refused, and the sandbox mounts
+  them read-only (credentials hidden) on top of the writable folder. The workspace
+  setting refuses them too.
+- **Removals and bulk edits.** Removing or rewriting files that are only known when a
+  command runs (`ls | xargs rm`, `find … -exec sed -i`, `sed -i … $(git ls-files)`) asks
+  first; a glob counts every file it matches, and an in-place edit of more than 20 files
+  asks; `mv` into `/tmp` counts as a removal (commands get a private `/tmp` that is thrown
+  away); removing a file larger than an undo copy (20 MB) asks; more than 24 removals or
+  120 file changes in one chat within an hour ask, so a long unattended session cannot
+  spread a spree over many turns. Autonomous mode refuses all of these.
+- **Every route to a mass change asks.** One command that changes or removes more than 20
+  existing files asks however it gets there: brace ranges (`rm f{1..30}.py`), several small
+  globs, a loop, `truncate`, `tee`, `ln -sf`, `yq -i`, Ruby one-liners (`ruby -pi`,
+  `File.delete`), inline code that rewrites files it lists, `zip -m` and `7z -sdel` (which
+  delete their inputs), scripted `vim`/`ex`/`ed` edits, `xargs -I{} sh -c 'rm {}'` and
+  `git rm -r`. A symlink is judged where it is made, so `ln -sf … ~/.bashrc` is refused
+  instead of passing as a write into `/tmp`. Making new files never counts.
+- **Commands can be undone.** Before a command runs, the workspace files it will change or
+  remove are checkpointed (`rm`, `sed -i`, redirects, `mv`, `truncate`, and the working
+  tree before `git reset --hard`, `git checkout .`, `git restore`, `git clean`), so
+  `undo_changes` puts them back.
+- **"Allow in this chat" covers one kind of step**, not the whole tool, and is never offered
+  for a step that can destroy data or that a breaker or prompt-injection warning escalated.
+  Before, allowing one `kill` let every later risky command of that chat run unasked.
+- **Approved removals stay in the sandbox.** An approved high-risk step leaves the sandbox
+  only when it has to (`git push` needs `~/.ssh`); removing a workspace folder, `git reset --hard`
+  and other workspace-only steps run confined.
+
 ## [3.0.0] — 2026-11-10
 
 Kiwibro runs models itself, watches every reply with a second small model, keeps a

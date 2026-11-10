@@ -10,6 +10,7 @@ store is bounded in bytes and rows and pruned oldest-first.
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import logging
 import os
@@ -22,11 +23,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from . import config
 from .extensions import ExtensionTool, data_dir_for, schema, tool_result
 
 log = logging.getLogger(__name__)
 
-MAX_FILE_BYTES = 20 * 1024 * 1024
+MAX_FILE_BYTES = config.UNDO_FILE_BYTES
 MAX_FILES_PER_CALL = 500
 MAX_STORE_BYTES = 512 * 1024 * 1024
 MAX_ROWS = 20_000
@@ -299,6 +301,67 @@ def files_for(name: str, args: dict[str, Any], workspace: Any) -> list[tuple[Pat
     return []
 
 
+_SKIPPED_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", ".cache", ".kiwibro-sandbox",
+                           ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "dist", "build", "target", ".next"})
+MAX_SCAN_ENTRIES = 20_000
+
+
+def _command_files(workspace: Any, targets: list[str]) -> list[tuple[Path, str]]:
+    """Workspace files a shell command was judged to change or remove, newest first.
+
+    Globs are expanded and folders walked (skipping .git and build output), so a
+    `rm notes/*.md`, `sed -i … src/*.py` or `git reset --hard` can be undone. When a
+    folder holds more files than one checkpoint keeps, the most recently changed ones
+    are kept: they are the ones nothing else (git, a build) can bring back."""
+    root = Path(workspace.root).resolve()
+    found: dict[Path, float] = {}
+    scanned = 0
+
+    def consider(path: Path) -> None:
+        try:
+            real = path.resolve()
+            if not real.is_relative_to(root) or real == root or path.is_symlink():
+                return
+            if real.is_file():
+                found.setdefault(real, real.stat().st_mtime)
+            elif not real.exists() and real.parent.is_dir():
+                found.setdefault(real, float("inf"))  # a file it creates: undo removes it again
+        except OSError:
+            pass
+
+    for target in targets[:64]:
+        matches = glob.glob(target) if any(ch in target for ch in "*?[") else [target]
+        for match in matches[:MAX_FILES_PER_CALL]:
+            path = Path(match)
+            if path.is_dir() and not path.is_symlink():
+                for directory, dirs, names in os.walk(path):
+                    dirs[:] = [d for d in dirs if d not in _SKIPPED_DIRS]
+                    scanned += len(names) + len(dirs)
+                    for name in names:
+                        consider(Path(directory) / name)
+                    if scanned > MAX_SCAN_ENTRIES:
+                        break
+            else:
+                consider(path)
+    newest = sorted(found, key=lambda item: -found[item])[:MAX_FILES_PER_CALL]
+    return [(path, workspace.public(path)) for path in newest]
+
+
+def snapshot_command(data_dir: Path, workspace: Any, name: str, targets: tuple[str, ...] | list[str],
+                     conversation_id: str) -> str | None:
+    """Checkpoint the workspace files a command will change or remove. Never raises."""
+    if not targets:
+        return None
+    try:
+        files = _command_files(workspace, list(targets))
+        if not files:
+            return None
+        return store_for(data_dir).snapshot(files, conversation_id=conversation_id, tool=name)
+    except Exception:  # checkpoints must never block the command itself
+        log.warning("checkpoint before %s failed", name, exc_info=True)
+        return None
+
+
 def snapshot_call(data_dir: Path, workspace: Any, name: str, args: dict[str, Any], conversation_id: str) -> str | None:
     """Checkpoint everything a tool call may change. Never raises."""
     try:
@@ -349,8 +412,9 @@ UNDO_CHANGES = ExtensionTool(
     name=UNDO_TOOL,
     description=(
         "Undo your recent file changes in this chat. Kiwibro checkpoints every file write, edit, patch, "
-        "move and delete automatically; this restores the files exactly as they were before the last change. "
-        "Use it right away when an edit went wrong. Optional: one path only, or several steps back."
+        "move and delete automatically, and the workspace files a command changes or removes; this restores "
+        "the files exactly as they were before the last change. Use it right away when an edit or command "
+        "went wrong. Optional: one path only, or several steps back."
     ),
     parameters=schema(
         {

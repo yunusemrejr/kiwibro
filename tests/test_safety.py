@@ -265,7 +265,7 @@ def test_smart_mode_asks_for_unsandboxed_code(ws: Path, no_sandbox: None) -> Non
 def test_default_autonomy_is_smart(ws: Path, fake_sandbox: None) -> None:
     decision = safety.decide({}, "run_command", {"command": "pytest -q"}, workspace=ws)
     assert decision.mode == "auto"
-    assert decision.payload() == {"level": "medium", "reasons": ["runs `pytest`"], "source": "policy"}
+    assert decision.payload() == {"level": "medium", "reasons": ["runs `pytest`"], "source": "policy", "can_always": True}
 
 
 def test_mass_deletion_circuit_breaker(ws: Path, fake_sandbox: None) -> None:
@@ -401,3 +401,202 @@ def test_sandbox_off_setting(tmp_path: Path, fake_sandbox: None) -> None:
         assert safety.confine(["true"], writable=[tmp_path], cwd=tmp_path) == ["true"]
     finally:
         safety.configure({"sandbox": safety.DEFAULT_SANDBOX})
+
+
+# --- removals and bulk edits ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "level"),
+    [
+        ("ls | xargs rm", "high"),  # removes files nobody can name beforehand
+        ("rm \"$(cat list.txt)\"", "high"),
+        ("find . -name '*.py' -exec sed -i 's/a/b/' {} +", "high"),  # edits an unknown set of files
+        ("git ls-files | xargs sed -i 's/a/b/'", "high"),
+        ("sed -i 's/a/b/' $(git ls-files)", "high"),
+        ("mv src /var/tmp/gone", "high"),  # commands get a private /tmp, thrown away: a removal
+        ("mv src/a.py /var/tmp/", "medium"),
+        ("sed -i 's/a/b/' src/*.py", "medium"),  # a few known files: copied first, undoable
+        ("rm *.pyc", "medium"),
+    ],
+)
+def test_removals_and_bulk_edits(ws: Path, command: str, level: str) -> None:
+    assert safety.classify_command(command, workspace=ws).level == level, command
+
+
+def test_in_place_edit_counts_every_file_a_glob_matches(ws: Path) -> None:
+    for index in range(5):
+        (ws / "src" / f"m{index}.py").write_text("x\n")
+    risk = safety.classify_command("sed -i 's/x/y/' src/*.py", workspace=ws)
+    assert risk.writes == 6 and risk.level == "medium"
+    for index in range(5, 25):
+        (ws / "src" / f"m{index}.py").write_text("x\n")
+    assert safety.classify_command("perl -pi -e 's/x/y/' src/*.py", workspace=ws).level == "high"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm src/f{1..30}.py",  # a brace range names 30 files
+        "sed -i 's/x/y/' src/f{1..30}.py",
+        "sed -i 's/x/y/' src/f1*.py src/f2*.py src/f3*.py",  # small globs that add up
+        "for f in src/*.py; do > \"$f\"; done",
+        "truncate -s0 src/f*.py",
+        "tee src/*.py < /dev/null",
+        "ln -sf /dev/null src/*.py",
+        "yq -i '.a=1' src/*.py",
+        "ruby -e 'Dir[\"src/*.py\"].each{|f| File.delete(f)}'",
+        "ruby -pi -e 's/x/y/' src/*.py",
+        "python3 -c 'import glob; [open(f,\"w\").write(\"\") for f in glob.glob(\"src/*.py\")]'",
+        "zip -m out.zip src/*.py",  # the inputs are moved into the archive
+        "zip -rm out.zip src",
+        "7z a -sdel out.7z src/*.py",
+        "xargs -I{} sh -c 'rm -f {}' < list.txt",
+        "git rm -rf src",
+        "ex -sc '%s/x/y/g|wqa' src/*.py",
+        "vim -c '%s/x/y/g | wqa' src/*.py",
+    ],
+)
+def test_many_files_changed_by_any_route_need_a_yes(ws: Path, command: str) -> None:
+    for index in range(1, 31):
+        (ws / "src" / f"f{index}.py").write_text("x\n")
+    risk = safety.classify_command(command, workspace=ws)
+    assert risk.level == "high", (command, risk.reasons)
+    assert "loss" in risk.flags  # so "allow in this chat" is never offered for it
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["touch src/n{1..25}.py", "mkdir -p d{1..30}", "echo {1..100}", "git rm --cached src/a.py", "ruby -e 'puts 1'",
+     "zip -9 out.zip src/a.py", "cp src/*.py backup/", "sed -i 's/x/y/' src/a.py"],
+)
+def test_making_new_files_or_a_small_edit_is_not_a_mass_change(ws: Path, command: str) -> None:
+    assert safety.classify_command(command, workspace=ws).level in ("safe", "low", "medium"), command
+
+
+@pytest.mark.parametrize("link", ["~/.local/bin/tool", "~/.config/autostart/x.desktop", "~/.bashrc"])
+def test_a_link_into_a_start_up_place_is_judged_where_it_lands(ws: Path, link: str) -> None:
+    # Following the link first made it look like a write into /tmp.
+    assert safety.classify_command(f"ln -sf /tmp/evil {link}", workspace=ws).level == "critical"
+
+
+def test_removing_a_file_too_large_to_copy_needs_a_yes(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiwibro import config
+
+    monkeypatch.setattr(config, "UNDO_FILE_BYTES", 9)  # ok.sh has 8 bytes
+    (ws / "big.bin").write_bytes(b"0123456789")
+    assert safety.classify_command("rm big.bin", workspace=ws).level == "high"
+    assert safety.assess("file_manage", {"action": "delete", "path": "big.bin"}, workspace=ws).level == "high"
+    assert safety.classify_command("rm ok.sh", workspace=ws).level == "medium"
+
+
+def test_commands_name_the_workspace_files_to_copy_before_they_run(ws: Path) -> None:
+    risk = safety.classify_command("rm src/a.py && sed -i 's/a/b/' ok.sh; echo x > /tmp/x", workspace=ws)
+    assert set(risk.paths) == {str(ws / "src" / "a.py"), str(ws / "ok.sh")}
+    assert safety.classify_command("git reset --hard", workspace=ws).paths == (str(ws),)
+    assert safety.classify_command("rm -rf node_modules", workspace=ws).paths == ()  # regenerable: no copy
+
+
+def test_session_breaker_spans_turns(ws: Path, fake_sandbox: None) -> None:
+    safety.SESSIONS.clear()
+    for index in range(40):
+        (ws / f"f{index}.txt").write_text("x")
+    modes = []
+    for index in range(safety.SESSION_DELETE_LIMIT + 1):
+        state = {"conversation_id": "c-long"}  # a fresh turn every time: the per-turn counters reset
+        decision = safety.decide(_settings("autonomous"), "run_command", {"command": f"rm f{index}.txt"},
+                                 workspace=ws, turn_state=state)
+        modes.append(decision.mode)
+    assert modes[:-1] == ["auto"] * safety.SESSION_DELETE_LIMIT
+    assert modes[-1] == "deny"  # removal number 25 within the hour in one chat: nobody is watching
+    other = safety.decide(_settings("autonomous"), "run_command", {"command": "rm f39.txt"}, workspace=ws,
+                          turn_state={"conversation_id": "c-other"})
+    assert other.mode == "auto"
+    safety.SESSIONS.clear()
+
+
+# --- places a session may never change -----------------------------------------------
+
+
+def test_startup_and_credential_files_stay_protected_inside_a_workspace() -> None:
+    config_dir = Path.home() / ".config"
+    assert safety.classify_command("echo x > autostart/x.desktop", workspace=config_dir).level == "critical"
+    assert safety.classify_command("echo x > systemd/user/x.service", workspace=config_dir).level == "critical"
+    assert safety.classify_command("cat gh/hosts.yml", workspace=config_dir).level == "high"
+    assert safety.classify_command("echo x > bin/ls", workspace=Path.home() / ".local").level == "critical"
+    assert safety.classify_command("echo x > myapp/settings.ini", workspace=config_dir).level == "medium"
+
+
+def test_kiwibro_never_changes_its_own_code(tmp_path: Path) -> None:
+    parent = safety.APP_DIR.parent
+    assert safety.classify_command(f"echo x > {safety.APP_DIR / 'kiwibro' / 'safety.py'}", workspace=parent).level == "critical"
+    assert safety.assess("write_file", {"path": f"{safety.APP_DIR.name}/kiwibro/safety.py"}, workspace=parent).level == "critical"
+    assert safety.classify_command(f"rm -rf {safety.APP_DIR.name}", workspace=parent).level == "critical"
+    assert safety.classify_command(f"cat {safety.APP_DIR / 'README.md'}", workspace=tmp_path).level == "safe"
+
+
+def test_workspace_setting_refuses_protected_places() -> None:
+    from kiwibro import config
+
+    for place in (safety.APP_DIR, Path.home() / ".ssh", Path.home() / ".config" / "autostart"):
+        with pytest.raises(ValueError):
+            config.validate_workspace(str(place))
+
+
+def test_guarded_paths_are_mounted_read_only_on_top_of_the_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    (home / ".config" / "autostart").mkdir(parents=True)
+    (home / ".config" / "gh").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(safety, "_engines", lambda: ("/usr/bin/bwrap", None))
+    workspace = home / ".config"
+    argv = safety._bwrap_argv(["true"], writable=[workspace], cwd=workspace, network=True, hide=True)
+    bind = argv.index("--bind")
+    autostart = argv.index(str(home / ".config" / "autostart"))
+    hidden = argv.index(str(home / ".config" / "gh"))
+    assert argv[autostart - 1] == "--ro-bind" and autostart > bind  # later mounts win
+    assert argv[hidden - 1] == "--tmpfs" and hidden > bind
+
+
+# --- "allow in this chat" and leaving the box ----------------------------------------
+
+
+def test_destructive_steps_never_offer_allow_in_this_chat(ws: Path, fake_sandbox: None) -> None:
+    for command in ("rm -rf src", "git reset --hard", "ls | xargs rm", "git push --force"):
+        decision = safety.decide(_settings("smart"), "run_command", {"command": command}, workspace=ws)
+        assert decision.mode == "ask" and decision.can_always is False, command
+    push = safety.decide(_settings("smart"), "run_command", {"command": "git push origin main"}, workspace=ws)
+    assert push.can_always is True and push.allow_key == "run_command|git push publishes commits outside this machine"
+    again = safety.decide(_settings("smart"), "run_command", {"command": "git push upstream dev"}, workspace=ws)
+    assert again.allow_key == push.allow_key  # the same kind of step
+
+
+def test_approved_removals_inside_the_workspace_stay_in_the_box(ws: Path, fake_sandbox: None) -> None:
+    inside = safety.decide(_settings("smart"), "run_command", {"command": "rm -rf src"}, workspace=ws)
+    with safety.applied(inside, approved_by_user=True):
+        assert not safety.is_unconfined()
+    push = safety.decide(_settings("smart"), "run_command", {"command": "git push origin main"}, workspace=ws)
+    with safety.applied(push, approved_by_user=True):
+        assert safety.is_unconfined()  # needs ~/.ssh
+    outside = safety.decide(_settings("smart"), "run_command", {"command": "rm -rf ~/Documents/old"}, workspace=ws)
+    assert outside.escape is True and outside.can_always is False
+
+
+@needs_bwrap
+def test_kiwibro_code_is_read_only_even_inside_a_writable_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = tmp_path / "parent" / "kiwibro-app"
+    (app / "kiwibro").mkdir(parents=True)
+    (app / "kiwibro" / "safety.py").write_text("RULES = 'strict'\n")
+    monkeypatch.setattr(safety, "APP_DIR", app)
+    root = tmp_path / "parent"
+    result = Workspace(root).run_command("echo hacked > kiwibro-app/kiwibro/safety.py; echo ok > mine.txt; echo end")
+    assert (app / "kiwibro" / "safety.py").read_text() == "RULES = 'strict'\n"
+    assert (root / "mine.txt").read_text().strip() == "ok"
+    assert "Read-only file system" in result["output"]
+
+
+def test_a_workspace_the_operator_put_inside_kiwibros_folder_still_works() -> None:
+    inner = safety.APP_DIR / ".dev" / "qa" / "runtime" / "run" / "workspace"  # the e2e harness
+    assert safety.classify_command("echo x > notes.txt", workspace=inner).level == "medium"
+    assert safety.classify_command(f"echo x > {safety.APP_DIR / 'app.py'}", workspace=inner).level == "critical"
+    assert safety.classify_command("echo x > app.py", workspace=safety.APP_DIR).level == "critical"

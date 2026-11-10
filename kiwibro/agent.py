@@ -1759,6 +1759,9 @@ class AgentManager:
             )
             if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
+            elif item["decision"] is not None and item["decision"].targets:  # and what a command changes or removes
+                checkpoints.snapshot_command(self.data_dir, context.workspace, name, item["decision"].targets,
+                                             turn.conversation_id)
             with safety.applied(item["decision"], approved_by_user=item["approved"]):
                 result = tools.execute_tool(name, guard.reveal(name, args, turn.safety), context)
             result = guard.postprocess(name, args, result, turn.safety)
@@ -1905,7 +1908,10 @@ class AgentManager:
             self._settings(), name, item["args"], workspace=workspace, turn_state=state, risk=spec.risk
         )
         requires = decision.mode == "ask"
-        allowed_here = requires and name in self._chat_allowed.get(turn.conversation_id, ())
+        # "Allow in this chat" covers the same kind of step only, and never one that can destroy data.
+        allowed_here = requires and decision.can_always and decision.allow_key in self._chat_allowed.get(
+            turn.conversation_id, ()
+        )
         if allowed_here:
             requires = False
             decision = replace(decision, mode="auto", reasons=(*decision.reasons, "allowed for this chat"))
@@ -1936,7 +1942,8 @@ class AgentManager:
                 "Duplicate tool call stopped",
             )
         if requires:
-            if not self._request_approval(turn, name, spec.risk, shown_args, decision.payload()):
+            allow_key = decision.allow_key if decision.can_always else None
+            if not self._request_approval(turn, name, spec.risk, shown_args, decision.payload(), allow_key=allow_key):
                 return refuse("The user denied permission for this tool call. Do not retry it.", "Denied by user")
             item["approved"] = True
         elif allowed_here:
@@ -2014,7 +2021,11 @@ class AgentManager:
         risk: str,
         args: dict[str, Any],
         safety_info: dict[str, Any] | None = None,
+        *,
+        allow_key: str | None = "",
     ) -> bool:
+        """Ask the user. ``allow_key`` is what "allow in this chat" would remember (None: the
+        step can destroy data, so it is offered once only and the choice is never kept)."""
         approval_id = f"ap_{uuid.uuid4().hex}"
         approval = Approval(
             id=approval_id,
@@ -2052,14 +2063,14 @@ class AgentManager:
         decision = approval.decision or "deny"
         with self._approvals_guard:
             self._approvals.pop(approval_id, None)
-        if decision == "always":
+        if decision == "always" and allow_key is not None:
             if manual:
                 try:
                     self.db.set_permission(name, "auto")
                 except ValueError:  # pragma: no cover - defensive
                     log.warning("could not persist always permission for %s", name)
             else:
-                self._chat_allowed.setdefault(turn.conversation_id, set()).add(name)
+                self._chat_allowed.setdefault(turn.conversation_id, set()).add(allow_key or name)
         return decision in ("allow", "always")
 
     # --- finish paths ------------------------------------------------------
