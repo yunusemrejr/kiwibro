@@ -479,6 +479,12 @@ def test_full_think_block_in_content_is_split_too(monkeypatch):
     assert (result.content, result.reasoning, len(rewrites)) == ("Answer.", "plan it", 1)
 
 
+def test_blank_lines_after_an_empty_think_block_do_not_open_the_answer(monkeypatch):
+    result, shown, rewrites = _stream(monkeypatch, ["<think>", "\n\n</think>", "\n\n", "I'm Kiwibro.", "\n\nAnd more."])
+    assert result.content == "I'm Kiwibro.\n\nAnd more." and rewrites == [("", "")]
+    assert "".join(shown).endswith("</think>I'm Kiwibro.\n\nAnd more.")
+
+
 def test_literal_tags_inside_an_answer_are_left_alone(monkeypatch):
     text = "Use `<think>` and `</think>` to mark reasoning."
     result, _shown, rewrites = _stream(monkeypatch, [text])

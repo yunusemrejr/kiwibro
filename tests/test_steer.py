@@ -56,6 +56,37 @@ def test_denying_a_tool_it_has_is_caught_only_when_the_tool_exists():
     assert kind(reply, steer.Facts(question="open example.com", tools=WEB, tools_ran=1, memory_on=False)) is None
 
 
+CANNOT_LIST = """I'm Kiwibro. Here is what I can do:
+- Search the web and read pages
+- Work on code and documents
+
+**What I can't do:**
+- Access external websites or databases
+- Taste food
+
+Shall I look something up?"""
+
+
+def test_a_list_of_things_it_cannot_do_is_read_item_by_item():
+    facts = steer.Facts(question="who are you and what can you do?", tools=WEB, memory_on=False)
+    verdict = steer.review(CANNOT_LIST, facts)
+    assert verdict.kind == steer.DENIAL and "`web_search`" in verdict.note and "leave it out" in verdict.note
+    assert kind(CANNOT_LIST, steer.Facts(question="who are you and what can you do?", memory_on=False)) is None
+    repaired = steer.repair(CANNOT_LIST, verdict, facts)
+    assert "external websites" not in repaired and "- Taste food" in repaired and "- Search the web" in repaired
+
+
+def test_a_cannot_list_left_empty_loses_its_heading():
+    facts = steer.Facts(question="what can you do?", tools=WEB, memory_on=False)
+    reply = "I can search the web.\n\nWhat I can't do:\n- Access external websites or databases\n\nAsk away."
+    assert steer.repair(reply, steer.review(reply, facts), facts) == "I can search the web.\n\nAsk away."
+
+
+def test_a_list_of_abilities_is_not_read_as_denials():
+    reply = "Here is what I can do:\n- Search the web and read pages\n- Browse the internet for news"
+    assert kind(reply, steer.Facts(question="what can you do?", tools=WEB, memory_on=False)) is None
+
+
 def test_denying_its_memory_is_caught_while_memory_is_on():
     reply = "I don't have the ability to remember previous conversations."
     assert kind(reply, steer.Facts(question="do you remember my name?")) == steer.DENIAL

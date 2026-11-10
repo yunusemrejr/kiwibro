@@ -675,6 +675,8 @@ class LLMClient:
         if not isinstance(delta, dict):
             return
         content = delta.get("content")
+        if isinstance(content, str) and not result.content:
+            content = content.lstrip()  # a reply does not open with blank lines (left after a think block)
         if isinstance(content, str) and content:
             result.content += content
             if on_delta:

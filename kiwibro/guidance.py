@@ -18,10 +18,11 @@ from . import plan
 # Each snippet is one short line; order is the order they appear in the note.
 SNIPPETS: dict[str, str] = {
     "capabilities": (
-        "What Kiwibro can do: talk and remember facts across chats; search the web and read pages; "
-        "work on code and documents in the workspace (search, read, patch, run tests and commands); "
+        "What Kiwibro can do: talk and remember facts across chats; keep notes; search the web and read "
+        "pages; work on code and documents in the workspace (search, read, patch, run tests and commands); "
         "use this computer (open files or URLs, clipboard, notifications, screenshots, system info); "
-        "analyse data with code; describe images with a helper model."
+        "calculate and analyse data with code; describe images with a helper model. "
+        "Say these in your own words. Do not add a list of things you cannot do."
     ),
     "steps": (
         "Several steps: keep task_board current, and batch independent calls in one reply "

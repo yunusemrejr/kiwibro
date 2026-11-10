@@ -98,6 +98,13 @@ _OUTSIDE_WORLD = re.compile(
     r"\bpage\b|e-?mail|reminder|memory|\bnotes?\b|clipboard|screenshot|server|\bchanges\b|patch|\w+\.[a-z]{1,5}\b",
     re.IGNORECASE)
 _MEMORY_CLAIM = re.compile(r"memory|remember|noted|\bnotes?\b|stored your", re.IGNORECASE)
+# A list under a line such as "What I can't do:" denies an ability in every item, without
+# repeating the "I can't". Each item is read with those words put back.
+_CANNOT_LEAD = re.compile(r"\b(?:can(?:['’]|no)t|can not|unable to|not able to|limitations?)\b", re.IGNORECASE)
+_LIST_ITEM = re.compile(r"^\s{0,8}(?:[-*+•–]|\d+[.)])\s+(?=\S)")
+_OWN_SUBJECT = re.compile(r"\W*(?:i|we|you|kiwibro)\b", re.IGNORECASE)
+_EMPTY_ITEM = re.compile(r"(?m)^[ \t]*(?:[-*+•–]|\d+[.)])[ \t]*(?:\n|\Z)")
+_CANNOT_FRAME = "I can't "
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
@@ -163,6 +170,38 @@ def _probe(reader: Any, sentence: str) -> tuple[str, float]:
     return label, scores[label]
 
 
+def _cannot_lead(line: str) -> bool:
+    """Whether a line introduces a list of things the assistant says it cannot do."""
+    text = line.strip().strip("#*_ ").strip()
+    return bool(text) and len(_words(text)) <= 12 and bool(_CANNOT_LEAD.search(text)) and (
+        text.endswith(":") or line.lstrip().startswith(("#", "**")))
+
+
+def _sentences(reply: str, limit: int = 12) -> list[tuple[str, bool]]:
+    """The reply as (sentence, listed) pairs. ``listed`` marks an item of a "what I cannot
+    do" list, written out as the sentence it stands for."""
+    out: list[tuple[str, bool]] = []
+    block: list[str] = []
+    framed = False
+
+    def flush() -> None:
+        if block:
+            out.extend((sentence, False) for sentence in sense_module.sentences("\n".join(block), limit))
+            block.clear()
+
+    for line in sense_module._FENCE_RE.sub(" ", reply or "").split("\n"):
+        item = _LIST_ITEM.match(line)
+        if item and framed and not _OWN_SUBJECT.match(line[item.end():]):
+            flush()
+            out.extend((sentence, True) for sentence in sense_module.sentences(_CANNOT_FRAME + line[item.end():], 1))
+            continue
+        if line.strip() and not item:
+            framed = _cannot_lead(line)
+        block.append(line)
+    flush()
+    return out[:limit]
+
+
 def _names_in(text: str) -> set[str]:
     lowered = text.lower()
     return {name for name in _OTHER_NAMES if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", lowered)}
@@ -201,7 +240,7 @@ def _identity(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
     )
 
 
-def _denial(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
+def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> Verdict | None:
     label, score = _probe(reader, sentence)
     if label != DENIAL or score < _threshold(reader):
         return None
@@ -209,10 +248,10 @@ def _denial(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
         for _capability, pattern, tool_names in _CAPABILITIES:
             usable = [tool for tool in tool_names if tool in facts.tools]
             if usable and pattern.search(sentence):
+                todo = ("Write your reply again and leave it out of the things you cannot do." if listed
+                        else "Call the tool now instead of saying you cannot.")
                 return Verdict(
-                    DENIAL,
-                    f"That is not true here: you can do it with your `{usable[0]}` tool. "
-                    "Call the tool now instead of saying you cannot.",
+                    DENIAL, f"That is not true here: you can do it with your `{usable[0]}` tool. {todo}",
                     sentence, score,
                 )
     if facts.memory_on and _MEMORY_WORDS.search(sentence):
@@ -328,15 +367,16 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
     reader = _reader()
     if reader is None or not (reply or "").strip():
         return None
-    parts = sense_module.sentences(reply)
-    for index, sentence in enumerate(parts):
-        verdict = _identity(reader, sentence, facts) or _denial(reader, sentence, facts)
+    read = _sentences(reply)
+    for index, (sentence, listed) in enumerate(read):
+        verdict = _identity(reader, sentence, facts) or _denial(reader, sentence, facts, listed)
         if verdict is None and index < 2:
             verdict = _meta(reader, sentence)
         if verdict is not None:
             return verdict
     if not final:
         return None
+    parts = [sentence for sentence, listed in read if not listed]
     threshold = _threshold(reader)
     for sentence in parts:
         label, score = _probe(reader, sentence)
@@ -370,16 +410,31 @@ def repair(reply: str, verdict: Verdict, facts: Facts) -> str:
     if reader is None or verdict.kind not in (OTHER_IDENTITY, ADOPTED_USER, META_LEAK, DENIAL):
         return reply
     kept = reply
-    for index, sentence in enumerate(sense_module.sentences(reply, limit=40)):
+    for index, (sentence, listed) in enumerate(_sentences(reply, limit=40)):
         if verdict.kind in (OTHER_IDENTITY, ADOPTED_USER):
             found = _identity(reader, sentence, facts)
         elif verdict.kind == DENIAL:
-            found = _denial(reader, sentence, facts)
+            found = _denial(reader, sentence, facts, listed)
         else:
             found = _meta(reader, sentence) if index < 2 else None
-        if found is not None and found.kind == verdict.kind and sentence in kept:
-            kept = kept.replace(sentence, "", 1)
+        written = sentence[len(_CANNOT_FRAME):] if listed else sentence
+        if found is not None and found.kind == verdict.kind and written in kept:
+            kept = kept.replace(written, "", 1)
+    kept = _without_empty_lists(kept)
     return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", kept)).strip()
+
+
+def _without_empty_lists(text: str) -> str:
+    """Drop list items left empty, and a "what I cannot do" line left with no item under it."""
+    lines = _EMPTY_ITEM.sub("", text).split("\n")
+    out: list[str] = []
+    for index, line in enumerate(lines):
+        if _cannot_lead(line) and not _LIST_ITEM.match(line):
+            following = next((later for later in lines[index + 1:] if later.strip()), "")
+            if not _LIST_ITEM.match(following):
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def reminders(traits: dict[str, int], facts: Facts) -> list[str]:
