@@ -104,6 +104,7 @@ ABOUT_YOU_NO_TOOLS = (
     "Not run: the user asked about you, Kiwibro, and no tool holds that. Answer now in your own words: "
     "who you are and what you can do for them."
 )
+WORKED_OUT = "Exact results for this message. Give them as they are; do not recalculate:\n{lines}"
 NOTHING_TO_NOTE = "There is nothing earlier in this chat to save yet. Tell me what the note should say and I'll keep it."
 SEVERAL_QUESTIONS = "The message asks {count} things. Answer every one, in order:\n{questions}"
 UNANSWERED = (

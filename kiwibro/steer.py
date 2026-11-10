@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from . import autofacts
+from . import autofacts, compute
 from . import sense as sense_module
 
 OTHER_IDENTITY = "other_identity"
@@ -35,6 +35,7 @@ UNBACKED_CLAIM = "unbacked_claim"
 UNKEPT_PROMISE = "unkept_promise"
 META_LEAK = "meta_leak"
 OFF_TOPIC = "off_topic"
+WRONG_RESULT = "wrong_result"
 LOOP = "loop"
 
 # What each kind is called where a person reads it (the inference panel, How it works).
@@ -46,6 +47,7 @@ LABELS = {
     UNKEPT_PROMISE: "announced a step without taking it",
     META_LEAK: "talked about its instructions",
     OFF_TOPIC: "answered something else",
+    WRONG_RESULT: "gave a wrong number",
     LOOP: "went in circles",
 }
 
@@ -146,6 +148,7 @@ class Facts:
     note: str = ""  # Kiwibro's context note for this turn (the model must never read it out)
     learned: tuple[str, ...] = ()  # facts about the user that Kiwibro saved from this message
     told_only: bool = False  # the message states those facts and asks nothing
+    worked: tuple[tuple[str, str], ...] = ()  # sums the message asks for, with their exact results
 
 
 @dataclass(frozen=True)
@@ -412,9 +415,17 @@ def _echo(reply: str, facts: Facts) -> Verdict | None:
     )
 
 
-def _meta(reader: Any, sentence: str) -> Verdict | None:
+# A reply that opens by describing the request ("The user wants to know…") is thinking out loud.
+_NARRATES = re.compile(
+    r"^\W*(?:(?:okay|ok|alright|so|hmm|well)\b[,.\s]*)?the user(?:'s|’s)?\s+(?:wants|asks|asked|is asking|has asked|"
+    r"would like|needs|said|says|is requesting|requests|wrote|message|question|request)\b", re.IGNORECASE)
+_ABOUT_USERS = re.compile(r"\busers?\b", re.IGNORECASE)
+
+
+def _meta(reader: Any, sentence: str, facts: Facts | None = None) -> Verdict | None:
     label, score = _probe(reader, sentence)
-    if label != META_LEAK or score < _threshold(reader):
+    narrates = _NARRATES.match(sentence) is not None and not (facts and _ABOUT_USERS.search(facts.question))
+    if not narrates and (label != META_LEAK or score < _threshold(reader)):
         return None
     return Verdict(
         META_LEAK,
@@ -445,7 +456,7 @@ def early(text: str, facts: Facts, checked: int = 0) -> tuple[Verdict | None, in
             verdict = None  # code puts it right once the reply is whole: no reason to stop the stream
         verdict = verdict or _denial(reader, sentence, facts)
         if verdict is None and index < 2:
-            verdict = _meta(reader, sentence)
+            verdict = _meta(reader, sentence, facts)
         if verdict is not None:
             return verdict, len(complete)
     return None, len(complete)
@@ -522,7 +533,7 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
     for index, (sentence, listed) in enumerate(read):
         verdict = _identity(reader, sentence, facts) or _denial(reader, sentence, facts, listed)
         if verdict is None and index < 2:
-            verdict = _meta(reader, sentence)
+            verdict = _meta(reader, sentence, facts)
         if verdict is not None:
             return verdict
     if not final:
@@ -553,7 +564,24 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
                 "You said what you would do next but did not do it. Do it now with a tool call, then answer.",
                 parts[-1], score,
             )
-    return _unheard(reply, facts) or _off_topic(reader, reply, facts)
+    return _wrong_result(reply, facts) or _unheard(reply, facts) or _off_topic(reader, reply, facts)
+
+
+def _exact(worked: tuple[tuple[str, str], ...]) -> str:
+    return "\n".join(f"{asked} = **{result}**" for asked, result in worked)
+
+
+def _wrong_result(reply: str, facts: Facts) -> Verdict | None:
+    """The message asked for a sum Kiwibro worked out exactly, and the reply gives another number or none."""
+    missing = tuple((asked, result) for asked, result in facts.worked if not compute.gives(reply, result))
+    if not missing:
+        return None
+    exact = "; ".join(f"{asked} = {result}" for asked, result in missing)
+    return Verdict(
+        WRONG_RESULT,
+        f"Kiwibro worked it out exactly: {exact}. Your reply does not give that. Answer again with exactly "
+        "this result.",
+    )
 
 
 _FACT_FILLER = frozenset({"user", "user's", "named", "name", "the", "and", "are", "has", "have", "from", "with"})
@@ -585,6 +613,8 @@ def repair(reply: str, verdict: Verdict, facts: Facts) -> str:
     Used when a second attempt fails the same way: what remains is true, if shorter."""
     if verdict.kind == OFF_TOPIC:
         return verdict.rewrite or reply
+    if verdict.kind == WRONG_RESULT:
+        return _exact(facts.worked)  # the model could not say it: the result itself is the reply
     reader = _reader()
     if reader is None or verdict.kind not in (OTHER_IDENTITY, ADOPTED_USER, META_LEAK, DENIAL):
         return reply
@@ -598,7 +628,7 @@ def repair(reply: str, verdict: Verdict, facts: Facts) -> str:
         elif verdict.kind == DENIAL:
             found = _denial(reader, sentence, facts, listed)
         else:
-            found = _meta(reader, sentence) if index < 2 else None
+            found = _meta(reader, sentence, facts) if index < 2 else None
         written = sentence[len(_CANNOT_FRAME):] if listed else sentence
         if found is None or found.kind != verdict.kind:
             continue

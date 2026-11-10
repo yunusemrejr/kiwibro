@@ -232,7 +232,7 @@ def test_reminders_follow_what_the_model_got_wrong_before():
 
 def test_every_kind_has_a_plain_label():
     kinds = (steer.OTHER_IDENTITY, steer.ADOPTED_USER, steer.DENIAL, steer.UNBACKED_CLAIM,
-             steer.UNKEPT_PROMISE, steer.META_LEAK, steer.OFF_TOPIC, steer.LOOP)
+             steer.UNKEPT_PROMISE, steer.META_LEAK, steer.OFF_TOPIC, steer.WRONG_RESULT, steer.LOOP)
     assert set(steer.LABELS) == set(kinds)
 
 
@@ -514,3 +514,22 @@ def test_a_note_reported_saved_in_the_passive_is_a_claim_too():
     facts = steer.Facts(question="save a note: renew passport before March", tools=frozenset({"note"}))
     verdict = steer.review('Your note has been saved successfully: **"renew passport before March"**.', facts)
     assert verdict is not None and verdict.kind == steer.UNBACKED_CLAIM
+
+
+def test_a_wrong_sum_is_caught_and_the_exact_result_stands_in():
+    facts = steer.Facts(question="what is 12% of 480?", worked=(("12% of 480", "57.6"),))
+    verdict = steer.review("**12% of 480 = 5760.**", facts)
+    assert verdict is not None and verdict.kind == steer.WRONG_RESULT and "12% of 480 = 57.6" in verdict.note
+    assert steer.repair("**12% of 480 = 5760.**", verdict, facts) == "12% of 480 = **57.6**"
+    assert steer.review("12% of 480 is 57.6.", facts) is None
+
+
+def test_a_reply_that_narrates_the_request_is_caught_and_the_narration_dropped():
+    facts = steer.Facts(question="what is 12% of 480?")
+    reply = "The user wants to know 12% of 480. It is 57.6."
+    verdict = steer.review(reply, facts)
+    assert verdict is not None and verdict.kind == steer.META_LEAK
+    assert steer.repair(reply, verdict, facts) == "It is 57.6."
+    # a reply that is about users, because the question was, is left alone
+    story = steer.Facts(question="write a user story for password reset")
+    assert steer.review("The user wants to reset a forgotten password. They open the sign-in page.", story) is None

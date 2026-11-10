@@ -188,3 +188,14 @@ def test_a_short_preface_before_a_tool_call_stays(env: Env):
     env.fake.stream_script = [preface, ChatResult(content="There are no files in the workspace yet.")]
     events, _raw = chat_events(env, "what files do I have?")
     assert not [event for event, _ in events if event == "retract"]
+
+
+def test_a_sum_is_worked_out_before_the_model_replies_and_a_wrong_answer_is_redone(env: Env):
+    env.fake.stream_script = [ChatResult(content="12% of 480 = 5760."), ChatResult(content="12% of 480 is 57.6.")]
+    events, _raw = chat_events(env, "what is 12% of 480?")
+    assert "- 12% of 480 = 57.6" in env.fake.stream_calls[0]["messages"][-1]["content"]
+    assert "Kiwibro worked it out exactly: 12% of 480 = 57.6" in env.fake.stream_calls[1]["messages"][-1]["content"]
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["12% of 480 is 57.6."]
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["steered"] == ["wrong_result"]

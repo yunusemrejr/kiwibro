@@ -29,6 +29,7 @@ const SENSE_LABELS = {
   unkept_promise: "announced a step without taking it",
   meta_leak: "talked about its instructions",
   off_topic: "answered something else",
+  wrong_result: "gave a wrong number",
   loop: "went in circles",
 };
 

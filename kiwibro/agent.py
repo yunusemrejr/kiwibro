@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
+    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
     sessions, steer, terms, toolcall, tools, workspaces,
 )
 from .context import (
@@ -334,6 +334,7 @@ class Turn:
     acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
     learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
     questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
+    worked: tuple[tuple[str, str], ...] = ()  # sums the message asks for, worked out exactly before the reply
     steered: list[str] = field(default_factory=list)  # kinds of correction made this turn
     adapter_task: str | None = None  # the task this turn's adapters follow, read once from the user's words
     adapters_tried: list[Any] = field(default_factory=list)  # on when a reply went wrong; off from then on
@@ -607,6 +608,7 @@ class AgentManager:
         self._page_long_message(turn, user_message, model)
         turn.plan = self._plan_for(turn, settings)
         turn.questions = plan.questions(turn.message) if turn.plan is None else []
+        turn.worked = self._worked(turn)
         captured = self._capture_memory(turn, settings)
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
@@ -857,6 +859,15 @@ class AgentManager:
         note_message = self.db.add_message(turn.conversation_id, "assistant", left, model=model, meta={"plan_open": True})
         turn.last_message_id = note_message["id"]
         turn.emit("delta", {"text": "\n\n" + left})
+
+    @staticmethod
+    def _worked(turn: Turn) -> tuple[tuple[str, str], ...]:
+        """The sums in the message, done exactly in code: a small model gets them wrong with confidence."""
+        try:
+            return tuple(compute.worked(turn.message))
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not work out the sums", turn.conversation_id, exc_info=True)
+            return ()
 
     def _retract_repeats(self, turn: Turn, final: str) -> None:
         """A small model often answers, calls one more tool, and answers again. What it wrote
@@ -1375,12 +1386,15 @@ class AgentManager:
             plan_steps=len(steps),
         ))
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
+        worked = prompts.WORKED_OUT.format(
+            lines="\n".join(f"- {asked} = {result}" for asked, result in turn.worked)
+        ) if turn.worked else ""
         several = prompts.SEVERAL_QUESTIONS.format(
             count=len(turn.questions), questions="\n".join(f"{i}. {q}" for i, q in enumerate(turn.questions, 1)),
         ) if turn.questions else ""
         blocks = [
             inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
-            _directives_note(self.db, turn.conversation_id), plan_note, several, guidance_note, learned,
+            _directives_note(self.db, turn.conversation_id), plan_note, several, worked, guidance_note, learned,
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
@@ -1441,6 +1455,7 @@ class AgentManager:
             note=turn.turn_context or "",
             learned=turn.learned,
             told_only=bool(turn.learned) and autofacts.stated_only(turn.message),
+            worked=turn.worked,
         )
 
     def _trait(self, model: str | None, kind: str) -> int:
