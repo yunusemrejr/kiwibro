@@ -1998,7 +1998,7 @@ def classify_command(
 _EXECUTABLE_SUFFIXES = (".sh", ".bash", ".desktop", ".appimage", ".run", ".bin", ".exe", ".jar",
                         ".py", ".pl", ".rb", ".deb", ".rpm", ".snap", ".flatpakref", ".msi")
 _READ_TOOLS = frozenset({"read_file", "read_files", "list_files", "glob_files", "grep_files",
-                         "file_outline", "git", "system_info", "notify", "recall", "remember",
+                         "file_outline", "git", "system_info", "notify", "recall", "remember", "note",
                          "task_board", "plan", "models", "doc_list", "doc_read", "doc_search"})
 _WEB_TOOLS = frozenset({"web_search", "fetch_page", "multi_search", "fetch_pages", "web_research",
                         "browse_page"})

@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from kiwibro import compute
 from kiwibro.compute import ANALYZE_TABLE, TOOLS, evaluate
 from kiwibro.sandbox import SandboxError, Workspace
 
@@ -283,3 +284,46 @@ def test_aggregate_reports_skipped_non_numeric_cells(tmp_path):
     ctx = types.SimpleNamespace(workspace=ws, memory=None, search=None, conversation_id="c1")
     out = ANALYZE_TABLE.execute(ANALYZE_TABLE.validate({"path": "t.csv", "group_by": "team", "aggregate": "sum:score"}), ctx)
     assert "1 non-numeric value(s) were left out" in out.content
+
+
+# --- sums read from a chat message ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("what is 12% of 480?", [("12% of 480", "57.6")]),
+        ("what is 17 * 23 + 9?", [("17 * 23 + 9", "400")]),
+        ("what's 10 - 3?", [("10 - 3", "7")]),
+        ("what is 3 x 4?", [("3 x 4", "12")]),
+        ("2^10 = ?", [("2^10", "1024")]),
+        ("how much is (2 + 3) * 4", [("(2 + 3) * 4", "20")]),
+        ("what is 2 + 2 and what is 9 * 9?", [("2 + 2", "4"), ("9 * 9", "81")]),
+        ("convert 10 km to miles", [("10 km to miles", "6.21371192237 mi")]),
+        # Numbers that are not sums.
+        ("what happened on 2026-11-10?", []),
+        ("resize to 1920 x 1080", []),
+        ("read pages 10-20", []),
+        ("call me at 555-1234", []),
+        ("tell me about Python 3.15.2", []),
+        ("send 5 emails to John", []),
+        ("explain `a + 1 * 2`", []),
+        ("is 7/2 bigger than 3?", []),
+    ],
+)
+def test_the_sums_a_message_asks_for_are_worked_out(message, expected):
+    assert compute.worked(message) == expected
+
+
+@pytest.mark.parametrize(
+    "reply, result, given",
+    [
+        ("It is 57.6.", "57.6", True),
+        ("**12% of 480 = 5760.**", "57.6", False),
+        ("about 6.21 miles", "6.21371192237 mi", True),
+        ("3,600 in total", "3600", True),
+        ("I am not sure.", "400", False),
+    ],
+)
+def test_a_reply_gives_a_result_to_the_precision_it_writes(reply, result, given):
+    assert compute.gives(reply, result) is given

@@ -4,6 +4,82 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-11-10
+
+Kiwibro runs models itself, watches every reply with a second small model, keeps a
+notebook, and explains itself. The LM Studio API is gone; LM Studio's downloaded models
+are still found and used. Covered by unit, API and browser tests, and tried by hand on
+0.8B to 1.2B models through the llama.cpp build LM Studio installed.
+
+### Added
+
+- **Kiwi Sense** (`kiwibro/sense`, `steer.py`): a reading model that runs beside whichever
+  language model is loaded. The core is WebAssembly (`static/sense/sense.wasm`, 9 KB) with
+  static word-piece embeddings and a trained sentence probe (`sense.bin`, 2.7 MB); the
+  server runs it through `wasmtime` when that package is installed and through a
+  bit-identical Python twin otherwise, the browser always runs the WebAssembly. It reads
+  each sentence of a reply in under a millisecond and `steer.py` checks it against the
+  facts of the turn: speaking as another assistant or as the user, denying a tool that is
+  available, claiming work no tool did, promising work and stopping, thinking out loud,
+  answering the previous question, looping. A wrong opening is cut off while it streams;
+  the model gets one corrected attempt and, failing that, the wrong sentences are removed.
+  What a model needed correcting for is kept per model and rides as a standing reminder.
+  Switch: Settings → Behaviour → Kiwi Sense.
+- **Kiwibro does it itself.** What code can do for certain is not left to the model. Sums
+  and unit conversions in a message are calculated first and handed over, and a reply
+  with a different number is redone. When a model only talks about searching or about
+  saving a note, Kiwibro makes the search or saves the note and says so under the reply.
+  A message with several questions is checked for a skipped one. A reply that repeats
+  your words as its own (“My dog is named Biscuit”) is turned round, an answer the model
+  gave twice in a turn is shown once, and `<answer>`-style wrappers are removed.
+- **More is remembered without the model's help**: birthdays, the names of your people
+  and pets, where they live, children, allergies and health conditions, one favourite
+  per thing. A question about yourself is answered from memory, not from the web.
+- **Models panel**: what is on this computer with disk use and memory fit, delete with the
+  space it frees (Kiwibro's own models; LM Studio's are removed in LM Studio), Hugging Face
+  search and resumable downloads checked against sha256, and the installed engine builds.
+- **Engine installer**: one click downloads the official llama.cpp release build for the
+  machine (Vulkan or CPU), verifies its sha256 and unpacks it into
+  `~/.local/share/kiwibro/runtime`. Nothing is downloaded or run without that click.
+- **Notes**: a notebook (`notes.py`, the `note` tool, the Notes panel). The agent saves,
+  appends to, reads and searches notes; the notes closest to a message ride in its context
+  note; you write them too, in Markdown with tags and pins. Private chats neither read nor
+  write notes.
+- **Recall by meaning**: when no word of a question matches, memories, notes and the
+  compacted part of a long chat are searched by meaning ("what's my wife's name" finds
+  "married to Selin"; "that dairy shop" finds the exchange about the cheese place).
+- **Adapters adjust themselves**: when a reply goes wrong with a task adapter on, the same
+  request first runs again without it. Right without it counts against the adapter: half
+  scale after two such replies, off after four, forgotten after 30 days. The Models panel
+  lists adapters with their tasks and strength, with Restore and Delete. The task is also
+  read by meaning when a message uses no task word.
+- **How it works**: eight animated figures in the app (the big picture, tokens and the
+  context window, the KV cache, tools, compaction, memory and notes, Kiwi Sense, adapters)
+  and a box that runs the real Kiwi Sense in the page.
+- **Maths** in replies: `\( … \)`, `\[ … \]`, `$…$` and `$$…$$` render as MathML.
+- **Home screen and sidebar places** for Notes, Memory, Models and How it works; a new
+  mascot and a palette taken from the kiwi fruit.
+
+### Changed
+
+- **One engine.** Kiwibro starts llama.cpp itself for every model (the former "optimized
+  engine" is the only one). A model server you run yourself can be attached by address.
+  `KIWIBRO_LMSTUDIO_URL`, `KIWIBRO_LMSTUDIO_TOKEN` and `KIWIBRO_ENGINE` are replaced by
+  `KIWIBRO_SERVER_URL` and `KIWIBRO_SERVER_KEY`.
+- **First run** is two visible steps, Install engine and Get a model, instead of an
+  offline notice.
+- **Web search**: a follow-up query that points at the conversation ("how old is he") is
+  completed with the name it points at before it leaves, and merged results lead with the
+  one that answers the question by words and meaning.
+- **Identity prompt**: Kiwibro is the assistant, never the user and never the engine
+  underneath; memories in the user's own words are told about the user.
+- `remember` refuses what the user neither asked to keep nor said about themselves.
+- An empty turn is asked once more and never ends empty.
+
+### Removed
+
+- The LM Studio API client, LM Link listing and the engine switch.
+
 ## [2.6.0] — 2026-11-10
 
 Task adapters, Kiwibro's own model and runtime folders, and an engine that lets go of the

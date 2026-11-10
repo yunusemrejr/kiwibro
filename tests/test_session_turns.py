@@ -1,6 +1,6 @@
 """Agent turn behaviours: retrying an unanswered message, re-titling chats, earlier-chats notes.
 
-Every turn runs for real through POST /api/chat against the in-process fake LM Studio
+Every turn runs for real through POST /api/chat against the in-process fake model client
 from test_backend (no network, temporary data dir).
 """
 
@@ -14,7 +14,7 @@ import pytest
 from test_backend import Env, chat_events
 
 from kiwibro.agent import is_small_talk_title
-from kiwibro.llm import ChatResult, LMStudioError
+from kiwibro.llm import ChatResult, LLMError
 
 
 def _roles(env: Env, conversation_id: str) -> list[str]:
@@ -46,7 +46,7 @@ def _request_text(env: Env, index: int) -> str:
 
 
 def test_retry_after_a_failed_turn_reuses_the_stored_message(env: Env) -> None:
-    env.fake.stream_script = [LMStudioError("stream", "The connection to LM Studio was interrupted.")]
+    env.fake.stream_script = [LLMError("stream", "The connection to the model was interrupted.")]
     events, _raw = chat_events(env, "find PHP news")
     assert events[-1][0] == "error"
     cid = _only_chat_id(env)

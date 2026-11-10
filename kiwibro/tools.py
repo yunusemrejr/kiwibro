@@ -17,7 +17,7 @@ from typing import Any, Callable
 from . import codebase, config, delegate, desktop, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
-from .llm import LMStudioClient
+from .llm import LLMClient
 from .memory import MemoryEngine
 from .sandbox import TERMINALS, SandboxError, Workspace
 from .search import SearchEngine, SearchError
@@ -31,8 +31,9 @@ class ToolContext:
     memory: MemoryEngine
     search: SearchEngine
     conversation_id: str
-    llm: LMStudioClient | None = None
+    llm: LLMClient | None = None
     current_model: str | None = None
+    notes: Any = None  # notes.Notebook, wired by AgentManager
 
 
 @dataclass
@@ -307,6 +308,30 @@ _SPECS: tuple[ToolSpec, ...] = (
         label="Saving a memory",
         summary=lambda args: f"{_MEMORY_VERBS.get(str(args.get('action') or 'save'), 'Remember')}: "
         f"{str(args.get('content', ''))[:80]}",
+    ),
+    ToolSpec(
+        name="note",
+        description=(
+            "Keep the user's notes. save: write a new note. append: add text to an existing note. "
+            "read: show one note. search: find notes."
+        ),
+        parameters=_schema(
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["save", "append", "read", "search"],
+                    "description": "What to do with the notes",
+                },
+                "title": _str("The note's title (which note, for append and read)"),
+                "content": _str("The text to save or append, or the words to search for"),
+            },
+            ["action"],
+        ),
+        risk="read",
+        phase="tool",
+        label="Notes",
+        summary=lambda args: f"{_NOTE_VERBS.get(str(args.get('action') or ''), 'Notes')}: "
+        f"{str(args.get('title') or args.get('content') or '')[:80]}",
     ),
     # --- coding / codebase --------------------------------------------------------
     ToolSpec(
@@ -690,7 +715,7 @@ _SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="model_info",
         description=(
-            "List every model installed in the local LM Studio with its capabilities "
+            "List every installed model with its capabilities "
             "(vision, tools, coding, reasoning, long context…), load state and context "
             "size. Use before delegate when unsure what is available."
         ),
@@ -912,7 +937,7 @@ _MINIMAL = (
     "write_file", "replace_in_file", "run_command", "remember",
 )
 # The tool list renders into the prompt ahead of every message, so a list that
-# changes between turns forces LM Studio to re-prefill the whole conversation
+# changes between turns forces the server to re-prefill the whole conversation
 # (measured on this CPU: 0% reuse and 152 s, against 1-4 s with a stable list).
 # "auto" is therefore ONE fixed set, identical for every turn and conversation,
 # sized for 1-4B models; the rest of the catalog still runs when called by its
@@ -921,7 +946,7 @@ AUTO_TOOLS = (
     "web_search", "web_research", "fetch_page",
     "read_file", "list_files", "grep_files", "write_file", "replace_in_file",
     "run_command", "run_python", "study_file", "undo_changes",
-    "remember", "recall", "task_board", "doc_search", "doc_read",
+    "remember", "note", "recall", "task_board", "doc_search", "doc_read",
     "describe_image", "delegate", "calculate", "workspace",
 )
 
@@ -1274,6 +1299,12 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
             "action": action,
             "old": str(old).strip()[:300] if isinstance(old, str) and old.strip() else None,
         }
+    if name == "note":
+        return {
+            "action": str(args.get("action") or "").strip().lower(),
+            "title": _opt_str(args, "title"),
+            "content": _opt_str(args, "content"),
+        }
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -1501,7 +1532,7 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             caps = ", ".join(entry["capabilities"]) if entry["capabilities"] else "general chat"
             size = f" ~{entry['size_hint_b']}B" if entry["size_hint_b"] else ""
             lines.append(f"- {entry['id']} ({entry['state']}, ctx {entry['context']}{size}): {caps}")
-        content = "Installed LM Studio models:\n" + "\n".join(lines)
+        content = "Installed models:\n" + "\n".join(lines)
         if ctx.current_model:
             content += f"\nCurrent main model: {ctx.current_model}"
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"models": models})
@@ -1559,10 +1590,12 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return _execute_recall(args, ctx)
     if name == "remember":
         return _execute_remember(args, ctx)
+    if name == "note":
+        return _execute_note(args, ctx)
     raise ValueError(f"unknown tool: {name}")
 
 
-def _require_llm(ctx: ToolContext) -> LMStudioClient:
+def _require_llm(ctx: ToolContext) -> LLMClient:
     if ctx.llm is None:
         raise DelegateError("model delegation is unavailable in this context")
     return ctx.llm
@@ -1679,6 +1712,7 @@ def _execute_terminal(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 
 _MEMORY_VERBS = {"save": "Remember", "update": "Update memory", "forget": "Forget"}
+_NOTE_VERBS = {"save": "Save note", "append": "Add to note", "read": "Read note", "search": "Search notes"}
 _UNGROUNDED = (
     "Not saved: a memory must be something the user said about themselves, their work or their "
     "preferences in this conversation — not a fact about Kiwibro, the tools or the web."
@@ -1704,8 +1738,14 @@ _PRIVATE_CHAT = (
 )
 
 
+_NOT_ASKED = (
+    "Not saved: the user did not ask you to remember this and did not say it about themselves. "
+    "Memory is only for facts about the user. Carry on with what they asked."
+)
+
+
 def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    from .memory import grounded  # local: memory imports this package's db/llm layers
+    from .memory import grounded, worth_saving  # local: memory imports this package's db/llm layers
 
     action, content = args.get("action") or "save", args["content"]
     said = _user_words(ctx)
@@ -1730,6 +1770,8 @@ def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             content, old = old, content
     if ctx.memory.about_assistant(content) or (said and not grounded(content, said)):
         return ToolResult(ok=False, content=_UNGROUNDED, preview="Not saved")
+    if said and not worth_saving(_user_words(ctx, latest=True) or said):
+        return ToolResult(ok=False, content=_NOT_ASKED, preview="Not saved")
     if action == "update":
         memory, replaced = ctx.memory.revise(
             old, content, args.get("kind"), source_conversation_id=ctx.conversation_id
@@ -1739,6 +1781,83 @@ def _execute_remember(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         memory = ctx.memory.remember(content, args.get("kind"), source_conversation_id=ctx.conversation_id)
         message = f"Remembered: {memory['content']}"
     return ToolResult(ok=True, content=message, preview=message, meta={"memory_id": memory["id"]})
+
+
+_NOTE_PRIVATE = "Not saved: this chat is private, so nothing from it goes into notes."
+_NOTE_ACTIONS = ("save", "append", "read", "search")
+_NOTE_READ_CHARS = 4000
+
+
+def _execute_note(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """Save, append to, read and search the user's notes (notes.Notebook does the storage)."""
+    notes = ctx.notes
+    if notes is None:
+        return ToolResult(ok=False, content="Notes are not available here.", preview="Notes unavailable")
+    action, title, content = args.get("action") or "", (args.get("title") or "").strip(), args.get("content") or ""
+
+    def private_refusal() -> ToolResult | None:
+        is_private = getattr(ctx.memory, "is_private", None)
+        if callable(is_private) and is_private(ctx.conversation_id):
+            return ToolResult(ok=False, content=_NOTE_PRIVATE, preview="Private chat: not saved")
+        return None
+
+    try:
+        if action == "save":
+            if not content.strip():
+                return ToolResult(ok=False, content="Nothing to save: content is empty.", preview="Nothing to save")
+            refused = private_refusal()
+            if refused is not None:
+                return refused
+            note = notes.save(content, title or None, origin="kiwibro", conversation_id=ctx.conversation_id)
+            return ToolResult(
+                ok=True, content=f"Saved note “{note['title']}”.", preview=_preview(note["body"], 160),
+                meta={"note_id": note["id"]},
+            )
+        if action == "append":
+            if not title or not content.strip():
+                return ToolResult(ok=False, content="Append needs title (the note) and content (the text).",
+                                  preview="Nothing to add")
+            refused = private_refusal()
+            if refused is not None:
+                return refused
+            note = notes.append(title, content)
+            if note is None:
+                return ToolResult(ok=False, content=f"No note called “{title}”. Use action save to create it.",
+                                  preview="No such note")
+            return ToolResult(ok=True, content=f"Added to note “{note['title']}”.",
+                              preview=_preview(content, 160), meta={"note_id": note["id"]})
+        if action == "read":
+            if not title:
+                return ToolResult(ok=False, content="Read needs title (the note's title).", preview="No title")
+            note = notes.find(title)
+            if note is None:
+                message = f"No note called “{title}”."
+                closest = [hit["title"] for hit in notes.search(title, limit=5)]
+                if closest:
+                    message += "\nClosest notes: " + ", ".join(closest)
+                return ToolResult(ok=False, content=message, preview="No such note")
+            text = f"# {note['title']}\n{note['body']}"[:_NOTE_READ_CHARS]
+            return ToolResult(ok=True, content=text, preview=_preview(note["body"]), meta={"note_id": note["id"]})
+        if action == "search":
+            query = content.strip() or title
+            if not query:
+                return ToolResult(ok=False, content="Search needs content (the words to search for).",
+                                  preview="Nothing to search")
+            hits = notes.search(query)
+            if not hits:
+                return ToolResult(ok=True, content="No notes match.", preview="No notes match")
+            lines = []
+            for hit in hits:
+                first = next((line.strip() for line in hit["body"].splitlines() if line.strip()), "")
+                lines.append(f"- {hit['title']}: {first[:100]}")
+            return ToolResult(ok=True, content="\n".join(lines), preview=f"{len(hits)} notes found")
+    except ValueError as exc:
+        return ToolResult(ok=False, content=str(exc), preview=_preview(str(exc)))
+    return ToolResult(
+        ok=False,
+        content=f"Unknown action “{action}”. Use one of: {', '.join(_NOTE_ACTIONS)}.",
+        preview="Unknown action",
+    )
 
 
 def _execute_recall(args: dict[str, Any], ctx: ToolContext) -> ToolResult:

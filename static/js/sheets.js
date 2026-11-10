@@ -321,7 +321,7 @@ export function createMemorySheet({ dialog, api, onChange, onOpenConversation })
     if (!state.memories.length) {
       listEl.append(
         emptyState(
-          "sparkles",
+          "bookmark",
           state.q || state.kind ? "No matches" : "Nothing remembered yet",
           state.q || state.kind
             ? "Try a different search or filter."
@@ -457,15 +457,15 @@ export function createMemorySheet({ dialog, api, onChange, onOpenConversation })
 export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
   const body = dialog.querySelector("#settings-body");
   const versionEl = dialog.querySelector("#settings-version");
-  const footerUrlEl = dialog.querySelector("#settings-lm-url");
+  const footerUrlEl = dialog.querySelector("#settings-engine");
 
   const data = {
     settings: null,
     models: [],
     current: null,
-    lmstudio: false,
-    engine: "lmstudio",
-    direct: null,
+    engineOk: false, // models response engine_ok
+    engine: "local", // "local" or "attached" (/api/engine)
+    direct: null, // /api/engine "direct" block: the local engine's runtime, models and servers
     health: null,
     workspace: null,
     dataDir: "",
@@ -504,13 +504,13 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     if (modelsResult.status === "fulfilled") {
       data.models = modelsResult.value.models || [];
       data.current = modelsResult.value.current || data.settings?.model || null;
-      data.lmstudio = Boolean(modelsResult.value.lmstudio);
+      data.engineOk = Boolean(modelsResult.value.engine_ok);
     }
     if (healthResult.status === "fulfilled") data.health = healthResult.value;
     if (workspaceResult.status === "fulfilled") data.workspace = workspaceResult.value;
-    // If the engine call fails, the saved setting still says which engine is active.
+    // If the engine call fails, the health check still says which mode is running.
     const engineData = engineResult.status === "fulfilled" ? engineResult.value : null;
-    data.engine = engineData?.engine || data.settings?.engine || "lmstudio";
+    data.engine = engineData?.engine || data.health?.engine || "local";
     data.direct = engineData?.direct || null;
 
     data.loading = false;
@@ -633,63 +633,52 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     return group;
   }
 
-  // LM Studio's address (LM Link models already come through this computer's server) and
-  // an API token for servers with authentication on. The token is write-only here.
-  function serverRows() {
-    const urlInput = el("input", {
-      class: "setting-input",
-      type: "text",
-      value: data.settings.lmstudio_url || "",
-      "aria-label": "LM Studio server address",
-      spellcheck: "false",
-      autocomplete: "off",
-    });
-    urlInput.addEventListener("change", async () => {
-      const previous = data.settings.lmstudio_url || "";
-      const value = urlInput.value.trim();
-      if (!value || value === previous) {
-        urlInput.value = previous;
-        return;
-      }
-      if (await patch({ lmstudio_url: value }, () => (urlInput.value = previous))) await load();
-    });
-    const tokenSet = Boolean(data.settings.lmstudio_token_set);
-    const tokenInput = el("input", {
-      class: "setting-input",
-      type: "password",
-      placeholder: tokenSet ? "Saved · type to replace" : "Not needed on this computer",
-      "aria-label": "LM Studio API token",
-      autocomplete: "off",
-    });
-    tokenInput.addEventListener("change", async () => {
-      const value = tokenInput.value.trim();
-      if (!value) return;
-      tokenInput.value = "";
-      if (await patch({ lmstudio_token: value })) await load();
-    });
-    const tokenControls = [tokenInput];
-    if (tokenSet) {
-      const remove = el("button", { class: "text-btn", type: "button", text: "Remove" });
-      remove.addEventListener("click", async () => {
-        if (await patch({ lmstudio_token: "" })) await load();
-      });
-      tokenControls.push(remove);
-    }
-    const row = (name, description, controls) =>
-      el("div", { class: "setting-row" }, [
-        el("div", { class: "setting-text" }, [
-          el("div", { class: "setting-name", text: name }),
-          el("div", { class: "setting-desc", text: description }),
-        ]),
-        ...controls,
-      ]);
-    return el("div", {}, [
-      row("Server", "Models linked with LM Link appear here through this computer's LM Studio.", [urlInput]),
-      row("API token", "Only for an LM Studio server that requires authentication.", tokenControls),
+  // One labelled setting: name and description on the left, its control(s) on the right.
+  function row(name, description, controls) {
+    return el("div", { class: "setting-row" }, [
+      el("div", { class: "setting-text" }, [
+        el("div", { class: "setting-name", text: name }),
+        el("div", { class: "setting-desc", text: description }),
+      ]),
+      ...controls,
     ]);
   }
 
-  // Direct mode: which llama.cpp build runs the models, where the model files are, and how
+  // The model server address. Empty keeps models on this computer; an address makes Kiwibro
+  // use a llama.cpp-compatible server instead.
+  function serverRow() {
+    const previous = () => data.settings.server_url || "";
+    const input = el("input", {
+      class: "setting-input",
+      type: "text",
+      value: previous(),
+      placeholder: "http://127.0.0.1:8080",
+      "aria-label": "Model server address",
+      spellcheck: "false",
+      autocomplete: "off",
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+    input.addEventListener("change", async () => {
+      const value = input.value.trim();
+      if (value === previous()) {
+        input.value = previous();
+        return;
+      }
+      if (await patch({ server_url: value }, () => (input.value = previous()))) await load();
+    });
+    return row(
+      "Model server",
+      "Optional. Leave empty and Kiwibro runs models itself. Set an address to use a llama.cpp-compatible server instead.",
+      [input],
+    );
+  }
+
+  // Local mode: which llama.cpp build runs the models, where the model files are, and how
   // many CPU threads it may use. Each save reloads the sheet so it shows what was found.
   function directRows() {
     const direct = data.direct;
@@ -746,14 +735,6 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
       if (threads === previous) return;
       if (await patch({ direct_threads: threads }, () => (threadsInput.value = previous || ""))) await load();
     });
-    const row = (name, description, controls) =>
-      el("div", { class: "setting-row" }, [
-        el("div", { class: "setting-text" }, [
-          el("div", { class: "setting-name", text: name }),
-          el("div", { class: "setting-desc", text: description }),
-        ]),
-        ...controls,
-      ]);
     const rows = [
       switchRow({
         name: "Graphics acceleration",
@@ -768,8 +749,8 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
           if (ok) await load();
         },
       }),
-      row("llama.cpp runtime", "Empty uses LM Studio's bundled engine. Set a path to use your own llama-server build.", [runtimeInput]),
-      row("Models folder", "Empty scans LM Studio's models folders.", [modelsInput]),
+      row("llama.cpp runtime", "Empty uses the engine Kiwibro installed or found on this computer. Set a path to use your own llama-server build.", [runtimeInput]),
+      row("Models folder", "An extra folder of GGUF models. Kiwibro's own folder and LM Studio's folder (read-only) are always listed.", [modelsInput]),
       row("CPU threads", "Auto uses every physical core.", [threadsInput]),
     ];
 
@@ -879,46 +860,33 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     }
     if (!data.settings) return;
 
-    /* --- Models: LM Studio API or direct llama.cpp --- */
+    /* --- Models: the model server address, or the local engine --- */
     const lmSection = group("Models");
     const modelsCount = data.models.length;
-    const directMode = data.engine === "direct";
+    const attached = data.engine === "attached";
     const direct = data.direct;
     const directReady = Boolean(direct?.available && direct?.runtime);
+    const ready = attached ? data.engineOk : directReady;
 
-    // The engine switch comes first: it decides what the status card below describes.
-    lmSection.append(
-      switchRow({
-        name: "Optimized engine",
-        description:
-          "Runs LM Studio's downloaded models with Kiwibro's own llama.cpp setup: on the GPU when there is one, " +
-          "thinking capped without re-reading the chat, and LM Studio doesn't need to be open.",
-        checked: directMode,
-        onChange: async (next, control) => {
-          const ok = await patch({ engine: next ? "direct" : "lmstudio" }, () =>
-            control.setAttribute("aria-checked", String(!next)),
-          );
-          if (ok) await load();
-        },
-      }),
-    );
+    // The address comes first: it decides which engine the status card below describes.
+    lmSection.append(serverRow());
 
     let statusName;
     let statusSub;
-    if (directMode) {
+    if (attached) {
+      statusName = data.engineOk ? "Server connected" : "Server offline";
+      statusSub = data.engineOk
+        ? `${data.settings.server_url} · ${modelsCount} model${modelsCount === 1 ? "" : "s"}`
+        : "Check the address above, then reconnect.";
+    } else {
       const count = direct?.models_count || 0;
-      statusName = directReady ? "Optimized engine ready" : "Optimized engine unavailable";
+      statusName = directReady ? "Engine ready" : "No engine installed";
       statusSub = directReady
         ? [direct.runtime.label, direct.gpu, `${count} model${count === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
         : direct?.error || "No llama.cpp runtime was found.";
-    } else {
-      statusName = data.lmstudio ? "LM Studio is running" : "LM Studio isn't running";
-      statusSub = data.lmstudio
-        ? `${data.settings.lmstudio_url} · ${modelsCount} model${modelsCount === 1 ? "" : "s"}`
-        : "Start LM Studio, then reconnect.";
     }
     const statusCard = el("div", { class: "status-card" }, [
-      el("span", { class: "status-dot", "data-tone": (directMode ? directReady : data.lmstudio) ? "loaded" : "warn" }),
+      el("span", { class: "status-dot", "data-tone": ready ? "loaded" : "warn" }),
       el("div", { class: "status-text" }, [
         el("div", { class: "status-name", text: statusName }),
         el("div", { class: "status-sub", text: statusSub }),
@@ -929,8 +897,8 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
           {
             class: "icon-btn menu-refresh",
             type: "button",
-            title: directMode ? "Refresh" : "Reconnect",
-            "aria-label": directMode ? "Refresh" : "Reconnect to LM Studio",
+            title: attached ? "Reconnect" : "Refresh",
+            "aria-label": attached ? "Reconnect to the model server" : "Refresh",
           },
           [icon("refresh")],
         );
@@ -944,19 +912,21 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     ]);
     lmSection.append(statusCard);
 
-    if (data.lmstudio && modelsCount) {
+    if (data.engineOk && modelsCount) {
       const modelList = el("div", { class: "model-list" });
       for (const model of data.models) modelList.append(modelRow(model, model.id === data.current));
       lmSection.append(modelList);
     } else if (!data.models.length) {
-      const emptyText = directMode
-        ? "No downloaded models were found in LM Studio's models folder."
-        : data.lmstudio
-          ? "No chat models are available in LM Studio."
-          : "Models will appear here once LM Studio is reachable.";
+      const emptyText = !data.engineOk
+        ? attached
+          ? "Models will appear here once the server is reachable."
+          : "Models will appear here once the engine is installed."
+        : attached
+          ? "The server has no models loaded."
+          : "No models yet. Add GGUF files to a models folder below.";
       lmSection.append(el("div", { class: "model-empty", text: emptyText }));
     }
-    lmSection.append(directMode ? directRows() : serverRows());
+    if (!attached) lmSection.append(directRows());
     body.append(lmSection);
 
     // One select row per enum setting; a failed save puts the old value back.
@@ -1066,6 +1036,17 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
         checked: data.settings.memory_enabled,
         onChange: async (next, control) => {
           await patch({ memory_enabled: next }, () => {
+            control.setAttribute("aria-checked", String(!next));
+          });
+        },
+      }),
+      switchRow({
+        name: "Kiwi Sense",
+        description:
+          "Reads every reply as it is written and corrects it when the model speaks as someone else, denies a tool it has, or claims work it did not do.",
+        checked: data.settings.sense_enabled,
+        onChange: async (next, control) => {
+          await patch({ sense_enabled: next }, () => {
             control.setAttribute("aria-checked", String(!next));
           });
         },
@@ -1200,7 +1181,11 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
     body.append(dataSection);
 
     versionEl.textContent = data.health?.version ? `Kiwibro ${data.health.version}` : "Kiwibro";
-    footerUrlEl.textContent = isMock ? "Mock mode" : "Local only";
+    footerUrlEl.textContent = isMock
+      ? "Mock mode"
+      : attached
+        ? data.settings.server_url || "Model server"
+        : "Runs on this computer";
   }
 
   async function open() {

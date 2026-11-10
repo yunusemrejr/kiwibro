@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#1b1b1f">
+  <meta name="theme-color" content="#15160f">
   <meta name="description" content="Kiwibro — a local AI agent that lives on your machine.">
   <title>Kiwibro</title>
   <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
@@ -14,6 +14,10 @@
   <link rel="stylesheet" href="/static/css/markdown.css">
   <link rel="stylesheet" href="/static/css/attachments.css">
   <link rel="stylesheet" href="/static/css/inference.css">
+  <link rel="stylesheet" href="/static/css/shell.css">
+  <link rel="stylesheet" href="/static/css/models.css">
+  <link rel="stylesheet" href="/static/css/notes.css">
+  <link rel="stylesheet" href="/static/css/how.css">
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
@@ -52,6 +56,18 @@
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M20.5 15.5 16 11l-8.5 8"/></symbol>
     <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3 21l1.4-5.6A8.5 8.5 0 1 1 21 12Z"/></symbol>
     <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8Z"/><path d="M14 3v5h5M9.5 14h5M12 11.5v5"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2.2"/><path d="M9 3v18M12.5 8H16M12.5 12H16"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M7 3.5h10a1 1 0 0 1 1 1V21l-6-4.2L6 21V4.5a1 1 0 0 1 1-1Z"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2.8 20 7.2v9.6l-8 4.4-8-4.4V7.2l8-4.4Z"/><path d="M4 7.2l8 4.4 8-4.4M12 11.6v9.6"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18H14a4 4 0 0 0 4-4V8.5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5L8 5.5Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 2.5V6M14.5 2.5V6M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.3a7.5 7.5 0 1 0 10 0"/></symbol>
   </svg>
 
   <div class="app" id="app">
@@ -74,7 +90,7 @@
       </div>
       <div class="header-right">
         <button class="icon-btn" id="memory-btn" type="button" aria-label="Memory" title="Memory">
-          <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg>
           <span class="icon-badge" id="memory-badge" hidden>0</span>
         </button>
         <button class="icon-btn" id="settings-btn" type="button" aria-label="Settings" title="Settings — Ctrl+,">
@@ -90,6 +106,27 @@
             <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
             <span>New chat</span>
           </button>
+          <nav class="places" aria-label="Kiwibro">
+            <button class="place" id="place-notes" type="button" data-tone="tan">
+              <svg class="icon" aria-hidden="true"><use href="#i-note"/></svg>
+              <span class="place-name">Notes</span>
+              <span class="place-count" id="place-notes-count"></span>
+            </button>
+            <button class="place" id="place-memory" type="button" data-tone="tan">
+              <svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg>
+              <span class="place-name">Memory</span>
+              <span class="place-count" id="place-memory-count"></span>
+            </button>
+            <button class="place" id="place-models" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg>
+              <span class="place-name">Models</span>
+              <span class="place-count" id="place-models-count"></span>
+            </button>
+            <button class="place" id="place-how" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>
+              <span class="place-name">How it works</span>
+            </button>
+          </nav>
           <div class="conv-filter"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="conv-search" placeholder="Filter chats…" aria-label="Filter chats" autocomplete="off" spellcheck="false"></div>
         </div>
         <nav class="conv-scroll" aria-label="Conversations">
@@ -97,11 +134,7 @@
           <p class="conv-empty" id="conv-empty" hidden>No chats yet.</p>
         </nav>
         <div class="sidebar-footer">
-          <button class="sidebar-stat" id="sidebar-memory" type="button" title="Memory">
-            <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
-            <span id="sidebar-memory-count">—</span>
-          </button>
-          <button class="sidebar-stat sidebar-model" id="sidebar-model" type="button" title="Model">
+          <button class="sidebar-stat sidebar-model" id="sidebar-model" type="button" title="Models">
             <span class="status-dot" id="sidebar-dot" data-tone="idle" aria-hidden="true"></span>
             <span id="sidebar-model-name">—</span>
           </button>
@@ -113,23 +146,87 @@
         <div class="transcript" id="transcript" role="log" aria-label="Conversation">
           <div class="chat" id="chat">
             <section class="empty" id="empty-state" aria-labelledby="empty-title">
-              <div class="empty-mark">
-                <img src="/static/img/kiwibro.svg" alt="" width="120" height="120">
+              <div class="hero-bird" aria-hidden="true">
+                <svg class="hero-slice" viewBox="0 0 200 200">
+                  <circle class="hero-slice-flesh" cx="100" cy="100" r="96"/>
+                  <g class="hero-slice-seeds">
+                    <ellipse cx="100" cy="30" rx="3" ry="6"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(30 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(60 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(90 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(120 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(150 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(180 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(210 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(240 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(270 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(300 100 100)"/>
+                    <ellipse cx="100" cy="30" rx="3" ry="6" transform="rotate(330 100 100)"/>
+                  </g>
+                </svg>
+                <svg class="hero-kiwi" viewBox="5 8 60 56">
+                  <defs>
+                    <linearGradient id="hkSkin" x1="16" y1="14" x2="40" y2="58" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#C9A268"/><stop offset="1" stop-color="#8F6B3C"/></linearGradient>
+                    <radialGradient id="hkFlesh" cx="27.5" cy="39" r="13.5" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#D6EE8E"/><stop offset=".45" stop-color="#A9D95A"/><stop offset="1" stop-color="#7DB83A"/></radialGradient>
+                    <linearGradient id="hkBeak" x1="50" y1="17" x2="63" y2="28" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F7EBCF"/><stop offset="1" stop-color="#D8BC8A"/></linearGradient>
+                  </defs>
+                  <g stroke="#E0C08C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                    <path d="M22.5 55v5.2M22.5 60.2l-3.6 1.5M22.5 60.2l3.2 1.6"/>
+                    <path d="M33 55v5.2M33 60.2l-3.4 1.5M33 60.2l3.4 1.6"/>
+                  </g>
+                  <g class="hero-kiwi-body">
+                    <path d="M8.5 40C8.5 26.5 18.5 17.2 31 17.2c3 0 5-1.6 7-3.4 4.3-3.8 11.6-2.9 14.3 2.2 2.2 4.2.7 9-3.3 11.2-1.8 1-2.3 3.3-2.3 6.3.2 1.8.5 3.7.5 5.8C47.2 50 39.2 57.5 28 57.5 17 57.5 8.5 50.5 8.5 40Z" fill="url(#hkSkin)"/>
+                    <path d="M12.6 31.5c2.6-6 8.2-10.3 15.2-11.3" stroke="#F3DCA8" stroke-width="1.8" stroke-linecap="round" opacity=".42" fill="none"/>
+                    <circle cx="27.5" cy="39" r="13.5" fill="url(#hkFlesh)"/>
+                    <circle cx="27.5" cy="39" r="13.5" fill="none" stroke="#5F9628" stroke-width="1.2" opacity=".7"/>
+                    <g stroke="#E4F4A8" stroke-width=".9" stroke-linecap="round" opacity=".55">
+                      <path d="M27.5 31.2v-3.4M33 33.5l2.4-2.4M35.3 39h3.4M33 44.5l2.4 2.4M27.5 46.8v3.4M22 44.5l-2.4 2.4M19.7 39h-3.4M22 33.5l-2.4-2.4"/>
+                    </g>
+                    <ellipse cx="27.5" cy="39" rx="4.3" ry="4.7" fill="#F6F3CE"/>
+                    <g fill="#1B1D12">
+                      <ellipse cx="27.5" cy="31.6" rx=".95" ry="1.55"/>
+                      <ellipse cx="27.5" cy="46.4" rx=".95" ry="1.55"/>
+                      <ellipse cx="20.1" cy="39" rx="1.55" ry=".95"/>
+                      <ellipse cx="34.9" cy="39" rx="1.55" ry=".95"/>
+                      <ellipse cx="22.27" cy="33.77" rx=".95" ry="1.55" transform="rotate(-45 22.27 33.77)"/>
+                      <ellipse cx="32.73" cy="33.77" rx=".95" ry="1.55" transform="rotate(45 32.73 33.77)"/>
+                      <ellipse cx="22.27" cy="44.23" rx=".95" ry="1.55" transform="rotate(45 22.27 44.23)"/>
+                      <ellipse cx="32.73" cy="44.23" rx=".95" ry="1.55" transform="rotate(-45 32.73 44.23)"/>
+                    </g>
+                    <path d="M51.6 16.9c4.9 2.3 9.3 6.9 11.8 12.9-4.9-2-9.6-4.9-13.3-8.4-.3-1.7.3-3.4 1.5-4.5Z" fill="url(#hkBeak)"/>
+                    <g class="hero-kiwi-eye">
+                      <circle cx="45.7" cy="18.6" r="2.25" fill="#1B1D12"/>
+                      <circle cx="46.4" cy="17.8" r=".75" fill="#FBF8EC"/>
+                    </g>
+                  </g>
+                </svg>
               </div>
               <h1 class="empty-title" id="empty-title">Kiwibro</h1>
               <p class="empty-sub">A local AI that keeps its beak out of the cloud.</p>
-              <div class="suggestions" role="group" aria-label="Suggestions">
-                <button class="suggestion" type="button" data-prompt="What can you do?">
-                  <svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg>
-                  <span>What can you do?</span>
+              <button class="hero-setup" id="hero-setup" type="button" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+                <span id="hero-setup-text"></span>
+              </button>
+              <div class="starters" role="group" aria-label="Things to try">
+                <button class="starter" type="button" data-prompt="What's in the news today? Search the web.">
+                  <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>
+                  <span class="starter-name">Look it up</span>
+                  <span class="starter-ask">What's in the news today?</span>
                 </button>
-                <button class="suggestion" type="button" data-prompt="Summarise a long article in three bullets">
-                  <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
-                  <span>Summarise something</span>
-                </button>
-                <button class="suggestion" type="button" data-prompt="Write a small Python script that renames files by date">
+                <button class="starter" type="button" data-prompt="How much free disk space do I have?">
                   <svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>
-                  <span>Write a script</span>
+                  <span class="starter-name">Use this computer</span>
+                  <span class="starter-ask">How much free disk space do I have?</span>
+                </button>
+                <button class="starter" type="button" data-prompt="Write a Python script that renames photos by the date they were taken.">
+                  <svg class="icon" aria-hidden="true"><use href="#i-file-plus"/></svg>
+                  <span class="starter-name">Write code</span>
+                  <span class="starter-ask">A script that renames photos by date</span>
+                </button>
+                <button class="starter" type="button" data-tone="tan" data-prompt="What do you remember about me?">
+                  <svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg>
+                  <span class="starter-name">Remember</span>
+                  <span class="starter-ask">What do you remember about me?</span>
                 </button>
               </div>
             </section>
@@ -243,8 +340,45 @@
     <div class="sheet-scroll" id="settings-body"></div>
     <div class="sheet-foot">
       <span class="sheet-foot-hint" id="settings-version">Kiwibro</span>
-      <span class="sheet-foot-hint" id="settings-lm-url"></span>
+      <span class="sheet-foot-hint" id="settings-engine"></span>
     </div>
+  </dialog>
+
+  <dialog class="sheet sheet-wide" id="models-sheet" aria-labelledby="models-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="models-title">Models</h2>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close models" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-scroll" id="models-body"></div>
+  </dialog>
+
+  <dialog class="sheet sheet-wide" id="notes-sheet" aria-labelledby="notes-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="notes-title">Notes</h2>
+        <span class="sheet-count" id="notes-count"></span>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close notes" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body" id="notes-body"></div>
+  </dialog>
+
+  <dialog class="sheet sheet-wide" id="how-sheet" aria-labelledby="how-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="how-title">How it works</h2>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close how it works" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body" id="how-body"></div>
   </dialog>
 
   <noscript>

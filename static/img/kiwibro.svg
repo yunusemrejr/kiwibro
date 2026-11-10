@@ -1,40 +1,48 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="7.7 9.2 56 56" width="64" height="64" role="img" aria-labelledby="kb-title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="5 8 60 56" width="64" height="64" role="img" aria-labelledby="kb-title">
   <title id="kb-title">Kiwibro</title>
   <defs>
-    <linearGradient id="kbBody" x1="16" y1="17" x2="43" y2="51" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#B9E78D"/>
-      <stop offset="1" stop-color="#83BA50"/>
+    <linearGradient id="kbSkin" x1="16" y1="14" x2="40" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C9A268"/>
+      <stop offset="1" stop-color="#8F6B3C"/>
     </linearGradient>
-    <linearGradient id="kbBeak" x1="42" y1="29" x2="61" y2="37" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#F6EBD4"/>
-      <stop offset="1" stop-color="#C7A974"/>
+    <radialGradient id="kbFlesh" cx="27.5" cy="39" r="13.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D6EE8E"/>
+      <stop offset=".45" stop-color="#A9D95A"/>
+      <stop offset="1" stop-color="#7DB83A"/>
+    </radialGradient>
+    <linearGradient id="kbBeak" x1="50" y1="17" x2="63" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F7EBCF"/>
+      <stop offset="1" stop-color="#D8BC8A"/>
     </linearGradient>
-    <clipPath id="kbClip">
-      <circle cx="27.4" cy="33.6" r="17.3"/>
-    </clipPath>
   </defs>
-  <g transform="rotate(-5 32 34)">
-    <!-- tiny feet -->
-    <g stroke="#CBB68F" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <path d="M23.7 50.4 22.4 55.6"/>
-      <path d="M22.4 55.6 19.6 57.2"/>
-      <path d="M22.4 55.6 24.9 57.1"/>
-      <path d="M32.9 51.1 34.8 56.4"/>
-      <path d="M34.8 56.4 32 58"/>
-      <path d="M34.8 56.4 37.4 57.7"/>
-    </g>
-    <!-- round body -->
-    <circle cx="27.4" cy="33.6" r="17.3" fill="url(#kbBody)"/>
-    <g clip-path="url(#kbClip)">
-      <path d="M9.5 44.5c5 4.6 11.8 7.2 19 7.2 6.7 0 12.9-2.3 17.7-6.2-1.5 7.4-8.6 13.1-19.2 13.1-8.9 0-15.9-4.5-18.5-9.8z" fill="#4F7F2D" opacity=".22"/>
-      <path d="M14.4 32.8c3.3 3.1 3.8 8.3 1.2 11.9" stroke="#6DA23F" stroke-width="2" stroke-linecap="round" opacity=".32" fill="none"/>
-    </g>
-    <path d="M17.6 24.5c2.6-4.1 6.8-6.8 11.5-7.4" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" opacity=".3" fill="none"/>
-    <!-- long slanted beak -->
-    <path d="M43.1 29.9c7 1.5 13.2 4.4 18.1 6.7-7.1 1-12.8.6-17.5-.4-1.2-2.1-1.4-4.2-.6-6.3z" fill="url(#kbBeak)" stroke="#B99F6E" stroke-opacity=".55" stroke-width=".7"/>
-    <path d="M44 34c5.7.8 10.9 1.7 15.7 2.3" stroke="#C7B183" stroke-width=".9" opacity=".5" fill="none"/>
-    <!-- eye -->
-    <circle cx="37.6" cy="25.8" r="3" fill="#20211F"/>
-    <circle cx="36.7" cy="24.8" r=".9" fill="#F5F3EF"/>
+  <!-- feet -->
+  <g stroke="#E0C08C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M22.5 55v5.2M22.5 60.2l-3.6 1.5M22.5 60.2l3.2 1.6"/>
+    <path d="M33 55v5.2M33 60.2l-3.4 1.5M33 60.2l3.4 1.6"/>
   </g>
+  <!-- body and head: one fuzzy kiwi -->
+  <path d="M8.5 40C8.5 26.5 18.5 17.2 31 17.2c3 0 5-1.6 7-3.4 4.3-3.8 11.6-2.9 14.3 2.2 2.2 4.2 .7 9-3.3 11.2-1.8 1-2.3 3.3-2.3 6.3.2 1.8.5 3.7.5 5.8C47.2 50 39.2 57.5 28 57.5 17 57.5 8.5 50.5 8.5 40Z" fill="url(#kbSkin)"/>
+  <path d="M12.6 31.5c2.6-6 8.2-10.3 15.2-11.3" stroke="#F3DCA8" stroke-width="1.8" stroke-linecap="round" opacity=".42" fill="none"/>
+  <!-- the cut fruit: flesh, pale core, seeds -->
+  <circle cx="27.5" cy="39" r="13.5" fill="url(#kbFlesh)"/>
+  <circle cx="27.5" cy="39" r="13.5" fill="none" stroke="#5F9628" stroke-width="1.2" opacity=".7"/>
+  <g stroke="#E4F4A8" stroke-width=".9" stroke-linecap="round" opacity=".55">
+    <path d="M27.5 31.2v-3.4M33 33.5l2.4-2.4M35.3 39h3.4M33 44.5l2.4 2.4M27.5 46.8v3.4M22 44.5l-2.4 2.4M19.7 39h-3.4M22 33.5l-2.4-2.4"/>
+  </g>
+  <ellipse cx="27.5" cy="39" rx="4.3" ry="4.7" fill="#F6F3CE"/>
+  <g fill="#1B1D12">
+    <ellipse cx="27.5" cy="31.6" rx=".95" ry="1.55"/>
+    <ellipse cx="27.5" cy="46.4" rx=".95" ry="1.55"/>
+    <ellipse cx="20.1" cy="39" rx="1.55" ry=".95"/>
+    <ellipse cx="34.9" cy="39" rx="1.55" ry=".95"/>
+    <ellipse cx="22.27" cy="33.77" rx=".95" ry="1.55" transform="rotate(-45 22.27 33.77)"/>
+    <ellipse cx="32.73" cy="33.77" rx=".95" ry="1.55" transform="rotate(45 32.73 33.77)"/>
+    <ellipse cx="22.27" cy="44.23" rx=".95" ry="1.55" transform="rotate(45 22.27 44.23)"/>
+    <ellipse cx="32.73" cy="44.23" rx=".95" ry="1.55" transform="rotate(-45 32.73 44.23)"/>
+  </g>
+  <!-- long beak -->
+  <path d="M51.6 16.9c4.9 2.3 9.3 6.9 11.8 12.9-4.9-2-9.6-4.9-13.3-8.4-.3-1.7.3-3.4 1.5-4.5Z" fill="url(#kbBeak)"/>
+  <!-- eye -->
+  <circle cx="45.7" cy="18.6" r="2.25" fill="#1B1D12"/>
+  <circle cx="46.4" cy="17.8" r=".75" fill="#FBF8EC"/>
 </svg>

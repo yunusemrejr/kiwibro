@@ -1,7 +1,7 @@
 """Offline pytest suite for the Kiwibro backend.
 
-Every test uses a temporary data dir/workspace and an in-process fake LM Studio
-client: no network, no real LM Studio, no writes outside the repo sandbox.
+Every test uses a temporary data dir/workspace and an in-process fake model
+client: no network, no real model server, no writes outside the repo sandbox.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from kiwibro.llm import (
     ChatResult,
     Completion,
     ContextLimitError,
-    LMStudioClient,
-    LMStudioError,
+    LLMClient,
+    LLMError,
     ToolsUnsupportedError,
     classify_http_error,
     normalize_model,
@@ -58,7 +58,7 @@ MODEL = {
 
 
 class FakeLLM:
-    """Stands in for LMStudioClient methods; scripted per test."""
+    """Stands in for LLMClient methods; scripted per test."""
 
     def __init__(self) -> None:
         self.models: list[dict[str, Any]] = [dict(MODEL)]
@@ -71,7 +71,7 @@ class FakeLLM:
 
     def list_models(self, force: bool = False) -> list[dict[str, Any]]:
         if self.offline:
-            raise LMStudioError("connection", "LM Studio is not reachable.")
+            raise LLMError("connection", "The model server at http://127.0.0.1:9 is not reachable.")
         return [dict(model) for model in self.models]
 
     def complete(
@@ -128,7 +128,7 @@ class FakeLLM:
         if isinstance(item, tuple) and item[0] == "partial_error":
             if on_delta:
                 on_delta("partial text before the error")
-            raise LMStudioError("stream", "The connection to LM Studio was interrupted.")
+            raise LLMError("stream", "The connection to the model was interrupted.")
         if isinstance(item, tuple) and item[0] == "abort_partial":
             if on_delta:
                 on_delta("partial text before abort")
@@ -181,7 +181,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
             "TESTING": True,
             "KIWIBRO_DATA_DIR": str(data_dir),
             "KIWIBRO_WORKSPACE": str(workspace),
-            "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9",
+            "KIWIBRO_SERVER_URL": "http://127.0.0.1:9",
         }
     )
     svc = app.extensions["kiwibro"]
@@ -504,7 +504,7 @@ def test_compaction_falls_back_to_hard_trim(env: Env, monkeypatch: pytest.Monkey
         env.svc.db.add_message(conversation["id"], "assistant", f"answer {index} " + "filler " * 60)
 
     def failing_complete(**kwargs):
-        raise LMStudioError("server", "no summary for you")
+        raise LLMError("server", "no summary for you")
 
     monkeypatch.setattr(env.svc.llm, "complete", failing_complete)
     prepared = env.svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
@@ -990,7 +990,7 @@ def test_lm_client_decodes_utf8_and_accumulates_tool_calls(monkeypatch: pytest.M
     ]
     monkeypatch.setattr("kiwibro.llm.requests.post", lambda *a, **k: _sse_response(lines))
     deltas: list[str] = []
-    client = LMStudioClient(lambda: {"lmstudio_url": "http://fake"})
+    client = LLMClient(lambda: {"server_url": "http://fake"})
     result = client.stream_chat(
         model="fake-1", messages=[{"role": "user", "content": "hi"}], on_delta=deltas.append
     )
@@ -1031,7 +1031,7 @@ def test_lm_client_retries_without_tools(monkeypatch: pytest.MonkeyPatch):
         return _sse_response(success_lines)
 
     monkeypatch.setattr("kiwibro.llm.requests.post", fake_post)
-    client = LMStudioClient(lambda: {"lmstudio_url": "http://fake"})
+    client = LLMClient(lambda: {"server_url": "http://fake"})
     result = client.stream_chat(
         model="fake-1",
         messages=[{"role": "user", "content": "hi"}],
@@ -1100,7 +1100,9 @@ def test_health_and_bootstrap(env: Env):
     health = env.client.get("/health")
     assert health.status_code == 200
     payload = health.get_json()
-    assert payload["ok"] is True and payload["lmstudio"] is True
+    assert payload["ok"] is True and payload["engine_ok"] is True
+    assert payload["engine"] == "attached"
+    assert "lmstudio_url" not in payload
     assert payload["version"] == config.VERSION
     assert payload["model"] == "fake-1"
     assert isinstance(payload["started_at"], int) and payload["started_at"] > 0
@@ -1118,8 +1120,9 @@ def test_system_prompt_identity_and_capabilities(env: Env):
     settings = env.svc.settings_provider()
     prompt = env.svc.agent._system_prompt(settings, model="fake-1", model_info={"tools": True})
     assert "You are Kiwibro" in prompt
-    assert "local AI agent" in prompt
-    assert "LM Studio" in prompt
+    assert "AI agent that lives on the user's own computer" in prompt
+    assert "you are never the user" in prompt and "only your engine" in prompt
+    assert "LM Studio" not in prompt
     assert "fake-1" in prompt
     assert "## Workspace" in prompt
     assert "web_search" in prompt and "run_command" in prompt
@@ -1142,14 +1145,14 @@ def test_system_prompt_identity_and_capabilities(env: Env):
 
 def test_health_offline_is_calm(env: Env, monkeypatch: pytest.MonkeyPatch):
     def offline(**kwargs):
-        raise LMStudioError("connection", "LM Studio is not reachable.")
+        raise LLMError("connection", "The model server at http://127.0.0.1:9 is not reachable.")
 
     monkeypatch.setattr(env.svc.llm, "list_models", offline)
     health = env.client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["lmstudio"] is False
+    assert health.get_json()["engine_ok"] is False
     models = env.client.get("/api/models").get_json()
-    assert models["lmstudio"] is False and models["models"] == []
+    assert models["engine_ok"] is False and models["models"] == []
     bootstrap = env.client.get("/api/bootstrap")
     assert bootstrap.status_code == 200
     assert bootstrap.get_json()["models"] == []
@@ -1276,7 +1279,9 @@ def test_settings_api_and_validation(env: Env):
     assert env.client.patch("/api/settings", json={"permissions": {"read_file": "sometimes"}}).status_code == 400
     assert env.client.patch("/api/settings", json={"workspace": "/"}).status_code == 400
     assert env.client.patch("/api/settings", json={"workspace": "relative/path"}).status_code == 400
-    assert env.client.patch("/api/settings", json={"lmstudio_url": "ftp://nope"}).status_code == 400
+    # The model server is not a stored setting any more (KIWIBRO_SERVER_URL); retired keys are unknown.
+    assert env.client.patch("/api/settings", json={"lmstudio_url": "http://127.0.0.1:1234"}).status_code == 400
+    assert env.client.patch("/api/settings", json={"engine": "direct"}).status_code == 400
     assert env.client.patch("/api/settings", json={"unknown": 1}).status_code == 400
 
 

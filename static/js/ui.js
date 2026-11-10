@@ -402,13 +402,14 @@ const TOOL_META = {
   clipboard: { label: "Clipboard", icon: "copy" },
   notify: { label: "Notify", icon: "message" },
   screenshot: { label: "Screenshot", icon: "image" },
-  model_info: { label: "Local models", icon: "sparkles" },
-  delegate: { label: "Helper model", icon: "sparkles" },
+  model_info: { label: "Local models", icon: "cube" },
+  delegate: { label: "Helper model", icon: "cube" },
   describe_image: { label: "Describe image", icon: "image" },
   study_file: { label: "Study file", icon: "file" },
   task_board: { label: "Task board", icon: "check" },
-  recall: { label: "Recall", icon: "sparkles" },
-  remember: { label: "Remember", icon: "sparkles" },
+  recall: { label: "Recall", icon: "bookmark" },
+  remember: { label: "Remember", icon: "bookmark" },
+  note: { label: "Notes", icon: "note" },
   calculate: { label: "Calculate", icon: "tool" },
   analyze_table: { label: "Analyze table", icon: "database" },
   doc_search: { label: "Search documents", icon: "search" },
@@ -437,6 +438,8 @@ export function toolSummary(name, args) {
     case "recall":
     case "grep_files":
       return args.query || args.pattern || "";
+    case "note":
+      return args.title || (typeof args.content === "string" ? args.content.split("\n")[0].slice(0, 80) : "") || args.action || "";
     case "multi_search":
       return Array.isArray(args.queries) ? args.queries.join(" · ") : "";
     case "fetch_pages":

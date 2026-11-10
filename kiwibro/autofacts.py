@@ -4,7 +4,9 @@ The small local model often forgets to call its ``remember`` tool. ``extract``
 catches the clearest first-person statements ("my name is X", "I live in X",
 "remember that I use tabs") with fixed patterns, so they are saved anyway.
 Precision matters more than recall: a question, a hypothetical, quoted text,
-code, reported speech about someone else or an instruction yields nothing.
+code, reported speech or an instruction yields nothing. Of the people, pets and
+things around the user only what they state outright is kept: a name ("my
+dog's name is Biscuit") or where someone lives.
 """
 
 from __future__ import annotations
@@ -40,16 +42,27 @@ SLOT_PREFIXES: dict[str, str] = {
     "editor": "User's editor is ",
     "reply_language": "User's preferred reply language is ",
     "native_language": "User's native language is ",
+    "birthday": "User's birthday is ",
+    "birth_year": "User's birth year is ",
 }
 _FAVORITE_SLOT = "favorite:"
+_NAMED_SLOT = "named:"
+_LIVES_SLOT = "lives:"
+# Slots that carry their subject: "favorite:editor", "named:dog", "lives:sister".
+_SLOT_FAMILIES = {
+    _FAVORITE_SLOT: "User's favorite {} is ",
+    _NAMED_SLOT: "User's {} is named ",
+    _LIVES_SLOT: "User's {} lives in ",
+}
 
 
 def slot_prefix(slot: str) -> str:
-    """Exact start of every content stored under ``slot``, including the ``favorite:<thing>`` family."""
+    """Exact start of every content stored under ``slot``, including families like ``favorite:<thing>``."""
     if slot in SLOT_PREFIXES:
         return SLOT_PREFIXES[slot]
-    if slot.startswith(_FAVORITE_SLOT):
-        return f"User's favorite {slot[len(_FAVORITE_SLOT):]} is "
+    for family, wording in _SLOT_FAMILIES.items():
+        if slot.startswith(family) and len(slot) > len(family):
+            return wording.format(slot[len(family):])
     raise ValueError(f"unknown slot: {slot!r}")
 
 
@@ -79,8 +92,10 @@ _INSTRUCTION_RE = re.compile(
 _PERSON_WORDS = (
     "friend|friends|brother|sister|mom|mum|mother|dad|father|wife|husband|boss|colleague|coworker|"
     "partner|son|daughter|kid|kids|child|children|roommate|girlfriend|boyfriend|manager|teacher|"
-    "cousin|uncle|aunt|grandma|grandpa|sibling|team|client|customer|doctor|professor"
+    "cousin|uncle|aunt|grandma|grandpa|sibling|team|client|customer|doctor|professor|fiance|fiancee|"
+    "nephew|niece|grandmother|grandfather|grandson|granddaughter|neighbour|neighbor|stepmother|stepfather"
 )
+_PERSON_SET = frozenset(_PERSON_WORDS.split("|"))
 _OTHER_START_RE = re.compile(
     rf"^(?:my\s+(?:{_PERSON_WORDS})|he|she|they|someone|somebody|everyone|nobody|people)\b",
     re.IGNORECASE,
@@ -469,6 +484,188 @@ def _slot_fact(text: str) -> Fact | None:
     return None
 
 
+# --- the user's people, pets and things; dates and health -----------------------
+
+# "dog", "little sister", "best friend": what the user calls it, one or two plain words.
+_THING = r"(?P<thing>[^\W\d_]+(?:[ -][^\W\d_]+)?)"
+_NAMED_RES = (
+    re.compile(rf"my\s+{_THING}'s\s+name\s+is\s+(?P<rest>.+)", re.IGNORECASE),
+    re.compile(rf"my\s+{_THING}(?:\s+is|'s)\s+(?:called|named)\s+(?P<rest>.+)", re.IGNORECASE),
+)
+_HAVE_NAMED_RE = re.compile(
+    rf"(?:i have|i've got|i own)\s+(?P<art>an?)\s+{_THING}\s+(?:called|named)\s+(?P<rest>.+)", re.IGNORECASE
+)
+_LIVES_RE = re.compile(rf"my\s+{_THING}\s+(?:lives|is living|is based)\s+in\s+(?P<rest>.+)", re.IGNORECASE)
+_THING_BAD = _OBJECT_BLOCK | _FAVORITE_BAD_WORDS | frozenset({"name", "favorite", "favourite", "own", "other"})
+
+_NUMBER_WORDS = "a|an|one|two|three|four|five|six|seven|eight|nine|ten"
+_FAMILY = "kid|child|son|daughter|brother|sister|sibling|dog|cat|grandchild|grandkid"
+_HAVE_FAMILY_RE = re.compile(
+    rf"(?:i have|i've got)\s+(?P<n>{_NUMBER_WORDS}|\d)\s+(?P<thing>(?:{_FAMILY})s?|children|grandchildren)"
+    r"(?![\w-])(?P<rest>.*)",
+    re.IGNORECASE,
+)
+
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+    "November", "December",
+)
+_MONTH_CANON = {month.lower(): month for month in _MONTHS} | {
+    month[:3].lower(): month for month in _MONTHS
+} | {"sept": "September"}
+_MONTH_ALT = _alternation(_MONTH_CANON)
+_YEAR = r"(?P<year>(?:19|20)\d\d)"
+_BIRTHDAY_RE = re.compile(
+    r"(?:my birthday is|my birthday's|i was born)\s+(?:on\s+)?(?:the\s+)?(?P<rest>.+)", re.IGNORECASE
+)
+_DAY_MONTH_RE = re.compile(
+    rf"(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<month>{_MONTH_ALT})(?![\w-])(?:,?\s+{_YEAR})?(?!\d)",
+    re.IGNORECASE,
+)
+_MONTH_DAY_RE = re.compile(
+    rf"(?P<month>{_MONTH_ALT})\s+(?:the\s+)?(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?!\d)(?:,?\s+{_YEAR})?(?!\d)",
+    re.IGNORECASE,
+)
+_BORN_YEAR_RE = re.compile(rf"i was born in\s+{_YEAR}(?!\d)", re.IGNORECASE)
+
+_ALLERGY_RE = re.compile(
+    r"(?:i'?m|i am)\s+(?:(?:very|really|severely|highly|deathly)\s+)?allergic to\s+(?P<x>.+)", re.IGNORECASE
+)
+_LIST_END_RE = re.compile(
+    r"[;:()!?]|\s(?:but|because|since|when|which|who|while|if|so|though|although)(?=\s|$)", re.IGNORECASE
+)
+_LIST_SPLIT_RE = re.compile(r"\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+", re.IGNORECASE)
+_CONDITIONS = {
+    "vegetarian": "vegetarian", "vegan": "vegan", "pescatarian": "pescatarian", "diabetic": "diabetic",
+    "lactose intolerant": "lactose intolerant", "lactose-intolerant": "lactose intolerant",
+    "gluten intolerant": "gluten intolerant", "gluten-intolerant": "gluten intolerant",
+    "celiac": "coeliac", "coeliac": "coeliac", "colour blind": "colour blind", "color blind": "colour blind",
+    "colorblind": "colour blind", "colourblind": "colour blind", "left-handed": "left-handed",
+    "left handed": "left-handed", "dyslexic": "dyslexic",
+}
+_CONDITION_RE = re.compile(
+    r"(?:i'?m|i am)\s+(?:an?\s+)?(?P<x>" + _alternation(_CONDITIONS) + r")(?![\w-])(?P<rest>.*)", re.IGNORECASE
+)
+# What may follow a complete statement: nothing, punctuation, or a new clause.
+_DONE_TAIL = frozenset({"and", "but", "so", "btw", "because", "too", "now", "as", "by"})
+
+
+def _done(rest: str) -> bool:
+    words = rest.split()
+    return not words or words[0][0] in ",;(" or words[0].lower() in _DONE_TAIL
+
+
+def _thing(match: re.Match[str]) -> str | None:
+    thing = _canon_key(match.group("thing"))
+    return None if any(word in _THING_BAD for word in re.split(r"[ -]", thing)) else thing
+
+
+def _kind_of(thing: str) -> str:
+    return "person" if re.split(r"[ -]", thing)[-1] in _PERSON_SET else "fact"
+
+
+def _named_fact(text: str) -> Fact | None:
+    """"My dog's name is Biscuit", "my wife is called Elif", "I have a cat named Miso"."""
+    for pattern in _NAMED_RES:
+        match = pattern.match(text)
+        if match is None:
+            continue
+        thing = _thing(match)
+        words, rest = _proper_run(match.group("rest"), 3)
+        if thing is None or not words or not _tail_ok(rest):
+            return None
+        slot = _NAMED_SLOT + thing
+        return _fact(_kind_of(thing), slot_prefix(slot) + " ".join(words), slot)
+    match = _HAVE_NAMED_RE.match(text)
+    if match is None:
+        return None
+    thing = _thing(match)
+    words, rest = _proper_run(match.group("rest"), 3)
+    if thing is None or not words or not _tail_ok(rest):
+        return None
+    # No slot: "I have a dog named Max" does not say the other dog is gone.
+    return _fact(_kind_of(thing), f"User has {match.group('art').lower()} {thing} named {' '.join(words)}")
+
+
+def _lives_fact(text: str) -> Fact | None:
+    match = _LIVES_RE.match(text)
+    if match is None:
+        return None
+    thing = _thing(match)
+    words, rest = _proper_run(match.group("rest"), 4)
+    if thing is None or not words or not _tail_ok(rest):
+        return None
+    slot = _LIVES_SLOT + thing
+    return _fact(_kind_of(thing), slot_prefix(slot) + " ".join(words), slot)
+
+
+def _family_fact(text: str) -> Fact | None:
+    match = _HAVE_FAMILY_RE.match(text)
+    if match is None or not _done(match.group("rest")):
+        return None
+    return _fact("fact", f"User has {match.group('n').lower()} {match.group('thing').lower()}")
+
+
+def _birthday_fact(text: str) -> Fact | None:
+    match = _BORN_YEAR_RE.match(text)
+    if match is not None:
+        return _fact("fact", slot_prefix("birth_year") + match.group("year"), "birth_year")
+    match = _BIRTHDAY_RE.match(text)
+    if match is None:
+        return None
+    date = _DAY_MONTH_RE.match(match.group("rest")) or _MONTH_DAY_RE.match(match.group("rest"))
+    if date is None or not 1 <= int(date.group("day")) <= 31:
+        return None
+    value = f"{int(date.group('day'))} {_MONTH_CANON[date.group('month').lower()]}"
+    if date.group("year"):
+        value += f" {date.group('year')}"
+    return _fact("fact", slot_prefix("birthday") + value, "birthday")
+
+
+def _listed(text: str, max_items: int = 4, max_words: int = 3) -> str | None:
+    """"peanuts, shellfish and cats" as written, or None when it is not a short plain list."""
+    end = _LIST_END_RE.search(text)
+    items = [item.strip() for item in _LIST_SPLIT_RE.split((text[: end.start()] if end else text).strip())]
+    if not 1 <= len(items) <= max_items:
+        return None
+    if any(not 1 <= len(item.split()) <= max_words or _has_block(item) for item in items):
+        return None
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _health_fact(text: str) -> Fact | None:
+    match = _ALLERGY_RE.match(text)
+    if match is not None:
+        things = _listed(match.group("x"))
+        return None if things is None else _fact("fact", f"User is allergic to {things}")
+    match = _CONDITION_RE.match(text)
+    if match is not None and _done(match.group("rest")):
+        return _fact("fact", f"User is {_CONDITIONS[_canon_key(match.group('x'))]}")
+    return None
+
+
+_WORLD_MATCHERS = (_named_fact, _lives_fact)
+_SELF_MATCHERS = (_family_fact, _birthday_fact, _health_fact)
+
+
+def _world_fact(text: str) -> Fact | None:
+    """A name or a home the user states for someone or something of theirs. It runs before the
+    "this sentence is about someone else" guard, which would drop "my wife's name is Elif"."""
+    for matcher in _WORLD_MATCHERS:
+        fact = matcher(text)
+        if fact is not None:
+            return fact
+    return None
+
+
+def _self_fact(text: str) -> Fact | None:
+    for matcher in _SELF_MATCHERS:
+        fact = matcher(text)
+        if fact is not None:
+            return fact
+    return None
+
+
 # --- explicit memory requests, preferences and projects -------------------------
 
 _SAVE_RE = re.compile(
@@ -502,9 +699,12 @@ def _save_fact(text: str) -> Fact | None:
     if match is None:
         return None
     clause = match.group("x").strip()
+    world = _world_fact(clause)
+    if world is not None:
+        return world
     if _is_about_other(clause):
         return None
-    slot = _slot_fact(clause)
+    slot = _slot_fact(clause) or _self_fact(clause)
     if slot is not None:
         return slot
     kind = "preference" if _PREF_WORDS_RE.search(clause) else "fact"
@@ -581,9 +781,14 @@ def _clause_fact(clause: str) -> Fact | None:
     text = _FILLER_RE.sub("", clause, count=1).strip()
     # Every pattern is anchored at the start, so a clause must open with one of these words.
     first = text.split(None, 1)[0].lower() if text else ""
-    if first not in _START_WORDS or _is_about_other(text):
+    if first not in _START_WORDS or _SPEECH_RE.search(text):
         return None
-    for matcher in (_forget_fact, _save_fact, _slot_fact, _preference_fact, _project_fact):
+    world = _world_fact(text)
+    if world is not None:
+        return world
+    if _is_about_other(text):
+        return None
+    for matcher in (_forget_fact, _save_fact, _slot_fact, _self_fact, _preference_fact, _project_fact):
         fact = matcher(text)
         if fact is not None:
             return fact
@@ -592,7 +797,7 @@ def _clause_fact(clause: str) -> Fact | None:
 
 def _sentence_facts(sentence: str) -> list[Fact]:
     text = _FILLER_RE.sub("", sentence, count=1).strip()
-    if not text or _HYPO_RE.search(text) or _INSTRUCTION_RE.search(text) or _is_about_other(text):
+    if not text or _HYPO_RE.search(text) or _INSTRUCTION_RE.search(text) or _SPEECH_RE.search(text):
         return []
     # "Forget that I live in Berlin and I use vim": the whole sentence is the command's scope.
     clauses = [text] if _COMMAND_RE.match(text) else _CLAUSE_RE.split(text)
@@ -635,3 +840,42 @@ def extract(message: str, *, limit: int = 5) -> list[Fact]:
             if len(facts) >= limit:
                 return facts
     return facts
+
+
+def stated_only(message: str) -> bool:
+    """Whether the message does nothing but state facts ``extract`` reads: no question, no
+    request, no remark besides. Such a message needs an acknowledgement and nothing else."""
+    found = False
+    for sentence, is_question in _sentences(_clean(message or "")):
+        text = _FILLER_RE.sub("", sentence, count=1).strip()
+        if is_question or not text:
+            return False
+        if _HYPO_RE.search(text) or _INSTRUCTION_RE.search(text) or _SPEECH_RE.search(text):
+            return False
+        clauses = [text] if _COMMAND_RE.match(text) else _CLAUSE_RE.split(text)
+        facts = [_clause_fact(clause) for clause in clauses]
+        if any(fact is None or fact.forget for fact in facts):
+            return False
+        found = True
+    return found
+
+
+_VERB_BASE = {form: base for base, form in _VERB3.items()}
+_TO_YOU_RE = re.compile(
+    r"^User (?:(?P<adv>always|usually|never|often|sometimes|really|also|still) )?(?P<verb>[a-z']+)\b"
+)
+_BE_HAVE = {"is": "are", "was": "were", "has": "have", "doesn't": "don't"}
+
+
+def to_you(content: str) -> str:
+    """A stored fact said to the user: "User's dog is named Biscuit." -> "your dog is named Biscuit"."""
+    text = content.strip().rstrip(".")
+    if text.startswith("User's "):
+        return "your " + text[len("User's "):]
+    match = _TO_YOU_RE.match(text)
+    if match is None:
+        return text
+    verb = match.group("verb")
+    verb = _BE_HAVE.get(verb) or _VERB_BASE.get(verb, verb)
+    adverb = f"{match.group('adv')} " if match.group("adv") else ""
+    return f"you {adverb}{verb}{text[match.end():]}"

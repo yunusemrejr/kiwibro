@@ -132,7 +132,7 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
     def stream_chat(**kwargs):
         calls.append(kwargs)
         text = good + loop if len(calls) == 1 else "Patch to PHP 8.5.12 or later today."
-        for start in range(0, len(text), 9):  # streamed in small pieces, as LM Studio does
+        for start in range(0, len(text), 9):  # streamed in small pieces, as a model server does
             kwargs["on_delta"](text[start:start + 9])
         return ChatResult(content=text)
 
@@ -148,3 +148,54 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
     assert stored[-1]["content"] == kept["content"] + "\n\nPatch to PHP 8.5.12 or later today."
     rewrites = [payload["text"] for event, payload in events if event == "rewrite"]
     assert rewrites == [kept["content"] + "\n\n"]  # the UI drops the loop, keeps the start
+
+
+def test_wrapper_tags_around_an_answer_are_neither_shown_nor_stored(env: Env):
+    env.fake.stream_script = [ChatResult(content="<output>\n400\n</output>")]
+    events, _raw = chat_events(env, "what is 17 * 23 + 9?")
+    shown = "".join(payload["text"] for event, payload in events if event == "delta")
+    assert shown.strip() == "400" and not [event for event, _ in events if event == "rewrite"]
+    conversation_id = events[0][1]["conversation_id"]
+    assert [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"] == ["400"]
+
+
+def test_a_reply_that_only_starts_like_a_wrapper_keeps_its_tag(env: Env):
+    text = "<output> is the HTML element for a calculation result."
+    env.fake.stream_script = [ChatResult(content=text)]
+    events, _raw = chat_events(env, "what is the output tag in HTML for?")
+    conversation_id = events[0][1]["conversation_id"]
+    assert [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"] == [text]
+    assert [payload["text"] for event, payload in events if event == "rewrite"][-1] == text
+
+
+def test_an_answer_given_before_one_more_tool_call_and_then_again_is_kept_once(env: Env):
+    early = ("The latest stable Python version is 3.15.2, released on 25 October 2026. It is the second "
+             "maintenance release of the 3.15 series.")
+    final = "The latest stable Python version is **3.15.2**, released on 25 October 2026 (second maintenance release of 3.15)."
+    again = tool_call_result("list_files", {"path": "."})
+    again.content = early
+    env.fake.stream_script = [again, ChatResult(content=final)]
+    events, _raw = chat_events(env, "tell me about Python 3.15.2")
+    assert [payload["text"] for event, payload in events if event == "retract"] == [early]
+    conversation_id = events[0][1]["conversation_id"]
+    texts = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert texts == ["", final]
+
+
+def test_a_short_preface_before_a_tool_call_stays(env: Env):
+    preface = tool_call_result("list_files", {"path": "."})
+    preface.content = "Let me look at the files first."
+    env.fake.stream_script = [preface, ChatResult(content="There are no files in the workspace yet.")]
+    events, _raw = chat_events(env, "what files do I have?")
+    assert not [event for event, _ in events if event == "retract"]
+
+
+def test_a_sum_is_worked_out_before_the_model_replies_and_a_wrong_answer_is_redone(env: Env):
+    env.fake.stream_script = [ChatResult(content="12% of 480 = 5760."), ChatResult(content="12% of 480 is 57.6.")]
+    events, _raw = chat_events(env, "what is 12% of 480?")
+    assert "- 12% of 480 = 57.6" in env.fake.stream_calls[0]["messages"][-1]["content"]
+    assert "Kiwibro worked it out exactly: 12% of 480 = 57.6" in env.fake.stream_calls[1]["messages"][-1]["content"]
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["12% of 480 is 57.6."]
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["steered"] == ["wrong_result"]

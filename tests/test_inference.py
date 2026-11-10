@@ -1,6 +1,6 @@
 """Tests for kiwibro.inference: model profiles, reasoning policy, prefix reuse, timing.
 
-Offline and deterministic: no LM Studio, no sockets, no sleeps. An injected
+Offline and deterministic: no model server, no sockets, no sleeps. An injected
 clock replaces time.monotonic in RoundTimer.
 """
 
@@ -13,7 +13,7 @@ import pytest
 
 from kiwibro import inference as inf
 
-# --- fixtures: real LM Studio /api/v1/models shapes and a Kiwibro-normalised record -------
+# --- fixtures: model entries as a server lists them, and a Kiwibro-normalised record ---------
 
 SPARK_RAW: dict[str, Any] = {
     "type": "llm",
@@ -60,7 +60,7 @@ class FakeClock:
         return self.now
 
 
-# --- 1. model_profile on raw LM Studio entries and Kiwibro records -----------------------
+# --- 1. model_profile on raw model entries and Kiwibro records -----------------------
 
 
 def test_model_profile_raw_quantized_reasoning_model():
@@ -288,7 +288,7 @@ def test_server_reuse_counts_exactly_from_llama_cpp_timings():
     }
     assert inf.server_reuse({"cache_n": 0.0, "prompt_n": 0.0})["reuse_percent"] == 0
     assert inf.server_reuse(None) is None
-    assert inf.server_reuse({"prompt_n": 5.0}) is None  # LM Studio-style partial data: keep the estimate
+    assert inf.server_reuse({"prompt_n": 5.0}) is None  # partial data from some servers: keep the estimate
 
 
 # --- 10. PrefixTracker -------------------------------------------------------------------
@@ -454,12 +454,12 @@ class _SSE:
 
 
 def _stream(monkeypatch, deltas: list[str]):
-    from kiwibro.llm import LMStudioClient
+    from kiwibro.llm import LLMClient
 
     monkeypatch.setattr("kiwibro.llm.requests.post", lambda *a, **k: _SSE(deltas))
     shown: list[str] = []
     rewrites: list[tuple[str, str]] = []
-    client = LMStudioClient(lambda: {"lmstudio_url": "http://lm.test"})
+    client = LLMClient(lambda: {"server_url": "http://lm.test"})
     result = client.stream_chat(
         model="m", messages=[{"role": "user", "content": "hi"}],
         on_delta=shown.append, on_rewrite=lambda text, why: rewrites.append((text, why)),
@@ -477,6 +477,12 @@ def test_bare_close_tag_moves_leaked_reasoning_out_of_the_answer(monkeypatch):
 def test_full_think_block_in_content_is_split_too(monkeypatch):
     result, _shown, rewrites = _stream(monkeypatch, ["<think>plan it</think>Answer."])
     assert (result.content, result.reasoning, len(rewrites)) == ("Answer.", "plan it", 1)
+
+
+def test_blank_lines_after_an_empty_think_block_do_not_open_the_answer(monkeypatch):
+    result, shown, rewrites = _stream(monkeypatch, ["<think>", "\n\n</think>", "\n\n", "I'm Kiwibro.", "\n\nAnd more."])
+    assert result.content == "I'm Kiwibro.\n\nAnd more." and rewrites == [("", "")]
+    assert "".join(shown).endswith("</think>I'm Kiwibro.\n\nAnd more.")
 
 
 def test_literal_tags_inside_an_answer_are_left_alone(monkeypatch):

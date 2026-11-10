@@ -1,14 +1,14 @@
 """Model readiness: the selected model is loaded with a working window and the
 prompt prefix of the next request is prefilled before the user sends anything.
 
-Measured on this laptop (Ryzen 5 7530U, CPU only, LM Studio 0.4.26): Kiwibro's
+Measured on this laptop (Ryzen 5 7530U, CPU only): Kiwibro's
 stable prefix (identity + the auto tool set) is ~4.7k tokens. With
 ``liquid/lfm2.5-1.2b`` the first request took 47 s cold and 6 s once that prefix
-was in LM Studio's KV cache. So opening Kiwibro, picking a model or opening a
+was in the server's KV cache. So opening Kiwibro, picking a model or opening a
 chat starts one background job:
 
 1. **Load** the model explicitly when it is not loaded (or is loaded with a
-   window too small to work in). LM Studio's just-in-time load uses the model's
+   window too small to work in). The server's just-in-time load uses the model's
    own defaults — sometimes a single parallel slot, where any background call
    (memory, titles) evicts the chat's cache.
 2. **Warm**: send the exact leading messages of the next request (system
@@ -32,13 +32,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import inference, routing
-from .llm import LMStudioError, TurnAborted
+from .llm import LLMError, TurnAborted
 
 log = logging.getLogger(__name__)
 
 TARGET_CONTEXT = 32768  # window Kiwibro loads models with (capped by the model's maximum)
 MIN_CONTEXT = 16384  # a loaded model below this is reloaded larger while nothing is running
-LOAD_LADDER = (32768, 16384, 8192)  # tried in order when LM Studio's memory guardrails refuse
+LOAD_LADDER = (32768, 16384, 8192)  # tried in order when the server's memory guardrails refuse
 PARALLEL_SLOTS = 4  # one slot for the chat, others for background calls (shared KV pool)
 WARM_HISTORY_TOKENS = 24000  # longer chats are not prefilled ahead of time
 # Warming an opened chat is speculative: it is wasted when the chat is only read. So it
@@ -198,13 +198,13 @@ class Readiness:
     def _run(self, job: _Job) -> None:
         try:
             model = job.model or self.llm.resolve_model()
-        except LMStudioError as exc:
+        except LLMError as exc:
             self._set(model=job.model, phase="error", detail=exc.message, context_length=None)
             return
         job.model = model
         info = self._info(model, force=True)
         if info is None:
-            self._set(model=model, phase="error", detail=f"{model} is not available in LM Studio.")
+            self._set(model=model, phase="error", detail=f"{model} is not installed.")
             return
         info = self._ensure_loaded(model, info, job)
         if job.abort.is_set():
@@ -230,7 +230,7 @@ class Readiness:
         except TurnAborted:
             self._set(phase="ready", detail="")
             return
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.info("warm-up for %s failed: %s", model, exc.message)
             self._set(phase="error", detail=exc.message)
             return
@@ -254,7 +254,7 @@ class Readiness:
     def _release_others(self, key: str) -> None:
         """Unload the models this worker loaded for an earlier selection: each holds
         gigabytes of RAM, and a CPU laptop with two 4B models resident swaps. Models the
-        user loaded in LM Studio, and helpers leased by routing, are never touched; jobs
+        user loaded in the server, and helpers leased by routing, are never touched; jobs
         only run while no reply streams, so none of these is in use."""
         with self._lock:
             stale, self._loaded = self._loaded - {key}, self._loaded & {key}
@@ -265,12 +265,12 @@ class Readiness:
     def _info(self, model: str, *, force: bool = False) -> dict[str, Any] | None:
         try:
             models = self.llm.list_models(force=force)
-        except LMStudioError:
+        except LLMError:
             return None
         return next((m for m in models if m.get("id") == model or m.get("key") == model), None)
 
     def _ensure_loaded(self, model: str, info: dict[str, Any], job: _Job) -> dict[str, Any]:
-        """Load (or enlarge) the model's window; on any refusal LM Studio's JIT load remains."""
+        """Load (or enlarge) the model's window; on any refusal the server's JIT load remains."""
         max_context = int(info.get("max_context") or 0)
         if info.get("state") == "loaded":
             current = int((info.get("loaded_config") or {}).get("context_length") or info.get("context") or 0)
@@ -280,12 +280,12 @@ class Readiness:
             self._set(model=model, phase="loading", detail=f"Enlarging the window to {target // 1024}K")
             try:
                 routing.reload_with_context(self.llm, info, target)
-            except LMStudioError as exc:
+            except LLMError as exc:
                 log.info("could not enlarge %s: %s", model, exc.message)
             return self._info(model, force=True) or info
         self._set(model=model, phase="loading", detail="Loading the model", context_length=None)
         key = str(info.get("key") or model)
-        self._release_others(key)  # first: both resident at once can make LM Studio refuse the load
+        self._release_others(key)  # first: two models resident at once may not fit in memory
         for size in load_sizes(max_context):
             if job.abort.is_set():
                 break
@@ -293,7 +293,6 @@ class Readiness:
                 with self._lock:
                     self._loaded.add(key)
                 break
-            direct = callable(getattr(self.llm, "direct_on", None)) and self.llm.direct_on()
-            if not direct and getattr(self.llm, "_load_api_supported", None) is False:
-                break  # this LM Studio has no load API: the warm-up request JIT-loads it
+            if callable(getattr(self.llm, "direct_on", None)) and not self.llm.direct_on():
+                break  # an attached server loads what it was started with
         return self._info(model, force=True) or info

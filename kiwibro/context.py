@@ -8,9 +8,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import config, media, prompts
+from . import config, media, prompts, sense, terms
 from .db import Database
-from .llm import LMStudioClient, LMStudioError
+from .llm import LLMClient, LLMError
 
 log = logging.getLogger(__name__)
 
@@ -285,6 +285,8 @@ def combine_system_prompt(system_prompt: str, summary: str) -> str:
 
 RECALL_MAX_TOKENS = 1200
 RECALL_EXCERPT_CHARS = 500
+MEANING_RECALL_POOL = 240  # compacted messages read when no word of the question matches any
+MEANING_RECALL_MATCH = 0.44  # how close one must be in meaning (content words) to come back
 ANCHOR_MAX_CHARS = 280
 
 
@@ -382,7 +384,7 @@ class ContextEngine:
     def __init__(
         self,
         db: Database,
-        llm: LMStudioClient,
+        llm: LLMClient,
         settings_provider: Callable[[], dict[str, Any]],
     ) -> None:
         self.db = db
@@ -618,9 +620,14 @@ class ContextEngine:
             query = " ".join(q for q in queries if q.strip())[:600]
             excerpts: list[str] = []
             if query.strip():
-                hits = self.db.search_messages(
-                    query, conversation_id=conversation["id"], before_seq=window_start, limit=6
-                )
+                # The newest message leads: by its words, then by its meaning. The one before
+                # it only joins in when the newest finds nothing ("and the second one?").
+                def by_words(text: str) -> list[dict[str, Any]]:
+                    return self.db.search_messages(
+                        text, conversation_id=conversation["id"], before_seq=window_start, limit=6)
+
+                hits = (by_words(queries[0][:600]) or self._recall_by_meaning(conversation["id"], queries[0], window_start)
+                        or by_words(query))
                 for hit in hits:
                     text = " ".join((hit.get("content") or "").split())[:RECALL_EXCERPT_CHARS]
                     if not text:
@@ -639,6 +646,26 @@ class ContextEngine:
         except Exception:  # recall is an enhancement, never a failure mode
             log.warning("episodic recall note failed", exc_info=True)
             return "", 0, False
+
+    def _recall_by_meaning(self, conversation_id: str, question: str, window_start: int) -> list[dict[str, Any]]:
+        """The compacted exchange closest in meaning to the question, for when it shares no
+        word with anything said before ("that dairy shop" for the cheese place). A matching
+        question comes back with the reply that followed it: the reply holds the answer."""
+        asked = terms.gist(question)
+        reader = sense.shared() if asked else None
+        if reader is None:
+            return []
+        page, _more = self.db.list_messages_page(conversation_id, before_seq=window_start, limit=MEANING_RECALL_POOL)
+        spoken = [m for m in page if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+        texts = [terms.gist(m["content"][:400]) for m in spoken]
+        found = reader.nearest(asked, texts, limit=1, floor=MEANING_RECALL_MATCH)
+        if not found:
+            return []
+        index = found[0][0]
+        hit = [spoken[index]]
+        if spoken[index]["role"] == "user" and index + 1 < len(spoken) and spoken[index + 1]["role"] == "assistant":
+            hit.append(spoken[index + 1])
+        return hit
 
     def memory_cap_for(self, model: str) -> int:
         """Durable-memory prompt cap scaled to this model's budget."""
@@ -787,7 +814,7 @@ class ContextEngine:
                 max_tokens=max_out,
                 temperature=0.0,
             )
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.warning("summary call failed: %s", exc.message)
             return None
         return (completion.text or "").strip() or None

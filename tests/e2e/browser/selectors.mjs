@@ -74,6 +74,20 @@ export const SEL = {
   agentSwitch: 'button[role="switch"][aria-label="Agent mode"]',
   memorySwitch: 'button[role="switch"][aria-label="Automatic memory"]',
 
+  placeNotes: "#place-notes",
+  placeMemory: "#place-memory",
+  placeModels: "#place-models",
+  placeHow: "#place-how",
+  notesSheet: "#notes-sheet",
+  notesNew: ".nt-side .btn-primary",
+  noteRow: ".nt-list button",
+  noteTitle: ".nt-title",
+  noteBody: ".nt-body",
+  noteDelete: ".nt-delete",
+  noteDeleteConfirm: ".nt-confirm .btn-danger",
+  modelsSheet: "#models-sheet",
+  howSheet: "#how-sheet",
+
   settingsSheet: "#settings-sheet",
   settingsBody: "#settings-body",
 
@@ -85,7 +99,7 @@ export const SEL = {
 
 /** Labels used for text-based waits (kept separate from CSS selectors). */
 export const TEXT = {
-  lmOfflineHints: ["LM Studio isn't running", "No chat model loaded", "Can't reach the Kiwibro server"],
+  engineOfflineHints: ["No engine yet", "No models yet", "The model server isn't reachable", "Can't reach the Kiwibro server"],
   send: "Send",
 };
 

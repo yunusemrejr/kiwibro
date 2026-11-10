@@ -1,6 +1,6 @@
 """Situational guidance: the right instructions for this turn, chosen by code.
 
-Message 0 has to stay byte-identical between turns (LM Studio reuses its KV cache), and
+Message 0 has to stay byte-identical between turns (the server reuses its KV cache), and
 on a CPU every prompt token costs prefill time, so it carries only what every turn
 needs. How to research, code, use the desktop, render a chart or handle memory is
 picked here from the user's message (plus attachments and the turn plan) with cheap
@@ -18,10 +18,11 @@ from . import plan
 # Each snippet is one short line; order is the order they appear in the note.
 SNIPPETS: dict[str, str] = {
     "capabilities": (
-        "What Kiwibro can do: talk and remember facts across chats; search the web and read pages; "
-        "work on code and documents in the workspace (search, read, patch, run tests and commands); "
+        "What Kiwibro can do: talk and remember facts across chats; keep notes; search the web and read "
+        "pages; work on code and documents in the workspace (search, read, patch, run tests and commands); "
         "use this computer (open files or URLs, clipboard, notifications, screenshots, system info); "
-        "analyse data with code; describe images with a helper model."
+        "calculate and analyse data with code; describe images with a helper model. "
+        "Say these in your own words. Do not add a list of things you cannot do."
     ),
     "steps": (
         "Several steps: keep task_board current, and batch independent calls in one reply "
@@ -48,6 +49,14 @@ SNIPPETS: dict[str, str] = {
         "(action \"update\", old = the outdated fact) or remove one (action \"forget\"); use recall to "
         "look up earlier conversations instead of asking the user to repeat themselves."
     ),
+    "about_user": (
+        "The user asks about themselves. Answer from the memory in this note, speaking to them (“Your … "
+        "is …”). If it is not there, say you do not know it yet. Do not search the web for it."
+    ),
+    "notes": (
+        "The user wants a note kept or looked up: call the `note` tool (save, append, read or search) "
+        "instead of answering from memory."
+    ),
     "visual": (
         "Rich output: the chat renders markdown tables, ```csv blocks as tables, and one self-contained "
         "```html or ```svg block (inline CSS/JS, no external links) as a live preview — use it for a "
@@ -58,7 +67,7 @@ SNIPPETS: dict[str, str] = {
         "a vision model or by code). Treat it as what you see; use the path with your tools for more."
     ),
 }
-TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "desktop", "memory"})
+TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "desktop", "memory", "notes"})
 HEADER = "## Guidance for this turn"
 
 _CAPABILITIES = re.compile(
@@ -93,6 +102,22 @@ _MEMORY = re.compile(
     r"\b(?:remember|forget|memory|memories|recall|last\s+time|earlier|previously|"
     r"we\s+(?:talked|discussed|spoke|said)|did\s+i\s+(?:tell|say|mention)|i\s+(?:told|said|mentioned)|"
     r"you\s+know\s+(?:that\s+)?my|what\s+do\s+you\s+know\s+about\s+me|my\s+name)\b",
+    re.I,
+)
+# "What is my dog's name?", "where do I live?", "when is my birthday?"
+_ABOUT_USER = re.compile(
+    r"^\W*(?:what|what's|where|who|who's|when|when's|which|how\s+old|do\s+you\s+(?:know|remember))\b[^.?!]{0,60}"
+    r"\b(?:my|(?:do|did|am|was)\s+i)\b",
+    re.I,
+)
+_MACHINE = re.compile(
+    r"\b(?:ip|mac\s+address|hostname|battery|disk|cpu|gpu|ram|screen|wi-?fi|network|clipboard|password|"
+    r"computer|laptop|pc|system|os|kernel|browser|terminal)\b",
+    re.I,
+)
+_NOTES = re.compile(
+    r"\b(?:take|make|write|jot|add|keep|save)\b[^.?!]{0,40}\bnotes?\b|\bnote\s+(?:this|that|it)\s+down\b|"
+    r"\bmy\s+notes?\b|\bnotebook\b",
     re.I,
 )
 _VISUAL = re.compile(
@@ -132,6 +157,12 @@ def select(
         keys.add("desktop")
     if _MEMORY.search(text):
         keys.add("memory")
+    if "memory" not in keys and _ABOUT_USER.search(text) and not any(
+        other.search(text) for other in (plan._LOCAL_WORD, _MACHINE, _DESKTOP, _CODE)
+    ):
+        keys.add("about_user")
+    if _NOTES.search(text):
+        keys.add("notes")
     if _VISUAL.search(text):
         keys.add("visual")
     if not tools:

@@ -689,6 +689,72 @@ def evaluate(expression: str, *, today: date | None = None) -> dict[str, str]:
     return _record("math", text, format_math(eval_math(text)))
 
 
+# --- sums in a chat message ----------------------------------------------------
+
+# A small model gets "12% of 480" wrong and says so confidently. The sums a message
+# asks for are worked out here, exactly, before the model replies.
+MAX_WORKED = 3
+_CODE_SPANS = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+_SUM_NUMBER = r"\(*-?\d[\d,]*(?:\.\d+)?\)*%?"
+_SUM_PERCENT_OF = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:%|percent)\s+of\s+\d[\d,]*(?:\.\d+)?", re.IGNORECASE)
+# "*", "+" and "^" between numbers are sums. "-", "/" and "x" also sit in dates, ranges and
+# sizes ("2026-11-10", "pages 10-20", "1920 x 1080"), so they count only when the message asks for a result.
+_SURE_SUM = re.compile(rf"{_SUM_NUMBER}(?:\s*(?:\*\*|[*×÷^+])\s*{_SUM_NUMBER})+")
+_ANY_SUM = re.compile(rf"{_SUM_NUMBER}(?:\s*(?:\*\*|[*×÷^+/]|\s-\s|-|\sx\s)\s*{_SUM_NUMBER})+", re.IGNORECASE)
+_ASKS_RESULT = re.compile(
+    r"\b(?:what(?:'s|\s+is)|calculate|compute|evaluate|solve|work\s+out|how\s+much\s+is)\b|=\s*\??\s*$",
+    re.IGNORECASE,
+)
+_SUM_CONVERSION = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*°?[A-Za-z]{1,12}(?:\s+[a-z]{2,10})?\s+(?:in|to|into)\s+°?[A-Za-z]{1,12}(?:\s+[a-z]{2,10})?",
+    re.IGNORECASE,
+)
+_SUM_DATE_LIKE = re.compile(r"\d{4}-\d{1,2}(?:-\d{1,2})?|\d{1,2}/\d{1,2}(?:/\d{2,4})?")
+
+
+def worked(message: str) -> list[tuple[str, str]]:
+    """The sums and unit conversions a message asks for, as (what was asked, exact result)."""
+    text = _CODE_SPANS.sub(" ", (message or "").replace("\u2019", "'"))
+    if len(text) > 600:  # a pasted document is not a sum
+        return []
+    found: list[tuple[str, str]] = []
+
+    def add(chunk: str, units: bool = False) -> None:
+        chunk = " ".join(chunk.split()).strip(" .,;:?!")
+        if len(found) >= MAX_WORKED or any(chunk in shown or shown in chunk for shown, _ in found):
+            return
+        try:
+            outcome = unit_result(chunk) if units else format_math(eval_math(chunk))
+        except Exception:  # not a sum after all
+            return
+        if outcome is not None and outcome[0]:
+            found.append((chunk, outcome[0]))
+
+    for match in _SUM_PERCENT_OF.finditer(text):
+        add(match.group())
+    sums = _ANY_SUM if _ASKS_RESULT.search(text) else _SURE_SUM
+    for match in sums.finditer(text):
+        if not _SUM_DATE_LIKE.fullmatch(match.group().strip()):
+            add(match.group())
+    for match in _SUM_CONVERSION.finditer(text):
+        add(match.group(), units=True)
+    return found
+
+
+def gives(reply: str, result: str) -> bool:
+    """Whether a reply states ``result`` (to the precision it writes numbers in)."""
+    wanted = re.search(r"-?\d[\d,]*(?:\.\d+)?", result)
+    if wanted is None:
+        return result.lower() in (reply or "").lower()
+    value = float(wanted.group().replace(",", ""))
+    for shown in re.findall(r"-?\d+(?:\.\d+)?", re.sub(r"(?<=\d),(?=\d{3}\b)", "", reply or "")):
+        number = float(shown)
+        decimals = len(shown.partition(".")[2])
+        if number == round(value, decimals) or abs(number - value) <= 1e-9 * max(1.0, abs(value)):
+            return True
+    return False
+
+
 # --- tables ------------------------------------------------------------------
 
 MAX_TABLE_BYTES = 500 * 1024 * 1024

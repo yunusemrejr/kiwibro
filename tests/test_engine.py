@@ -1,9 +1,9 @@
-"""Tests for the direct engine (kiwibro.engine), its GGUF header reader and the
-direct-mode parts of kiwibro.llm and kiwibro.config.
+"""Tests for the engine (kiwibro.engine), its GGUF header reader and the
+local-mode parts of kiwibro.llm and kiwibro.config.
 
-Hermetic: LM Studio's folders, the llama.cpp search path and KIWIBRO_LLAMA_SERVER
+Hermetic: other apps' model folders, the llama.cpp search path and KIWIBRO_LLAMA_SERVER
 are all replaced, and the only "llama-server" is a fake Python script that serves
-the OpenAI-style routes on 127.0.0.1. No network, no real LM Studio, no bubblewrap.
+the OpenAI-style routes on 127.0.0.1. No network, no real model app, no bubblewrap.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import pytest
 
 from kiwibro import config, engine, gguf
 from kiwibro.engine import DirectEngine, LocalModel, Runtime, adapt_payload, find_runtimes, server_args
-from kiwibro.llm import LMStudioClient, LMStudioError
+from kiwibro.llm import LLMClient, LLMError
 
 # --- GGUF writer ------------------------------------------------------------------------
 
@@ -95,7 +95,7 @@ def write_script(path: Path, body: str) -> Path:
 
 
 def install_backend(root: Path, folder: str, name: str, version: str, server_source: Path | None = None) -> Path:
-    """One LM Studio llama.cpp engine: an executable llama-server plus its manifest."""
+    """One llama.cpp build in another app's folder: an executable llama-server plus its manifest."""
     engine_dir = root / "extensions" / "backends" / folder
     engine_dir.mkdir(parents=True, exist_ok=True)
     server = engine_dir / "llama-server"
@@ -236,7 +236,7 @@ def read_calls(path: Path) -> list[Any]:
 
 @pytest.fixture
 def models_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolation: no LM Studio roots, no extra folders, no PATH llama-server, one tmp models folder."""
+    """Isolation: no other apps' folders, no extra folders, no PATH llama-server, one tmp models folder."""
     folder = tmp_path / "models"
     folder.mkdir()
     monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", ())
@@ -255,7 +255,7 @@ def fake_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def add_tiny_model(models: Path) -> None:
-    """pub/tiny: a 32k-context chat model (LM Studio's JIT-style start uses the full trained window)."""
+    """pub/tiny: a 32k-context chat model (a start without a window size uses the full trained window)."""
     write_gguf(
         models / "Pub" / "Tiny-GGUF" / "Tiny-Q4_K_M.gguf",
         overrides={"llama.context_length": (T_UINT32, 32768)},
@@ -266,8 +266,8 @@ def add_tiny_model(models: Path) -> None:
 def direct_client(tmp_path: Path, models_root: Path, fake_calls: Path):
     add_tiny_model(models_root)
     script = write_script(tmp_path / "bin" / "llama-server", FAKE_LLAMA_BODY)
-    settings = {"engine": "direct", "direct_runtime": str(script), "model": None}
-    client = LMStudioClient(lambda: settings, data_dir=tmp_path / "data")
+    settings = {"direct_runtime": str(script), "model": None}  # no server_url: Kiwibro runs the server itself
+    client = LLMClient(lambda: settings, data_dir=tmp_path / "data")
     try:
         yield client
     finally:
@@ -327,7 +327,7 @@ def test_header_truncated_inside_a_skipped_array_raises(tmp_path: Path):
         gguf.read_metadata(cut)
 
 
-# --- 2. scanning LM Studio's folders ---------------------------------------------------------
+# --- 2. scanning the model folders -----------------------------------------------------------
 
 
 def test_single_quant_model_gets_publisher_id(models_root: Path):
@@ -454,7 +454,7 @@ def test_ambiguous_repo_name_does_not_resolve_by_name_alone(models_root: Path):
 # --- 4. adapt_payload -------------------------------------------------------------------
 
 
-def test_adapt_payload_drops_lmstudio_only_keys_and_sets_prompt_cache():
+def test_adapt_payload_drops_unsupported_keys_and_sets_prompt_cache():
     payload = {"model": "m", "messages": [], "ttl": 300, "draft_model": "d", "temperature": 0.2}
     original = copy.deepcopy(payload)
 
@@ -499,7 +499,7 @@ def test_adapt_payload_passes_thinking_budgets_through():
 
 # --- 5. server_args -------------------------------------------------------------------------
 
-RUNTIME = Runtime(path="/opt/llama/llama-server", version="2.10.0", kind="cpu", source="lmstudio")
+RUNTIME = Runtime(path="/opt/llama/llama-server", version="2.10.0", kind="cpu", source="found")
 ALL_OPTIONAL_FLAGS = frozenset({
     "--api-key", "--alias", "--jinja", "--parallel", "--kv-unified", "--threads-batch", "--no-webui",
     "--ctx-size", "--flash-attn", "--reasoning-format", "--cache-reuse", "--cache-ram", "--metrics", "--mmproj",
@@ -610,9 +610,12 @@ def test_server_args_carries_key_alias_context_and_binding():
 
 
 @pytest.fixture
-def fake_lmstudio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, models_root: Path) -> Path:
-    root = tmp_path / "lmstudio"
+def other_app_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, models_root: Path) -> Path:
+    """Another app's folder with three llama.cpp builds (this test needs those, so the hermetic switches are off)."""
+    root = tmp_path / "other-app"
     monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", (str(root),))
+    monkeypatch.delenv("KIWIBRO_OWN_RUNTIME_ONLY", raising=False)
+    monkeypatch.delenv("KIWIBRO_OWN_MODELS_ONLY", raising=False)
     install_backend(root, "llama.cpp-linux-x86_64-avx2-2.10.0", "llama.cpp-linux-x86_64-avx2", "2.10.0")
     install_backend(root, "llama.cpp-linux-x86_64-avx2-2.20.0", "llama.cpp-linux-x86_64-avx2", "2.20.0")
     install_backend(root, "llama.cpp-linux-x86_64-vulkan-avx2-2.30.0",
@@ -620,28 +623,15 @@ def fake_lmstudio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, models_root: 
     return root
 
 
-def test_find_runtimes_cpu_engines_first_newest_first_without_gpu(fake_lmstudio: Path):
+def test_find_runtimes_cpu_engines_first_newest_first_without_gpu(other_app_folder: Path):
     runtimes = find_runtimes()
 
     assert [r.version for r in runtimes] == ["2.20.0", "2.10.0", "2.30.0"]
     assert runtimes[-1].kind == "vulkan"  # still a fallback: it runs on the CPU too
-    assert all(r.source == "lmstudio" for r in runtimes)
+    assert all(r.source == "found" for r in runtimes)
 
 
-def test_find_runtimes_prefers_the_engine_lmstudio_is_set_to_use(fake_lmstudio: Path):
-    (fake_lmstudio / ".internal").mkdir()
-    (fake_lmstudio / ".internal" / "backend-preferences-v1.json").write_text(json.dumps([
-        {"model_format": "gguf", "name": "llama.cpp-linux-x86_64-avx2", "version": "2.10.0"},
-    ]), encoding="utf-8")
-
-    runtimes = find_runtimes()
-
-    assert runtimes[0].version == "2.10.0"
-    assert runtimes[0].path.endswith("llama.cpp-linux-x86_64-avx2-2.10.0/llama-server")
-    assert [r.version for r in runtimes[1:]] == ["2.20.0", "2.30.0"]
-
-
-def test_custom_runtime_ranks_before_lmstudio_engines(fake_lmstudio: Path, tmp_path: Path):
+def test_custom_runtime_ranks_before_found_engines(other_app_folder: Path, tmp_path: Path):
     custom = write_script(tmp_path / "custom-build" / "llama-server", "exit 0\n")
 
     runtimes = find_runtimes(str(custom))
@@ -670,9 +660,9 @@ def test_parse_devices_keeps_hardware_gpus_only():
     assert engine.parse_devices("Available devices:\n") == ()
 
 
-def test_gpu_engine_with_a_device_ranks_first_when_gpu_is_on(fake_lmstudio: Path, tmp_path: Path):
+def test_gpu_engine_with_a_device_ranks_first_when_gpu_is_on(other_app_folder: Path, tmp_path: Path):
     source = write_script(tmp_path / "gpu-server", GPU_SERVER_BODY)
-    install_backend(fake_lmstudio, "llama.cpp-linux-x86_64-vulkan-avx2-2.30.0",
+    install_backend(other_app_folder, "llama.cpp-linux-x86_64-vulkan-avx2-2.30.0",
                     "llama.cpp-linux-x86_64-vulkan-avx2", "2.30.0", server_source=source)
 
     on = find_runtimes(gpu=True)
@@ -684,34 +674,18 @@ def test_gpu_engine_with_a_device_ranks_first_when_gpu_is_on(fake_lmstudio: Path
     assert engine.gpu_devices(off[0]) == ()  # a CPU build is never asked
 
 
-def test_gpu_engine_without_a_device_does_not_jump_the_queue(fake_lmstudio: Path):
+def test_gpu_engine_without_a_device_does_not_jump_the_queue(other_app_folder: Path):
     assert [r.version for r in find_runtimes(gpu=True)] == ["2.20.0", "2.10.0", "2.30.0"]
 
 
-def test_a_left_over_older_lmstudio_install_does_not_choose_the_engine(tmp_path: Path, monkeypatch, models_root):
-    """Seen here: a native install's preference named a 2.17 engine that cannot load current models."""
-    current, stale = tmp_path / "flatpak", tmp_path / "native"
-    monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", (str(stale), str(current)))
-    install_backend(current, "llama.cpp-linux-x86_64-avx2-2.64.0", "llama.cpp-linux-x86_64-avx2", "2.64.0")
-    install_backend(current, "llama.cpp-linux-x86_64-avx2-2.62.0", "llama.cpp-linux-x86_64-avx2", "2.62.0")
-    install_backend(stale, "llama.cpp-linux-x86_64-avx2-2.17.0", "llama.cpp-linux-x86_64-avx2", "2.17.0")
-    for root, version in ((current, "2.62.0"), (stale, "2.17.0")):
-        (root / ".internal").mkdir()
-        (root / ".internal" / "backend-preferences-v1.json").write_text(json.dumps([
-            {"model_format": "gguf", "name": "llama.cpp-linux-x86_64-avx2", "version": version},
-        ]), encoding="utf-8")
-
-    assert [r.version for r in find_runtimes()] == ["2.62.0", "2.64.0", "2.17.0"]
-
-
-def test_custom_runtime_that_is_not_executable_is_ignored(fake_lmstudio: Path, tmp_path: Path):
+def test_custom_runtime_that_is_not_executable_is_ignored(other_app_folder: Path, tmp_path: Path):
     plain = tmp_path / "not-a-server"
     plain.write_text("just text", encoding="utf-8")
     plain.chmod(0o644)
 
     runtimes = find_runtimes(str(plain))
 
-    assert all(r.source == "lmstudio" for r in runtimes)
+    assert all(r.source == "found" for r in runtimes)
 
 
 # --- 7. end to end with the fake llama-server ----------------------------------------------------
@@ -750,7 +724,7 @@ def test_direct_engine_serves_chat_and_completion_then_loads_and_unloads(direct_
 
 
 def test_unknown_model_id_raises_engine_error(direct_client):
-    with pytest.raises(LMStudioError) as caught:
+    with pytest.raises(LLMError) as caught:
         direct_client.stream_chat(model="nobody/missing", messages=[{"role": "user", "content": "hi"}])
 
     assert caught.value.kind == "engine"
@@ -765,14 +739,15 @@ def test_load_falls_back_to_the_next_runtime_when_one_crashes(
     add_tiny_model(models_root)
     working = write_script(tmp_path / "working" / "llama-server", FAKE_LLAMA_BODY)
     crashing = write_script(tmp_path / "crashing" / "llama-server", CRASHING_BODY)
-    lmstudio = tmp_path / "lmstudio"
+    other_app = tmp_path / "other-app"
     installed = install_backend(
-        lmstudio, "llama.cpp-linux-x86_64-avx2-2.10.0", "llama.cpp-linux-x86_64-avx2", "2.10.0",
+        other_app, "llama.cpp-linux-x86_64-avx2-2.10.0", "llama.cpp-linux-x86_64-avx2", "2.10.0",
         server_source=working,
     )
-    monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", (str(lmstudio),))
-    settings = {"engine": "direct", "direct_runtime": str(crashing), "model": None}
-    client = LMStudioClient(lambda: settings, data_dir=tmp_path / "data")
+    monkeypatch.setattr(engine, "LMSTUDIO_ROOTS", (str(other_app),))
+    monkeypatch.delenv("KIWIBRO_OWN_RUNTIME_ONLY", raising=False)  # this test needs the other app's build
+    settings = {"direct_runtime": str(crashing), "model": None}
+    client = LLMClient(lambda: settings, data_dir=tmp_path / "data")
     try:
         assert client.load_model("pub/tiny") is True
         server = client.direct_engine().loaded("pub/tiny")
@@ -812,12 +787,6 @@ def test_unload_does_not_stop_a_server_with_a_request_in_flight(tmp_path: Path, 
 
 
 # --- 9. config.validate_settings_patch ---------------------------------------------------------
-
-
-def test_engine_setting_accepts_only_known_engines():
-    assert config.validate_settings_patch({"engine": "direct"}, {}) == {"engine": "direct"}
-    with pytest.raises(ValueError):
-        config.validate_settings_patch({"engine": "x"}, {})
 
 
 @pytest.mark.parametrize("value", [0, 8])
@@ -862,3 +831,26 @@ def test_direct_models_dir_must_be_an_existing_folder(tmp_path: Path):
     }
     with pytest.raises(ValueError):
         config.validate_settings_patch({"direct_models_dir": str(tmp_path / "missing")}, {})
+
+
+# --- No engine installed yet -------------------------------------------------------------
+
+
+def test_models_on_disk_without_an_engine_report_the_missing_engine(tmp_path: Path, models_root: Path):
+    add_tiny_model(models_root)
+    client = LLMClient(lambda: {"model": None}, data_dir=tmp_path / "data")
+
+    ok, models, error = client.models_status(force=True)
+
+    assert (ok, models, error) == (False, [], engine.NO_RUNTIME)
+    assert client.direct_engine().models(force=True)  # the Models panel still lists the file
+    with pytest.raises(LLMError) as caught:
+        client.resolve_model()
+    assert caught.value.kind == "no_engine" and caught.value.message == engine.NO_RUNTIME
+
+
+def test_an_installed_engine_lists_the_models(direct_client: LLMClient):
+    ok, models, error = direct_client.models_status(force=True)
+
+    assert ok is True and error is None
+    assert [model["id"] for model in models] == ["pub/tiny"]

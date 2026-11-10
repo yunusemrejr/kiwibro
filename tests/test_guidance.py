@@ -21,6 +21,9 @@ def test_each_kind_of_request_gets_its_own_line() -> None:
     assert guidance.select("take a screenshot") == ["desktop"]
     assert guidance.select("draw a chart of my spending") == ["visual"]
     assert guidance.select("what did I tell you last time about my trip") == ["memory"]
+    assert guidance.select("what is my dog's name?") == ["about_user"]
+    assert guidance.select("where do I live?") == ["about_user"]
+    assert guidance.select("what is my IP address?") == []  # about the machine, not the person
     assert guidance.select("What can you do?") == ["capabilities"]
     assert guidance.select("look at this", attachments=True) == ["attachments"]
     assert "steps" in guidance.select("research X, then write a doc", plan_kinds=["web", "write"], plan_steps=2)

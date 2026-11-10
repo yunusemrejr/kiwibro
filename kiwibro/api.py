@@ -12,7 +12,7 @@ from werkzeug.exceptions import HTTPException
 
 from . import config, media, routing
 from .agent import BusyError, ConversationNotFound
-from .llm import LMStudioError
+from .llm import LLMError
 from .sandbox import SandboxError, Workspace
 
 log = logging.getLogger(__name__)
@@ -38,18 +38,16 @@ def error_body(code: str, message: str) -> dict[str, Any]:
 
 # Settings that change the prompt prefix (message 0 or the tool list): a change re-warms.
 PREFIX_SETTINGS = frozenset({
-    "user_name", "workspace", "agent_enabled", "tool_profile", "reasoning", "lmstudio_url", "lmstudio_token",
-    "autonomy", "engine", "direct_runtime", "direct_models_dir", "direct_threads", "direct_gpu",
+    "user_name", "workspace", "agent_enabled", "tool_profile", "reasoning",
+    "autonomy", "direct_runtime", "direct_models_dir", "direct_threads", "direct_gpu",
 })
-# Settings that change how the direct engine launches llama.cpp: running servers restart.
+# Settings that change how the engine launches llama.cpp: running servers restart.
 DIRECT_LAUNCH_SETTINGS = frozenset({"direct_runtime", "direct_models_dir", "direct_threads", "direct_gpu"})
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Settings for the browser: the LM Studio API token is never sent back, only whether one is set."""
-    view = dict(settings)
-    view["lmstudio_token_set"] = bool(str(view.pop("lmstudio_token", "") or "").strip())
-    return view
+    """Settings for the browser (keys an older version stored are left out)."""
+    return {key: value for key, value in settings.items() if key not in config.RETIRED_SETTINGS}
 
 
 def _prepare_model(svc: Any, model: str | None = None, *, conversation_id: str | None = None) -> dict[str, Any]:
@@ -122,6 +120,20 @@ def _memory_view(memory: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _note_view(note: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": note["id"],
+        "title": note["title"],
+        "body": note["body"],
+        "tags": note["tags"],
+        "pinned": note["pinned"],
+        "origin": note["origin"],
+        "source_conversation_id": note["source_conversation_id"],
+        "created_at": note["created_at"],
+        "updated_at": note["updated_at"],
+    }
+
+
 def _current_model(models: list[dict[str, Any]] | None) -> str | None:
     svc = services()
     if models:
@@ -152,7 +164,7 @@ def _runtime_status(svc: Any) -> dict[str, Any]:
 
 @bp.get("/api/version")
 def version() -> Response:
-    """Cheap poll (no LM Studio call): open windows reload when ``code_version`` changes."""
+    """Cheap poll (no model call): open windows reload when ``code_version`` changes."""
     return jsonify({"ok": True, **_runtime_status(services())})
 
 
@@ -164,13 +176,12 @@ def health() -> Response:
     payload: dict[str, Any] = {
         "ok": True,
         **_runtime_status(svc),
-        "lmstudio": ok,
-        "lmstudio_url": settings.get("lmstudio_url"),
+        "engine_ok": ok,
         "engine": svc.llm.engine_mode(),
         "model": _current_model(models) if ok else settings.get("model"),
     }
     if error:
-        payload["lmstudio_error"] = error
+        payload["engine_error"] = error
     return jsonify(payload)
 
 
@@ -183,8 +194,7 @@ def bootstrap() -> Response:
         "health": {
             "ok": True,
             **_runtime_status(svc),
-            "lmstudio": ok,
-            "lmstudio_url": settings.get("lmstudio_url"),
+            "engine_ok": ok,
             "engine": svc.llm.engine_mode(),
         },
         "settings": public_settings(settings),
@@ -193,10 +203,11 @@ def bootstrap() -> Response:
         "readiness": _prepare_model(svc) if ok and models else svc.agent.readiness.status(),
         "conversations": [_conversation_list_item(c) for c in svc.db.list_conversations()],
         "memories_count": svc.db.count_memories(),
+        "notes_count": svc.db.count_notes(),
         "workspace": settings.get("workspace"),
     }
     if error:
-        payload["health"]["lmstudio_error"] = error
+        payload["health"]["engine_error"] = error
     return jsonify(payload)
 
 
@@ -209,7 +220,7 @@ def list_models() -> Response:
     ok, models, error = svc.llm.models_status(force=request.args.get("refresh") == "1")
     payload: dict[str, Any] = {
         "ok": True,
-        "lmstudio": ok,
+        "engine_ok": ok,
         "current": _current_model(models) if ok else svc.settings_provider().get("model"),
         "models": [
             {**m, "context_choices": routing.context_choices(m)} if m.get("state") == "loaded" else m
@@ -218,20 +229,20 @@ def list_models() -> Response:
         "readiness": svc.agent.readiness.status(),
     }
     if error:
-        payload["lmstudio_error"] = error
+        payload["engine_error"] = error
     return jsonify(payload)
 
 
 @bp.get("/api/engine")
 def engine_status() -> Response:
-    """Which engine serves models, and what the direct engine found (runtime, folders, servers)."""
+    """What the engine found (llama.cpp build, model folders) and which servers it runs."""
     svc = services()
     return jsonify({"ok": True, "engine": svc.llm.engine_mode(), "direct": svc.llm.direct_engine().status()})
 
 
 @bp.post("/api/engine/stop")
 def engine_stop() -> Response:
-    """Stop the direct engine's llama.cpp servers (frees their memory; the next message restarts one)."""
+    """Stop the engine's llama.cpp servers (frees their memory; the next message restarts one)."""
     svc = services()
     if svc.agent.active_turns():
         raise ApiError("busy", "Wait for the current reply to finish.", 409)
@@ -272,14 +283,14 @@ def resize_model_context() -> Response:
     ok, models, error = svc.llm.models_status(force=True)
     model = next((m for m in models if m["id"] == model_id), None) if ok else None
     if model is None or model.get("state") != "loaded":
-        raise ApiError("unknown_model", error or f"{model_id} is not loaded in LM Studio.", 400)
+        raise ApiError("unknown_model", error or f"{model_id} is not loaded.", 400)
     if size not in routing.context_choices(model):
         raise ApiError("bad_request", "That context length is not available for this model.", 400)
     if svc.agent.active_turns():
         raise ApiError("busy", "Wait for the current reply to finish.", 409)
     try:
         current = routing.reload_with_context(svc.llm, model, size)
-    except LMStudioError as exc:
+    except LLMError as exc:
         raise ApiError(exc.kind, exc.message, 409 if exc.kind == "no_memory" else 502) from exc
     svc.db.set_setting("model", current)
     svc.agent.readiness.invalidate()
@@ -719,6 +730,71 @@ def delete_all_memories() -> Response:
     return jsonify({"ok": True, "deleted": deleted})
 
 
+# --- notes ------------------------------------------------------------------
+
+
+@bp.get("/api/notes")
+def list_notes() -> Response:
+    svc = services()
+    query = (request.args.get("q") or "").strip() or None
+    tag = (request.args.get("tag") or "").strip() or None
+    notes = svc.db.list_notes(query=query, tag=tag)
+    total = svc.db.count_notes(query=query, tag=tag)
+    tags = [{"tag": name, "count": count} for name, count in svc.db.note_tags()]
+    return jsonify({"ok": True, "notes": [_note_view(n) for n in notes], "total": total, "tags": tags})
+
+
+@bp.post("/api/notes")
+def create_note() -> Response:
+    svc = services()
+    data = _json_body()
+    try:
+        note = svc.notes.save(data.get("body"), data.get("title"), data.get("tags"))
+    except ValueError as exc:
+        raise ApiError("bad_request", str(exc), 400) from None
+    return jsonify({"ok": True, "note": _note_view(note)})
+
+
+@bp.get("/api/notes/<note_id>")
+def get_note(note_id: str) -> Response:
+    svc = services()
+    note = svc.db.get_note(note_id)
+    if note is None:
+        raise ApiError("not_found", "Note not found.", 404)
+    return jsonify({"ok": True, "note": _note_view(note)})
+
+
+@bp.patch("/api/notes/<note_id>")
+def patch_note(note_id: str) -> Response:
+    svc = services()
+    if svc.db.get_note(note_id) is None:
+        raise ApiError("not_found", "Note not found.", 404)
+    data = _json_body()
+    if "pinned" in data and not isinstance(data["pinned"], bool):
+        raise ApiError("bad_request", "pinned must be true or false.", 400)
+    try:
+        note = svc.notes.update(
+            note_id,
+            title=data.get("title"),
+            body=data.get("body"),
+            tags=data.get("tags"),
+            pinned=data.get("pinned"),
+        )
+    except ValueError as exc:
+        raise ApiError("bad_request", str(exc), 400) from None
+    if note is None:
+        raise ApiError("not_found", "Note not found.", 404)
+    return jsonify({"ok": True, "note": _note_view(note)})
+
+
+@bp.delete("/api/notes/<note_id>")
+def delete_note(note_id: str) -> Response:
+    svc = services()
+    if not svc.notes.delete(note_id):
+        raise ApiError("not_found", "Note not found.", 404)
+    return jsonify({"ok": True})
+
+
 # --- settings ---------------------------------------------------------------
 
 
@@ -746,22 +822,15 @@ def patch_settings() -> Response:
     if not cleaned:
         raise ApiError("bad_request", "nothing to update", 400)
     changed = {key for key in cleaned if current.get(key) != cleaned[key]}
-    if "engine" in changed and cleaned["engine"] == "direct":
-        # LM Studio would keep the models Kiwibro loaded there resident next to llama.cpp's.
-        svc.agent.readiness.release_all()
     svc.db.patch_settings(cleaned)
-    if "engine" in changed and cleaned["engine"] != "direct" or changed & DIRECT_LAUNCH_SETTINGS:
-        svc.llm.stop_direct()  # back on LM Studio, or relaunch with the new runtime/threads
-    if "engine" in changed:
-        svc.llm.clear_cache()
+    if changed & DIRECT_LAUNCH_SETTINGS:
+        svc.llm.stop_direct()  # relaunch with the new runtime, folder or threads
     if "workspace" in cleaned:
         try:
             Path(cleaned["workspace"]).mkdir(parents=True, exist_ok=True)
         except OSError:  # validation already created it
             pass
     if any(current.get(key) != cleaned[key] for key in cleaned if key in PREFIX_SETTINGS):
-        if "lmstudio_url" in cleaned or "lmstudio_token" in cleaned:
-            svc.llm.clear_cache()
         svc.agent.readiness.invalidate()
         _prepare_model(svc)
     return jsonify({"ok": True, "settings": public_settings(svc.settings_provider())})
@@ -882,3 +951,5 @@ def handle_unexpected(exc: Exception) -> Response:
 
 
 __all__ = ["bp", "services", "error_body", "ApiError"]
+
+from . import api_models  # noqa: E402,F401

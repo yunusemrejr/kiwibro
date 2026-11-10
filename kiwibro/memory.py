@@ -10,15 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import autofacts, config, inference, prompts, terms
+from . import autofacts, config, inference, prompts, sense, terms
 from .context import estimate_tokens
 from .db import Database
-from .llm import LMStudioClient, LMStudioError, TurnAborted, parse_json_loose
+from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
 
 log = logging.getLogger(__name__)
 
 DEDUPE_SEQ_RATIO = 0.86
 DEDUPE_JACCARD = 0.72
+MEANING_MATCH = 0.41  # cosine from Kiwi Sense at which a memory rides along without a shared word
 MEMORY_PROMPT_TOKEN_CAP = 800
 MAX_OPS_PER_TURN = 5
 MIN_CONTENT = 3
@@ -153,13 +154,120 @@ def _memory_keys(memory: dict[str, Any]) -> set[str]:
     return terms.key_terms(memory.get("content") or "")
 
 
-_FIRST_PERSON_RE = re.compile(r"^(i|i'm|i've|i'd|i'll|my|me|we|our)\b", re.IGNORECASE)
+_FIRST_PERSON_RE = re.compile(r"^(i|i'm|i've|i'd|i'll|i’m|i’ve|i’d|i’ll|my|me|we|our)\b", re.IGNORECASE)
+_APOSTROPHE = "['\u2019]"
+# How a sentence the user wrote about themselves starts, and how it reads about them.
+_SELF_STARTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(rf"^(?:i\s+am|i{_APOSTROPHE}m)\s+", re.IGNORECASE), "The user is "),
+    (re.compile(r"^my\s+name\s+is\s+", re.IGNORECASE), "The user's name is "),
+    (re.compile(r"^(?:please\s+)?call\s+me\s+", re.IGNORECASE), "The user wants to be called "),
+    (re.compile(rf"^(?:i\s+have|i{_APOSTROPHE}ve)\s+", re.IGNORECASE), "The user has "),
+    (re.compile(rf"^(?:i\s+do\s+not|i\s+don{_APOSTROPHE}t)\s+", re.IGNORECASE), "The user does not "),
+    (re.compile(rf"^(?:i\s+would|i{_APOSTROPHE}d)\s+", re.IGNORECASE), "The user would "),
+    (re.compile(rf"^(?:i\s+will|i{_APOSTROPHE}ll)\s+", re.IGNORECASE), "The user will "),
+    (re.compile(r"^my\s+", re.IGNORECASE), "The user's "),
+)
+_LEGACY_QUOTE = "User said: "
+_CALL_ME_RE = re.compile(r"^(?:please\s+)?call\s+me\s+", re.IGNORECASE)
+_SELF_VERB_RE = re.compile(
+    rf"^i\s+((?:(?:always|never|often|usually|sometimes|mostly|really|only|just|still|also)\s+)?)"
+    rf"([a-z]+(?:{_APOSTROPHE}t)?)\b", re.IGNORECASE)
+_UNCHANGED_VERBS = frozenset(
+    """can can't cannot could couldn't should shouldn't must may might will won't would wouldn't
+    was had did went got bought made took came saw met left grew became began chose knew told found
+    spent built wrote read""".replace("'", "’").split()
+) | frozenset("can't couldn't shouldn't won't wouldn't".split())
+_PRESENT_VERBS = frozenset(
+    """use like love prefer live work study need want own speak play write run drive enjoy hate know
+    think feel eat drink build teach learn manage lead plan hope keep make take get go do have ride
+    cook watch listen follow support avoid collect train practise practice commute travel sleep wake""".split()
+)
+_LATER_SELF: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(rf"\bI\s+am\b|\bI{_APOSTROPHE}m\b"), "they are"),
+    (re.compile(rf"\bI{_APOSTROPHE}ve\b"), "they have"),
+    (re.compile(rf"\bI{_APOSTROPHE}d\b"), "they would"),
+    (re.compile(rf"\bI{_APOSTROPHE}ll\b"), "they will"),
+    (re.compile(r"\bI\b"), "they"),
+    (re.compile(r"\bmyself\b", re.IGNORECASE), "themselves"),
+    (re.compile(r"\bmine\b", re.IGNORECASE), "theirs"),
+    (re.compile(r"\bmy\b", re.IGNORECASE), "their"),
+    (re.compile(r"\bme\b", re.IGNORECASE), "them"),
+)
+
+
+def _third_singular(verb: str) -> str:
+    irregular = {"have": "has", "do": "does", "go": "goes"}
+    if verb in irregular:
+        return irregular[verb]
+    if verb.endswith(("s", "x", "z", "ch", "sh")):
+        return verb + "es"
+    if verb.endswith("y") and verb[-2:-1] not in "aeiou":
+        return verb[:-1] + "ies"
+    return verb + "s"
+
+
+_SENTENCE_START_RE = re.compile(r"([.!?]\s+)(they|their|them)\b")
+
+
+def _later_self(rest: str) -> str:
+    for pattern, word in _LATER_SELF:
+        rest = pattern.sub(word, rest)
+    return _SENTENCE_START_RE.sub(lambda match: match.group(1) + match.group(2).capitalize(), rest)
 
 
 def third_person(content: str) -> str:
-    """Model-written memories sometimes quote the user ("I use Neovim"); later prompts
-    would read that "I" as the assistant, so attribute it explicitly."""
-    return f"User said: {content}" if _FIRST_PERSON_RE.match(content) else content
+    """A memory in the user's own words ("I am Sam", "I use Neovim") as a statement about
+    the user ("The user is Sam", "The user uses Neovim").
+
+    In a prompt, "I" reads as the assistant: small models then introduce themselves as the
+    user. Sentences this cannot turn safely are quoted as the user's words instead."""
+    text = (content or "").strip()
+    if text.startswith(_LEGACY_QUOTE):  # how releases before 3.0 stored the user's own words
+        text = text[len(_LEGACY_QUOTE):].strip()
+    if not _FIRST_PERSON_RE.match(text) and not _CALL_ME_RE.match(text):
+        return content
+    for pattern, lead in _SELF_STARTS:
+        match = pattern.match(text)
+        if match:
+            return lead + _later_self(text[match.end():])
+    match = _SELF_VERB_RE.match(text)
+    if match:
+        adverb, verb, rest = match.group(1).lower(), match.group(2).lower(), _later_self(text[match.end():])
+        if verb in _UNCHANGED_VERBS or verb.endswith("ed"):
+            return f"The user {adverb}{verb}{rest}"
+        if verb in _PRESENT_VERBS:
+            return f"The user {adverb}{_third_singular(verb)}{rest}"
+    return f"The user said: “{text}”"
+
+
+_REMEMBER_INTENT_RE = re.compile(
+    r"\b(?:remember|memori[sz]e|don[’']?t forget|do not forget|keep in mind|note that|make a note|"
+    r"save (?:this|that|it)|from now on|in (?:the )?future|always|never|"
+    r"hat[ıi]rla|unutma|akl[ıi]nda tut|not al|kaydet)\b", re.IGNORECASE)
+_ABOUT_SELF_RE = re.compile(
+    rf"\b(?:i|i{_APOSTROPHE}m|i{_APOSTROPHE}ve|i{_APOSTROPHE}d|i{_APOSTROPHE}ll|my|me|mine|myself|we|our|us)\b",
+    re.IGNORECASE)
+_ENGLISH_HINT_RE = re.compile(r"\b(?:the|a|an|is|are|was|to|of|and|you|about|for|with|that|this|write|what|how)\b",
+                              re.IGNORECASE)
+
+
+def _small_talk(message: str | None) -> bool:
+    from .plan import is_small_talk  # local: plan sits above memory in the import order
+
+    return is_small_talk(message or "")
+
+
+def worth_saving(said: str) -> bool:
+    """Whether the user's message can be the source of a memory at all: they asked for
+    something to be kept, or they spoke about themselves.
+
+    A request like "write a story about a sad shop owner" is neither, so nothing from it is
+    saved. Only English messages are judged; other languages pass (the wording check
+    `grounded` still applies)."""
+    said = said or ""
+    if len(said.split()) < 5 or not _ENGLISH_HINT_RE.search(said):  # too short to judge ("yes, do that")
+        return True
+    return bool(_REMEMBER_INTENT_RE.search(said) or _ABOUT_SELF_RE.search(said))
 
 
 def validate_kind(kind: Any) -> str:
@@ -341,7 +449,7 @@ class MemoryEngine:
     def __init__(
         self,
         db: Database,
-        llm: LMStudioClient,
+        llm: LLMClient,
         settings_provider: Callable[[], dict[str, Any]],
     ) -> None:
         self.db = db
@@ -402,7 +510,9 @@ class MemoryEngine:
         # FTS query is an OR over query tokens, so common words match many
         # rows; coverage scoring below separates true matches from noise.)
         add(self.db.pinned_memories(8))
-        add(self._profile())
+        # A greeting only needs the name and reply language; the user's longer self-descriptions
+        # wait for a message they can help with (small models otherwise recite them).
+        add(self._profile(brief=_small_talk(query)))
         if (query or "").strip():
             add(self._search_pool(query))
         add(self.db.recently_used_memories(8))
@@ -412,6 +522,10 @@ class MemoryEngine:
         query_keys = terms.key_terms(query or "")
         relevant = [m for m in candidates if query_keys & _memory_keys(m)]
         relevant_ids = {m["id"] for m in relevant}
+        if not relevant:
+            for memory in self._meaning_matches(query):
+                relevant_ids.add(memory["id"])
+                add([memory])
         kept = [m for m in candidates if m.get("pinned") or is_profile(m) or m["id"] in relevant_ids]
         result = self._rank(kept, query)[:limit]
         # Only a memory that matched counts as used; counting every injected one made the
@@ -424,16 +538,35 @@ class MemoryEngine:
                 log.warning("could not mark memories as used", exc_info=True)
         return result
 
-    def _profile(self) -> list[dict[str, Any]]:
+    def _meaning_matches(self, query: str) -> list[dict[str, Any]]:
+        """When no memory shares a word with the message: the one that answers it in other
+        words ("my wife" finds "married to Selin"). Read by Kiwi Sense; nothing when it is
+        unavailable. One-line memories give it little to read, so only the closest one rides."""
+        asked = terms.gist(query or "")
+        if not asked or _small_talk(query):
+            return []
+        reader = sense.shared()
+        if reader is None:
+            return []
+        try:
+            memories = self.db.all_memories()
+            hits = reader.nearest(asked, [terms.gist(str(m.get("content") or "")) for m in memories], limit=1,
+                                  floor=MEANING_MATCH)
+        except Exception:  # pragma: no cover - defensive
+            log.warning("meaning search over memories failed", exc_info=True)
+            return []
+        return [memories[index] for index, _score in hits]
+
+    def _profile(self, brief: bool = False) -> list[dict[str, Any]]:
         """Who the user is and how to reply: useful on every turn (PROFILE_SLOTS, plus the
-        user's own self-descriptions)."""
+        user's own self-descriptions unless ``brief``)."""
         try:
             memories = self.db.all_memories()
         except Exception:  # pragma: no cover - defensive
             return []
         slots = [m for m in memories if str(m.get("content") or "").startswith(_PROFILE_PREFIXES)]
         own = [m for m in memories if _SELF_DESCRIPTION_RE.match(str(m.get("content") or ""))]
-        return slots[: len(PROFILE_SLOTS)] + own[:SELF_DESCRIPTIONS]
+        return slots[: len(PROFILE_SLOTS)] + ([] if brief else own[:SELF_DESCRIPTIONS])
 
     @staticmethod
     def _rank(memories: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
@@ -900,7 +1033,7 @@ class MemoryEngine:
             floor=config.MEMORY_EXTRACTION_TIMEOUT_S,
         )
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kiwibro-mem")
-        stop = threading.Event()  # set on timeout too, so LM Studio stops working on it
+        stop = threading.Event()  # set on timeout too, so the server stops working on it
         watcher = None
         if abort is not None:
             watcher = threading.Thread(target=_relay, args=(abort, stop), daemon=True)
@@ -926,7 +1059,7 @@ class MemoryEngine:
         except TimeoutError:
             log.info("memory extraction timed out")
             return None, "failed"
-        except LMStudioError as exc:
+        except LLMError as exc:
             log.debug("memory extraction LLM error: %s", exc.message)
             return None, "failed"
         finally:

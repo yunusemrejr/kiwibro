@@ -10,13 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "2.6.0"
+VERSION = "3.0.0"
 APP_NAME = "Kiwibro"
 # Unix timestamp of process start: lets the desktop launcher notice when the repo
 # changed underneath a still-running server and restart it.
 STARTED_AT = int(time.time())
 
-DEFAULT_LMSTUDIO_URL = "http://127.0.0.1:1234"
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 DEFAULT_TEMPERATURE = 0.6
 MAX_OUTPUT_TOKENS_RANGE = (256, 8192)
@@ -28,7 +27,7 @@ APPROVAL_TIMEOUT_S = 120.0
 HEARTBEAT_S = 15.0
 MEMORY_EXTRACTION_TIMEOUT_S = 8.0  # floor; the real budget follows measured speed (inference.SPEEDS)
 # Background memory extraction waits until no reply has streamed for this long. Cancelling
-# it frees the CPU only at LM Studio's next 2048-token batch (~20 s on a laptop CPU), so it
+# it frees the CPU only at the server's next 2048-token batch (~20 s on a laptop CPU), so it
 # starts in real pauses rather than between quick replies (the remember tool saves at once).
 MEMORY_IDLE_S = float(os.environ.get("KIWIBRO_MEMORY_IDLE_S", "20"))
 MEMORY_CAP = 400
@@ -76,6 +75,7 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "task_board": "auto",
     "recall": "auto",
     "remember": "auto",
+    "note": "auto",
 }
 
 # File changes per turn before safety.decide escalates each further one a level
@@ -117,10 +117,6 @@ DEFAULT_AUTONOMY = "smart"
 SANDBOX_MODES = ("auto", "strict", "off")
 DEFAULT_SANDBOX = "auto"
 
-# Where models run: "lmstudio" calls LM Studio's API; "direct" runs LM Studio's downloaded
-# models with llama.cpp itself (see engine.py), so the LM Studio app need not be open.
-ENGINES = ("lmstudio", "direct")
-DEFAULT_ENGINE = "lmstudio"
 DIRECT_THREADS_RANGE = (0, 256)  # 0 = every physical core
 # Direct engine graphics acceleration: auto = a GPU build of llama.cpp on the GPU it finds
 # (an integrated one too), off = the CPU only.
@@ -129,13 +125,15 @@ DEFAULT_GPU = "auto"
 
 # Settings whose value must be one of a fixed set.
 SETTING_CHOICES: dict[str, tuple[str, ...]] = {
-    "engine": ENGINES,
     "direct_gpu": GPU_MODES,
     "tool_profile": TOOL_PROFILES,
     "reasoning": REASONING_MODES,
     "autonomy": AUTONOMY_MODES,
     "sandbox": SANDBOX_MODES,
 }
+
+# Stored by versions that talked to another app's server; ignored now.
+RETIRED_SETTINGS = frozenset({"lmstudio_url", "lmstudio_token", "engine"})
 
 MEMORY_KINDS = ("fact", "preference", "project", "person", "decision")
 
@@ -164,21 +162,24 @@ def default_workspace() -> Path:
     return Path.home() / "Kiwibro"
 
 
-def default_settings(lmstudio_url: str | None = None, workspace: str | None = None) -> dict[str, Any]:
-    """Fresh settings values (permissions are merged separately)."""
-    url = (lmstudio_url or os.environ.get("KIWIBRO_LMSTUDIO_URL") or DEFAULT_LMSTUDIO_URL).rstrip("/")
+def default_settings(server_url: str | None = None, workspace: str | None = None) -> dict[str, Any]:
+    """Fresh settings values (permissions are merged separately).
+
+    ``server_url`` is not a stored setting: it comes from ``KIWIBRO_SERVER_URL`` and
+    attaches Kiwibro to a llama.cpp-compatible server that is already running (tests,
+    a server on another machine) instead of starting its own."""
+    url = (server_url if server_url is not None else os.environ.get("KIWIBRO_SERVER_URL") or "").strip().rstrip("/")
     ws = workspace or os.environ.get("KIWIBRO_WORKSPACE") or str(default_workspace())
     return {
         "model": None,
-        "lmstudio_url": url,
-        "lmstudio_token": "",
-        "engine": os.environ.get("KIWIBRO_ENGINE") if os.environ.get("KIWIBRO_ENGINE") in ENGINES else DEFAULT_ENGINE,
+        "server_url": url,
         "direct_runtime": "",
         "direct_models_dir": "",
         "direct_threads": 0,
         "direct_gpu": DEFAULT_GPU,
         "agent_enabled": True,
         "memory_enabled": True,
+        "sense_enabled": True,
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
         "temperature": DEFAULT_TEMPERATURE,
         "workspace": str(Path(ws).expanduser()),
@@ -216,18 +217,6 @@ def validate_workspace(value: Any) -> str:
     if not target.is_dir():
         raise ValueError("workspace path is not a directory")
     return str(target)
-
-
-def validate_lmstudio_url(value: Any) -> str:
-    from urllib.parse import urlsplit
-
-    if not isinstance(value, str):
-        raise ValueError("lmstudio_url must be a string")
-    url = value.strip().rstrip("/")
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
-        raise ValueError("lmstudio_url must be an http(s) URL")
-    return url
 
 
 def _validate_optional_path(value: Any, key: str, *, executable: bool) -> str:
@@ -277,10 +266,8 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             cleaned["max_output_tokens"] = value
         elif key == "workspace":
             cleaned["workspace"] = validate_workspace(value)
-        elif key == "lmstudio_url":
-            cleaned["lmstudio_url"] = validate_lmstudio_url(value)
         elif key == "direct_runtime":
-            # A custom llama.cpp build's llama-server; empty = LM Studio's bundled engine.
+            # A custom llama.cpp build's llama-server; empty = the engine Kiwibro installed or found.
             cleaned["direct_runtime"] = _validate_optional_path(value, key, executable=True)
         elif key == "direct_models_dir":
             cleaned["direct_models_dir"] = _validate_optional_path(value, key, executable=False)
@@ -290,16 +277,11 @@ def validate_settings_patch(patch: dict[str, Any], current: dict[str, Any]) -> d
             if not DIRECT_THREADS_RANGE[0] <= value <= DIRECT_THREADS_RANGE[1]:
                 raise ValueError("direct_threads must be between 0 and 256")
             cleaned["direct_threads"] = value
-        elif key == "lmstudio_token":
-            # API token for an LM Studio server with authentication on (another machine's).
-            if not isinstance(value, str) or len(value) > 512 or any(c.isspace() for c in value.strip()):
-                raise ValueError("lmstudio_token must be a single token of at most 512 characters")
-            cleaned["lmstudio_token"] = value.strip()
         elif key == "model":
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError("model must be a non-empty string or null")
             cleaned["model"] = value.strip() if isinstance(value, str) else None
-        elif key in ("agent_enabled", "memory_enabled"):
+        elif key in ("agent_enabled", "memory_enabled", "sense_enabled"):
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean")
             cleaned[key] = value

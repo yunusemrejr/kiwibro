@@ -1,0 +1,633 @@
+/* ==========================================================================
+   How it works: a list of topics, one animated figure, a few plain sentences.
+   Green is what is live or moving, tan is what belongs to Kiwibro itself,
+   orange is something going wrong.
+   ========================================================================== */
+
+.how-steps {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 2px;
+  width: 216px;
+  padding: 16px 10px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+
+.how-step {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background var(--dur), color var(--dur);
+}
+
+.how-step-n {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  color: var(--faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--dur), border-color var(--dur), color var(--dur);
+}
+
+.how-step:hover {
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-2);
+}
+
+.how-step[aria-current="step"] {
+  background: var(--green-dim);
+  color: var(--text);
+}
+
+.how-step[aria-current="step"] .how-step-n {
+  border-color: var(--green);
+  background: var(--green);
+  color: var(--green-ink);
+  font-weight: 700;
+}
+
+.how-stage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.how-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 32px 8px;
+  overflow-y: auto;
+}
+
+.how-figure {
+  max-width: 600px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.how-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.how-copy {
+  max-width: 600px;
+  margin: 18px auto 0;
+}
+
+.how-question {
+  color: var(--text);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.how-lines {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.62;
+}
+
+.how-term {
+  color: var(--green-bright);
+  font-weight: 600;
+}
+
+.how-fact {
+  margin-top: 12px;
+  padding-left: 12px;
+  border-left: 2px solid var(--tan);
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.how-fact-tag {
+  margin-right: 8px;
+  color: var(--tan-soft);
+  font-weight: 600;
+}
+
+.how-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: none;
+  padding: 10px 32px 14px;
+}
+
+.how-nav .btn {
+  height: 34px;
+  padding: 0 14px;
+}
+
+.how-play[hidden] {
+  display: none;
+}
+
+/* ---------- Figure parts -------------------------------------------------- */
+.how-svg text {
+  font-family: inherit;
+  user-select: none;
+}
+
+.hw-t {
+  fill: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hw-t-muted {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.hw-t-tan {
+  fill: var(--tan-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hw-t-green {
+  fill: var(--green-bright);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hw-t-orange {
+  fill: var(--orange-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.hw-line {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.hw-line-tan {
+  stroke: var(--tan);
+  stroke-opacity: 0.6;
+}
+
+.hw-arrow {
+  fill: none;
+  stroke: var(--faint);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hw-stroke-green {
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2.2;
+  stroke-linejoin: round;
+}
+
+.hw-frame {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 5;
+}
+
+.hw-track {
+  fill: rgba(255, 255, 255, 0.07);
+}
+
+.hw-fill-green {
+  fill: var(--green);
+}
+
+.hw-mark {
+  stroke: var(--faint);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: stroke 0.2s;
+}
+
+.hw-mark.is-on {
+  stroke: var(--amber);
+}
+
+.hw-node rect {
+  fill: var(--surface);
+  stroke: var(--line-2);
+  stroke-width: 1.4;
+  transition: fill 0.25s, stroke 0.25s;
+}
+
+.hw-node.is-on rect {
+  fill: var(--green-dim);
+  stroke: var(--green);
+}
+
+.hw-node.is-on .hw-t {
+  fill: var(--text);
+}
+
+.hw-node-tan rect {
+  stroke: var(--tan-line);
+}
+
+.hw-node-tan.is-on rect {
+  fill: var(--tan-dim);
+  stroke: var(--tan);
+}
+
+.hw-dot {
+  fill: var(--green);
+}
+
+.hw-cards rect {
+  fill: var(--tan-dim);
+  stroke: var(--tan-line);
+  stroke-width: 1.2;
+  transition: fill 0.25s, stroke 0.25s;
+}
+
+.hw-cards.is-on rect {
+  fill: var(--tan);
+  stroke: var(--tan);
+}
+
+.hw-tile {
+  fill: rgba(243, 241, 227, 0.16);
+  stroke: rgba(243, 241, 227, 0.22);
+  stroke-width: 1;
+}
+
+.hw-tile.is-on {
+  fill: var(--green);
+  stroke: var(--green);
+}
+
+.hw-tile-tan {
+  fill: var(--tan);
+  stroke: var(--tan);
+}
+
+.hw-tile-new {
+  fill: var(--green-dim);
+  stroke: var(--green);
+  stroke-width: 1.4;
+}
+
+.hw-cache {
+  fill: rgba(255, 255, 255, 0.08);
+  transition: fill 0.15s;
+}
+
+.hw-cache.is-on {
+  fill: var(--green);
+}
+
+.hw-head path {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.hw-head .hw-head-tip {
+  fill: var(--text);
+  stroke: none;
+}
+
+.hw-ticket rect,
+.hw-chip rect {
+  fill: var(--green-deep);
+  stroke: var(--green);
+  stroke-width: 1.3;
+  transition: fill 0.2s, stroke 0.2s;
+}
+
+.hw-ticket path,
+.hw-chip path {
+  fill: none;
+  stroke: var(--green-soft);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: stroke 0.2s;
+}
+
+.hw-ticket .hw-check {
+  stroke: var(--text);
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+}
+
+.hw-chip.is-off rect {
+  fill: var(--orange-dim);
+  stroke: var(--orange);
+}
+
+.hw-chip.is-off path {
+  stroke: var(--orange-soft);
+}
+
+.hw-chip .hw-note {
+  fill: var(--tan);
+  stroke: none;
+}
+
+.hw-sheet rect {
+  fill: var(--surface-3);
+  stroke: var(--text-2);
+  stroke-width: 1.3;
+}
+
+.hw-sheet path {
+  fill: none;
+  stroke: var(--text-2);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.hw-answer rect,
+.hw-bubble rect {
+  fill: var(--green-deep);
+}
+
+.hw-answer path,
+.hw-bubble path {
+  fill: none;
+  stroke: var(--green-soft);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+
+.hw-bubble .hw-key {
+  opacity: 0.6;
+  transition: stroke 0.3s, opacity 0.3s;
+}
+
+.hw-bubble .hw-key.is-on {
+  stroke: var(--text);
+  opacity: 1;
+}
+
+.hw-gate-ring {
+  fill: var(--green-dim);
+  stroke: var(--green-line);
+  stroke-width: 2;
+  transition: fill 0.2s, stroke 0.2s;
+}
+
+.hw-gate-core {
+  fill: var(--text);
+  opacity: 0.85;
+}
+
+.hw-gate-seed {
+  fill: var(--green-soft);
+}
+
+.hw-gate.is-ok .hw-gate-ring {
+  stroke: var(--green);
+}
+
+.hw-gate.is-off .hw-gate-ring {
+  fill: var(--orange-dim);
+  stroke: var(--orange);
+}
+
+.hw-card rect {
+  fill: var(--tan-dim);
+  stroke: var(--tan-line);
+  stroke-width: 1.2;
+  transition: fill 0.3s, stroke 0.3s;
+}
+
+.hw-card path {
+  fill: none;
+  stroke: var(--tan);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  opacity: 0.55;
+  transition: stroke 0.3s, opacity 0.3s;
+}
+
+.hw-card-note rect {
+  fill: none;
+}
+
+.hw-card.is-on rect {
+  fill: var(--tan);
+  stroke: var(--tan-soft);
+}
+
+.hw-card.is-on path {
+  stroke: var(--green-ink);
+  opacity: 0.9;
+}
+
+.hw-cell {
+  fill: color-mix(in srgb, var(--green) calc(var(--tint, 0) * 100%), var(--surface-3));
+}
+
+.hw-strip {
+  fill: var(--tan-dim);
+  stroke: var(--tan);
+  stroke-width: 1.2;
+  transition: fill 0.2s, stroke 0.2s;
+}
+
+.hw-strip.is-on {
+  fill: var(--green);
+  stroke: var(--green);
+}
+
+/* ---------- Kiwi Sense, live ---------------------------------------------- */
+.how-try {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.how-try-label {
+  display: block;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.how-try-input {
+  display: block;
+  width: 100%;
+  height: 38px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.how-try-input:focus-visible {
+  border-color: var(--green);
+  outline: none;
+}
+
+.how-try-samples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 6px;
+}
+
+.how-try-rows {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.how-try-row {
+  display: grid;
+  grid-template-columns: 190px 1fr 40px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.how-try-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.how-try-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--faint);
+  transition: width 0.25s var(--ease-out), background 0.2s;
+}
+
+.how-try-share {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.how-try-row[data-tone="fine"] .how-try-bar > span {
+  background: var(--green);
+}
+
+.how-try-row[data-tone="off"] {
+  color: var(--orange-soft);
+}
+
+.how-try-row[data-tone="off"] .how-try-bar > span {
+  background: var(--orange);
+}
+
+.how-try-verdict {
+  min-height: 20px;
+  margin-top: 10px;
+  color: var(--green-soft);
+  font-size: 13px;
+}
+
+.how-try-verdict[data-tone="off"] {
+  color: var(--orange-soft);
+}
+
+/* ---------- Narrow -------------------------------------------------------- */
+@media (max-width: 860px) {
+  #how-body {
+    flex-direction: column;
+  }
+
+  .how-steps {
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 4px;
+    width: auto;
+    padding: 10px 12px;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .how-step {
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+  }
+
+  .how-step-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .how-step-n {
+    width: 26px;
+    height: 26px;
+    font-size: 12.5px;
+  }
+
+  .how-step[aria-current="step"] {
+    background: transparent;
+  }
+
+  .how-scroll {
+    padding: 12px 12px 6px;
+  }
+
+  .how-nav {
+    padding: 8px 12px 12px;
+  }
+
+  .how-question {
+    font-size: 17.5px;
+  }
+
+  .how-try-row {
+    grid-template-columns: 150px 1fr 36px;
+    gap: 8px;
+    font-size: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .how-svg * {
+    transition: none !important;
+  }
+}

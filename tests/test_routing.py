@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from kiwibro import routing
-from kiwibro.llm import Completion, LMStudioError
+from kiwibro.llm import Completion, LLMError
 
 MODELS: list[dict[str, Any]] = [
     {"id": "tiny-chat-0.8b", "type": "llm", "state": "loaded", "context": 8192,
@@ -119,7 +119,7 @@ def test_run_helper_embeddings_and_missing_capability():
         llm, "embeddings", [{"role": "user", "content": "embed me"}], current_model="tiny-chat-0.8b"
     )
     assert result["embeddings"] == [[0.1, 0.2]]
-    with pytest.raises(LMStudioError) as exc:
+    with pytest.raises(LLMError) as exc:
         routing.run_helper(llm, "audio", [{"role": "user", "content": "listen"}])
     assert exc.value.kind == "no_model"
 
@@ -128,13 +128,13 @@ def test_run_helper_unloads_even_when_call_fails():
     class FailingLLM(FakeLLM):
         def complete_vision(self, **kw):  # noqa: ANN003 - test double
             self.calls.append(("vision", kw["model"]))
-            raise LMStudioError("server", "boom")
+            raise LLMError("server", "boom")
 
     llm = FailingLLM(MODELS)
     messages = [{
         "role": "user",
         "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}],
     }]
-    with pytest.raises(LMStudioError):
+    with pytest.raises(LLMError):
         routing.run_helper(llm, "vision", messages, current_model="tiny-chat-0.8b")
     assert llm.calls[-1] == ("unload", "qwen-vl-2b")

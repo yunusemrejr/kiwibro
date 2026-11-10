@@ -15,7 +15,7 @@ import pytest
 
 from kiwibro import create_app
 from kiwibro.context import estimate_tokens
-from kiwibro.llm import Completion, LMStudioError
+from kiwibro.llm import Completion, LLMError
 from kiwibro.memory import is_similar, normalize
 
 MODEL = {
@@ -58,7 +58,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "TESTING": True,
             "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
             "KIWIBRO_WORKSPACE": str(workspace),
-            "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9",
+            "KIWIBRO_SERVER_URL": "http://127.0.0.1:9",
         }
     )
     svc = app.extensions["kiwibro"]
@@ -343,6 +343,35 @@ def test_recall_note_returns_exact_early_fact_after_compaction(env):
     assert prepared.used <= prepared.budget
 
 
+def test_recall_finds_an_early_exchange_by_meaning_when_no_word_matches(env):
+    from kiwibro import sense
+
+    if sense.shared() is None:
+        pytest.skip("Kiwi Sense is not available")
+    svc, _fake = env
+    conversation = svc.db.create_conversation()
+    svc.db.add_message(conversation["id"], "user", "First, help me plan the week.")
+    svc.db.add_message(conversation["id"], "assistant", "Sure, let us plan it.")
+    svc.db.add_message(conversation["id"], "user", "Can you recommend somewhere in London to buy good cheese?")
+    svc.db.add_message(conversation["id"], "assistant", "Try La Fromagerie on Moxon Street; they age their own comte.")
+    for i in range(50):
+        svc.db.add_message(conversation["id"], "user", f"Filler sailing topic {i} " + "chat " * 30)
+        svc.db.add_message(conversation["id"], "assistant", f"Filler reply {i} " + "talk " * 30)
+    asked = svc.db.add_message(conversation["id"], "user", "where was that dairy shop again")
+    assert svc.db.search_messages("where was that dairy shop again", conversation_id=conversation["id"],
+                                  before_seq=asked["seq"]) == []  # no word of it was said before
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    newest_user = [m for m in prepared.messages if m["role"] == "user"][-1]
+    assert prepared.recalled == 2  # the question it matched and the reply that answered it
+    assert "La Fromagerie on Moxon Street" in newest_user["content"]
+    assert prepared.used <= prepared.budget
+
+    svc.db.add_message(conversation["id"], "assistant", "La Fromagerie, on Moxon Street.")
+    svc.db.add_message(conversation["id"], "user", "write me a poem about autumn")
+    prepared = svc.context.prepare(conversation["id"], "fake-1", "SYSTEM")
+    assert "La Fromagerie on Moxon Street" not in [m for m in prepared.messages if m["role"] == "user"][-1]["content"]
+
+
 def test_prepare_prefix_is_stable_across_turns(env):
     """KV rule: older rendered messages never change when a new turn arrives."""
     svc, _fake = env
@@ -421,7 +450,7 @@ def test_conversation_api_pagination_is_opt_in(tmp_path: Path, monkeypatch: pyte
     workspace.mkdir()
     app = create_app(
         {"TESTING": True, "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
-         "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_LMSTUDIO_URL": "http://127.0.0.1:9"}
+         "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_SERVER_URL": "http://127.0.0.1:9"}
     )
     svc = app.extensions["kiwibro"]
     fake = FakeLLM()
@@ -453,7 +482,7 @@ def test_extraction_watermark_retries_after_failure(env, monkeypatch: pytest.Mon
     svc.db.add_message(conversation["id"], "assistant", "Congrats on the move!")
 
     def boom(**kwargs):
-        raise LMStudioError("timeout", "slow model")
+        raise LLMError("timeout", "slow model")
 
     monkeypatch.setattr(svc.llm, "complete_json", boom)
     assert svc.memory.extract_and_apply(conversation["id"], "fake-1")["added"] == 0
@@ -530,7 +559,7 @@ def test_extraction_failure_never_raises(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
 
     def boom(**kwargs):
-        raise LMStudioError("timeout", "slow model")
+        raise LLMError("timeout", "slow model")
 
     monkeypatch.setattr(svc.llm, "complete_json", boom)
     conversation = svc.db.create_conversation()
@@ -648,9 +677,9 @@ def test_recall_matches_singular_and_plural(env):
 
 
 def test_complete_json_ignores_reasoning_and_truncated_replies(monkeypatch: pytest.MonkeyPatch):
-    from kiwibro.llm import LMStudioClient
+    from kiwibro.llm import LLMClient
 
-    client = LMStudioClient(lambda: {})
+    client = LLMClient(lambda: {})
     reply = Completion("")
     monkeypatch.setattr(client, "complete", lambda **kwargs: reply)
 
@@ -697,11 +726,19 @@ def test_extraction_only_saves_facts_grounded_in_the_conversation(env):
 def test_model_written_first_person_memories_name_the_user(env):
     from kiwibro.memory import third_person
 
-    assert third_person("I always use Neovim") == "User said: I always use Neovim"
-    assert third_person("My cat is Pamuk") == "User said: My cat is Pamuk"
+    assert third_person("I always use Neovim") == "The user always uses Neovim"
+    assert third_person("My cat is Pamuk") == "The user's cat is Pamuk"
+    assert third_person("I'm Sam. I am a nurse and my shift ends at 7.") == (
+        "The user is Sam. They are a nurse and their shift ends at 7.")
+    assert third_person("Call me Em") == "The user wants to be called Em"
+    assert third_person("I don't eat meat") == "The user does not eat meat"
+    assert third_person("I can't stand long emails") == "The user can't stand long emails"
+    assert third_person("I moved to Berlin in 2021") == "The user moved to Berlin in 2021"
+    assert third_person("User said: I always use Neovim") == "The user always uses Neovim"  # stored by older releases
+    assert third_person("I kind of zigzag through tasks") == "The user said: “I kind of zigzag through tasks”"
     assert third_person("Israel trip planned") == "Israel trip planned"
     svc, _fake = env
     conversation = svc.db.create_conversation()
     saved = svc.memory.remember("I always use Neovim", source_conversation_id=conversation["id"])
-    assert saved["content"] == "User said: I always use Neovim"
+    assert saved["content"] == "The user always uses Neovim"
     assert svc.memory.remember("I like tea")["content"] == "I like tea"  # typed by the user in the UI

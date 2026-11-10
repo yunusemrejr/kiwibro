@@ -1,27 +1,22 @@
-"""Direct engine: serve LM Studio's downloaded models without the LM Studio app.
+"""The engine: Kiwibro runs llama.cpp itself, one ``llama-server`` child per loaded model.
 
-LM Studio itself runs every GGUF model through a bundled ``llama-server``
-(llama.cpp) behind its own API. The direct engine skips that layer: it finds
-the models LM Studio downloaded (both the native and the Flatpak install),
-picks a llama.cpp runtime (LM Studio's own bundled one, a custom build from
-Settings or ``KIWIBRO_LLAMA_SERVER``, or ``llama-server`` on PATH) and runs it
-as a child process on a private localhost port. It speaks the same
-OpenAI-compatible protocol, so :class:`kiwibro.llm.LMStudioClient` uses it
-unchanged once ``engine`` is set to ``direct``.
+Models are GGUF files. Kiwibro keeps its own in ``<data>/models`` (downloads land
+there and can be deleted from the app) and also reads, without ever changing them,
+the folders other apps on this computer keep theirs in (LM Studio's, llama.cpp's
+cache). The llama.cpp build is Kiwibro's own, installed into ``<data>/runtime`` from
+the official releases (:mod:`kiwibro.runtime`); until that exists, a build from
+Settings, ``KIWIBRO_LLAMA_SERVER``, PATH or another app's folder is used. Each server
+listens on a private localhost port and speaks the OpenAI-compatible protocol
+:class:`kiwibro.llm.LLMClient` uses.
 
-Why it is faster (measured, Ryzen 5 7530U, spark-x2.6-4b IQ2_M): LM Studio
-launched the model on the CPU with 4 threads and prefilled at 27–34 tok/s. The
-direct engine puts the model on the GPU when a GPU build of llama.cpp finds
-one, the integrated Radeon here too (Vulkan: prefill 85–107 tok/s, decode
-8.9–11.7 tok/s, 0.04 CPU-seconds per generated token, up to a third less energy
-per token), and otherwise uses every physical core (prefill 54 tok/s, decode
-7.4; fewer threads were slower and cost more energy per token). It also turns
-on what LM Studio leaves off: KV chunk reuse (``--cache-reuse``) for prompts
-whose middle changed, a unified KV pool shared by the slots, host-RAM prompt
-caching, and per-request thinking budgets (``thinking_budget_tokens``), so a
-thought is ended inside the request instead of by a retry that re-reads the
-chat. The LM Studio app does not have to run at all, which frees its memory
-too.
+What the launch flags buy (measured, Ryzen 5 7530U, spark-x2.6-4b IQ2_M): on the
+integrated Radeon through Vulkan, prefill 85–107 tok/s and decode 8.9–11.7 tok/s at
+0.04 CPU-seconds per generated token; on the CPU, every physical core (prefill 54
+tok/s, decode 7.4; fewer threads were slower and cost more energy per token). KV chunk
+reuse (``--cache-reuse``) for prompts whose middle changed, one unified KV pool shared
+by the slots, host-RAM prompt caching, and per-request thinking budgets
+(``thinking_budget_tokens``), so a thought is ended inside the request instead of by a
+retry that re-reads the chat.
 """
 
 from __future__ import annotations
@@ -52,8 +47,15 @@ from . import gguf
 
 log = logging.getLogger(__name__)
 
-LMSTUDIO_ROOTS = ("~/.lmstudio", "~/.var/app/ai.lmstudio.lm-studio/.lmstudio")  # native, Flatpak
-EXTRA_MODEL_DIRS = ("~/.cache/lm-studio/models", "~/.cache/llama.cpp")  # pre-0.3 LM Studio; llama.cpp -hf downloads
+# Other apps' folders Kiwibro reads from and never writes to: LM Studio's (native and
+# Flatpak installs) and the caches older LM Studio builds and llama.cpp's own -hf use.
+LMSTUDIO_ROOTS = ("~/.lmstudio", "~/.var/app/ai.lmstudio.lm-studio/.lmstudio")
+EXTRA_MODEL_DIRS = ("~/.cache/lm-studio/models", "~/.cache/llama.cpp")
+# Where a model file lives: only Kiwibro's own can be deleted from the app.
+SOURCE_OWN, SOURCE_FOLDER, SOURCE_LMSTUDIO, SOURCE_SHARED = "kiwibro", "folder", "lmstudio", "shared"
+SOURCE_LABELS = {
+    SOURCE_OWN: "Kiwibro", SOURCE_FOLDER: "Your folder", SOURCE_LMSTUDIO: "LM Studio", SOURCE_SHARED: "This computer",
+}
 DEFAULT_CONTEXT = 32768
 DEFAULT_PARALLEL = 4  # one slot for the chat, others for background calls (one shared KV pool)
 MAX_RESIDENT = 2  # chat model + one helper; a third evicts the least recently used idle one
@@ -71,14 +73,17 @@ CTX_CHECKPOINTS = 8
 # next one: an idle Kiwibro holds no model memory (KIWIBRO_IDLE_SLEEP_S; 0 = never).
 IDLE_SLEEP_S = 1800
 SPEC_TYPE = "ngram-mod"
-LMSTUDIO_ONLY_KEYS = frozenset({"ttl", "draft_model"})
+UNSUPPORTED_KEYS = frozenset({"ttl", "draft_model"})  # knobs llama.cpp has no use for
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _QUANT = re.compile(r"(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|F16|BF16|F32|MXFP4)(?:$|[-_.])", re.IGNORECASE)
 _PR_SET_PDEATHSIG = 1
 
 
 class EngineError(Exception):
-    """A calm, user-facing reason the direct engine cannot serve a request."""
+    """A calm, user-facing reason the engine cannot serve a request."""
+
+
+NO_RUNTIME = "Kiwibro's engine is not installed yet. Open Models and choose Install engine."
 
 
 class _Crashed(EngineError):
@@ -106,6 +111,11 @@ class LocalModel:
     embeddings: bool = False
     projector: str | None = None
     aliases: tuple[str, ...] = ()
+    source: str = SOURCE_FOLDER
+
+    @property
+    def deletable(self) -> bool:
+        return self.source == SOURCE_OWN
 
     @property
     def kind(self) -> str:
@@ -134,32 +144,37 @@ def _lmstudio_downloads(root: Path) -> Path | None:
     return path
 
 
-def model_dirs(custom: str | None = None, data_dir: str | Path | None = None) -> list[Path]:
-    """Folders to scan, in priority order (first wins when two hold the same id): a custom
-    folder, Kiwibro's own ``<data>/models`` (no LM Studio needed), then LM Studio's."""
-    candidates: list[Path] = []
+def model_sources(custom: str | None = None, data_dir: str | Path | None = None) -> list[tuple[Path, str]]:
+    """Folders to scan with where each belongs, in priority order (first wins when two hold
+    the same id): a custom folder, Kiwibro's own ``<data>/models``, LM Studio's, shared caches."""
+    candidates: list[tuple[Path, str]] = []
     for raw in (custom, *os.environ.get("KIWIBRO_MODELS_DIR", "").split(os.pathsep)):
         if raw and raw.strip():
-            candidates.append(Path(raw.strip()).expanduser())
+            candidates.append((Path(raw.strip()).expanduser(), SOURCE_FOLDER))
     if data_dir:
-        candidates.append(Path(data_dir).expanduser() / "models")
-    for root in lmstudio_roots():
-        downloads = _lmstudio_downloads(root)
-        if downloads is not None:
-            candidates.append(downloads)
-        candidates.append(root / "models")
-    candidates += [Path(extra).expanduser() for extra in EXTRA_MODEL_DIRS]
+        candidates.append((Path(data_dir).expanduser() / "models", SOURCE_OWN))
+    if not os.environ.get("KIWIBRO_OWN_MODELS_ONLY"):
+        for root in lmstudio_roots():
+            downloads = _lmstudio_downloads(root)
+            if downloads is not None:
+                candidates.append((downloads, SOURCE_LMSTUDIO))
+            candidates.append((root / "models", SOURCE_LMSTUDIO))
+        candidates += [(Path(extra).expanduser(), SOURCE_SHARED) for extra in EXTRA_MODEL_DIRS]
     seen: set[str] = set()
-    out: list[Path] = []
-    for path in candidates:
+    out: list[tuple[Path, str]] = []
+    for path, source in candidates:
         try:
             resolved = path.resolve()
         except OSError:
             continue
         if resolved.is_dir() and str(resolved) not in seen:
             seen.add(str(resolved))
-            out.append(resolved)
+            out.append((resolved, source))
     return out
+
+
+def model_dirs(custom: str | None = None, data_dir: str | Path | None = None) -> list[Path]:
+    return [path for path, _source in model_sources(custom, data_dir)]
 
 
 def _strip_gguf(name: str) -> str:
@@ -205,9 +220,11 @@ class ModelScanner:
                 self._meta[key] = {}
         return self._meta[key] or None
 
-    def scan(self, directories: list[Path]) -> list[LocalModel]:
+    def scan(self, directories: list[Path] | list[tuple[Path, str]]) -> list[LocalModel]:
+        """Models in ``directories`` (paths, or ``(path, source)`` pairs from model_sources)."""
         models: dict[str, LocalModel] = {}
-        for directory in directories:
+        for item in directories:
+            directory, source = item if isinstance(item, tuple) else (item, SOURCE_FOLDER)
             groups: dict[Path, list[Path]] = {}
             for path in _gguf_files(directory):
                 groups.setdefault(path.parent, []).append(path)
@@ -215,6 +232,7 @@ class ModelScanner:
                 for model in self._folder(directory, folder, files):
                     if model.id in models:
                         continue  # an earlier folder already has this id
+                    model.source = source
                     models[model.id] = model
         return list(models.values())
 
@@ -244,7 +262,7 @@ class ModelScanner:
             base = _strip_gguf(repo).lower()
             model_id = f"{publisher.lower()}/{base}" if publisher else base
             quant = summary.get("quantization") or _quant_from_name(path.name)
-            if len(weights) > 1:  # several quantisations side by side: LM Studio's id@quant
+            if len(weights) > 1:  # several quantisations side by side: id@quant
                 model_id = f"{model_id}@{(quant or path.stem).lower()}"
             stem = _SHARD.sub("", path.name)
             stem = re.sub(r"\.gguf$", "", stem, flags=re.IGNORECASE).lower()
@@ -274,12 +292,21 @@ class Runtime:
     path: str  # the llama-server executable
     version: str
     kind: str  # cpu | vulkan | cuda | rocm | unknown
-    source: str  # custom | lmstudio | path
+    source: str  # custom | kiwibro | path | found
 
     @property
     def label(self) -> str:
-        where = {"lmstudio": "LM Studio's llama.cpp", "custom": "custom llama.cpp", "path": "llama.cpp"}[self.source]
-        return f"{where} {self.version} ({self.kind.upper() if self.kind != 'unknown' else 'build'})".strip()
+        build = f" ({self.kind.upper()})" if self.kind != "unknown" else ""
+        if self.source == "kiwibro":
+            return f"llama.cpp {self.version}{build}"
+        if self.source == "found":
+            return f"llama.cpp {self.version}{build}, found on this computer"
+        return {"custom": "Custom llama.cpp build", "path": "llama.cpp on PATH"}[self.source]
+
+    @property
+    def own(self) -> bool:
+        """Kiwibro installed this build itself."""
+        return self.source == "kiwibro"
 
     @property
     def maybe_gpu(self) -> bool:
@@ -316,8 +343,8 @@ def parse_devices(text: str) -> tuple[Device, ...]:
 def gpu_devices(runtime: Runtime) -> tuple[Device, ...]:
     """The GPUs ``runtime`` can use (asked once per build; a CPU build has none).
 
-    Measured on a Ryzen 5 7530U (Radeon Vega 7 iGPU, RADV) with LM Studio's own Vulkan
-    engine and spark-x2.6-4b: prefill 85–107 tok/s against 54 on all six CPU cores,
+    Measured on a Ryzen 5 7530U (Radeon Vega 7 iGPU, RADV) with a Vulkan build and
+    spark-x2.6-4b: prefill 85–107 tok/s against 54 on all six CPU cores,
     decode 8.9–11.7 against 7.4 tok/s, up to a third less energy per token and 0.04
     CPU-seconds per generated token instead of 0.81, so the processor stays free and cool."""
     if not runtime.maybe_gpu:
@@ -358,22 +385,15 @@ def _executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
-def lmstudio_runtimes() -> tuple[list[Runtime], set[tuple[str, str]]]:
-    """LM Studio's bundled llama.cpp engines, plus ``("path", server)`` for the one it is set
-    to use. With two installs (native and Flatpak) only the newer one's choice counts: the
-    other is usually left over, and its choice an engine too old for current models."""
+def found_runtimes() -> list[Runtime]:
+    """llama.cpp builds another app left on this computer (LM Studio bundles them as
+    ``extensions/backends/llama.cpp-*/llama-server``). Used only while Kiwibro has no
+    build of its own."""
     found: list[Runtime] = []
-    per_root: list[tuple[tuple[int, ...], set[tuple[str, str]], list[tuple[str, str, str]]]] = []
     for root in lmstudio_roots():
-        try:
-            prefs = json.loads((root / ".internal" / "backend-preferences-v1.json").read_text(encoding="utf-8"))
-            chosen = {(str(p.get("name")), str(p.get("version"))) for p in prefs if isinstance(p, dict)}
-        except (OSError, ValueError, TypeError):
-            chosen = set()
         backends = root / "extensions" / "backends"
         if not backends.is_dir():
             continue
-        engines: list[tuple[str, str, str]] = []
         for engine in sorted(backends.iterdir()):
             server = engine / "llama-server"
             if not engine.name.startswith("llama.cpp-") or not _executable(server):
@@ -384,57 +404,67 @@ def lmstudio_runtimes() -> tuple[list[Runtime], set[tuple[str, str]]]:
                 manifest = {}
             name = str(manifest.get("name") or engine.name.rsplit("-", 1)[0])
             version = str(manifest.get("version") or engine.name.rsplit("-", 1)[-1])
-            found.append(Runtime(str(server), version, _kind(name), "lmstudio"))
-            engines.append((name, version, str(server)))
-        newest = max((_version_key(version) for _name, version, _server in engines), default=(0,))
-        per_root.append((newest, chosen, engines))
-    preferred: set[tuple[str, str]] = set()
-    if per_root:
-        _newest, chosen, engines = max(per_root, key=lambda item: item[0])
-        preferred = chosen | {("path", server) for name, version, server in engines if (name, version) in chosen}
-    return found, preferred
+            found.append(Runtime(str(server), version, _kind(name), "found"))
+    return found
 
 
 def _has_nvidia() -> bool:
     return Path("/dev/nvidia0").exists() or Path("/proc/driver/nvidia").exists()
 
 
+_OWN_BUILD = re.compile(r"^(?P<tag>[A-Za-z0-9.]+)-(?P<kind>[a-z0-9]+)$")
+
+
 def own_runtimes(data_dir: str | Path | None) -> list[Runtime]:
-    """llama-server builds placed in Kiwibro's own ``<data>/runtime`` folder (or one folder below)."""
+    """The llama.cpp builds in Kiwibro's ``<data>/runtime`` folder: the ones it installed
+    (``<tag>-<kind>/``, the current one first), then any build placed there by hand."""
     if not data_dir:
         return []
     root = Path(data_dir).expanduser() / "runtime"
     try:
-        found = [root / "llama-server", *sorted(root.glob("*/llama-server")), *sorted(root.glob("*/bin/llama-server"))]
+        current = str(json.loads((root / "current.json").read_text(encoding="utf-8")).get("name") or "")
+    except (OSError, ValueError, AttributeError):
+        current = ""
+    try:
+        found = [root / "llama-server", *sorted(root.glob("*/llama-server"), reverse=True),
+                 *sorted(root.glob("*/bin/llama-server"))]
     except OSError:
         return []
-    return [Runtime(str(path), "own", "unknown", "custom") for path in found if _executable(path)]
+    out: list[Runtime] = []
+    for path in found:
+        if not _executable(path) or path.parent.name.startswith("."):
+            continue
+        named = _OWN_BUILD.match(path.parent.name) if path.parent != root else None
+        if named and named.group("kind") in (*GPU_KINDS, "cpu"):
+            out.append(Runtime(str(path), named.group("tag"), named.group("kind"), "kiwibro"))
+        else:
+            out.append(Runtime(str(path), "own", "unknown", "custom"))
+    out.sort(key=lambda runtime: Path(runtime.path).parent.name != current)  # stable: current first
+    return out
 
 
 def find_runtimes(custom: str | None = None, *, gpu: bool = False, data_dir: str | Path | None = None) -> list[Runtime]:
-    """Usable llama.cpp servers, best first: a custom build, then (with ``gpu``) LM Studio's
-    GPU engines that find a GPU here, then the engine LM Studio is set to use, its newest
-    engines, and ``llama-server`` on PATH. Without ``gpu`` its CPU engines come first."""
+    """Usable llama.cpp servers, best first: a custom build, Kiwibro's own, ``llama-server``
+    on PATH, then builds found on this computer (with ``gpu`` the ones that find a GPU
+    here lead; without it the CPU builds do)."""
     out: list[Runtime] = []
     for raw in (custom, os.environ.get("KIWIBRO_LLAMA_SERVER")):
         if raw and _executable(Path(raw).expanduser()):
             out.append(Runtime(str(Path(raw).expanduser()), "custom", "unknown", "custom"))
     out += own_runtimes(data_dir)
-    bundled, preferred = lmstudio_runtimes()
-    usable = [r for r in bundled if r.kind != "cuda" or _has_nvidia()]
-
-    def rank(runtime: Runtime) -> tuple[int, int, tuple[int, ...], int]:
-        placed = 0 if runtime.kind == "cpu" else 1  # a GPU build without a GPU is a slower CPU build
-        if gpu and runtime.kind in GPU_KINDS and gpu_devices(runtime):
-            placed = -1
-        chosen = ("path", runtime.path) in preferred
-        return (placed, 0 if chosen else 1, tuple(-n for n in _version_key(runtime.version)),
-                0 if runtime.kind == "cpu" else 1)
-
-    out += sorted(usable, key=rank)
     system = shutil.which("llama-server")
     if system:
         out.append(Runtime(system, "system", "unknown", "path"))
+    usable = [] if os.environ.get("KIWIBRO_OWN_RUNTIME_ONLY") else [
+        r for r in found_runtimes() if r.kind != "cuda" or _has_nvidia()]
+
+    def rank(runtime: Runtime) -> tuple[int, tuple[int, ...], int]:
+        placed = 0 if runtime.kind == "cpu" else 1  # a GPU build without a GPU is a slower CPU build
+        if gpu and runtime.kind in GPU_KINDS and gpu_devices(runtime):
+            placed = -1
+        return (placed, tuple(-n for n in _version_key(runtime.version)), 0 if runtime.kind == "cpu" else 1)
+
+    out += sorted(usable, key=rank)
     seen: set[str] = set()
     return [r for r in out if not (r.path in seen or seen.add(r.path))]
 
@@ -491,13 +521,13 @@ def _free_port() -> int:
 
 
 def adapt_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """An LM Studio request body as llama-server wants it.
+    """A chat request body as llama-server wants it.
 
     ``reasoning_effort: "none"`` is understood natively (thinking off). Other
     effort words are template-specific (spark-x2.6 raises on "medium"), so they
-    become a plain thinking-on switch. LM Studio's own knobs are dropped.
+    become a plain thinking-on switch. Knobs llama.cpp has no use for are dropped.
     """
-    out = {k: v for k, v in payload.items() if k not in LMSTUDIO_ONLY_KEYS}
+    out = {k: v for k, v in payload.items() if k not in UNSUPPORTED_KEYS}
     out.setdefault("cache_prompt", True)
     if out.get("tools"):
         # Kiwibro asks for independent calls in one reply (fewer rounds, fewer prefills);
@@ -696,7 +726,7 @@ def server_args(
 
 
 class DirectEngine:
-    """Runs llama-server children for LM Studio's models; thread-safe."""
+    """Runs one llama-server child per loaded model; thread-safe."""
 
     def __init__(self, settings_provider: Callable[[], dict[str, Any]], data_dir: str | Path | None = None) -> None:
         self._settings = settings_provider
@@ -714,7 +744,9 @@ class DirectEngine:
         self._adapters: list[Any] = []
         self._adapters_at = 0.0
         self._bad_adapters: set[str] = set()  # model ids whose adapters made llama.cpp exit
-        for folder in ("models", "adapters", "runtime"):  # Kiwibro's own: usable without LM Studio
+        self.adapter_health = adapters_mod.Health(  # which adapters spoiled replies lately
+            self._data_dir / "adapter_health.json" if self._data_dir else None)
+        for folder in ("models", "adapters", "runtime"):  # Kiwibro's own folders
             if self._data_dir is not None:
                 try:
                     (self._data_dir / folder).mkdir(parents=True, exist_ok=True)
@@ -737,6 +769,10 @@ class DirectEngine:
     def _runtimes(self) -> list[Runtime]:
         return find_runtimes(self._custom_runtime(), gpu=self._gpu_on(), data_dir=self._data_dir)
 
+    def has_runtime(self) -> bool:
+        """Whether there is a llama.cpp build to run models with."""
+        return bool(self._runtimes())
+
     # --- task adapters ---
 
     def adapters(self, force: bool = False) -> list[Any]:
@@ -757,13 +793,41 @@ class DirectEngine:
         fit = [a for a in self.adapters() if adapters_mod.fits(a, model.arch, model.name, model.id, model.repo)]
         return tuple(fit[:adapters_mod.MAX_ADAPTERS])
 
-    def lora_for(self, model_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-        """The per-request ``lora`` field for a running model: the adapter for this task on,
-        the others off. None when the model runs without adapters (nothing is sent)."""
+    def lora_for(self, model_id: str, messages: list[dict[str, Any]], off: bool = False,
+                 task: str | None = None) -> list[dict[str, Any]] | None:
+        """The per-request ``lora`` field for a running model: the adapter for this task on
+        (turned down when it spoiled replies lately), the others off; ``off`` switches all
+        of them off. ``task`` is the caller's reading of the task; without it the messages
+        are read. None when the model runs without adapters (nothing is sent)."""
         server = self.loaded(model_id)
         if server is None or not server.adapters:
             return None
-        return adapters_mod.request_scales(server.adapters, adapters_mod.task_of(messages))
+        if off:
+            task = ""
+        elif task is None:
+            task = adapters_mod.task_of(messages)
+        return adapters_mod.request_scales(server.adapters, task, self.adapter_health.counts(), off)
+
+    def adapters_on(self, model_id: str, messages: list[dict[str, Any]], task: str | None = None) -> list[Any]:
+        """The adapters a request with these messages runs with (scale above zero)."""
+        server = self.loaded(model_id)
+        scales = self.lora_for(model_id, messages, task=task)
+        if server is None or not scales:
+            return []
+        return [server.adapters[item["id"]] for item in scales if item["scale"] > 0]
+
+    def describe_adapters(self) -> list[dict[str, Any]]:
+        """Every adapter found, with how much of its scale it runs at now and why."""
+        out = []
+        for adapter in self.adapters():
+            trouble = self.adapter_health.trouble(adapter.path)
+            try:
+                size = os.path.getsize(adapter.path)
+            except OSError:
+                size = 0
+            out.append({**adapter.describe(), "trouble": trouble, "strength": adapters_mod.strength(trouble),
+                        "size_bytes": size})
+        return out
 
     # --- catalog ---
 
@@ -773,7 +837,7 @@ class DirectEngine:
             fresh = time.monotonic() - self._scanned_at < SCAN_TTL_S and key == self._scan_key
             if fresh and not force:
                 return list(self._models)
-        found = self._scanner.scan(model_dirs(self._custom_models_dir(), self._data_dir))
+        found = self._scanner.scan(model_sources(self._custom_models_dir(), self._data_dir))
         with self._lock:
             self._models, self._scanned_at, self._scan_key = found, time.monotonic(), key
             return list(found)
@@ -789,14 +853,14 @@ class DirectEngine:
         for model in models:
             if wanted in model.aliases:
                 return model
-        # LM Studio names some models after their maker ("liquid/lfm2.5-1.2b" for
-        # lmstudio-community's upload): the name part alone still identifies it.
+        # Some ids name a model after its maker ("liquid/lfm2.5-1.2b" for a community
+        # upload): the name part alone still identifies it.
         name = wanted.rsplit("/", 1)[-1]
         matches = [model for model in models if name in model.aliases]
         return matches[0] if len(matches) == 1 else None
 
     def canonical(self, model_id: str | None) -> str | None:
-        """The direct id for an id from either engine (LM Studio's ids usually match)."""
+        """The id this engine uses for ``model_id`` (an alias or an id an older version saved)."""
         model = self.find(model_id)
         return model.id if model else None
 
@@ -805,7 +869,7 @@ class DirectEngine:
         return runtimes[0] if runtimes else None
 
     def raw_entries(self) -> list[dict[str, Any]]:
-        """Models in LM Studio's ``/api/v0/models`` shape (see llm.normalize_model)."""
+        """One record per model file, in the shape llm.normalize_model reads."""
         with self._lock:
             running = {mid: s for mid, s in self._servers.items() if s.alive()}
         entries = []
@@ -824,7 +888,7 @@ class DirectEngine:
         return entries
 
     def native_entries(self) -> list[dict[str, Any]]:
-        """Models in LM Studio's ``/api/v1/models`` shape (see llm.merge_native_metadata)."""
+        """File facts per model (size, source, reasoning switch), merged by llm.merge_native_metadata."""
         with self._lock:
             running = {mid: s for mid, s in self._servers.items() if s.alive()}
         entries = []
@@ -837,7 +901,8 @@ class DirectEngine:
                 "key": model.id, "display_name": model.name or model.repo, "architecture": model.arch,
                 "params_string": model.params, "size_bytes": model.size_bytes,
                 "quantization": {"name": model.quantization}, "capabilities": capabilities,
-                "path": model.path, "loaded_instances": [],
+                "path": model.path, "source": model.source, "deletable": model.deletable,
+                "loaded_instances": [],
             }
             server = running.get(model.id)
             if server:
@@ -876,7 +941,7 @@ class DirectEngine:
 
     @contextmanager
     def lease(self, model_id: str) -> Iterator[str]:
-        """The URL serving ``model_id`` (started just in time, like LM Studio's JIT load), held busy."""
+        """The URL serving ``model_id`` (started just in time), held busy."""
         server = self.acquire(model_id)
         try:
             yield server.url
@@ -886,7 +951,7 @@ class DirectEngine:
     def ensure(self, model_id: str, context_length: int | None = None, parallel: int | None = None) -> Server:
         model = self.find(model_id)
         if model is None:
-            raise EngineError(f"{model_id} is not among the models LM Studio downloaded.")
+            raise EngineError(f"{model_id} is not among the installed models.")
         while True:
             with self._lock:
                 server = self._servers.get(model.id)
@@ -938,11 +1003,7 @@ class DirectEngine:
     def _start(self, model: LocalModel, context_length: int, parallel: int) -> Server:
         runtimes = self._runtimes()
         if not runtimes:
-            raise EngineError(
-                "No llama.cpp runtime was found. Install LM Studio's llama.cpp engine once, "
-                "or set a llama-server path in Settings. A llama-server build placed in "
-                f"{(self._data_dir / 'runtime') if self._data_dir else 'the runtime folder'} works without LM Studio."
-            )
+            raise EngineError(NO_RUNTIME)
         self._make_room(model)
         last: EngineError | None = None
         attempts = [(runtime, spec) for runtime in runtimes[:RUNTIME_TRIES] for spec in (True, False)]
@@ -1136,22 +1197,30 @@ class DirectEngine:
         with self._lock:
             servers = [s.describe() for s in self._servers.values() if s.alive()]
         models = self.models()
-        dirs = [str(p) for p in model_dirs(self._custom_models_dir(), self._data_dir)]
+        sources = model_sources(self._custom_models_dir(), self._data_dir)
+        dirs = [str(p) for p, _source in sources]
         used = [d for d in dirs if any(m.path.startswith(d + os.sep) for m in models)]
         devices = gpu_devices(runtimes[0]) if runtimes else ()
+        folders = []
+        for folder, source in sources:
+            inside = [m for m in models if m.path.startswith(str(folder) + os.sep)]
+            folders.append({"path": str(folder), "source": source, "label": SOURCE_LABELS[source],
+                            "models": len(inside), "bytes": sum(m.size_bytes for m in inside)})
         return {
             "available": bool(runtimes) and bool(models),
             "runtime": ({"path": runtimes[0].path, "label": runtimes[0].label, "kind": runtimes[0].kind,
-                         "source": runtimes[0].source} if runtimes else None),
-            "runtimes": [{"path": r.path, "label": r.label} for r in runtimes],
+                         "source": runtimes[0].source, "version": runtimes[0].version,
+                         "own": runtimes[0].own} if runtimes else None),
+            "runtimes": [{"path": r.path, "label": r.label, "source": r.source} for r in runtimes],
             "model_dirs": used + [d for d in dirs if d not in used],  # folders holding models first
+            "sources": folders,
             "models_count": sum(1 for m in models if not m.embeddings),
             "threads": int(self._settings().get("direct_threads") or 0) or physical_cores(),
             # The GPU the next model would run on ("" = CPU), and whether any build here has one.
             "gpu": devices[0].name if devices and self._gpu_on() else "",
             "gpu_available": any(r.kind in GPU_KINDS and gpu_devices(r) for r in runtimes),
             "servers": servers,
-            "adapters": [a.describe() for a in self.adapters()],
+            "adapters": self.describe_adapters(),
             "adapters_dir": str(self._data_dir / "adapters") if self._data_dir else "",
             "own_models_dir": str(self._data_dir / "models") if self._data_dir else "",
             "own_runtime_dir": str(self._data_dir / "runtime") if self._data_dir else "",

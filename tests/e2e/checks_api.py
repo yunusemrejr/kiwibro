@@ -1,8 +1,8 @@
-"""Black-box API checks that do not require a live LM Studio.
+"""Black-box API checks that do not require a live model server.
 
 These run against a real ``python3 app.py`` child process. Phase "offline"
-points the app at a closed port to exercise the LM-offline contract; phase
-"api" points it at the fake LM server from ``fake_lm.py``.
+points the app at a closed port to exercise the model-offline contract; phase
+"api" points it at the fake llama.cpp-compatible server from ``fake_lm.py``.
 """
 
 from __future__ import annotations
@@ -36,18 +36,18 @@ def health_offline(env: "Any") -> str:
     expect_status(response, 200, "GET /health")
     data = response.data or {}
     assert_eq(data.get("ok"), True, "health.ok")
-    assert_eq(data.get("lmstudio"), False, "health.lmstudio offline")
+    assert_eq(data.get("engine_ok"), False, "health.engine_ok offline")
     assert_eq(data.get("version"), config.VERSION, "health.version")
-    assert_true(data.get("lmstudio_error"), "health.lmstudio_error present")
+    assert_true(data.get("engine_error"), "health.engine_error present")
     assert_eq(response.headers.get("cache-control"), "no-store", "health cache-control")
-    return "lmstudio=false with calm error message"
+    return "engine_ok=false with calm error message"
 
 
 def bootstrap_offline(env: "Any") -> str:
     response = env.client.get("/api/bootstrap")
     expect_status(response, 200, "GET /api/bootstrap")
     data = response.data or {}
-    assert_eq(data.get("health", {}).get("lmstudio"), False, "bootstrap.health.lmstudio")
+    assert_eq(data.get("health", {}).get("engine_ok"), False, "bootstrap.health.engine_ok")
     assert_eq(data.get("models"), [], "bootstrap.models empty when offline")
     assert_eq(data.get("conversations"), [], "bootstrap.conversations")
     assert_eq(data.get("memories_count"), 0, "bootstrap.memories_count")
@@ -63,9 +63,9 @@ def models_offline(env: "Any") -> str:
     expect_status(response, 200, "GET /api/models")
     data = response.data or {}
     assert_eq(data.get("ok"), True, "models.ok")
-    assert_eq(data.get("lmstudio"), False, "models.lmstudio")
+    assert_eq(data.get("engine_ok"), False, "models.engine_ok")
     assert_eq(data.get("models"), [], "models.models")
-    return "200, lmstudio=false, models=[]"
+    return "200, engine_ok=false, models=[]"
 
 
 def chat_offline_is_graceful(env: "Any") -> str:
@@ -83,7 +83,7 @@ def chat_offline_is_graceful(env: "Any") -> str:
     error = errors[0]
     assert_eq(error.get("code"), "connection", "error.code")
     assert_eq(error.get("recoverable"), True, "error.recoverable")
-    assert_true("LM Studio" in str(error.get("message")), "error message mentions LM Studio")
+    assert_true("model server" in str(error.get("message")), "error message names the model server")
     conversation_id = chat.of("meta")[0]["conversation_id"]
     conversation = env.client.get(f"/api/conversations/{conversation_id}")
     expect_status(conversation, 200, "GET conversation after offline chat")
@@ -263,7 +263,7 @@ def settings_validation(env: "Any") -> str:
     settings = client.get("/api/settings").data["settings"]
     for key in (
         "model",
-        "lmstudio_url",
+        "server_url",
         "agent_enabled",
         "memory_enabled",
         "max_output_tokens",
@@ -284,7 +284,7 @@ def settings_validation(env: "Any") -> str:
         ({"permissions": {"write_file": "sometimes"}}, "permission mode"),
         ({"permissions": {"format_disk": "auto"}}, "unknown permission tool"),
         ({"workspace": "/"}, "workspace root"),
-        ({"lmstudio_url": "ftp://example.com"}, "lmstudio scheme"),
+        ({"lmstudio_url": "http://example.com"}, "retired lmstudio_url is unknown"),
         ({"unknown_key": 1}, "unknown setting"),
         ({"agent_enabled": "yes"}, "agent_enabled type"),
     ]

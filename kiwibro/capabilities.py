@@ -1,6 +1,6 @@
 """Model capability inference and smallest-capable-model selection.
 
-Pure functions over LM Studio model records (raw ``/api/v0/models`` entries or
+Pure functions over model records (raw server entries or
 Kiwibro's normalised shape). Low-level facts only — capability annotation and
 size ranking. Selection *policy* (which helper to run) lives in ``routing.py``;
 this module deliberately has no picker, so there is exactly one policy owner.
@@ -69,7 +69,7 @@ def _name_hint(model_id: str, hints: tuple[str, ...]) -> bool:
 def infer_capabilities(model: dict[str, Any]) -> dict[str, Any]:
     """Annotate a model record with capabilities + size rank (returns a copy).
 
-    Accepts raw LM Studio entries (``type``, ``capabilities``, ``state``) and
+    Accepts raw server entries (``type``, ``capabilities``, ``state``) and
     Kiwibro-normalised ones (``tools``, ``vision`` may already exist).
     """
     out = dict(model)

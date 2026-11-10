@@ -9,6 +9,9 @@ import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet, modelMetaLine } from "./sheets.js";
 import { conversationMarkdown, exportFilename } from "./export.js";
+import { createModelsView } from "./models.js";
+import { createNotesView } from "./notes.js";
+import { createHowView } from "./how.js";
 import {
   $,
   $$,
@@ -43,8 +46,16 @@ const els = {
   convSearch: $("#conv-search"),
   convList: $("#conv-list"),
   convEmpty: $("#conv-empty"),
-  sidebarMemory: $("#sidebar-memory"),
-  sidebarMemoryCount: $("#sidebar-memory-count"),
+  sidebarMemory: $("#place-memory"),
+  sidebarMemoryCount: $("#place-memory-count"),
+  placeNotes: $("#place-notes"),
+  placeNotesCount: $("#place-notes-count"),
+  placeModels: $("#place-models"),
+  placeModelsCount: $("#place-models-count"),
+  placeHow: $("#place-how"),
+  emptyTitle: $("#empty-title"),
+  heroSetup: $("#hero-setup"),
+  heroSetupText: $("#hero-setup-text"),
   sidebarModel: $("#sidebar-model"),
   sidebarModelName: $("#sidebar-model-name"),
   sidebarDot: $("#sidebar-dot"),
@@ -66,6 +77,9 @@ const els = {
   stopBtn: $("#stop-btn"),
   memorySheet: $("#memory-sheet"),
   settingsSheet: $("#settings-sheet"),
+  modelsSheet: $("#models-sheet"),
+  notesSheet: $("#notes-sheet"),
+  howSheet: $("#how-sheet"),
 };
 
 const STORAGE = {
@@ -87,6 +101,9 @@ const mobileQuery = window.matchMedia("(max-width: 860px)");
 const state = {
   booted: false,
   unreachable: false,
+  engineOk: false, // health.engine_ok / models engine_ok
+  engineMode: "local", // "local" (Kiwibro runs models) or "attached" (model server at server_url)
+  engineError: null,
   health: null,
   settings: null,
   models: [],
@@ -97,6 +114,7 @@ const state = {
   conversationId: null,
   conversation: null,
   memoriesCount: 0,
+  notesCount: 0,
   readiness: null,
   workspace: "",
   dataDir: "",
@@ -117,6 +135,9 @@ let healthCheckAt = 0;
 let memoryRefreshTimer = 0;
 let memorySheet = null;
 let settingsSheet = null;
+let modelsView = null;
+let notesView = null;
+let howView = null;
 
 /* -------------------------------------------------------------------------- */
 /* Chat view                                                                  */
@@ -166,15 +187,19 @@ function applyBootstrap(data) {
     null;
   state.conversations = Array.isArray(data.conversations) ? data.conversations : [];
   state.memoriesCount = Number(data.memories_count) || 0;
+  state.notesCount = Number(data.notes_count) || 0;
   state.workspace = data.workspace || state.settings?.workspace || "";
-  state.lmstudio = Boolean(state.health?.lmstudio);
+  applyEngineHealth(state.health);
   state.unreachable = false;
   applyReadiness(data.readiness);
 }
 
-// Models run through LM Studio's API, or directly with llama.cpp (Settings → Models → Engine).
-function directEngine() {
-  return state.settings?.engine === "direct";
+// "local": Kiwibro runs models itself (the default). "attached": a llama.cpp-compatible
+// server at settings.server_url answers instead.
+function applyEngineHealth(health) {
+  state.engineOk = Boolean(health?.engine_ok);
+  state.engineMode = health?.engine === "attached" ? "attached" : "local";
+  state.engineError = health?.engine_error || null;
 }
 
 async function boot() {
@@ -192,7 +217,7 @@ async function boot() {
   } catch (error) {
     state.booted = false;
     state.unreachable = true;
-    state.lmstudio = false;
+    state.engineOk = false;
     state.models = [];
     renderOfflineState();
     if (!state.retryNotified) {
@@ -222,6 +247,7 @@ async function restoreConversation() {
 }
 
 function renderAll() {
+  renderHome();
   renderHeaderModel();
   renderSidebar();
   renderMemoryCounts();
@@ -231,11 +257,36 @@ function renderAll() {
 }
 
 function renderOfflineState() {
+  renderHome();
   renderHeaderModel();
   renderSidebar();
   renderMemoryCounts();
   updateComposerState();
   updateContext(null);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Home screen                                                                */
+/* -------------------------------------------------------------------------- */
+
+// What stands between the user and a first answer, if anything.
+function setupStep() {
+  if (state.unreachable || !state.booted) return null;
+  if (!state.engineOk) {
+    return state.engineMode === "attached"
+      ? { text: "Check the model server", open: () => settingsSheet?.open() }
+      : { text: "Set up the engine", open: () => modelsView?.open() };
+  }
+  if (!state.models.length) return { text: "Get a model", open: () => modelsView?.open() };
+  return null;
+}
+
+function renderHome() {
+  const name = (state.settings?.user_name || "").trim().split(/\s+/)[0];
+  els.emptyTitle.textContent = name ? `Hi ${name}` : "Kiwibro";
+  const step = setupStep();
+  els.heroSetup.hidden = !step;
+  if (step) els.heroSetupText.textContent = step.text;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -252,14 +303,15 @@ function renderHeaderModel() {
     name = "Offline";
     tone = "warn";
     title = "Kiwibro server is unreachable";
-  } else if (!state.lmstudio) {
-    name = directEngine() ? "Engine offline" : "LM Studio offline";
+  } else if (!state.engineOk) {
+    const attached = state.engineMode === "attached";
+    name = attached ? "Server offline" : "No engine";
     tone = "warn";
-    title = directEngine() ? "The direct engine couldn't start" : "Start LM Studio to chat";
+    title = attached ? "The model server isn't reachable" : "Kiwibro needs its engine";
   } else if (!state.models.length) {
-    name = "No model";
+    name = "No models";
     tone = "amber";
-    title = directEngine() ? "No downloaded models were found" : "No chat model loaded in LM Studio";
+    title = "No models yet";
   } else if (state.currentModel) {
     name = state.currentModel;
     tone = "loaded";
@@ -277,22 +329,25 @@ function renderHeaderModel() {
   els.modelPill.title = title;
   els.sidebarModelName.textContent = state.unreachable
     ? "Offline"
-    : !state.lmstudio
-      ? directEngine() ? "Engine off" : "LM Studio off"
-      : state.currentModel || "No model";
+    : !state.engineOk
+      ? state.engineMode === "attached" ? "Server off" : "Engine off"
+      : state.currentModel || "No models";
   els.sidebarDot.dataset.tone = tone;
+  els.placeModelsCount.textContent = state.models.length ? String(state.models.length) : "";
+  renderHome();
 }
 
 function buildModelMenu(menu) {
   clear(menu);
   menu.append(el("div", { class: "menu-label", text: "Model" }));
 
-  if (!state.lmstudio) {
+  if (!state.engineOk) {
+    const attached = state.engineMode === "attached";
     menu.append(
       el("div", { class: "menu-empty" }, [
         icon("alert"),
-        el("div", { text: directEngine() ? "The direct engine couldn't start." : "LM Studio isn't running." }),
-        el("div", { text: directEngine() ? "Check Settings → Models, then refresh." : "Start it, then refresh." }),
+        el("div", { text: attached ? "The model server isn't reachable." : "Kiwibro has no engine to run models yet." }),
+        el("div", { text: state.engineError || (attached ? "Check its address in Settings." : "Install it under Models.") }),
       ]),
     );
   } else if (!state.models.length) {
@@ -363,6 +418,16 @@ function buildModelMenu(menu) {
       ]),
     );
   }
+
+  const manage = el("button", { class: "menu-item menu-manage", type: "button", role: "menuitem" }, [
+    icon("cube"),
+    el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: "Manage models" })]),
+  ]);
+  manage.addEventListener("click", () => {
+    closePopover({ restoreFocus: false });
+    modelsView?.open();
+  });
+  menu.append(manage);
 
   menu.addEventListener("keydown", moveMenuFocus);
 }
@@ -449,7 +514,7 @@ async function selectModel(id) {
     applyReadiness(result.readiness);
     watchReadiness();
     renderHeaderModel();
-    toast(`Using ${state.currentModel}`, { iconName: "sparkles" });
+    toast(`Using ${state.currentModel}`, { iconName: "cube" });
     announce(`Model switched to ${state.currentModel}`);
     return true;
   } catch (error) {
@@ -463,7 +528,8 @@ async function refreshModels({ quiet = false } = {}) {
     const data = await api.models();
     state.models = Array.isArray(data.models) ? data.models : [];
     state.currentModel = data.current || state.currentModel;
-    state.lmstudio = Boolean(data.lmstudio);
+    state.engineOk = Boolean(data.engine_ok);
+    state.engineError = data.engine_error || null;
     renderHeaderModel();
     updateComposerState();
     return true;
@@ -891,7 +957,7 @@ function newChat() {
 /* -------------------------------------------------------------------------- */
 
 function composerReady() {
-  return !state.unreachable && state.lmstudio && state.models.length > 0;
+  return !state.unreachable && state.engineOk && state.models.length > 0;
 }
 
 function updateComposerState() {
@@ -902,8 +968,8 @@ function updateComposerState() {
 
   let hint = "";
   if (state.unreachable) hint = "Can't reach the Kiwibro server. Is it running?";
-  else if (!state.lmstudio) hint = directEngine() ? "The direct engine couldn't start. Check Settings → Models." : "LM Studio isn't running. Start it to chat.";
-  else if (!state.models.length) hint = directEngine() ? "No downloaded models were found. Download one in LM Studio." : "No chat model loaded in LM Studio.";
+  else if (!state.engineOk) hint = state.engineMode === "attached" ? "The model server isn't reachable. Check Settings → Models." : "No engine yet. Open Models to install it.";
+  else if (!state.models.length) hint = "No models yet. Open Models to download one.";
 
   els.dockHint.hidden = !hint;
   if (hint) els.dockHintText.textContent = hint;
@@ -1107,6 +1173,9 @@ function handleStreamEvent(event, data, activeStream) {
     case "rewrite":
       if (typeof data.text === "string") chatView.rewriteText(data.text, data.reasoning || "");
       break;
+    case "retract":
+      if (typeof data.text === "string") chatView.retractText(data.text);
+      break;
     case "tool_call":
       chatView.addToolCall(data);
       break;
@@ -1141,7 +1210,11 @@ function handleStreamEvent(event, data, activeStream) {
       if (data.id && data.title) updateConversationTitle(data.id, data.title);
       break;
     case "done":
-      chatView.finishDone({ aborted: Boolean(data.aborted) });
+      chatView.finishDone({
+        aborted: Boolean(data.aborted),
+        steered: Array.isArray(data.inference?.steered) ? data.inference.steered : [],
+        acted: data.inference?.acted_instead || "",
+      });
       inferenceUI.onDone(data);
       scheduleConversationRefresh();
       break;
@@ -1248,8 +1321,9 @@ function stopStreaming() {
 }
 
 function toastNotReady() {
-  const offline = directEngine() ? "The direct engine couldn't start" : "LM Studio isn't running";
-  toast(!state.lmstudio ? offline : "No model is available", { tone: "error", iconName: "alert" });
+  const attached = state.engineMode === "attached";
+  const message = state.engineOk ? "No model is available" : attached ? "The model server isn't reachable" : "The engine isn't installed yet";
+  toast(message, { tone: "error", iconName: "alert" });
 }
 
 function retryLastSend() {
@@ -1330,6 +1404,17 @@ async function patchSettingsAndSync(patch) {
   if (next.workspace) state.workspace = next.workspace;
   applySettingsUI();
   updateComposerState();
+  if ("server_url" in patch) {
+    // The address decides which engine answers: refresh what the header and composer say.
+    const health = await api.health().catch(() => null);
+    if (health) {
+      state.health = health;
+      applyEngineHealth(health);
+      await refreshModels({ quiet: true });
+      renderHeaderModel();
+      updateComposerState();
+    }
+  }
   watchReadiness(); // prompt-shaping settings re-warm the model
   return next;
 }
@@ -1374,7 +1459,7 @@ async function refreshMemoryCount({ announce = false } = {}) {
     renderMemoryCounts();
     memorySheet?.refreshIfOpen();
     if (announce && gained > 0) {
-      toast(gained === 1 ? "Remembered something new" : `Remembered ${gained} new things`, { iconName: "sparkles" });
+      toast(gained === 1 ? "Remembered something new" : `Remembered ${gained} new things`, { iconName: "bookmark" });
     }
     return true;
   } catch {
@@ -1387,7 +1472,8 @@ function renderMemoryCounts() {
   const count = state.memoriesCount;
   els.memoryBadge.hidden = count <= 0;
   els.memoryBadge.textContent = count > 99 ? "99+" : String(count);
-  els.sidebarMemoryCount.textContent = count === 1 ? "1 memory" : `${count} memories`;
+  els.sidebarMemoryCount.textContent = count > 0 ? String(count) : "";
+  els.placeNotesCount.textContent = state.notesCount > 0 ? String(state.notesCount) : "";
 }
 
 function updateContext(context) {
@@ -1473,11 +1559,11 @@ async function reconnect() {
     }
     const health = await api.health();
     state.health = health;
-    state.lmstudio = Boolean(health.lmstudio);
-    if (state.lmstudio) await refreshModels({ quiet: true });
+    applyEngineHealth(health);
+    if (state.engineOk) await refreshModels({ quiet: true });
     renderHeaderModel();
     updateComposerState();
-    if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
+    if (state.engineOk) toast(state.engineMode === "attached" ? "Server connected" : "Engine ready");
   } catch (error) {
     toast(error?.message || "Still offline", { tone: "error" });
   } finally {
@@ -1534,14 +1620,14 @@ async function maybeCheckHealth() {
   healthCheckAt = Date.now();
   try {
     const health = await api.health();
-    const wasOnline = state.lmstudio;
+    const wasOnline = state.engineOk;
     state.health = health;
-    state.lmstudio = Boolean(health.lmstudio);
-    if (state.lmstudio !== wasOnline) {
-      if (state.lmstudio) await refreshModels({ quiet: true });
+    applyEngineHealth(health);
+    if (state.engineOk !== wasOnline) {
+      if (state.engineOk) await refreshModels({ quiet: true });
       renderHeaderModel();
       updateComposerState();
-      if (state.lmstudio) toast(directEngine() ? "Models found" : "LM Studio connected");
+      if (state.engineOk) toast(state.engineMode === "attached" ? "Server connected" : "Engine ready");
     }
     refreshMemoryCount();
   } catch {
@@ -1579,8 +1665,46 @@ function initSheets() {
     },
   });
 
-  wireDialog(els.memorySheet);
-  wireDialog(els.settingsSheet);
+  modelsView = createModelsView({
+    dialog: els.modelsSheet,
+    api,
+    getState: () => state,
+    actions: {
+      selectModel,
+      // The set of models or the engine changed: refresh what the rest of the app shows.
+      modelsChanged: async () => {
+        try {
+          state.health = await api.health();
+          applyEngineHealth(state.health);
+        } catch {
+          /* the next health check catches up */
+        }
+        await refreshModels({ quiet: true });
+        updateComposerState();
+      },
+      openSettings: () => settingsSheet?.open(),
+    },
+  });
+
+  notesView = createNotesView({
+    dialog: els.notesSheet,
+    api,
+    onCount: (count) => {
+      if (!Number.isFinite(count)) return;
+      state.notesCount = count;
+      renderMemoryCounts();
+    },
+    onOpenConversation: async (id) => {
+      closeSheet(els.notesSheet);
+      if (!(await openConversation(id))) toast("That chat no longer exists", { tone: "error" });
+    },
+  });
+
+  howView = createHowView({ dialog: els.howSheet });
+
+  for (const dialog of [els.memorySheet, els.settingsSheet, els.modelsSheet, els.notesSheet, els.howSheet]) {
+    wireDialog(dialog);
+  }
 }
 
 function initComposer() {
@@ -1635,6 +1759,11 @@ function searchConversationText(text) {
   }, 220);
 }
 
+function openPlace(view) {
+  closeDrawer();
+  view?.open();
+}
+
 function initChrome() {
   els.sidebarToggle.addEventListener("click", toggleSidebar);
   els.brandHome.addEventListener("click", newChat);
@@ -1655,9 +1784,13 @@ function initChrome() {
     }
   });
   els.memoryBtn.addEventListener("click", () => memorySheet?.open());
-  els.sidebarMemory.addEventListener("click", () => memorySheet?.open());
+  els.sidebarMemory.addEventListener("click", () => openPlace(memorySheet));
   els.settingsBtn.addEventListener("click", () => settingsSheet?.open());
-  els.sidebarModel.addEventListener("click", () => settingsSheet?.open());
+  els.sidebarModel.addEventListener("click", () => openPlace(modelsView));
+  els.placeNotes.addEventListener("click", () => openPlace(notesView));
+  els.placeModels.addEventListener("click", () => openPlace(modelsView));
+  els.placeHow.addEventListener("click", () => openPlace(howView));
+  els.heroSetup.addEventListener("click", () => setupStep()?.open());
   els.modelPill.addEventListener("click", toggleModelPopover);
   els.dockRetry.addEventListener("click", reconnect);
   els.scrim.addEventListener("click", closeDrawer);

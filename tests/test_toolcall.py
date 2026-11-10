@@ -422,7 +422,7 @@ def test_phantom_roots_in_path_lists():
 
 
 def test_glm_pairs_leaked_into_a_value_are_split():
-    # Seen live: LM Studio half-parsed a GLM-style call into one string value.
+    # Seen live: a server half-parsed a GLM-style call into one string value.
     raw = '{"action": "update<arg_key>task_id</arg_key><arg_value>file-ops", "status": "in_progress"}'
     args, notes = tc.parse_arguments(raw)
     assert args == {"action": "update", "task_id": "file-ops", "status": "in_progress"}
@@ -453,3 +453,41 @@ def test_minicpm_style_xml_calls_are_extracted():
     assert rest == ""
     stream = tc.StreamFilter()
     assert stream.feed('Sure. <function name="doc_search">') == "Sure. "
+
+
+# --- wrapper tags around a whole answer ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "written, shown",
+    [
+        ("<output>\n400\n</output>", "400"),
+        ("<answer>Paris</answer>", "Paris"),
+        ("  <response>\nTwo lines.\n\nAnd more.\n</response>\n", "Two lines.\n\nAnd more."),
+        ("<output>\ncut off before the end", "cut off before the end"),
+        ("<output> is an HTML element for results.", "<output> is an HTML element for results."),
+        ("<output>400</output> and then more", "<output>400</output> and then more"),
+        ("Use `<output>` for results.", "Use `<output>` for results."),
+        ("Plain answer.", "Plain answer."),
+    ],
+)
+def test_an_answer_wrapped_whole_in_a_tag_is_unwrapped(written, shown):
+    assert tc.unwrap(written) == shown
+
+
+def _streamed(chunks):
+    stream = tc.StreamFilter()
+    shown = "".join(stream.feed(chunk) for chunk in chunks)
+    return stream, shown + stream.flush()
+
+
+def test_a_wrapper_tag_never_reaches_the_screen_while_streaming():
+    stream, shown = _streamed(["<out", "put>", "\n", "40", "0\n</out", "put>"])
+    assert shown == "400\n"
+    assert stream.opener == "<output>\n" and stream.closer == stream.held == "</output>"
+
+
+def test_text_that_only_looks_like_the_start_of_a_tag_streams_normally():
+    stream, shown = _streamed(["<", "b>bold</b> and 1 < 2"])
+    assert shown == "<b>bold</b> and 1 < 2"
+    assert stream.opener == "" and stream.held == ""

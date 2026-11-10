@@ -77,3 +77,26 @@
 .md li.task > ol {
   margin-left: calc(1.2em + 10px);
 }
+
+/* Maths from mathml.js. Display formulas scroll sideways instead of widening the reply. */
+.md math {
+  /* A font with a MATH table, so brackets, roots and integrals grow with what they hold. */
+  font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", "DejaVu Math TeX Gyre", "Noto Sans Math", math;
+  font-size: 1.08em;
+}
+
+.md .math-block {
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+.md .math-block math {
+  display: block;
+}
+
+.md math[display="block"] {
+  display: block;
+  margin: 8px 0;
+}

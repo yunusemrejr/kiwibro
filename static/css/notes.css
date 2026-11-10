@@ -1,0 +1,388 @@
+/* ==========================================================================
+   Notes panel: a list on the left, the editor on the right.
+   Tan is the colour of notes and memory; green is the one action; red is
+   only ever used for delete.
+   ========================================================================== */
+
+.nt-root {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nt-root [hidden] {
+  display: none !important;
+}
+
+/* ---------- Left: search, tags, list ------------------------------------- */
+
+.nt-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 300px;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.nt-top {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+}
+
+.nt-top .search-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.nt-tags {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  padding: 0 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nt-tag {
+  padding: 3px 0 2px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: color var(--dur);
+}
+
+.nt-tag:hover {
+  color: var(--text);
+}
+
+.nt-tag[aria-pressed="true"] {
+  border-bottom-color: var(--tan);
+  color: var(--tan-soft);
+}
+
+.nt-tag-count {
+  margin-left: 4px;
+  color: var(--faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nt-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.nt-state {
+  display: grid;
+  place-items: center;
+  padding: 28px 14px;
+}
+
+.nt-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 11px 14px 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background var(--dur);
+}
+
+.nt-item:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.nt-item:focus-visible {
+  outline: 1px solid var(--tan-line);
+  outline-offset: -1px;
+}
+
+.nt-item[aria-current="true"] {
+  background: var(--tan-dim);
+}
+
+.nt-item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--tan);
+}
+
+.nt-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nt-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nt-pin {
+  display: inline-flex;
+  flex: none;
+  color: var(--tan);
+}
+
+.nt-pin svg {
+  width: 12px;
+  height: 12px;
+}
+
+.nt-item-preview {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nt-item-meta {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Right: toolbar, title, tags, body ---------------------------- */
+
+.nt-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.nt-main > .panel-empty {
+  max-width: 320px;
+  margin: auto;
+}
+
+.nt-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.nt-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nt-mode-group {
+  display: flex;
+  gap: 2px;
+}
+
+.nt-mode {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background var(--dur), color var(--dur);
+}
+
+.nt-mode:hover {
+  color: var(--text);
+}
+
+.nt-mode[aria-pressed="true"] {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nt-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.nt-tools,
+.nt-confirm {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.nt-saved {
+  margin-right: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.nt-pin-btn[aria-pressed="true"] {
+  color: var(--tan);
+}
+
+.nt-delete:hover {
+  color: var(--orange-soft);
+}
+
+.nt-confirm {
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.nt-title {
+  flex: none;
+  width: 100%;
+  padding: 22px 32px 6px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.nt-title::placeholder,
+.nt-taginput::placeholder,
+.nt-body::placeholder {
+  color: var(--faint);
+}
+
+.nt-taginput {
+  flex: none;
+  width: 100%;
+  padding: 0 32px 14px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--tan-soft);
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+
+.nt-body,
+.nt-read {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 16px 32px 32px;
+}
+
+.nt-body {
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.nt-read {
+  overflow-y: auto;
+}
+
+.nt-read-empty {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.nt-origin {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 32px;
+  border-top: 1px solid var(--line);
+  color: var(--tan);
+  font-size: 12.5px;
+}
+
+/* ---------- Phone: one pane at a time ----------------------------------- */
+
+.nt-root .nt-back {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .nt-side {
+    width: 100%;
+    border-right: 0;
+  }
+
+  .nt-root:not(.nt-show-main) .nt-main {
+    display: none;
+  }
+
+  .nt-root.nt-show-main .nt-side {
+    display: none;
+  }
+
+  .nt-root .nt-back {
+    display: inline-grid;
+  }
+
+  .nt-top {
+    padding: 10px 12px;
+  }
+
+  .nt-bar {
+    gap: 4px;
+    padding: 0 8px 0 10px;
+  }
+
+  .nt-bar.nt-confirming .nt-mode-group {
+    display: none;
+  }
+
+  .nt-saved {
+    font-size: 11.5px;
+  }
+
+  .nt-title,
+  .nt-taginput,
+  .nt-body,
+  .nt-read,
+  .nt-origin {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .nt-main > .panel-empty {
+    max-width: none;
+    margin: auto 18px;
+  }
+}

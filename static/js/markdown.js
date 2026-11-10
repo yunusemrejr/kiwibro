@@ -11,7 +11,12 @@
  * richblocks.js adds them after a final render, as a sandboxed iframe (scripts
  * only, opaque origin, CSP that blocks all network access) or as an <img> data
  * URI for SVG, which cannot run script.
+ *
+ * LaTeX maths (\( \), \[ \], $ $, $$ $$) becomes MathML through mathml.js. Maths
+ * that cannot be converted is shown as its source, exactly as before.
  */
+
+import { texToMathML } from "./mathml.js";
 
 const ESCAPES = {
   "&": "&amp;",
@@ -33,25 +38,56 @@ function safeHref(raw) {
   return url;
 }
 
+// Emphasis marks hug their text ("2 * 3 * 4" is arithmetic), and an underscore inside a
+// word is part of the word (snake_case).
+const WORD_START = "(?<![^\\s(\\[{\"'“‘*~>-])";
+const WORD_END = "(?![^\\s.,;:!?)\\]}\"'”’*~<-])";
+
 const INLINE = new RegExp(
   [
     "(`+)([\\s\\S]*?)\\1", // 1,2 inline code
-    "\\*\\*([\\s\\S]+?)\\*\\*", // 3 strong
-    "__([\\s\\S]+?)__", // 4 strong
+    "\\*\\*(?!\\s)([\\s\\S]+?)(?<!\\s)\\*\\*", // 3 strong
+    `${WORD_START}__(?!\\s)([\\s\\S]+?)(?<!\\s)__${WORD_END}`, // 4 strong
     "~~([\\s\\S]+?)~~", // 5 strike
     "\\[([^\\]]+)\\]\\(([^()\\s]+)\\)", // 6,7 link label, href
-    "\\*([^*\\n]+?)\\*", // 8 emphasis
-    "_([^_\\n]+?)_", // 9 emphasis
+    "(?<!\\d)\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*", // 8 emphasis (2*3*4 is a product)
+    `${WORD_START}_(?!\\s)([^_\\n]+?)(?<!\\s)_${WORD_END}`, // 9 emphasis
     "(https?:\\/\\/[^\\s<>()\"']+)", // 10 bare url
+    "\\\\\\(([^\\n]+?)\\\\\\)", // 11 inline maths \( … \)
+    "\\\\\\[([^\\n]+?)\\\\\\]", // 12 display maths \[ … \] on one line
+    "\\$\\$([^\\n]+?)\\$\\$", // 13 display maths $$ … $$ on one line
+    "\\$(?![\\s$])([^$\\n]*?[^\\s$])\\$(?!\\d)", // 14 inline maths $ … $, checked below
   ].join("|"),
   "g",
 );
+
+// Dollar maths must look like maths, not a price: a formula symbol or a short term.
+const MATHS_SYMBOL = /[\\^_{}=]/;
+const SHORT_TERM = /^[\p{L}\p{Nd}]{1,3}$/u;
 
 function linkHtml(href, label) {
   const safe = safeHref(href);
   if (!safe) return null;
   const target = escapeHtml(safe);
   return `<a href="${target}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+}
+
+/**
+ * The MathML for a maths alternative of INLINE. Returns undefined for any other
+ * match and null when the span does not convert to maths. The caller then
+ * rescans from the next character, so the text comes out exactly as it did
+ * before maths support existed.
+ */
+function inlineMaths(match) {
+  if (match[11] !== undefined) return texToMathML(match[11]);
+  if (match[12] !== undefined) return texToMathML(match[12], { display: true });
+  if (match[13] !== undefined) return texToMathML(match[13], { display: true });
+  if (match[14] !== undefined) {
+    const tex = match[14];
+    if (!MATHS_SYMBOL.test(tex) && !SHORT_TERM.test(tex)) return null;
+    return texToMathML(tex);
+  }
+  return undefined;
 }
 
 function renderInline(source, depth = 0) {
@@ -61,14 +97,22 @@ function renderInline(source, depth = 0) {
   let out = "";
   let last = 0;
   let match;
-  INLINE.lastIndex = 0;
+  // A private copy: nested calls below must not move this loop's position in the text.
+  const pattern = new RegExp(INLINE);
 
-  while ((match = INLINE.exec(text)) !== null) {
-    if (match.index < last) continue;
+  while ((match = pattern.exec(text)) !== null) {
+    const maths = inlineMaths(match);
+    if (maths === null) {
+      // Not maths: rescan from the next character, as if this alternative were not there.
+      pattern.lastIndex = match.index + 1;
+      continue;
+    }
     out += escapeHtml(text.slice(last, match.index));
-    last = INLINE.lastIndex;
+    last = pattern.lastIndex;
 
-    if (match[2] !== undefined) {
+    if (maths !== undefined) {
+      out += maths;
+    } else if (match[2] !== undefined) {
       out += `<code>${escapeHtml(match[2])}</code>`;
     } else if (match[3] !== undefined || match[4] !== undefined) {
       out += `<strong>${renderInline(match[3] ?? match[4], depth + 1)}</strong>`;
@@ -650,6 +694,42 @@ function renderList(node) {
   return `<${node.tag}>${items.join("")}</${node.tag}>`;
 }
 
+const MATH_OPEN = /^(\$\$|\\\[)/;
+
+/**
+ * A display block: a line that opens with $$ or \[ runs to the line holding the
+ * matching $$ or \] (one line is enough). Returns null, so the line is read as
+ * ordinary text, when no closer comes before a blank line (a reply still
+ * streaming) or when the maths does not convert.
+ */
+function mathBlock(lines, start) {
+  const first = lines[start].trim();
+  if (!MATH_OPEN.test(first)) return null;
+  const [open, close] = first.startsWith("$$") ? ["$$", "$$"] : ["\\[", "\\]"];
+  const body = [];
+  for (let k = start; k < lines.length; k += 1) {
+    if (k > start && !lines[k].trim()) return null;
+    const line = k === start ? first.slice(open.length) : lines[k];
+    const at = line.indexOf(close);
+    if (at === -1) {
+      body.push(line);
+      continue;
+    }
+    body.push(line.slice(0, at));
+    const math = texToMathML(body.join("\n"), { display: true });
+    if (math === null) return null;
+    const html = `<div class="math-block">${math}</div>`;
+    const rest = line.slice(at + close.length);
+    if (rest.trim()) {
+      // Text after the closer carries on as the next line.
+      lines[k] = rest;
+      return { html, next: k };
+    }
+    return { html, next: k + 1 };
+  }
+  return null;
+}
+
 export function renderMarkdown(source) {
   const text = String(source ?? "").replace(/\r\n?/g, "\n");
   const lines = text.split("\n");
@@ -691,6 +771,14 @@ export function renderMarkdown(source) {
         i += 1;
       }
       html.push(fencedBlock(body.join("\n"), language));
+      continue;
+    }
+
+    const block = mathBlock(lines, i);
+    if (block) {
+      flushParagraph();
+      html.push(block.html);
+      i = block.next;
       continue;
     }
 

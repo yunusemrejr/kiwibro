@@ -204,21 +204,48 @@ def test_function_words_pull_in_no_memories(memory: MemoryEngine, query: str):
     assert memory.retrieve(query) == []
 
 
+@pytest.mark.parametrize(("query", "expected"), [
+    ("what's my wife's name", "User is married to Selin"),
+    ("which vehicle do I own", "User drives a 2014 Honda Civic"),
+    ("when do I harvest honey", "User keeps bees in the garden"),
+])
+def test_memory_found_by_meaning_when_no_word_matches(memory: MemoryEngine, db: Database, query: str, expected: str):
+    db.create_memory("fact", expected, normalize(expected))
+    assert not terms.key_terms(query) & terms.key_terms(expected)  # a word search cannot find it
+
+    assert [m["content"] for m in memory.retrieve(query)] == [expected]
+
+
+def test_meaning_search_is_skipped_without_kiwi_sense(memory: MemoryEngine, db: Database, monkeypatch: pytest.MonkeyPatch):
+    db.create_memory("fact", "User is married to Selin", normalize("User is married to Selin"))
+    monkeypatch.setattr("kiwibro.memory.sense.shared", lambda: None)
+
+    assert memory.retrieve("what's my wife's name") == []
+
+
 SELF = "I am Yunus Emre Vurgun. I am a developer and IT specialist from Istanbul."
 
 
-@pytest.mark.parametrize("query", ["what's my name?", "who am I?", "how old am I?", "hi"])
+@pytest.mark.parametrize("query", ["what's my name?", "who am I?", "how old am I?", "what should I cook?"])
 def test_users_own_self_description_rides_on_every_turn(db: Database, query: str):
     db.create_memory("person", SELF, normalize(SELF))
     block, _memories = MemoryEngine(db, None, lambda: {}).build_block(query)
-    assert "User said: I am Yunus Emre Vurgun" in block  # the user's words, never the assistant's "I"
+    # Told about the user, never in the user's "I" (a small model reads that "I" as itself).
+    assert "The user is Yunus Emre Vurgun. They are a developer" in block
+    assert "I am" not in block
+
+
+@pytest.mark.parametrize("greeting", ["hi", "hello!", "thanks"])
+def test_a_greeting_does_not_get_the_users_life_story(db: Database, greeting: str):
+    db.create_memory("person", SELF, normalize(SELF))
+    assert MemoryEngine(db, None, lambda: {}).build_block(greeting)[0] == ""
 
 
 def test_other_first_person_notes_stay_relevance_gated(db: Database):
     note = "My sister is a doctor in Ankara"
     db.create_memory("person", note, normalize(note))
     engine = MemoryEngine(db, None, lambda: {})
-    assert "User said: My sister is a doctor" in engine.build_block("what does my sister do?")[0]
+    assert "The user's sister is a doctor" in engine.build_block("what does my sister do?")[0]
     assert engine.build_block("is the build passing")[0] == ""
 
 

@@ -12,6 +12,11 @@ the server's KV cache for the chat — only changes when the task really does.
 What an adapter is for comes from a sidecar ``<file>.json`` (``{"tasks": ["code"],
 "scale": 0.8}``; ``"*"`` = always on) or, without one, from words in its file name and
 ``general.name``. An adapter whose purpose is unknown is loaded but never switched on.
+
+Adapters adjust themselves. When a reply goes wrong with an adapter on and comes out
+right with it off, that counts against the adapter (:class:`Health`): after
+``TROUBLE_HALF`` such replies it runs at half its scale, after ``TROUBLE_OFF`` it stays
+off. The count ages out after ``TROUBLE_DAYS``, so an adapter gets another chance.
 """
 
 from __future__ import annotations
@@ -19,15 +24,20 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from . import gguf
+from . import gguf, sense, terms
 
 TASKS = ("code", "math", "writing", "summarize", "translate", "research")
 ALWAYS = "*"
 MAX_ADAPTERS = 6  # per server: each one is held in memory next to the model
+TROUBLE_HALF = 2  # replies that went wrong with the adapter on and right with it off: half scale
+TROUBLE_OFF = 4  # ... and from here the adapter stays off
+TROUBLE_DAYS = 30  # how long such a reply counts against an adapter
 
 # What the user is asking for, from their own words (checked in TASKS order on a tie).
 _TASK_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -59,6 +69,21 @@ _NAME_HINTS: dict[str, re.Pattern[str]] = {
     "research": re.compile(r"research|rag|search|retriev|\bqa\b", re.IGNORECASE),
 }
 _WORD = re.compile(r"[a-z0-9]+")
+# What each task is about, for a message that uses none of the words above ("why does my
+# loop never end"). Kiwi Sense compares the message's content words with these.
+_TASK_MEANINGS: dict[str, tuple[str, ...]] = {
+    "code": ("program source code function error bug", "fix loop variable crash software",
+             "write script command terminal"),
+    "math": ("calculate number sum multiply divide", "solve equation fraction percentage",
+             "arithmetic average total cost"),
+    "writing": ("write paragraph text wording friendlier", "draft message note announcement",
+                "improve sentence grammar style"),
+    "summarize": ("short version main points brief", "summary overview key takeaways"),
+    "translate": ("translate language German French Spanish", "say sentence another language meaning word"),
+    "research": ("find information current facts online", "recent events news who what when"),
+}
+MEANING_MATCH = 0.5  # how close a message must be to a task's meaning ...
+MEANING_LEAD = 0.15  # ... and how far ahead of the next task, to count as that task
 
 
 @dataclass(frozen=True)
@@ -82,7 +107,20 @@ def classify(text: str) -> str:
         hits = len(_TASK_PATTERNS[task].findall(text or ""))
         if hits > best_hits:
             best, best_hits = task, hits
-    return best
+    return best or _by_meaning(text or "")
+
+
+def _by_meaning(text: str) -> str:
+    """The task a message is about when it names none of the task words: the one clear
+    winner by meaning, or "" (a wrong adapter is worse than none)."""
+    gist = terms.gist(text[:400])
+    reader = sense.shared() if gist else None
+    if reader is None:
+        return ""
+    scored = sorted(((max(reader.closeness(gist, meaning) for meaning in _TASK_MEANINGS[task]), task)
+                     for task in TASKS), reverse=True)
+    (top, task), (second, _other) = scored[0], scored[1]
+    return task if top >= MEANING_MATCH and top - second >= MEANING_LEAD else ""
 
 
 def _text(content: Any) -> str:
@@ -195,7 +233,82 @@ def fits(adapter: Adapter, arch: str, *labels: str) -> bool:
     return all(word in have for word in _WORD.findall(adapter.base.lower()))
 
 
-def request_scales(adapters: tuple[Adapter, ...], task: str) -> list[dict[str, Any]]:
-    """llama-server's per-request ``lora`` list: every loaded adapter with its scale now."""
-    return [{"id": index, "scale": adapter.scale if (task and task in adapter.tasks) or ALWAYS in adapter.tasks else 0.0}
-            for index, adapter in enumerate(adapters)]
+def strength(trouble: int) -> float:
+    """The share of its scale an adapter keeps after ``trouble`` replies it spoiled."""
+    return 0.0 if trouble >= TROUBLE_OFF else 0.5 if trouble >= TROUBLE_HALF else 1.0
+
+
+def request_scales(adapters: tuple[Adapter, ...], task: str, trouble: Mapping[str, int] | None = None,
+                   off: bool = False) -> list[dict[str, Any]]:
+    """llama-server's per-request ``lora`` list: every loaded adapter with its scale now.
+
+    ``trouble`` (path -> spoiled replies) turns an adapter down or off; ``off`` switches
+    all of them off for this request."""
+    out = []
+    for index, adapter in enumerate(adapters):
+        wanted = not off and ((task and task in adapter.tasks) or ALWAYS in adapter.tasks)
+        scale = adapter.scale * strength((trouble or {}).get(adapter.path, 0)) if wanted else 0.0
+        out.append({"id": index, "scale": round(scale, 3)})
+    return out
+
+
+class Health:
+    """Which adapters spoiled replies lately: ``{adapter path: [unix times]}`` in one small file."""
+
+    def __init__(self, path: Path | None) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._times: dict[str, list[float]] | None = None
+
+    def _load(self) -> dict[str, list[float]]:
+        if self._times is None:
+            self._times = {}
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8")) if self._path else {}
+            except (OSError, ValueError):
+                data = {}
+            if isinstance(data, dict):
+                for key, times in data.items():
+                    if isinstance(times, list):
+                        self._times[str(key)] = [float(t) for t in times if isinstance(t, (int, float))]
+        return self._times
+
+    def _save(self) -> None:
+        if self._path is None:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(self._times), encoding="utf-8")
+        except OSError:  # the count still holds for this run
+            pass
+
+    def trouble(self, adapter_path: str) -> int:
+        """Replies this adapter spoiled within the last TROUBLE_DAYS."""
+        since = time.time() - TROUBLE_DAYS * 86400
+        with self._lock:
+            return sum(1 for t in self._load().get(adapter_path, ()) if t >= since)
+
+    def counts(self) -> dict[str, int]:
+        with self._lock:
+            paths = list(self._load())
+        return {path: count for path in paths if (count := self.trouble(path))}
+
+    def note(self, adapter_path: str) -> int:
+        """Count one more spoiled reply; returns the adapter's count now."""
+        since = time.time() - TROUBLE_DAYS * 86400
+        with self._lock:
+            times = [t for t in self._load().get(adapter_path, ()) if t >= since]
+            times = [*times, time.time()][-2 * TROUBLE_OFF:]
+            self._times[adapter_path] = times
+            self._save()
+            return len(times)
+
+    def reset(self, adapter_path: str | None = None) -> None:
+        """Forget what counted against one adapter, or against all of them."""
+        with self._lock:
+            self._load()
+            if adapter_path is None:
+                self._times = {}
+            else:
+                self._times.pop(adapter_path, None)
+            self._save()

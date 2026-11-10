@@ -174,13 +174,54 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE conversations ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
 
 
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Schema v6: notes — longer pages the user or Kiwibro writes (title, markdown body, tags)."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notes ("
+        "id TEXT PRIMARY KEY, "
+        "title TEXT NOT NULL DEFAULT '', "
+        "body TEXT NOT NULL DEFAULT '', "
+        "tags TEXT NOT NULL DEFAULT '[]', "
+        "pinned INTEGER NOT NULL DEFAULT 0, "
+        "origin TEXT NOT NULL DEFAULT 'you', "
+        "source_conversation_id TEXT, "
+        "created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_order ON notes(pinned DESC, updated_at DESC)")
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5("
+        "note_id UNINDEXED, title, body, tags, tokenize='unicode61')"
+    )
+
+
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """Schema v7: settings of the retired external-server engine are dropped (Kiwibro runs
+    llama.cpp itself now)."""
+    conn.execute(
+        f"DELETE FROM settings WHERE key IN ({', '.join('?' for _ in config.RETIRED_SETTINGS)})",
+        tuple(sorted(config.RETIRED_SETTINGS)),
+    )
+
+
 # A migration is either a SQL script or a callable taking the connection
 # (for steps that must inspect the live schema, e.g. guarded ALTERs).
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """Schema v8: per-model behaviour traits (what Kiwi Sense had to correct, and how often)."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS model_traits ("
+        "model TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, "
+        "last_at TEXT NOT NULL, PRIMARY KEY (model, kind))"
+    )
+
+
 _MIGRATIONS: list[tuple[int, Any]] = [
     (1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4), (5, _migrate_v5),
+    (6, _migrate_v6), (7, _migrate_v7), (8, _migrate_v8),
 ]
 
 MEMORY_ORIGINS = ("you", "chat", "learned")
+NOTE_ORIGINS = ("you", "kiwibro")
 
 
 def _est_tokens(text: str | None) -> int:
@@ -1134,6 +1175,190 @@ class Database:
                 raise
         return len(ids)
 
+    # --- notes -------------------------------------------------------------
+
+    @staticmethod
+    def _note(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "body": row["body"],
+            "tags": _json_loads(row["tags"], []) or [],
+            "pinned": bool(row["pinned"]),
+            "origin": row["origin"],
+            "source_conversation_id": row["source_conversation_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _note_fts_write(conn: sqlite3.Connection, note_id: str, title: str, body: str, tags: list[str]) -> None:
+        conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
+        conn.execute(
+            "INSERT INTO notes_fts(note_id, title, body, tags) VALUES (?, ?, ?, ?)",
+            (note_id, title, body, " ".join(tags)),
+        )
+
+    def create_note(
+        self,
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        *,
+        origin: str = "you",
+        source_conversation_id: str | None = None,
+        pinned: bool = False,
+    ) -> dict[str, Any]:
+        if origin not in NOTE_ORIGINS:
+            raise ValueError(f"unknown note origin: {origin}")
+        now = config.now_iso()
+        nid = _new_id("note")
+        tags = list(tags or [])
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO notes(id, title, body, tags, pinned, origin, source_conversation_id, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (nid, title, body, _json_dumps(tags), 1 if pinned else 0, origin, source_conversation_id, now, now),
+                )
+                self._note_fts_write(conn, nid, title, body, tags)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (nid,)).fetchone()
+        return self._note(row)
+
+    def get_note(self, note_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        return self._note(row) if row else None
+
+    def find_note_by_title(self, title: str) -> dict[str, Any] | None:
+        """Exact title match ignoring case; casefold so "İ" and "i" compare as SQLite's
+        ASCII-only LOWER() would not. Titles are few, so the scan stays cheap."""
+        wanted = " ".join((title or "").split()).casefold()
+        if not wanted:
+            return None
+        with self.connect() as conn:
+            rows = conn.execute("SELECT id, title FROM notes ORDER BY updated_at DESC").fetchall()
+        for row in rows:
+            if " ".join(row["title"].split()).casefold() == wanted:
+                return self.get_note(row["id"])
+        return None
+
+    @staticmethod
+    def _notes_from(query: str | None, tag: str | None) -> tuple[str, list[Any]]:
+        """FROM/WHERE shared by list and count: FTS match (LIKE when the query has no
+        words) and the tag filter."""
+        sql = "FROM notes n"
+        clauses: list[str] = []
+        params: list[Any] = []
+        match = fts_query(query) if query else None
+        if match:
+            sql += " JOIN notes_fts ON notes_fts.note_id = n.id"
+            clauses.append("notes_fts MATCH ?")
+            params.append(match)
+        elif query:
+            clauses.append("(n.title LIKE ? OR n.body LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like])
+        tag = re.sub(r"[^\w-]+", "", (tag or "").strip().lower().lstrip("#"))  # as notes.clean_tags
+        if tag:
+            clauses.append("EXISTS (SELECT 1 FROM json_each(n.tags) AS j WHERE j.value = ?)")
+            params.append(tag)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        return sql, params
+
+    def list_notes(
+        self,
+        query: str | None = None,
+        tag: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        sql, params = self._notes_from(query, tag)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT n.* {sql} ORDER BY n.pinned DESC, n.updated_at DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [self._note(row) for row in rows]
+
+    def count_notes(self, query: str | None = None, tag: str | None = None) -> int:
+        sql, params = self._notes_from(query, tag)
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS n {sql}", params).fetchone()
+        return int(row["n"])
+
+    def search_notes(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Best full-text matches first; title hits outweigh body hits, tags sit between."""
+        match = fts_query(query)
+        if not match:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT n.* FROM notes n JOIN notes_fts ON notes_fts.note_id = n.id "
+                "WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts, 0.0, 4.0, 1.0, 2.0), n.updated_at DESC LIMIT ?",
+                (match, limit),
+            ).fetchall()
+        return [self._note(row) for row in rows]
+
+    def update_note(self, note_id: str, **fields: Any) -> dict[str, Any] | None:
+        unknown = set(fields) - {"title", "body", "tags", "pinned"}
+        if unknown:
+            raise ValueError(f"unknown note fields: {', '.join(sorted(unknown))}")
+        if not fields:
+            return self.get_note(note_id)
+        sets: list[str] = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key == "tags":
+                value = _json_dumps(list(value))
+            elif key == "pinned":
+                value = 1 if value else 0
+            sets.append(f"{key} = ?")
+            values.append(value)
+        sets.append("updated_at = ?")
+        values.extend([config.now_iso(), note_id])
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(f"UPDATE notes SET {', '.join(sets)} WHERE id = ?", values)
+                row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+                if row is not None and any(key in fields for key in ("title", "body", "tags")):
+                    self._note_fts_write(
+                        conn, note_id, row["title"], row["body"], _json_loads(row["tags"], []) or [],
+                    )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return self._note(row) if row else None
+
+    def delete_note(self, note_id: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+                conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return cursor.rowcount > 0
+
+    def note_tags(self) -> list[tuple[str, int]]:
+        """Every tag with the number of notes carrying it; most used first, then A to Z."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT j.value AS tag, COUNT(*) AS uses FROM notes n, json_each(n.tags) AS j "
+                "GROUP BY j.value ORDER BY uses DESC, tag ASC"
+            ).fetchall()
+        return [(row["tag"], int(row["uses"])) for row in rows]
+
     # --- permissions & settings -------------------------------------------
 
     def get_permissions(self) -> dict[str, str]:
@@ -1172,6 +1397,41 @@ class Database:
             merged[row["key"]] = value
         merged["permissions"] = self.get_permissions()
         return merged
+
+    # --- behaviour traits ---
+
+    def note_trait(self, model: str, kind: str) -> int:
+        """Count one more correction of ``kind`` for ``model``; returns the new count."""
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO model_traits(model, kind, count, last_at) VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(model, kind) DO UPDATE SET count = count + 1, last_at = excluded.last_at",
+                (model, kind, config.now_iso()),
+            )
+            row = conn.execute(
+                "SELECT count FROM model_traits WHERE model = ? AND kind = ?", (model, kind)
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def traits(self, model: str, since: str | None = None) -> dict[str, int]:
+        """{kind: count} for ``model``; with ``since`` (ISO time) only kinds seen at or after it."""
+        query, values = "SELECT kind, count FROM model_traits WHERE model = ?", [model]
+        if since:
+            query += " AND last_at >= ?"
+            values.append(since)
+        with self.connect() as conn:
+            return {row["kind"]: int(row["count"]) for row in conn.execute(query, values)}
+
+    def all_traits(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT model, kind, count, last_at FROM model_traits ORDER BY model, kind")
+            return [dict(row) for row in rows]
+
+    def clear_traits(self, model: str | None = None) -> int:
+        with self.connect() as conn:
+            if model:
+                return conn.execute("DELETE FROM model_traits WHERE model = ?", (model,)).rowcount
+            return conn.execute("DELETE FROM model_traits").rowcount
 
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as conn:

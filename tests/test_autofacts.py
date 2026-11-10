@@ -102,7 +102,6 @@ NEGATIVE = [
     "He said I live in Paris.",
     "They told me I live in Paris.",
     "Ali says I use Windows.",
-    "My wife's name is Ayse.",
     "My boss is a nightmare.",
     "My job is hard.",
     "My job is a nightmare.",
@@ -128,6 +127,19 @@ NEGATIVE = [
     "I prefer not to say.",
     "I'm working on a lot of stuff.",
     "Ask me later where I live.",
+    # People, pets and things: only a stated name or home counts.
+    "My wife said my dog's name is Rex.",
+    "My cat's name is not important.",
+    "My wife is called every day by her mom.",
+    "My thing is called Foo.",
+    "My mom lives in a small town.",
+    "I have a question.",
+    "I have a dog in the car.",
+    "My birthday is tomorrow.",
+    "I was born in Izmir.",
+    "I'm allergic to it.",
+    "I'm allergic to nonsense like that.",
+    "I'm a vegetarian restaurant owner.",
     "I forgot that I live in Berlin.",
     "I think I live in Paris?",
     "Remember this is a test?",
@@ -245,3 +257,74 @@ def test_large_input_is_fast() -> None:
         extract(message)
         best = min(best, time.perf_counter() - start)
     assert best < 0.2
+
+
+WORLD = [
+    ("My wife's name is Ayse.", [_fact("person", "User's wife is named Ayse.", "named:wife")]),
+    (
+        "my dog's name is Biscuit and I live in Izmir",
+        [_fact("fact", "User's dog is named Biscuit.", "named:dog"), _fact("fact", "User lives in Izmir.", "location")],
+    ),
+    ("My dog is called Biscuit.", [_fact("fact", "User's dog is named Biscuit.", "named:dog")]),
+    ("My little sister's name is Ayşe.", [_fact("person", "User's little sister is named Ayşe.", "named:little sister")]),
+    ("I have a cat named Miso.", [_fact("fact", "User has a cat named Miso.")]),
+    ("Remember that my wife's name is Elif.", [_fact("person", "User's wife is named Elif.", "named:wife")]),
+    ("My sister lives in Ankara.", [_fact("person", "User's sister lives in Ankara.", "lives:sister")]),
+    ("My brother moved to Berlin and I live in Paris.", [_fact("fact", "User lives in Paris.", "location")]),
+    ("I have two kids.", [_fact("fact", "User has two kids.")]),
+    ("My birthday is 4 May.", [_fact("fact", "User's birthday is 4 May.", "birthday")]),
+    ("My birthday is on May 4th, 1992.", [_fact("fact", "User's birthday is 4 May 1992.", "birthday")]),
+    ("I was born in 1992.", [_fact("fact", "User's birth year is 1992.", "birth_year")]),
+    (
+        "I'm allergic to peanuts and my sister lives in Ankara.",
+        [_fact("fact", "User is allergic to peanuts."), _fact("person", "User's sister lives in Ankara.", "lives:sister")],
+    ),
+    ("I'm allergic to peanuts, shellfish and cats.", [_fact("fact", "User is allergic to peanuts, shellfish and cats.")]),
+    ("I am vegetarian.", [_fact("fact", "User is vegetarian.")]),
+]
+
+
+@pytest.mark.parametrize("message, expected", WORLD)
+def test_names_homes_dates_and_health_the_user_states(message, expected):
+    assert autofacts.extract(message) == expected
+
+
+def test_every_slot_fact_starts_with_its_slot_prefix():
+    for message, expected in WORLD:
+        for fact in expected:
+            if fact.slot:
+                assert fact.content.startswith(autofacts.slot_prefix(fact.slot)), message
+
+
+@pytest.mark.parametrize(
+    "message, only",
+    [
+        ("my sister lives in Ankara and my birthday is 4 May", True),
+        ("I'm allergic to peanuts.", True),
+        ("Remember that I use tabs.", True),
+        ("I live in Izmir. What's a good day trip?", False),
+        ("My name is Yunus. Nice to meet you!", False),
+        ("hi, I live in Izmir", False),
+        ("Forget that I live in Berlin.", False),
+        ("What is my name?", False),
+        ("", False),
+    ],
+)
+def test_a_message_that_only_states_facts_is_told_apart(message, only):
+    assert autofacts.stated_only(message) is only
+
+
+@pytest.mark.parametrize(
+    "stored, said",
+    [
+        ("User's dog is named Biscuit.", "your dog is named Biscuit"),
+        ("User lives in Izmir.", "you live in Izmir"),
+        ("User is allergic to peanuts.", "you are allergic to peanuts"),
+        ("User always uses vim.", "you always use vim"),
+        ("User doesn't use Windows.", "you don't use Windows"),
+        ("User has two kids.", "you have two kids"),
+        ("User moved to Berlin.", "you moved to Berlin"),
+    ],
+)
+def test_a_stored_fact_can_be_said_back_to_the_user(stored, said):
+    assert autofacts.to_you(stored) == said

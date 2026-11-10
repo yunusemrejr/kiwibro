@@ -21,6 +21,18 @@ import {
   summarizeArgs,
 } from "./ui.js";
 
+const SENSE_LABELS = {
+  other_identity: "spoke as another assistant",
+  adopted_user: "spoke as you",
+  denial: "said it could not use a tool it has",
+  unbacked_claim: "claimed an action that did not happen",
+  unkept_promise: "announced a step without taking it",
+  meta_leak: "talked about its instructions",
+  off_topic: "answered something else",
+  wrong_result: "gave a wrong number",
+  loop: "went in circles",
+};
+
 const ASSISTANT_PHRASE = {
   web_search: "search the web",
   fetch_page: "fetch a web page",
@@ -533,6 +545,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       activity,
       activityLabel,
       segment: null,
+      texts: [],
       tools: new Map(),
       chips: null,
       error: null,
@@ -584,6 +597,26 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       turn.flow.append(turn.chips);
     }
     return turn.chips;
+  }
+
+  // Kiwi Sense caught this reply drifting and Kiwibro corrected it (server: steer.py).
+  function senseChip(kinds) {
+    const what = [...new Set(kinds)].map((kind) => SENSE_LABELS[kind] || "drifted").join(", ");
+    return el("span", { class: "chip chip-sense", title: `The first draft ${what}. Kiwi Sense caught it and Kiwibro answered again.` }, [
+      icon("refresh"),
+      el("span", { text: "Corrected by Kiwi Sense" }),
+    ]);
+  }
+
+  // Kiwibro made a tool call the model was asked for and skipped (agent.py, _act_instead).
+  const ACTED = {
+    web_search: ["Searched by Kiwibro", "The model replied without searching, so Kiwibro ran the search you asked for and had it answer from the results."],
+    note: ["Saved by Kiwibro", "The model replied without saving the note, so Kiwibro saved it as you wrote it."],
+  };
+
+  function actedChip(tool) {
+    const [label, title] = ACTED[tool];
+    return el("span", { class: "chip chip-sense", title }, [icon("check"), el("span", { text: label })]);
   }
 
   function appendChip(turn, chip) {
@@ -835,11 +868,18 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         scheduleRender(turn);
       }
     },
+    retractText(text) {
+      // The final reply says again what was written before a tool call: keep it once.
+      const turn = ensureTurn();
+      const repeated = turn.texts.find((part) => part !== turn.segment && part.text.trim() === text.trim());
+      if (repeated) repeated.element.remove();
+    },
     appendDelta(text) {
       const turn = ensureTurn();
       if (!turn.segment) {
         turn.segment = { element: el("div", { class: "md" }), text: "" };
         turn.flow.append(turn.segment.element);
+        turn.texts.push(turn.segment);
       }
       if (turn.reasoningActive) finishReasoning(turn);
       turn.activity.hidden = true;
@@ -936,10 +976,12 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (added && !updated && !removed) label = added === 1 ? "Memory saved" : `${added} memories saved`;
       else if (updated && !added) label = updated === 1 ? "Memory updated" : `${updated} memories updated`;
       else if (removed && !added && !updated) label = removed === 1 ? "Memory removed" : `${removed} memories removed`;
-      const chip = el("span", { class: "chip chip-memory" }, [icon("sparkles"), el("span", { text: label })]);
+      const chip = el("span", { class: "chip chip-memory" }, [icon("bookmark"), el("span", { text: label })]);
       appendChip(turn, chip);
     },
-    finishDone({ aborted = false } = {}) {
+    finishDone({ aborted = false, steered = [], acted = "" } = {}) {
+      if (current && steered.length) appendChip(current, senseChip(steered));
+      if (current && ACTED[acted]) appendChip(current, actedChip(acted));
       finishTurn({ aborted });
     },
     prepareRetry() {

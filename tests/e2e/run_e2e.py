@@ -3,14 +3,14 @@
 
 No pytest needed::
 
-    python3 tests/e2e/run_e2e.py                 # full fake-LM suite
+    python3 tests/e2e/run_e2e.py                 # full fake-server suite
     python3 tests/e2e/run_e2e.py --no-probes     # skip in-process unit probes
     python3 tests/e2e/run_e2e.py --only chat     # one phase
     python3 tests/e2e/run_e2e.py --list          # list checks and exit
 
 Every phase owns a real ``python3 app.py`` process and a scratch data dir under
-``.dev/qa/runtime/``; the fake LM server keeps the suite deterministic and
-completely offline (no LM Studio, no internet).
+``.dev/qa/runtime/``; the fake model server keeps the suite deterministic and
+completely offline (no model app, no internet).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import probes_static  # noqa: E402
 
 
 class Env:
-    """Everything a check needs: the app process, a client, workspace, fake LM."""
+    """Everything a check needs: the app process, a client, workspace, fake model server."""
 
     def __init__(self, app: AppServer, fake: FakeLM | None, *, offline: bool = False) -> None:
         self.app = app
@@ -82,6 +82,7 @@ CHAT_CHECKS = [
     ("chat", "reasoning_stream", checks_chat.reasoning_stream),
     ("chat", "no_usage_stream", checks_chat.no_usage_stream),
     ("chat", "empty_stream", checks_chat.empty_stream),
+    ("chat", "mute_model", checks_chat.mute_model),
     ("chat", "title_event", checks_chat.title_event),
     ("chat", "title_echo_rejected", checks_chat.title_echo_rejected),
     ("chat", "memory_extraction", checks_chat.memory_extraction),
@@ -156,32 +157,32 @@ def main(argv: list[str] | None = None) -> int:
 
     offline_url = f"http://127.0.0.1:{free_port()}"  # closed port by design
     if "offline" in selected:
-        print("\n== phase: offline LM Studio ==")
-        with AppServer("offline", lmstudio_url=offline_url) as app:
+        print("\n== phase: offline model server ==")
+        with AppServer("offline", server_url=offline_url) as app:
             env = Env(app, None, offline=True)
             _run_phase(runner, env, OFFLINE_CHECKS, verbose)
 
     if "api" in selected:
-        print("\n== phase: HTTP API (fake LM) ==")
-        with FakeLM() as fake, AppServer("api", lmstudio_url=fake.url) as app:
+        print("\n== phase: HTTP API (fake model server) ==")
+        with FakeLM() as fake, AppServer("api", server_url=fake.url) as app:
             env = Env(app, fake)
             _run_phase(runner, env, API_CHECKS, verbose)
 
     if "chat" in selected:
-        print("\n== phase: chat / tools / security (fake LM) ==")
-        with FakeLM() as fake, AppServer("chat", lmstudio_url=fake.url) as app:
+        print("\n== phase: chat / tools / security (fake model server) ==")
+        with FakeLM() as fake, AppServer("chat", server_url=fake.url) as app:
             env = Env(app, fake)
             _run_phase(runner, env, CHAT_CHECKS, verbose)
 
     if "compaction" in selected:
-        print("\n== phase: compaction (tiny context fake LM) ==")
-        with FakeLM(MODELS_TINY_CONTEXT) as fake, AppServer("compaction", lmstudio_url=fake.url) as app:
+        print("\n== phase: compaction (tiny context fake model server) ==")
+        with FakeLM(MODELS_TINY_CONTEXT) as fake, AppServer("compaction", server_url=fake.url) as app:
             env = Env(app, fake)
             _run_phase(runner, env, COMPACTION_CHECKS, verbose)
 
     if "notools" in selected:
         print("\n== phase: model without tool support ==")
-        with FakeLM(MODELS_NO_TOOLS) as fake, AppServer("notools", lmstudio_url=fake.url) as app:
+        with FakeLM(MODELS_NO_TOOLS) as fake, AppServer("notools", server_url=fake.url) as app:
             env = Env(app, fake)
             _run_phase(runner, env, NO_TOOLS_CHECKS, verbose)
 

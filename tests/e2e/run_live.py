@@ -2,10 +2,10 @@
 """Live verification runner for Kiwibro (task-3).
 
 Starts the latest app code on port 8799 with scratch state (``.dev/qa-data`` +
-``.dev/qa-workspace``), runs serialized checks against real LM Studio, optionally
+``.dev/qa-workspace``), runs serialized checks against a real model server, optionally
 runs the live browser pass (which writes the committed screenshots), then stops.
 
-Gated: only run after the Lead confirms LM Studio is healthy and the fixes are in.
+Gated: only run once the model server is up and the fixes are in.
 
     python3 tests/e2e/run_live.py                    # full live run + browser screenshots
     python3 tests/e2e/run_live.py --no-browser       # server/API live checks only
@@ -43,19 +43,28 @@ DEFAULT_PORT = 8799
 
 class Env:
     def __init__(
-        self, app: AppServer | None, base_url: str, conversation_id: str = "", real_lm_url: str = ""
+        self, app: AppServer | None, base_url: str, conversation_id: str = "", real_server_url: str = ""
     ) -> None:
         self.app = app
         self.base_url = base_url
         self.client = ApiClient(base_url)
         self.workspace = Path(app.workspace) if app else WORKSPACE
         self.conversation_id = conversation_id
-        self.real_lm_url = real_lm_url
+        self.real_server_url = real_server_url
 
     def restart(self) -> None:
         if not self.app:
             raise RuntimeError("cannot restart an attached server")
         self.app.stop()
+        self.app.start()
+        self.client = ApiClient(self.app.base_url)
+
+    def point_at(self, server_url: str) -> None:
+        """Restart the app on the same port, attached to another model server (set at launch)."""
+        if not self.app:
+            raise RuntimeError("cannot restart an attached server")
+        self.app.stop()
+        self.app.server_url = server_url
         self.app.start()
         self.client = ApiClient(self.app.base_url)
 
@@ -189,27 +198,25 @@ DIRECT_CHECKS: list[tuple[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 
-def lm_studio_probe(url: str, timeout: float = 12.0) -> tuple[bool, str]:
+def model_server_probe(url: str, timeout: float = 12.0) -> tuple[bool, str]:
     try:
-        response = requests.get(f"{url.rstrip('/')}/api/v0/models", timeout=(5, timeout))
+        response = requests.get(f"{url.rstrip('/')}/v1/models", timeout=(5, timeout))
     except requests.RequestException as error:
-        return False, f"LM Studio unreachable at {url}: {error}"
+        return False, f"model server unreachable at {url}: {error}"
     if response.status_code != 200:
-        return False, f"LM Studio /api/v0/models returned HTTP {response.status_code}"
+        return False, f"model server /v1/models returned HTTP {response.status_code}"
     try:
         data = response.json().get("data") or []
     except ValueError:
-        return False, "LM Studio returned invalid JSON"
-    chat = [model for model in data if model.get("type") in ("llm", "vlm")]
-    loaded = [model["id"] for model in chat if model.get("state") == "loaded"]
-    return True, f"LM Studio up: {len(chat)} chat models, loaded={loaded}"
+        return False, "model server returned invalid JSON"
+    return True, f"model server up: {len(data)} models"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--base", default="", help="attach to an already-running server instead of spawning")
-    parser.add_argument("--lm-url", default="http://127.0.0.1:1234")
+    parser.add_argument("--server-url", default="http://127.0.0.1:1234", help="the llama.cpp-compatible server to test")
     parser.add_argument("--browser", dest="browser", action="store_true", default=True)
     parser.add_argument("--no-browser", dest="browser", action="store_false")
     parser.add_argument("--shots-out", default="docs/screenshots")
@@ -219,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--probe-only",
         action="store_true",
-        help="only probe LM Studio + boot the app, then exit (plumbing check, no generation)",
+        help="only probe the model server + boot the app, then exit (plumbing check, no generation)",
     )
     parser.add_argument(
         "--screenshots-only",
@@ -232,10 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     runner = Runner(verbose=not args.quiet)
     started = time.time()
 
-    healthy, message = lm_studio_probe(args.lm_url)
-    print(f"LM Studio probe: {'OK' if healthy else 'FAILED'} — {message}")
+    healthy, message = model_server_probe(args.server_url)
+    print(f"model server probe: {'OK' if healthy else 'FAILED'} — {message}")
     if not healthy:
-        print("Aborting: run the deterministic suite instead until LM Studio is confirmed healthy.")
+        print("Aborting: run the deterministic suite instead until the model server is healthy.")
         return 2
 
     if args.probe_only:
@@ -243,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             app = AppServer(
                 "live-probe",
-                lmstudio_url=args.lm_url,
+                server_url=args.server_url,
                 port=args.port,
                 data_dir=DATA_DIR,
                 workspace=WORKSPACE,
@@ -261,14 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.base:
             base_url = args.base.rstrip("/")
             print(f"Attached live run against {base_url}")
-            env = Env(None, base_url, real_lm_url=args.lm_url)
+            env = Env(None, base_url, real_server_url=args.server_url)
         else:
             # fresh scratch state for the live pass (never the user's real data)
             for directory in (DATA_DIR, WORKSPACE):
                 shutil.rmtree(directory, ignore_errors=True)
             app = AppServer(
                 "live",
-                lmstudio_url=args.lm_url,
+                server_url=args.server_url,
                 port=args.port,
                 data_dir=DATA_DIR,
                 workspace=WORKSPACE,
@@ -276,12 +283,12 @@ def main(argv: list[str] | None = None) -> int:
             app.start()
             base_url = app.base_url
             print(f"Live app on {base_url} (data={DATA_DIR}, workspace={WORKSPACE})")
-            env = Env(app, base_url, real_lm_url=args.lm_url)
+            env = Env(app, base_url, real_server_url=args.server_url)
 
         # live checks must run on the documented model, not just "first loaded"
         models = env.client.get("/api/models?refresh=1").data
         ids = [model["id"] for model in models.get("models") or []]
-        assert "qwen3.8-2b" in ids, f"qwen3.8-2b is not available in LM Studio (have {ids})"
+        assert "qwen3.8-2b" in ids, f"qwen3.8-2b is not available on the model server (have {ids})"
         selected = env.client.post("/api/models/select", {"id": "qwen3.8-2b"})
         assert selected.status == 200, f"model select failed: {selected.status}"
         print("Using model qwen3.8-2b for all live checks")
@@ -295,8 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.skip_slow:
             checks = [entry for entry in checks if entry[0] not in ("live_context_compaction",)]
         if args.base:
-            checks = [entry for entry in checks if entry[0] != "live_restart_persistence"]
-            print("attached mode: skipping restart persistence (cannot restart the owner's server)")
+            checks = [entry for entry in checks if entry[0] not in ("live_restart_persistence", "live_context_compaction")]
+            print("attached mode: skipping the restart checks (cannot restart the owner's server)")
         print("\n== live checks (serialized, one model call at a time) ==")
         for name, func in checks:
             runner.check("live", name, func, env)

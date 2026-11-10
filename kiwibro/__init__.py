@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from dataclasses import dataclass
@@ -17,9 +18,12 @@ from .agent import AgentManager, retitle_small_talk_chats
 from .api import bp, error_body
 from .context import ContextEngine
 from .db import Database
-from .llm import LMStudioClient
+from .hub import Hub
+from .llm import LLMClient
 from .memory import MemoryEngine
+from .notes import Notebook
 from .readiness import Readiness
+from .runtime import Installer
 from .search import SearchEngine
 
 log = logging.getLogger(__name__)
@@ -30,13 +34,16 @@ _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 @dataclass
 class Services:
     db: Database
-    llm: LMStudioClient
+    llm: LLMClient
     context: ContextEngine
     memory: MemoryEngine
+    notes: Notebook
     search: SearchEngine
     agent: AgentManager
     settings_provider: Callable[[], dict[str, Any]]
     data_dir: Path
+    hub: Hub
+    installer: Installer
 
 
 def _configure_logging(data_dir: Path) -> None:
@@ -94,7 +101,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         logging.getLogger(__name__).warning("could not re-title chats", exc_info=True)
 
     defaults = config.default_settings(
-        lmstudio_url=app.config.get("KIWIBRO_LMSTUDIO_URL"),
+        server_url=app.config.get("KIWIBRO_SERVER_URL"),
         workspace=app.config.get("KIWIBRO_WORKSPACE"),
     )
     workspace_override = app.config.get("KIWIBRO_WORKSPACE")
@@ -119,11 +126,12 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             _settings_cache["version"] = db.settings_version
         return {**cached, "permissions": dict(cached.get("permissions") or {})}
 
-    llm = LMStudioClient(settings_provider, data_dir=data_dir)
+    llm = LLMClient(settings_provider, data_dir=data_dir)
     context = ContextEngine(db, llm, settings_provider)
     memory = MemoryEngine(db, llm, settings_provider)
+    notes = Notebook(db)
     search = SearchEngine()
-    agent = AgentManager(db, llm, context, memory, search, settings_provider)
+    agent = AgentManager(db, llm, context, memory, search, settings_provider, notes=notes)
     # Load + KV warm-up of the selected model ahead of the first message. Off in tests:
     # scripted fakes would answer the warm-up request instead of the turn.
     warmup = app.config.get("KIWIBRO_WARMUP")
@@ -133,15 +141,22 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         llm, agent.warm_prefix, busy_fn=agent.active_turns, on_job=agent._cancel_memory_extraction,
         enabled=bool(warmup),
     )
+    hub = Hub(data_dir / "models")
+    installer = Installer(data_dir)
+    if not app.config.get("TESTING"):
+        atexit.register(hub.shutdown)
     services = Services(
         db=db,
         llm=llm,
         context=context,
         memory=memory,
+        notes=notes,
         search=search,
         agent=agent,
         settings_provider=settings_provider,
         data_dir=data_dir,
+        hub=hub,
+        installer=installer,
     )
     app.extensions["kiwibro"] = services
 

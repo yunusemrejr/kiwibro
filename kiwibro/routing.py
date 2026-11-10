@@ -9,7 +9,7 @@ the problem with code/tools instead.
 
 Layering (one policy, no duplication): capability *facts* come from
 :mod:`kiwibro.capabilities` and HTTP/serving primitives from
-:class:`~kiwibro.llm.LMStudioClient` (``catalog``, ``complete_vision``,
+:class:`~kiwibro.llm.LLMClient` (``catalog``, ``complete_vision``,
 ``embed``, ``load_model``/``unload_model``). This module only ranks and
 orchestrates, duck-typing those primitives so it keeps working (JIT-only)
 on older clients. Everything is best-effort and bounded: a helper call
@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterator
 
 from . import capabilities, media
 from .inference import NO_THINKING, model_profile
-from .llm import LMStudioError
+from .llm import LLMError
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ def _check_memory(helper: dict[str, Any]) -> None:
         needed = gb * 1e9 if isinstance(gb, (int, float)) else needed
     free = MEMORY_PROBE()
     if free is not None and needed != float("inf") and needed * RAM_HEADROOM > free:
-        raise LMStudioError(
+        raise LLMError(
             "no_memory",
             f"{helper['id']} needs about {needed * RAM_HEADROOM / 1e9:.1f} GB but only "
             f"{free / 1e9:.1f} GB is free, so it was not loaded next to the main model.",
@@ -272,9 +272,9 @@ def run_helper(
     unloaded after); otherwise the policy below picks it.
 
     Lifecycle contract: if the helper was not loaded, it is best-effort
-    loaded (JIT on most LM Studio builds) and best-effort unloaded after
+    loaded (JIT on most servers) and best-effort unloaded after
     the call; a previously loaded model and the main model are never
-    unloaded. Raises :class:`LMStudioError` (kind ``no_model``) when no
+    unloaded. Raises :class:`LLMError` (kind ``no_model``) when no
     installed model satisfies ``need`` — callers then fall back to
     code/tools. For ``need="embeddings"`` the result also carries
     ``embeddings`` vectors and ``text`` is empty.
@@ -284,15 +284,15 @@ def run_helper(
     if model:
         named = next((m for m in models if m.get("id") == model), None)
         if named is None:
-            raise LMStudioError("no_model", f"Model not found in LM Studio: {model}")
+            raise LLMError("no_model", f"Model not found: {model}")
         helper = _annotate(named)
     elif current is not None and _satisfies(_annotate(current), need) and need not in ("fast", "long_context"):
         helper = _annotate(current)  # the main model already can: no swap, no load
     else:
         helper = pick_helper(models, need, current=current_model)
     if helper is None:
-        raise LMStudioError(
-            "no_model", f"No installed LM Studio model provides '{need}'."
+        raise LLMError(
+            "no_model", f"No installed model provides '{need}'."
         )
     model_id = str(helper["id"])
     window = min(_context_of(helper), 65536) if need == "long_context" else HELPER_CONTEXT
@@ -303,7 +303,7 @@ def run_helper(
         if need == "embeddings":
             embed = getattr(llm, "embed", None)
             if not callable(embed):
-                raise LMStudioError("no_model", "Embeddings are not available from this client.")
+                raise LLMError("no_model", "Embeddings are not available from this client.")
             texts = [
                 str(m.get("content") or "")
                 for m in messages
@@ -344,20 +344,20 @@ def context_choices(model: dict[str, Any]) -> list[int]:
 def reload_with_context(llm: Any, model: dict[str, Any], context_length: int) -> str:
     """Reload a loaded model with another context window; returns the new instance id.
 
-    LM Studio can't resize a loaded model, so this unloads and loads again. If
-    the bigger window does not fit (LM Studio's load guardrails refuse it), the
+    The server can't resize a loaded model, so this unloads and loads again. If
+    the bigger window does not fit (the server's load guardrails refuse it), the
     previous window is restored so the user is never left without a model.
     """
     model_id = str(model["id"])
     key = str(model.get("key") or model_id)
     previous = int((model.get("loaded_config") or {}).get("context_length") or model.get("context") or 0)
     if not llm.unload_model(model_id):
-        raise LMStudioError("load", f"LM Studio could not unload {model_id}.")
+        raise LLMError("load", f"Could not unload {model_id}.")
     if llm.load_model(key, context_length):
         return llm.loaded_instance(key) or model_id
     if previous and llm.load_model(key, previous):
-        raise LMStudioError(
+        raise LLMError(
             "no_memory",
             f"{model_id} does not fit with a {context_length // 1024}K context; kept {previous // 1024}K.",
         )
-    raise LMStudioError("load", f"LM Studio could not load {model_id} again. Load it in LM Studio.")
+    raise LLMError("load", f"Could not load {model_id} again.")

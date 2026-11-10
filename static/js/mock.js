@@ -1,8 +1,11 @@
 /**
  * Development-only fake backend, activated with ?mock=1.
  * It mirrors docs/API.md (REST shapes and SSE events) so the whole UI can be
- * exercised without Flask or LM Studio. It has no effect in normal mode.
+ * exercised without Flask or a real engine. It has no effect in normal mode.
  */
+
+import { mockModels } from "./mock_models.js";
+import { mockNotes } from "./mock_notes.js";
 
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -123,10 +126,10 @@ const DEFAULT_PERMISSIONS = {
   undo_changes: "auto",
 };
 
-// The llama.cpp build the direct engine would pick, and a server it already started.
+// The llama.cpp build the local engine would pick, and a server it already started.
 const DIRECT_RUNTIME = {
   path: "/usr/local/bin/llama-server",
-  label: "llama.cpp · CPU",
+  label: "llama.cpp · Vulkan",
   kind: "system",
   source: "PATH",
 };
@@ -165,7 +168,7 @@ const SEED_MEMORIES = [
   {
     id: "mem_mock_4",
     kind: "fact",
-    content: "Runs LM Studio on 127.0.0.1:1234 with qwen3.8-2b loaded.",
+    content: "Prefers small local models that fit in 8 GB of memory.",
     pinned: false,
     confidence: 1,
     created_at: isoAgo(7 * 24 * HOUR),
@@ -271,15 +274,15 @@ export class MockBackend {
     this.offline = params.get("offline") === "1";
     this.models = this.offline ? [] : clone(MODELS);
     this.currentModel = this.offline ? null : "qwen3.8-2b";
-    this.lmstudio = !this.offline;
     this.settings = {
       model: "qwen3.8-2b",
-      lmstudio_url: "http://127.0.0.1:1234",
+      server_url: "", // empty: local mode; an address switches to a llama.cpp-compatible server
       agent_enabled: true,
       memory_enabled: true,
+      sense_enabled: true,
       max_output_tokens: 2048,
       temperature: 0.6,
-      workspace: "/home/yemre/Kiwibro",
+      workspace: "~/Kiwibro",
       user_name: "",
       tool_profile: "auto",
       autonomy: "smart",
@@ -287,7 +290,6 @@ export class MockBackend {
       remote_hosts: [],
       max_tool_rounds: 16,
       permissions: clone(DEFAULT_PERMISSIONS),
-      engine: "lmstudio",
       direct_runtime: "",
       direct_models_dir: "",
       direct_threads: 0,
@@ -308,19 +310,12 @@ export class MockBackend {
     ];
     this.memories = clone(SEED_MEMORIES);
     this.workspaceFiles = clone(WORKSPACE_FILES);
-    this.dataDir = "/home/yemre/.local/share/kiwibro (mock)";
+    this.dataDir = "~/.local/share/kiwibro (mock)";
     this.approvals = new Map();
     this.sequence = 0;
     this.messageSeq = 0;
     this.conversations = [];
     this._seedConversations();
-    this.health = {
-      ok: true,
-      version: "1.0.0",
-      lmstudio: this.lmstudio,
-      lmstudio_url: this.settings.lmstudio_url,
-      model: this.currentModel,
-    };
   }
 
   /* ------------------------------------------------------------------ seed */
@@ -551,13 +546,28 @@ export class MockBackend {
     return conversation;
   }
 
+  // "local" (Kiwibro runs models itself) unless a server address is set ("attached").
+  _engineMode() {
+    return this.settings.server_url ? "attached" : "local";
+  }
+
+  _engineError() {
+    if (!this.offline) return null;
+    return this._engineMode() === "attached"
+      ? "The model server isn't reachable"
+      : "The engine isn't installed yet";
+  }
+
   _health() {
+    const error = this._engineError();
     return {
       ok: true,
-      version: "1.0.0",
-      lmstudio: this.lmstudio,
-      lmstudio_url: this.settings.lmstudio_url,
+      engine: this._engineMode(),
+      engine_ok: !this.offline,
+      ...(error ? { engine_error: error } : {}),
       model: this.currentModel,
+      busy: false,
+      version: "3.0.0",
     };
   }
 
@@ -565,15 +575,21 @@ export class MockBackend {
     const available = !this.offline;
     return {
       available,
-      runtime: clone(DIRECT_RUNTIME),
+      error: this._engineError(),
+      runtime: available ? clone(DIRECT_RUNTIME) : null,
       runtimes: [clone(DIRECT_RUNTIME)],
-      model_dirs: ["/home/yemre/.lmstudio/models"],
-      models_count: this.models.length,
-      threads: 8,
+      servers: clone(this.directServers),
       gpu: this.settings.direct_gpu === "off" ? "" : "AMD Radeon Graphics (RADV RENOIR)",
       gpu_available: true,
-      servers: clone(this.directServers),
-      error: available ? null : "No downloaded models were found in LM Studio's models folder.",
+      threads: 8,
+      idle_sleep_s: 1800,
+      model_dirs: ["~/.cache/lm-studio/models"],
+      models_count: this.models.length,
+      own_models_dir: "~/.local/share/kiwibro/models",
+      own_runtime_dir: "~/.local/share/kiwibro/runtime",
+      adapters: [],
+      adapters_dir: "~/.local/share/kiwibro/adapters",
+      sources: [{ source: "kiwibro", label: "Kiwibro", path: "~/.local/share/kiwibro/models", models: this.models.length, bytes: 0 }],
     };
   }
 
@@ -591,6 +607,15 @@ export class MockBackend {
     const route = url.pathname;
     const verb = method.toUpperCase();
 
+    // The model manager and the notes panel keep their fake data in their own files.
+    const fail = (status, code, message) => {
+      throw new MockApiError(status, code, message);
+    };
+    for (const part of [mockModels, mockNotes]) {
+      const answer = part(this, { route, verb, body, url, fail });
+      if (answer !== undefined) return clone(answer);
+    }
+
     if (route === "/health" && verb === "GET") return clone(this._health());
 
     if (route === "/api/bootstrap" && verb === "GET") {
@@ -601,12 +626,20 @@ export class MockBackend {
         current_model: this.currentModel,
         conversations: this._list(),
         memories_count: this.memories.length,
+        notes_count: (this.notes || []).length,
         workspace: this.settings.workspace,
       };
     }
 
     if (route === "/api/models" && verb === "GET") {
-      return { ok: true, lmstudio: this.lmstudio, current: this.currentModel, models: clone(this.models) };
+      const error = this._engineError();
+      return {
+        ok: true,
+        engine_ok: !this.offline,
+        ...(error ? { engine_error: error } : {}),
+        current: this.currentModel,
+        models: clone(this.models),
+      };
     }
 
     if (route === "/api/models/ready" && verb === "GET") {
@@ -772,7 +805,7 @@ export class MockBackend {
     }
 
     if (route === "/api/engine" && verb === "GET") {
-      return { ok: true, engine: this.settings.engine, direct: clone(this._direct()) };
+      return { ok: true, engine: this._engineMode(), direct: clone(this._direct()) };
     }
 
     if (route === "/api/engine/stop" && verb === "POST") {
@@ -1020,11 +1053,11 @@ export class MockBackend {
     await this._streamText(turn, send, wait, "reasoning", reasoning, { size: 8, delay: 18 });
     await wait(200);
 
-    const answer = `I'm your local agent — nothing here leaves the machine.
+    const answer = `I'm Kiwibro, an AI agent that runs on this computer. Your chats stay here.
 
 Here's what I can do:
 
-- **Chat** with any model you've loaded in LM Studio
+- **Chat** with any GGUF model on this computer
 - **Use tools**: search the web, read and write files, run shell commands
 - **Remember** durable facts between conversations
 - **Compact** long chats automatically, so you never hit a context wall
@@ -1039,7 +1072,7 @@ for note in notes:
     print(note.name)
 \`\`\`
 
-Ask me to *find something online*, *edit a file*, or *run a command* — I'll ask before touching anything.`;
+Ask me to *find something online*, *edit a file* or *run a command*. I ask before I change anything.`;
 
     await this._streamText(turn, send, wait, "delta", answer, { size: 6, delay: 26 });
     this._addMessage(turn.conversation, {

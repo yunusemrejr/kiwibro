@@ -1,8 +1,8 @@
 """Local-inference engine: how Kiwibro spends a laptop's compute.
 
 On CPU-only machines prompt prefill dominates latency. Measured on a Ryzen 5
-7530U with a 4B model in LM Studio 0.4.26: a 4,052-token prompt took 124 s
-cold and 1.3 s when LM Studio could reuse its KV cache for the prefix; moving
+7530U with a 4B model: a 4,052-token prompt took 124 s
+cold and 1.3 s when the server could reuse its KV cache for the prefix; moving
 one changing line (the clock) to the front of the prompt cost the full 135 s
 again. Thinking is the other big cost: "say hi" spent 200 reasoning tokens
 (28 s) with default thinking and 2 s with ``reasoning_effort: "none"``.
@@ -17,7 +17,7 @@ So this module owns three small, pure policies:
 * **Reasoning control** (``turn_reasoning`` → ``reasoning_payload``): one
   decision per turn, changed between turns only while a re-prefill is cheap.
 * **Model profiles** (``model_profile``): size, family, tier and what a model
-  can do, merged from LM Studio metadata and the model id.
+  can do, merged from the server's metadata and the model id.
 
 Plus per-round telemetry (``RoundTimer``). Nothing here performs I/O;
 ``PrefixTracker`` only keeps request digests.
@@ -72,7 +72,7 @@ class ModelProfile:
 
     @property
     def reasoning_toggle(self) -> bool:
-        """True when LM Studio lets requests switch thinking off for this model."""
+        """True when requests can switch thinking off for this model."""
         return "off" in self.reasoning
 
     @property
@@ -86,7 +86,7 @@ class ModelProfile:
 
 
 def parse_params(text: Any) -> float | None:
-    """'4.4B' -> 4.4, '773M' -> 0.773, '27B' -> 27.0 (LM Studio ``params_string``)."""
+    """'4.4B' -> 4.4, '773M' -> 0.773, '27B' -> 27.0 (the ``params_string`` of the model entry)."""
     if not isinstance(text, str):
         return None
     match = _SIZE_RE.match(text)
@@ -164,7 +164,7 @@ def _int_or(value: Any, default: int) -> int:
 
 
 def model_profile(model_id: str, model_info: Mapping[str, Any] | None = None) -> ModelProfile:
-    """Profile a model from Kiwibro's model record, a raw LM Studio entry, or just its id."""
+    """Profile a model from Kiwibro's model record, a raw server entry, or just its id."""
     info: Mapping[str, Any] = model_info or {}
     model_id = str(model_id or info.get("id") or info.get("key") or "")
     total = parse_params(info.get("params") or info.get("params_string"))
@@ -257,7 +257,7 @@ NO_THINKING = {"reasoning_effort": "none"}
 
 
 def reasoning_payload(profile: ModelProfile, *, think: bool) -> dict[str, Any]:
-    """LM Studio request fields for a thinking decision; empty when the model has no toggle."""
+    """Request fields for a thinking decision; empty when the model has no toggle."""
     if not profile.reasoning_toggle:
         return {}
     if think:
@@ -272,7 +272,7 @@ def reasoning_payload(profile: ModelProfile, *, think: bool) -> dict[str, Any]:
 # So with the direct engine a thinking decision never touches the prompt: the template
 # stays in thinking mode for every turn of every chat (spark-x2.6 renders that switch
 # into the system block, where flipping it re-prefilled the whole chat: 190 s for a
-# 6k-token conversation) and "no thinking" is a budget of 0. LM Studio's API has no
+# 6k-token conversation) and "no thinking" is a budget of 0. The server's API has no
 # budget, so there an acting round that thinks past THINK_BUDGET_CHARS is cut off and
 # retried with thinking off instead.
 TEMPLATE_THINKING = {"chat_template_kwargs": {"enable_thinking": True}}
@@ -327,9 +327,9 @@ def _default_tokens(message: Mapping[str, Any]) -> int:
 
 
 class PrefixTracker:
-    """Estimates how much of each request LM Studio can serve from its KV cache.
+    """Estimates how much of each request the server can serve from its KV cache.
 
-    LM Studio keeps one cache per parallel slot (4 by default; verified that a
+    The server keeps one cache per parallel slot (4 by default; verified that a
     background request does not evict a chat's warm prefix) and reuses the
     longest matching token prefix. This tracks message-level digests of the
     last few requests per model and reports the longest shared leading run, in
@@ -386,7 +386,7 @@ class PrefixTracker:
 
 def server_reuse(timings: Mapping[str, float] | None) -> dict[str, int] | None:
     """Prompt reuse as llama.cpp counted it (the direct engine's ``timings``), in the shape
-    :meth:`PrefixTracker.observe` returns; None when the server sent no counts (LM Studio)."""
+    :meth:`PrefixTracker.observe` returns; None when the server sent no counts."""
     if not timings or "cache_n" not in timings or "prompt_n" not in timings:
         return None
     cached, fresh = int(timings["cache_n"]), int(timings["prompt_n"])
@@ -433,7 +433,7 @@ class Overthinking(Exception):
 THINK_BUDGET_CHARS = 4000
 
 
-# Anti-repetition sampling for the one request that continues a collapsed reply (LM Studio
+# Anti-repetition sampling for the one request that continues a collapsed reply (the server
 # honours both; sampling does not touch the prompt, so the KV-cached prefix still applies).
 ANTI_REPEAT = {"repeat_penalty": 1.15, "frequency_penalty": 0.3}
 LOOP_MAX_BLOCK = 3  # lines in the repeating unit ("**The fix**" + its bullet is two)

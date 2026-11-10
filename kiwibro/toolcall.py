@@ -1082,31 +1082,88 @@ _STREAM_OPENERS = (
 )
 
 
+# Some small models put their whole answer inside one of these tags.
+WRAPPER_TAGS = ("output", "answer", "response", "final_answer", "reply", "result")
+_WRAP_OPENERS = tuple(f"<{tag}>" for tag in WRAPPER_TAGS)
+
+
+def _wrap_closer(opener: str) -> str:
+    return "</" + opener[1:]
+
+
+def unwrap(content: str) -> str:
+    """The text inside a reply written whole as ``<output>…</output>``; anything else unchanged.
+
+    A reply that merely starts with such a tag ("<output> is an HTML element…") is left
+    alone: the closing tag must end the reply, or be missing with the tag on its own line.
+    """
+    text = (content or "").strip()
+    for opener in _WRAP_OPENERS:
+        if not text.startswith(opener):
+            continue
+        closer, body = _wrap_closer(opener), text[len(opener):]
+        if body.endswith(closer):
+            return body[: -len(closer)].strip()
+        if closer not in body and body[:1] in ("\n", ""):
+            return body.strip()
+        break
+    return content
+
+
 class StreamFilter:
     """Hold back tool-call markup while streaming so users never see raw call syntax.
 
     Text before the first call marker streams through; from the marker on it is
     kept in ``held``. If no call is extracted at the end of the round, the
     caller should emit ``held`` (it was ordinary text after all).
+
+    A wrapper tag that opens the reply (``<output>``) is not shown either: it is
+    kept in ``opener``, and its closing tag counts as a marker. The caller decides
+    at the end, with ``unwrap``, whether the reply really was wrapped.
     """
 
     def __init__(self) -> None:
         self._pending = ""
         self.held = ""
+        self.opener = ""  # the wrapper tag held back, with the blank space after it
+        self._tag = ""
+        self._opening = True  # nothing shown yet: the reply may still open with a wrapper tag
+        self._after_opener = False
+        self._markers: tuple[str, ...] = _STREAM_OPENERS
+
+    @property
+    def closer(self) -> str:
+        return _wrap_closer(self._tag) if self._tag else ""
 
     def feed(self, text: str) -> str:
         if self.held:
             self.held += text
             return ""
         buffer = self._pending + text
-        hits = [index for index in (buffer.find(opener) for opener in _STREAM_OPENERS) if index >= 0]
+        if self._opening:
+            lead = buffer.lstrip()
+            opener = next((tag for tag in _WRAP_OPENERS if lead.startswith(tag)), "")
+            if opener:
+                self.opener = self._tag = opener
+                buffer = lead[len(opener):]
+                self._markers = _STREAM_OPENERS + (self.closer,)
+                self._after_opener = True
+            elif any(tag.startswith(lead) for tag in _WRAP_OPENERS):
+                self._pending = buffer  # may still become a wrapper tag
+                return ""
+            self._opening = False
+        if self._after_opener:
+            text = buffer.lstrip()
+            self.opener += buffer[: len(buffer) - len(text)]
+            buffer, self._after_opener = text, not text
+        hits = [index for index in (buffer.find(marker) for marker in self._markers) if index >= 0]
         if hits:
             first = min(hits)
             self._pending, self.held = "", buffer[first:]
             return buffer[:first]
         keep = max(
-            (size for opener in _STREAM_OPENERS for size in range(min(len(opener) - 1, len(buffer)), 0, -1)
-             if opener.startswith(buffer[-size:])),
+            (size for marker in self._markers for size in range(min(len(marker) - 1, len(buffer)), 0, -1)
+             if marker.startswith(buffer[-size:])),
             default=0,
         )
         self._pending = buffer[len(buffer) - keep :]
