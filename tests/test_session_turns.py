@@ -47,63 +47,63 @@ def _request_text(env: Env, index: int) -> str:
 
 def test_retry_after_a_failed_turn_reuses_the_stored_message(env: Env) -> None:
     env.fake.stream_script = [LLMError("stream", "The connection to the model was interrupted.")]
-    events, _raw = chat_events(env, "find PHP news")
+    events, _raw = chat_events(env, "explain PHP closures")
     assert events[-1][0] == "error"
     cid = _only_chat_id(env)
     assert _roles(env, cid) == ["user"]  # the failed turn left only the question behind
 
-    env.fake.stream_script = [ChatResult(content="Here is the PHP news.")]
-    events, _raw = chat_events(env, "find PHP news", conversation_id=cid)
+    env.fake.stream_script = [ChatResult(content="Here is how PHP closures work.")]
+    events, _raw = chat_events(env, "explain PHP closures", conversation_id=cid)
 
     assert events[-1][0] == "done"
-    assert _user_texts(env, cid) == ["find PHP news"]
+    assert _user_texts(env, cid) == ["explain PHP closures"]
     assert _roles(env, cid) == ["user", "assistant"]
-    assert env.svc.db.list_messages(cid)[-1]["content"] == "Here is the PHP news."
+    assert env.svc.db.list_messages(cid)[-1]["content"] == "Here is how PHP closures work."
     retry_request = _request_text(env, 1)
-    assert retry_request.count("find PHP news") == 1  # the model saw the question once
+    assert retry_request.count("explain PHP closures") == 1  # the model saw the question once
 
 
 def test_resending_an_unanswered_message_stores_it_once(env: Env) -> None:
     cid = env.svc.db.create_conversation()["id"]
-    env.svc.db.add_message(cid, "user", "find PHP news")
+    env.svc.db.add_message(cid, "user", "explain PHP closures")
 
-    events, _raw = chat_events(env, "find PHP news", conversation_id=cid)
+    events, _raw = chat_events(env, "explain PHP closures", conversation_id=cid)
 
     assert events[-1][0] == "done"
-    assert _user_texts(env, cid) == ["find PHP news"]
+    assert _user_texts(env, cid) == ["explain PHP closures"]
     assert _roles(env, cid) == ["user", "assistant"]
 
 
 def test_whitespace_differences_still_count_as_the_same_message(env: Env) -> None:
     cid = env.svc.db.create_conversation()["id"]
-    env.svc.db.add_message(cid, "user", "find PHP news")
+    env.svc.db.add_message(cid, "user", "explain PHP closures")
 
-    events, _raw = chat_events(env, "find   PHP\n news ", conversation_id=cid)
+    events, _raw = chat_events(env, "explain   PHP\n closures ", conversation_id=cid)
 
     assert events[-1][0] == "done"
-    assert _user_texts(env, cid) == ["find PHP news"]
+    assert _user_texts(env, cid) == ["explain PHP closures"]
 
 
 def test_repeating_an_answered_message_stores_a_second_one(env: Env) -> None:
     env.fake.stream_script = [ChatResult(content="First answer."), ChatResult(content="Second answer.")]
-    chat_events(env, "find PHP news")
+    chat_events(env, "explain PHP closures")
     cid = _only_chat_id(env)
 
-    events, _raw = chat_events(env, "find PHP news", conversation_id=cid)
+    events, _raw = chat_events(env, "explain PHP closures", conversation_id=cid)
 
     assert events[-1][0] == "done"
-    assert _user_texts(env, cid) == ["find PHP news", "find PHP news"]
+    assert _user_texts(env, cid) == ["explain PHP closures", "explain PHP closures"]
     assert _roles(env, cid) == ["user", "assistant", "user", "assistant"]
 
 
 def test_different_text_after_an_unanswered_message_is_stored(env: Env) -> None:
     cid = env.svc.db.create_conversation()["id"]
-    env.svc.db.add_message(cid, "user", "find PHP news")
+    env.svc.db.add_message(cid, "user", "explain PHP closures")
 
-    events, _raw = chat_events(env, "find Python news", conversation_id=cid)
+    events, _raw = chat_events(env, "explain Python decorators", conversation_id=cid)
 
     assert events[-1][0] == "done"
-    assert _user_texts(env, cid) == ["find PHP news", "find Python news"]
+    assert _user_texts(env, cid) == ["explain PHP closures", "explain Python decorators"]
     assert _roles(env, cid) == ["user", "user", "assistant"]
 
 

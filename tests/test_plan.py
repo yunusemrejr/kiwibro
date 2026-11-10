@@ -133,8 +133,7 @@ def test_search_helpers() -> None:
 
 def test_multi_step_request_runs_to_completion_without_asking(env: Env, home: Path, web: list[str]) -> None:
     target = home / "Desktop" / "goal" / "raspberry.md"
-    env.fake.stream_script = [
-        tool_call_result("web_search", {"query": "Raspberry Pi 5 news"}),
+    env.fake.stream_script = [  # Kiwibro makes the search itself, before the first round
         tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC}, "call_2"),
         ChatResult(content="A Raspberry Pi is a small, cheap single-board computer. I saved the news to "
                            "~/Desktop/goal/raspberry.md."),
@@ -145,8 +144,9 @@ def test_multi_step_request_runs_to_completion_without_asking(env: Env, home: Pa
     assert "approval" not in names  # the user named the place: no prompt, no refusal
     assert target.read_text() == DOC
     calls = env.fake.stream_calls
-    assert len(calls) == 3  # search, write, reply — no extra review round
-    assert "This request has 3 steps" in calls[0]["messages"][-1]["content"]
+    assert len(calls) == 2  # write, reply — no extra review round
+    assert web == ["the latest Raspberry Pi 5 news"]
+    assert any("This request has 3 steps" in str(m["content"]) for m in calls[0]["messages"] if m["role"] == "user")
     tools_out = [m["content"] for m in _tool_messages(env)]
     assert "Next: 3. write me a markdown doc" in tools_out[0]
     assert "[Location: ~/Desktop/goal/raspberry.md]" in tools_out[1]
@@ -194,51 +194,51 @@ def test_stopping_early_gets_one_corrective_nudge(env: Env, home: Path) -> None:
     assert not any("is not finished" in str(content) for content in stored)  # transient
 
 
-def test_a_search_the_model_skipped_is_made_for_it(env: Env, home: Path, web: list[str]) -> None:
+def test_the_search_a_request_asks_for_is_made_before_the_model_answers(env: Env, home: Path, web: list[str]) -> None:
     env.fake.stream_script = [
-        ChatResult(content="A Raspberry Pi is a small computer. I'll search for the news next."),  # no call
         tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC}),
         ChatResult(content="Saved the news to your Desktop."),
     ]
     events, _raw = chat_events(env, EXAMPLE)
     assert web == ["the latest Raspberry Pi 5 news"]  # Kiwibro's own call, worded from the request
-    nudge = env.fake.stream_calls[1]["messages"][-1]["content"]
-    assert nudge == prompts.SEARCHED_FOR_YOU.format(then=prompts.SEARCHED_THEN_GO_ON)
+    nudge = env.fake.stream_calls[0]["messages"][-1]["content"]  # the model's very first request has the results
+    assert nudge == prompts.SEARCHED_FIRST.format(then=prompts.SEARCHED_FIRST_THEN)
+    assert env.fake.stream_calls[0]["messages"][-2]["role"] == "tool"
+    names = [event for event, _ in events]
+    assert names.index("tool_result") < names.index("delta")  # nothing was written before the search
     messages = env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])
     first = next(m for m in messages if m["role"] == "assistant")
-    assert first["content"].startswith("A Raspberry Pi is a small computer.")  # its answer to step 1 stays
-    assert first["tool_calls"][0]["function"]["name"] == "web_search"
+    assert first["content"] == "" and first["tool_calls"][0]["function"]["name"] == "web_search"
     assert (home / "Desktop" / "goal" / "raspberry.md").exists()
-    assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "web_search"
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["searched_first"] is True
 
 
-def test_an_answer_given_without_the_search_it_needed_is_dropped(env: Env, web: list[str]) -> None:
+def test_a_follow_up_that_asks_to_look_it_up_is_searched_before_the_answer(env: Env, web: list[str]) -> None:
     env.fake.stream_script = [ChatResult(content="Inception was directed by Christopher Nolan.")]
     events, _raw = chat_events(env, "Who directed Inception?")
     conversation_id = events[0][1]["conversation_id"]
     assert web == []  # a plain question is not a search request
-    env.fake.stream_script = [ChatResult(content="He is 85 years old."),  # from recall, and wrong
-                              ChatResult(content="He was born on 30 July 1970, so he is 56.")]
+    env.fake.stream_script = [ChatResult(content="He was born on 30 July 1970, so he is 56.")]
     chat_events(env, "how old is he? look it up", conversation_id=conversation_id)
     assert len(web) == 1 and web[0].startswith("how old is he") and "Christopher Nolan" in web[0]
-    assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.SEARCHED_FOR_YOU.format(
-        then=prompts.SEARCHED_THEN_ANSWER)
+    assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.SEARCHED_FIRST.format(then="")
     stored = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert not any("85 years" in content for content in stored) and stored[-1].endswith("so he is 56.")
 
 
-def test_a_model_that_searches_by_itself_is_left_alone(env: Env, web: list[str]) -> None:
+def test_a_model_that_repeats_the_search_kiwibro_made_is_not_searched_twice(env: Env, web: list[str]) -> None:
     env.fake.stream_script = [tool_call_result("web_search", {"query": "tallest building in Turkey"}),
                               ChatResult(content="It is the Çamlıca Tower.")]
     events, _raw = chat_events(env, "look up the tallest building in Turkey")
-    assert web == ["tallest building in Turkey"]
-    assert "acted_instead" not in ([payload for event, payload in events if event == "done"][0]["inference"] or {})
+    assert web == ["the tallest building in Turkey"]
+    assert _tool_messages(env)[1]["content"].startswith("Not searched: this turn already searched")
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["searched_first"] is True
 
 
 def test_an_unfinished_turn_says_so_honestly(env: Env, home: Path, web: list[str]) -> None:
     env.fake.stream_script = [ChatResult(content="Sure!") for _ in range(4)]  # never does the work
     events, _raw = chat_events(env, EXAMPLE)
-    assert len(env.fake.stream_calls) == 2 + plan.MAX_FOLLOWUPS  # the search was made for it; the doc was not
+    assert len(env.fake.stream_calls) == 1 + plan.MAX_FOLLOWUPS  # the search was made first; the doc never was
     text = "".join(payload.get("text", "") for event, payload in events if event == "delta")
     assert "Not finished: 3. write me a markdown doc" in text and "2. search the web" not in text
 
@@ -260,15 +260,14 @@ def test_near_repeat_searches_and_endless_research_are_cut_short(env: Env, home:
     def search(query: str, call_id: str) -> ChatResult:
         return tool_call_result("web_search", {"query": query}, call_id)
 
-    env.fake.stream_script = [
-        search("PHP2Shell zero-day advisory", "c1"),
-        search("PHP2Shell zero day advisory details", "c2"),  # nearly the same
+    env.fake.stream_script = [  # Kiwibro's own search comes first
+        search("the PHP2Shell zero day advisory", "c2"),  # nearly the same
         search("PHP2Shell patched versions", "c3"),  # one more round after the plan's search
         search("PHP2Shell exploitation timeline", "c4"),  # refused: research is over
         ChatResult(content="Bulletin: PHP2Shell is a pair of critical PHP flaws; patch now."),
     ]
     chat_events(env, "search the web for the PHP2Shell zero day and summarize it as a bulletin")
-    assert web == ["PHP2Shell zero-day advisory", "PHP2Shell patched versions"]
+    assert web == ["the PHP2Shell zero day", "PHP2Shell patched versions"]
     contents = [m["content"] for m in _tool_messages(env)]
     assert contents[1].startswith("Not searched: this turn already searched for almost the same thing")
     assert contents[3] == prompts.SEARCH_SPENT
@@ -340,8 +339,7 @@ def test_pages_already_shown_this_turn_lose_their_snippet(env: Env, home: Path, 
                 {"title": f"Coverage of {query}", "url": f"https://news.example/{len(query)}", "snippet": "Details."}]
 
     monkeypatch.setattr(env.svc.search, "web_search", web_search)
-    env.fake.stream_script = [
-        tool_call_result("web_search", {"query": "PHP2Shell zero day"}),
+    env.fake.stream_script = [  # Kiwibro's own search for the PHP2Shell zero day comes first
         tool_call_result("web_search", {"query": "PHP2Shell exploitation timeline"}, "call_2"),
         ChatResult(content="Bulletin: PHP2Shell, patch now."),
     ]

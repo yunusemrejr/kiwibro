@@ -24,44 +24,107 @@ _TAG_SPLIT_RE = re.compile(r"[,\s]+")
 _TAG_DROP_RE = re.compile(r"[^\w-]+")
 
 
-# A note the user dictates word for word ("save a note: buy oat milk"), as opposed to one they
-# ask to have written ("make a note about the meeting"): only the first can be saved as typed.
+# A note the user dictates word for word ("save a note: buy oat milk", "jot down call mom"), as
+# opposed to one they ask to have written ("make a note about the meeting"): only the first can be
+# saved as typed.
 _POLITE = (r"(?:(?:hey|ok(?:ay)?|please|pls|kiwi(?:bro)?|(?:can|could|would|will)\s+you|"
            r"i\s+(?:want|need)\s+you\s+to)\b[\s,]*)*")
-_SAID = r"(?:\s*[:\-–—]\s*|\s+(?:that|saying)\s+)"
+_SAID = r"(?:\s*:\s*|\s+[\-–—]\s+|\s+(?:that|saying)\s+)"
+# The first pattern that matches decides, so the bare "note down ..." forms come last.
 _DICTATED = tuple(re.compile(rf"^\s*{_POLITE}{pattern}(?P<text>.+)$", re.I | re.S) for pattern in (
     r"(?:save|take|make|write|add|create|keep|store)\s+(?:down\s+)?(?:me\s+)?(?:a|an|this|the|the\s+following|a\s+new|a\s+quick)\s+"
     rf"note\b(?:\s+to\s+self)?{_SAID}",
-    r"note(?:\s+(?:down|to\s+self))?\s*[:\-–—]\s*",
+    r"(?:new\s+)?note(?:\s+(?:down|to\s+self))?(?:\s*:\s*|\s+[\-–—]\s+)",
     r"note\s+(?:down\s+)?that\s+",
-    r"(?:add|put|save|write)\s+(?:this\s+)?(?:to|in|into)\s+(?:my\s+)?notes?\s*[:\-–—]\s*",
-    r"(?:jot|write)\s+(?:this\s+|that\s+)?down\s*[:\-–—]\s*",
+    rf"(?:remember|save|keep|store)\s+(?:this|that|it)\s+as\s+(?:a\s+(?:new\s+)?|new\s+)?note{_SAID}",
+    rf"(?:make|take|save|create|keep)\s+(?:a\s+)?note\s+of\s+(?:this|that|it){_SAID}",
+    rf"(?:add|put|save|write)\s+(?:this\s+)?(?:to|in|into)\s+(?:my\s+)?notes?{_SAID}",
+    r"write\s+(?:(?:this|that|it)\s+)?down\s*[:\-–—]\s*",
+    r"jot\s+(?:(?:this|that|it)\s+)?down(?:\s*[:\-–—]\s*|\s+)",
+    r"note\s+(?:down|to\s+self)\s+",
 ))
+# "make a note called Trip with flights on the 12th": the title ends at a colon, " with " or " that ".
+_TITLED = re.compile(
+    rf"^\s*{_POLITE}(?:(?:save|take|make|write|add|create|keep|store)\s+)?"
+    r"(?:(?:a|an|the|new|a\s+new|a\s+quick)\s+)?note\s+(?:called|titled|named)\s+"
+    r"(?P<title>.+?)(?:\s*:\s*|\s+[\-–—]\s+|\s+(?:with|that)\s+)(?P<text>.+)$",
+    re.I | re.S,
+)
+# A polite question ("can you note down ...?") ends in a question mark that is not part of the note.
+_ASKED = re.compile(rf"^\s*{_POLITE}(?:can|could|would|will)\s+you\b", re.I)
 # "save that as a note": the note is what was just said.
 _THAT = r"(?:that|this|it|the\s+(?:answer|above|last\s+(?:answer|reply|message)))"
 _POINTED = tuple(re.compile(rf"^\s*{_POLITE}{pattern}[\s.!]*$", re.I) for pattern in (
-    rf"(?:save|keep|store|add|put|write)\s+{_THAT}\s+(?:down\s+)?(?:as|in|into|to)\s+(?:a\s+|my\s+)?(?:new\s+)?notes?(?:\s+(?:please|for\s+me))?",
+    rf"(?:save|keep|store|add|put|write|remember)\s+{_THAT}\s+(?:down\s+)?(?:as|in|into|to)\s+(?:a\s+|my\s+)?(?:new\s+)?notes?(?:\s+(?:please|for\s+me))?",
     rf"(?:note|jot)\s+{_THAT}\s+down(?:\s+(?:please|for\s+me))?",
-    rf"(?:make|take|save|create)\s+(?:a\s+)?note\s+of\s+{_THAT}(?:\s+(?:please|for\s+me))?",
+    rf"(?:make|take|save|create|keep)\s+(?:a\s+)?note\s+of\s+{_THAT}(?:\s+(?:please|for\s+me))?",
 ))
 
 
-def dictated(message: str) -> str | None:
-    """The note a message dictates, word for word; "" when it points at what was just said
-    ("save that as a note"); None when it does not ask for a note that code can save."""
+# A note the user asks to have written ("make a note about the meeting", "summarise this and
+# save it as a note"): the model writes it. When it only writes and never saves, the reply is
+# the note.
+_WRITTEN = (
+    re.compile(rf"^\s*{_POLITE}(?:make|write|create|draft|start|put\s+together|prepare)\s+(?:me\s+)?(?:a|an|some|the)?\s*"
+               r"(?:short\s+|quick\s+|new\s+|brief\s+|small\s+)?notes?\s+(?:about|on|for|explaining|summari[sz]ing|covering|of|with)\s+"
+               r"(?P<topic>.+)$", re.I | re.S),
+    re.compile(rf"^\s*{_POLITE}(?P<topic>.+?)\s*,?\s+(?:and|then)\s+(?:save|keep|store|put|add)\s+(?:it|that|this|them)\s+"
+               r"(?:as|in|into|to)\s+(?:a\s+|my\s+)?(?:new\s+)?notes?\b[\s.!]*$", re.I | re.S),
+)
+
+
+def written_request(message: str) -> str | None:
+    """The topic of a note the user asks Kiwibro to write ("" when none can be read); None when
+    the message asks for no such note."""
+    text = (message or "").strip()
+    if not text or len(text) > MAX_BODY or dictation(text) is not None:
+        return None
+    for pattern in _WRITTEN:
+        found = pattern.match(text)
+        if found:
+            topic = re.sub(r"^(?:write|make|give|create)\s+(?:me\s+)?(?:a|an)?\s*", "", found.group("topic").strip(), flags=re.I)
+            return clean_title(topic.rstrip(" .!?"))[:60].strip()
+    return None
+
+
+def dictation(message: str) -> tuple[str, str] | None:
+    """(title, body) of the note a message dictates, word for word. The title is "" when none
+    was given; the body is "" when the message points at what was just said ("save that as a
+    note"); None when it does not ask for a note that code can save."""
     text = (message or "").strip()
     if not text or len(text) > MAX_BODY:
         return None
     if any(pattern.match(text) for pattern in _POINTED):
-        return ""
+        return "", ""
+    named = _TITLED.match(text)
+    if named:
+        title = clean_title(named.group("title"))
+        body = _dictated_body(named.group("text"), text)
+        if title and body:
+            return title, body
     for pattern in _DICTATED:
         found = pattern.match(text)
         if found:
-            body = found.group("text").strip()
-            if len(body) >= 2 and _QUOTE_PAIRS.get(body[0]) == body[-1]:
-                body = body[1:-1].strip()
-            return body if len(body.split()) >= 2 else None
+            body = _dictated_body(found.group("text"), text)
+            return ("", body) if len(body.split()) >= 2 else None
     return None
+
+
+def dictated(message: str) -> str | None:
+    """The body of the note a message dictates, word for word; "" when it points at what was
+    just said ("save that as a note"); None when it does not ask for a note that code can save."""
+    found = dictation(message)
+    return None if found is None else found[1]
+
+
+def _dictated_body(text: str, message: str) -> str:
+    """The words to save: wrapping quotes go, and so does the question mark of a polite question."""
+    body = text.strip()
+    if len(body) >= 2 and _QUOTE_PAIRS.get(body[0]) == body[-1]:
+        body = body[1:-1].strip()
+    if body.endswith("?") and _ASKED.match(message):
+        body = body[:-1].rstrip()
+    return body
 
 
 def _text(value: Any, field: str) -> str:

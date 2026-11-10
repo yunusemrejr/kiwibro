@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from test_backend import Env, chat_events, tool_call_result
 
-from kiwibro import config, guidance, tools
+from kiwibro import config, guidance, notes, prompts, tools
 from kiwibro.llm import ChatResult
 from kiwibro.sandbox import Workspace
 
@@ -147,6 +148,75 @@ def test_only_a_note_given_word_for_word_is_saved_as_typed():
         assert notes.dictated(composed) is None
 
 
+@pytest.mark.parametrize(("message", "body"), [
+    ("note: buy milk tomorrow", "buy milk tomorrow"),
+    ("take a note: meeting with Ali at 3pm", "meeting with Ali at 3pm"),
+    ("write this down: call the bank on monday", "call the bank on monday"),
+    ("save this as a note", ""),
+    ("add to my notes that the server rotates keys monthly", "the server rotates keys monthly"),
+    ("jot down call mom", "call mom"),
+    ("keep a note of this: the api limit is 60 per minute", "the api limit is 60 per minute"),
+    ("note down the gate code 4471", "the gate code 4471"),
+    ("jot this down: dentist on friday", "dentist on friday"),
+    ("put in my notes: renew passport", "renew passport"),
+    ("add to notes: renew passport", "renew passport"),
+    ("save to my notes that the router is in the attic", "the router is in the attic"),
+    ("new note: idea for a kiwi logo", "idea for a kiwi logo"),
+    ("remember this as a note: oil change at 90k", "oil change at 90k"),
+    ("can you note down that the wifi is on channel 6?", "the wifi is on channel 6"),
+    ("create a note called groceries with eggs, milk and bread", "eggs, milk and bread"),
+    ("take a note called Ideas: kiwi logo, dark mode", "kiwi logo, dark mode"),
+    ("make a note titled Trip with flights on the 12th", "flights on the 12th"),
+])
+def test_dictated_notes_keep_the_words_the_user_said(message, body):
+    from kiwibro import notes
+
+    assert notes.dictated(message) == body
+
+
+@pytest.mark.parametrize("message", [
+    "make a note about quantum computing",
+    "write a note explaining how DNS works",
+    "write down the steps to install docker",
+    "what notes do I have?",
+    "read my note about groceries",
+    "search my notes for wifi",
+    "I noted that the build failed",
+    "note how the function handles errors",
+    "create a note called groceries",
+    "note: groceries",
+    "note-taking apps are useful",
+])
+def test_a_note_the_model_writes_or_no_note_is_not_dictated(message):
+    from kiwibro import notes
+
+    assert notes.dictated(message) is None
+    assert notes.dictation(message) is None
+
+
+@pytest.mark.parametrize(("message", "found"), [
+    ("create a note called groceries with eggs, milk and bread", ("groceries", "eggs, milk and bread")),
+    ("make a note titled Trip with flights on the 12th", ("Trip", "flights on the 12th")),
+    ('make a note called "Gate codes": 4471 north', ("Gate codes", "4471 north")),
+    ("take a note called Ideas: kiwi logo, dark mode", ("Ideas", "kiwi logo, dark mode")),
+    ("note: buy milk tomorrow", ("", "buy milk tomorrow")),
+    ("note - buy milk tomorrow", ("", "buy milk tomorrow")),
+    ("write it down: the wifi code is 99", ("", "the wifi code is 99")),
+    ("save this as a note", ("", "")),
+])
+def test_dictation_gives_the_title_and_the_body(message, found):
+    from kiwibro import notes
+
+    assert notes.dictation(message) == found
+
+
+def test_a_long_title_is_cut_to_the_title_limit():
+    from kiwibro import notes
+
+    title, body = notes.dictation("create a note called " + "t" * 300 + " with eggs")
+    assert len(title) == notes.MAX_TITLE and body == "eggs"
+
+
 def test_a_relevant_note_rides_on_the_newest_message_only(env: Env):
     env.svc.notes.save("Ferry to Bursa on Friday, hotel booked.", "Trip to Izmir")
     env.fake.stream_script = [ChatResult(content="Hello!")]
@@ -195,3 +265,37 @@ def test_a_dictated_note_is_saved_when_the_model_reaches_for_the_wrong_tool(env:
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant" and m["content"]]
     assert shown == ["It is in your notes now."]
+
+
+@pytest.mark.parametrize(("message", "topic"), [
+    ("make a note about the meeting tomorrow at 10 with the design team", "the meeting tomorrow at 10 with the design team"),
+    ("write a note explaining how DNS works", "how DNS works"),
+    ("summarize the article above and save it as a note", "summarize the article above"),
+    ("can you make me a short note on python decorators?", "python decorators"),
+])
+def test_a_note_to_be_written_is_recognised(message: str, topic: str):
+    assert notes.written_request(message) == topic
+
+
+@pytest.mark.parametrize("message", ["note: buy milk", "write a story about a cat", "save this as a note", "what notes do I have?"])
+def test_other_messages_ask_for_no_written_note(message: str):
+    assert notes.written_request(message) is None
+
+
+def test_a_note_the_model_wrote_but_never_saved_is_saved_for_it(env: Env):
+    text = "Decorators wrap a function: @cache memoises results, @wraps keeps the name and docstring."
+    env.fake.stream_script = [ChatResult(content=text), ChatResult(content="Saved it to your notes.")]
+    events, _raw = chat_events(env, "make a note about python decorators")
+    [note] = env.svc.db.list_notes()
+    assert note["title"] == "Python decorators" and note["body"] == text
+    assert env.fake.stream_calls[1]["messages"][-1]["content"] == prompts.NOTED_FOR_YOU
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == [text, "Saved it to your notes."]  # the note stays in the chat as well
+
+
+def test_a_titled_dictated_note_keeps_its_title(env: Env):
+    env.fake.stream_script = [ChatResult(content="Okay!"), ChatResult(content="Saved.")]
+    chat_events(env, "create a note called groceries with eggs, milk and bread")
+    [note] = env.svc.db.list_notes()
+    assert note["title"] == "groceries" and note["body"] == "eggs, milk and bread"

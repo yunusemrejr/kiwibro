@@ -333,7 +333,7 @@ def tool_errors(env: "Any") -> str:
     finish(stream)
 
     # bad arguments
-    stream = chat(env, "Search for nothing [[scenario:tool_bad_args]]")
+    stream = chat(env, "Make a broken call [[scenario:tool_bad_args]]")
     stream.wait_for("meta", timeout=20)
     stream.wait_for("tool_call", timeout=20)
     result = stream.wait_for("tool_result", timeout=20)

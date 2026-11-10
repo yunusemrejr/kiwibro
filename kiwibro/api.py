@@ -162,10 +162,26 @@ def _runtime_status(svc: Any) -> dict[str, Any]:
     return status
 
 
+def _window_seen() -> None:
+    presence = current_app.extensions.get("kiwibro_presence")
+    if presence is not None:
+        presence.seen()
+
+
 @bp.get("/api/version")
 def version() -> Response:
     """Cheap poll (no model call): open windows reload when ``code_version`` changes."""
+    _window_seen()
     return jsonify({"ok": True, **_runtime_status(services())})
+
+
+@bp.post("/api/window/closing")
+def window_closing() -> Response:
+    """Sent on pagehide, usually as a beacon: no body or JSON is read."""
+    presence = current_app.extensions.get("kiwibro_presence")
+    if presence is not None:
+        presence.closing()
+    return jsonify({"ok": True})
 
 
 @bp.get("/health")
@@ -187,6 +203,7 @@ def health() -> Response:
 
 @bp.get("/api/bootstrap")
 def bootstrap() -> Response:
+    _window_seen()
     svc = services()
     settings = svc.settings_provider()
     ok, models, error = svc.llm.models_status()

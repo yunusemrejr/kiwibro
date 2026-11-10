@@ -22,6 +22,7 @@ from .hub import Hub
 from .llm import LLMClient
 from .memory import MemoryEngine
 from .notes import Notebook
+from .presence import Presence
 from .readiness import Readiness
 from .runtime import Installer
 from .search import SearchEngine
@@ -159,6 +160,13 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         installer=installer,
     )
     app.extensions["kiwibro"] = services
+    presence = Presence(
+        busy=lambda: agent.active_turns() > 0 or bool(getattr(agent, "_extracting", None)),
+        stop_idle=llm.stop_idle,
+    )
+    if not app.config.get("TESTING"):
+        presence.start()
+    app.extensions["kiwibro_presence"] = presence
 
     app.register_blueprint(bp)
 

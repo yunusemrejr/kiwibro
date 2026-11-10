@@ -334,6 +334,17 @@ class LLMClient:
             engine.shutdown()
         self.clear_cache()
 
+    def stop_idle(self, min_idle_s: float) -> int:
+        """Stop the llama.cpp servers nobody has used for ``min_idle_s``; how many stopped."""
+        with self._direct_lock:
+            engine = self._direct
+        if engine is None:
+            return 0
+        stopped = engine.stop_idle(min_idle_s)
+        if stopped:
+            self.clear_cache()
+        return stopped
+
     @contextmanager
     def _serving(self, model: str) -> Iterator[str]:
         """The base URL that serves ``model``: a server of our own held busy for the

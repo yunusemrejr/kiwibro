@@ -43,6 +43,7 @@ TOOLS_SHARE_MAX = 0.35
 USER_MESSAGE_SHARE = 0.4
 # Reply cap while a planned document is still unwritten (thinking + the whole file in one call).
 WRITE_ROUND_MAX_TOKENS = 6144
+WRITTEN_NOTE_MIN_CHARS = 40  # a reply shorter than this is a remark, not the note that was asked for
 
 
 class BusyError(Exception):
@@ -332,6 +333,7 @@ class Turn:
     tools_ok: list[str] = field(default_factory=list)  # tools that ran and succeeded this turn
     interim: list[tuple[str, str]] = field(default_factory=list)  # (message id, text) written beside tool calls
     acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
+    bulletin: str = ""  # the news Kiwibro found, shown under the model's answer as its sources
     learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
     questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
     worked: tuple[tuple[str, str], ...] = ()  # sums the message asks for, worked out exactly before the reply
@@ -646,6 +648,16 @@ class AgentManager:
             max_rounds = config.MAX_TOOL_ROUNDS
         max_rounds = max(config.TOOL_ROUNDS_RANGE[0], min(max_rounds, config.TOOL_ROUNDS_RANGE[1]))
 
+        if self._search_first(turn, settings):
+            self._raise_if_aborted(turn)
+            if turn.reply_text.strip():  # answered from the results alone
+                max_rounds = 0
+                self._close_plan(turn, model)
+            else:
+                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
+                                               turn_context=turn_context)
+                self._emit_context(turn, prepared)
+
         for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
             if round_index > 0:
@@ -741,6 +753,7 @@ class AgentManager:
 
         if not turn.reply_text.strip():
             self._answer_anyway(turn, model, prepared, tool_list, text_mode)
+        self._show_bulletin(turn, model)
 
         # Final answer phase. Title is deterministic-first so `done` stays fast; memory
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
@@ -767,6 +780,65 @@ class AgentManager:
             },
         )
 
+    def _search_first(self, turn: Turn, settings: dict[str, Any]) -> bool:
+        """The message asks for a search, or about something only a search knows (news, weather,
+        prices, who won): Kiwibro runs it before the model writes a word. A model that answers
+        first writes from what it remembers, and a streamed reply cannot be taken back, so the
+        answer is written from the results instead, whatever the model."""
+        if turn.facts is None or turn.facts.small_talk or "web_search" not in turn.facts.tools:
+            return False
+        try:
+            query, _borrowed = plan.search_request(turn.message)
+            query = research.with_time_words(query, turn.message) if query else ""
+            if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
+                query = turn.message.strip().rstrip("?.! ")
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not read the search the message asks for", turn.conversation_id, exc_info=True)
+            return False
+        if not query:
+            return False
+        call = {
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": query}, ensure_ascii=False)},
+        }
+        log.info("turn %s: searching first for %s", turn.conversation_id, json.dumps(query, ensure_ascii=False)[:160])
+        message = self.db.add_message(turn.conversation_id, "assistant", "", tool_calls=[call], model=turn.model)
+        turn.last_message_id = message["id"]
+        turn.acted_instead = "web_search"
+        turn.inference["searched_first"] = True
+        self._handle_tool_calls(turn, [call], settings)
+        more = turn.plan is not None and any(step.kind != "web" for step in turn.plan.remaining())
+        found = [m for m in self.db.recent_messages(turn.conversation_id, limit=2) if m.get("role") == "tool"]
+        news = bool(found) and str(found[-1].get("content") or "").startswith(research.NEWS_HEAD)
+        bulletin = "\n".join(line for line in str(found[-1]["content"]).splitlines()
+                             if not line.startswith("[Kiwibro")).strip() if news else ""  # notes for the model
+        if news and not more and research.bulletin_is_the_answer(turn.message):
+            log.info("turn %s: the news bulletin is the answer", turn.conversation_id)
+            reply = self.db.add_message(turn.conversation_id, "assistant", bulletin, model=turn.model,
+                                        meta={"news_bulletin": True})
+            turn.last_message_id = reply["id"]
+            turn.reply_text = bulletin
+            turn.inference["news_bulletin"] = True
+            turn.emit("delta", {"text": bulletin})
+            return True
+        if news and not more:
+            turn.bulletin = bulletin
+        nudge = prompts.NEWS_FIRST if news else prompts.SEARCHED_FIRST
+        turn.pending_review = nudge.format(then=prompts.SEARCHED_FIRST_THEN if more else "")
+        return True
+
+    def _show_bulletin(self, turn: Turn, model: str) -> None:
+        """The news the model was asked to summarise or explain, under its answer: whatever the
+        model made of it, the user sees the real stories, dated and linked."""
+        if not turn.bulletin or turn.abort.is_set():
+            return
+        text = f"{prompts.NEWS_SOURCES}\n\n{turn.bulletin}"
+        message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta={"news_bulletin": True})
+        turn.last_message_id = message["id"]
+        turn.reply_text += "\n" + text
+        turn.emit("delta", {"text": "\n\n" + text})
+
     def _act_instead(self, turn: Turn, result: ChatResult) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,
         search the web) and the model replied without having done it, whatever else it
@@ -777,7 +849,7 @@ class AgentManager:
         if turn.facts is None or turn.facts.small_talk:
             return
         try:
-            call = self._note_call(turn) or self._search_call(turn)
+            call = self._note_call(turn) or self._written_note_call(turn, result) or self._search_call(turn)
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not act for the model", turn.conversation_id, exc_info=True)
             return
@@ -808,9 +880,10 @@ class AgentManager:
         """A `note` call for a note the user dictated, or for "save that as a note"."""
         if "note" not in turn.facts.tools or "note" in turn.tools_ok:
             return None
-        body = notes_module.dictated(turn.message)
-        if body is None:
+        found = notes_module.dictation(turn.message)
+        if found is None:
             return None
+        title, body = found
         if not body:  # it points at what was just said
             earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=8)
                        if m.get("id") != turn.user_message_id and m.get("role") == "assistant"
@@ -818,7 +891,19 @@ class AgentManager:
             if not earlier:
                 return "", {}, True, prompts.NOTHING_TO_NOTE
             body = str(earlier[-1]["content"]).strip()
-        return "note", {"action": "save", "content": body}, False, prompts.NOTED_FOR_YOU
+        return "note", {"action": "save", "content": body, **({"title": title} if title else {})}, False, prompts.NOTED_FOR_YOU
+
+    def _written_note_call(self, turn: Turn, result: ChatResult) -> tuple[str, dict[str, Any], bool, str] | None:
+        """A `note` call saving the reply itself, when the user asked for a note to be written and
+        the model wrote it without saving it."""
+        if "note" not in turn.facts.tools or "note" in turn.tools_ok:
+            return None
+        topic = notes_module.written_request(turn.message)
+        body = result.content.strip()
+        if topic is None or len(body) < WRITTEN_NOTE_MIN_CHARS:
+            return None
+        args = {"action": "save", "content": body, **({"title": topic[:1].upper() + topic[1:]} if topic else {})}
+        return "note", args, True, prompts.NOTED_FOR_YOU
 
     def _search_call(self, turn: Turn) -> tuple[str, dict[str, Any], bool, str] | None:
         """A `web_search` call for the search the message asks for."""

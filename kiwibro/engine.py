@@ -1118,6 +1118,13 @@ class DirectEngine:
         model = self.find(model_id)
         return self._stop(model.id if model else str(model_id), only_idle=True)
 
+    def stop_idle(self, min_idle_s: float) -> int:
+        """Stop every server that answers nothing and was last used at least ``min_idle_s`` ago."""
+        cutoff = time.monotonic() - min_idle_s
+        with self._lock:
+            idle = [mid for mid, s in self._servers.items() if s.in_flight == 0 and s.last_used <= cutoff]
+        return sum(self._stop(mid, only_idle=True) for mid in idle)
+
     def _stop(self, model_id: str, *, only_idle: bool = False) -> bool:
         with self._lock:
             server = self._servers.get(model_id)

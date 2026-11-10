@@ -1348,6 +1348,13 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             raise ValueError(f"extension tool {name} returned an invalid result")
         return outcome
     if name == "web_search":
+        news = research.news_request(args["query"])
+        if news is not None:
+            items, note = research.news_search(ctx.search, news, max(args["max_results"], research.NEWS_ITEMS))
+            if items:
+                content = research.format_news(items, note)
+                return ToolResult(ok=True, content=content, preview=_preview(content),
+                                  meta={"count": len(items), "results": items, "news": True})
         results = ctx.search.web_search(args["query"], args["max_results"])
         if not results:
             return ToolResult(ok=True, content=research.NO_RESULTS, preview="No results", meta={"count": 0})

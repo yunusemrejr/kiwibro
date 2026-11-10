@@ -77,6 +77,21 @@ NOTED_FOR_YOU = (
     "[Kiwibro: the user asked for a note and you replied without saving one, so Kiwibro saved it: see "
     "above. Tell the user it is saved, in one short sentence.]"
 )
+SEARCHED_FIRST = (
+    "[Kiwibro: this needs current information, so Kiwibro searched the web before your answer: the results "
+    "are above. Answer only from them: every story, name, number and date you give must be in them, and "
+    "nothing from memory may be added. If they do not cover part of the request (a day, a topic), say so "
+    "plainly instead of filling it in. Name the sources.{then}]"
+)
+NEWS_FIRST = (
+    "[Kiwibro: Kiwibro searched the news before your answer: the stories above are real, and Kiwibro shows "
+    "the whole list to the user under your answer, so do not list the stories again. Write only what the "
+    "user asked for beyond the list (a summary, an explanation, a pick, a translation), short, in their "
+    "language, and only from what the list says: no story, name, number, date or detail that is not in it. "
+    "If the list does not cover what was asked, say so.{then}]"
+)
+NEWS_SOURCES = "**The news this is from:**"
+SEARCHED_FIRST_THEN = " Then go on with the rest of the request."
 SEARCHED_THEN_ANSWER = "Answer the user from them now, briefly, and name the source."
 SEARCHED_THEN_GO_ON = "Use them and go on with the rest of the request."
 SEARCH_REPEATED = (
@@ -180,10 +195,12 @@ TITLE_USER = """First user message: {user}
 Write the title:"""
 
 MEMORY_SYSTEM = (
-    "You are Kiwibro's memory keeper. Extract durable memory about the user from a conversation. "
-    "Only facts that stay useful in future conversations: identity, preferences, ongoing projects, "
-    "people, decisions. Ignore small talk, transient requests, tool output and anything the assistant "
-    "merely guessed. Reply with strict JSON only, no prose."
+    "You are Kiwibro's memory keeper. Save what the user tells about themselves so later conversations "
+    "can use it: who they are, their work and studies, where they live, what they use, own, like or "
+    "dislike, their plans and projects, the people and pets in their life, how they want to be answered, "
+    "and anything they ask to be remembered. Be generous: when the user states something about themselves "
+    "and you are unsure whether it will matter later, save it. Skip only greetings, questions, one-off task "
+    "requests, tool output and what the assistant guessed. Reply with strict JSON only, no prose."
 )
 
 MEMORY_USER = """Existing memories (id | kind | content):
@@ -206,7 +223,10 @@ add only the newest version.
 - Do not add something already covered by an existing memory; update it instead (only ids listed above).
 - Use update only when the conversation changes or corrects that same memory (a new city replaces \
 the old one); a new fact about something else is an add.
-- Only include operations that are clearly supported by the conversation.
-- If nothing is worth remembering return {{"ops": []}}."""
+- Every fact must come from what the USER wrote, never from the assistant's replies.
+- Examples: "I'm learning Rust" -> add "User is learning Rust"; "keep answers short from now on" -> \
+add preference "User wants short answers"; "my boss Ali hates long emails" -> add person "User's boss Ali \
+hates long emails".
+- Return {{"ops": []}} only when the user said nothing about themselves and asked for nothing to be kept."""
 
 APPROVAL_SUMMARY_TOOL = "The agent wants to {verb} {target}. Review the details before allowing."

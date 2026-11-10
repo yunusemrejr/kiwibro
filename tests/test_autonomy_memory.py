@@ -169,7 +169,8 @@ def test_remember_refuses_facts_nobody_stated(env: Env):
 
 def test_remember_update_replaces_the_outdated_fact(env: Env):
     env.svc.memory.remember("User lives in Istanbul")
-    result = _remember(env, "I moved to Ankara last month", content="User lives in Ankara",
+    # Not "I moved to Ankara": memory capture would make that change before the tool runs.
+    result = _remember(env, "my city changed, update it to Ankara", content="User lives in Ankara",
                        action="update", old="lives in Istanbul")
     assert result["ok"] is True and result["preview"].startswith("Updated memory")
     contents = [m["content"] for m in env.svc.db.list_memories()]
@@ -473,3 +474,19 @@ def test_a_file_a_command_removed_comes_back_with_undo(env: Env):
     assert [r["name"] for r in results] == ["run_command", "undo_changes"] and all(r["ok"] for r in results)
     assert "notes.txt: restored" in results[1]["preview"]  # it was really gone, and came back
     assert (env.workspace / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_an_explicit_remember_is_saved_before_the_reply_whatever_the_model_does(env: Env):
+    from kiwibro.llm import ChatResult
+
+    env.fake.stream_script = [ChatResult(content="Sure, I'll keep that in mind!")]  # calls no tool
+    events, _raw = chat_events(env, "remember that my sister's birthday is March 3")
+    assert [m["content"] for m in env.svc.db.list_memories()] == ["User's sister's birthday is March 3."]
+    assert [payload for event, payload in events if event == "memory"][0]["added"] == 1
+
+
+def test_a_question_asking_to_remember_still_reaches_memory_extraction():
+    from kiwibro import memory
+
+    assert memory.worth_extracting([{"role": "user", "content": "could you remember that Ali is my manager?"}])
+    assert not memory.worth_extracting([{"role": "user", "content": "what is the capital of France?"}])

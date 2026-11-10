@@ -1800,6 +1800,10 @@ function initChrome() {
     if (state.drawerOpen && !isMobile()) closeDrawer();
   });
   window.addEventListener("focus", maybeCheckHealth);
+  window.addEventListener("pagehide", () => {
+    if (IS_MOCK) return;
+    fetch("/api/window/closing", { method: "POST", cache: "no-store", keepalive: true }).catch(() => {});
+  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       maybeCheckHealth();

@@ -13,6 +13,8 @@ import logging
 import re
 import requests
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import terms
@@ -178,6 +180,175 @@ def format_search_results(results: list[dict[str, str]]) -> str:
             lines.append(result["snippet"])
         lines.append("")
     return "\n".join(lines).strip()
+
+
+# --- news -------------------------------------------------------------------
+# A news question goes to dated news feeds instead of a web index: a web index answers
+# "today's AI news" with evergreen pages, and a small model then fills the gap from memory.
+_NEWS_ASK = re.compile(r"\b(?:news|headlines?|bulletin|breaking|what(?:'s|\s+is)\s+new|announcements?|announced)\b", re.I)
+_TODAY = re.compile(r"\b(?:today'?s?|tonight'?s?|this\s+(?:morning|evening|afternoon)|so\s+far\s+today)\b", re.I)
+_YESTERDAY = re.compile(r"\b(?:yesterday'?s?|last\s+night|past\s+(?:two|2)\s+days|last\s+(?:two|2)\s+days|48\s+hours)\b", re.I)
+_HAPPENED = re.compile(r"\bhappen(?:ed|ing|s)?\b", re.I)
+_DAY = re.compile(r"\b(?:(?:past|last)\s+(?:day|24\s+hours))\b", re.I)
+_WEEK = re.compile(r"\b(?:this|past|last)\s+(?:week|7\s+days|few\s+days)\b", re.I)
+_NEWS_FILLER = re.compile(
+    r"\b(?:news|headlines?|bulletin|breaking|announcements?|latest|newest|recent|top|current|any|the|some|"
+    r"about|on|of|for|in|from|only|and|or|me|please|stories|updates?|developments?|what'?s|what\s+is|what|new|happened|"
+    r"explain|why|how|does|do|did|is|are|was|were|it|that|this|matters?|summari[sz]e|tell|give|show|list|get|"
+    r"brief|catch|up|bring|i|my|you|can|could|would|need|want|to|a|an|search|look|find|google)\b",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class NewsAsk:
+    topic: str  # what to search the feeds for ("" = top stories)
+    days: int  # how far back the feeds look
+    since: datetime | None  # nothing older is listed (local time)
+    window: str  # in words, for the model ("today", "today and yesterday", "the past week", "")
+
+
+def news_request(query: str, now: datetime | None = None) -> NewsAsk | None:
+    """The news a search asks for, with its time window; None for a search that is not about news."""
+    text = (query or "").replace("\u2019", "'")
+    if not _NEWS_ASK.search(text) and not (_HAPPENED.search(text) and (_TODAY.search(text) or _YESTERDAY.search(text))):
+        return None
+    now = (now or datetime.now()).astimezone()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if _YESTERDAY.search(text):
+        days, since, window = 2, midnight - timedelta(days=1), "today and yesterday" if _TODAY.search(text) else "since yesterday"
+    elif _TODAY.search(text):
+        days, since, window = 1, midnight, "today"
+    elif _DAY.search(text):
+        days, since, window = 1, now - timedelta(days=1), "the past 24 hours"
+    elif _WEEK.search(text):
+        days, since, window = 7, now - timedelta(days=7), "the past week"
+    else:
+        days, since, window = 7, None, ""
+    topic = _NEWS_FILLER.sub(" ", _WEEK.sub(" ", _DAY.sub(" ", _YESTERDAY.sub(" ", _TODAY.sub(" ", text)))))
+    topic = " ".join(re.sub(r"[^\w.+#&'-]+", " ", topic).split()).strip(" '-")
+    return NewsAsk(topic, days, since, window)
+
+
+_NEWS_REQUEST_START = re.compile(
+    r"^\s*(?:(?:please|hey|ok|okay|so)\W+)*(?:summari[sz]e|explain|tell|give|show|list|what|whats|what's|any|get|"
+    r"brief|catch|bring|read|find|search|look|check|fetch|can|could|would|will|i\s+(?:want|need)|let'?s)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_news(message: str) -> bool:
+    """The message is a request for news (not a remark that mentions it: "I read the news today")."""
+    text = message.strip()
+    return news_request(text) is not None and (text.endswith("?") or bool(_NEWS_REQUEST_START.match(text)))
+
+
+def with_time_words(query: str, message: str) -> str:
+    """A news query with the time window the rest of the message gives ("… today and yesterday
+    only"), so the feeds list only those days."""
+    if news_request(query) is None:
+        return query
+    extra = []
+    for pattern in (_TODAY, _YESTERDAY, _DAY, _WEEK):
+        found = pattern.search(message or "")
+        if found and not pattern.search(query):
+            extra.append(found.group(0))
+    return " ".join([query, *extra])
+
+
+NEWS_ITEMS = 8  # a bulletin needs more than the five a web search returns
+NEWS_MIN_ITEMS = 3  # fewer than this inside "today": show the past 24 hours, and say so
+
+
+def news_search(engine: SearchEngine, ask: NewsAsk, limit: int = 8) -> tuple[list[dict[str, str]], str]:
+    """(items newest first, a line saying which window they cover)."""
+    items = engine.news_search(ask.topic, limit, days=ask.days, since=ask.since)
+    note = f"Only items from {ask.window} are listed." if ask.window else ""
+    if ask.since is not None and len(items) < NEWS_MIN_ITEMS and ask.days <= 2:
+        wider_since = min(ask.since, datetime.now().astimezone() - timedelta(days=1))
+        wider = engine.news_search(ask.topic, limit, days=max(ask.days, 1) + 1, since=wider_since)
+        if len(wider) > len(items):
+            note = (f"Only {len(items)} {'story is' if len(items) == 1 else 'stories are'} dated {ask.window}, "
+                    "so the past 24 hours are listed." if items else
+                    f"Nothing is dated {ask.window} yet, so the past 24 hours are listed.")
+            items = wider
+    return items, note
+
+
+def _moment(published: str, now: datetime) -> datetime | None:
+    try:
+        return datetime.fromisoformat(published).astimezone(now.tzinfo)
+    except (TypeError, ValueError):
+        return None
+
+
+def _day_heading(day: Any, now: datetime) -> str:
+    named = f"{day:%A} {day.day} {day:%B}"
+    if day == now.date():
+        return f"Today, {named}"
+    if day == (now - timedelta(days=1)).date():
+        return f"Yesterday, {named}"
+    return named
+
+
+SUMMARY_CHARS = 220
+
+
+def _first_sentence(text: str) -> str:
+    text = " ".join(text.split()).rstrip(". ")
+    cut = re.search(r"(?<=[.!?])\s", text)
+    text = (text[: cut.start()] if cut and cut.start() >= 40 else text).rstrip(". ")
+    return text if len(text) <= SUMMARY_CHARS else text[: SUMMARY_CHARS - 1].rsplit(" ", 1)[0] + "…"
+
+
+# The model only adds something to a bulletin when the message asks for more than the news
+# itself: an explanation, a comparison, a shorter or translated version.
+_NEWS_MORE = re.compile(
+    r"\b(why|how|explain\w*|compar\w*|analy[sz]\w*|opinion|think|mean\w*|impact|affect\w*|summar\w*|"
+    r"short\w*|brief\w*|top \d+|most important|biggest|translat\w*|in (?!the\b)[a-z]+ish|in [a-z]+an)\b",
+    re.IGNORECASE,
+)
+
+
+def bulletin_is_the_answer(message: str) -> bool:
+    """The message asks for the news and nothing more, in English: the finished bulletin is the
+    reply, word for word, so no model can pad it with stories or details it made up."""
+    letters = [ch for ch in message if ch.isalpha()]
+    foreign = sum(1 for ch in letters if not ch.isascii())
+    return not _NEWS_MORE.search(message) and foreign * 20 <= len(letters)
+
+
+NEWS_HEAD = "News bulletin, newest first"
+
+
+def format_news(items: list[dict[str, str]], note: str = "", now: datetime | None = None) -> str:
+    """News as a finished bulletin: grouped by day, each story with its outlet, time and (when the
+    feed gave one) its first sentence and link. Small models copy a bulletin faithfully; asked to
+    compose one from raw results they pad headlines with made-up detail and repeat stories."""
+    if not items:
+        return NO_NEWS
+    now = (now or datetime.now()).astimezone()
+    head = f"{NEWS_HEAD} (it is now {now:%A} {now.day} {now:%B %Y}, {now:%H:%M} local time)."
+    lines = [" ".join(filter(None, (head, note)))]
+    day = None
+    for item in items:
+        moment = _moment(item.get("published", ""), now)
+        if (moment.date() if moment else None) != day or not lines[1:]:
+            day = moment.date() if moment else None
+            lines.extend(("", f"**{_day_heading(day, now) if day else 'Date unknown'}**"))
+        title = item.get("title", "").replace("[", "(").replace("]", ")")
+        url = item.get("url", "")
+        headline = f"[{title}]({url})" if url and "news.google.com/" not in url else title
+        where = ", ".join(filter(None, (item.get("source", ""), f"{moment:%H:%M}" if moment else "")))
+        summary = f" {_first_sentence(item['snippet'])}." if item.get("snippet") else ""
+        lines.append(f"- {headline} ({where}).{summary}")
+    return "\n".join(lines).strip()
+
+
+NO_NEWS = (
+    "No news items were found for this. Say so plainly; do not list stories from memory. Searching again "
+    "with a broader topic (fewer words) may help."
+)
 
 
 _RESULT_HEAD = re.compile(r"^(?:\d+\.|\[\d+\]) ")

@@ -328,3 +328,41 @@ def test_a_message_that_only_states_facts_is_told_apart(message, only):
 )
 def test_a_stored_fact_can_be_said_back_to_the_user(stored, said):
     assert autofacts.to_you(stored) == said
+
+
+# Asked in so many words, or plainly about the user: saved in code, whatever the model does.
+EAGER: list[tuple[str, list[tuple[str, str]]]] = [
+    ("remember that my sister's birthday is March 3", [("person", "User's sister's birthday is March 3.")]),
+    ("can you remember that I prefer tabs over spaces?", [("preference", "User prefers tabs over spaces.")]),
+    ("remember this: the wifi password is kiwi123", [("fact", "User noted: The wifi password is kiwi123.")]),
+    ("save this to your memory: my car is blue", [("fact", "User's car is blue.")]),
+    ("memorize that my locker code is 4471", [("fact", "User's locker code is 4471.")]),
+    ("I don't like long answers", [("preference", "User doesn't like long answers.")]),
+    ("keep answers short from now on", [("preference", "User wants: keep answers short.")]),
+    ("never use emojis", [("preference", "User wants: never use emojis.")]),
+    ("from now on, answer in bullet points", [("preference", "User wants: answer in bullet points.")]),
+    ("I'm learning Rust these days", [("fact", "User is learning Rust.")]),
+    ("I'm studying computer science", [("fact", "User is studying computer science.")]),
+    ("I moved to Ankara last month", [("fact", "User lives in Ankara.")]),
+    ("I drive a 2019 Corolla", [("fact", "User drives a 2019 Corolla.")]),
+    ("I speak Turkish and English", [("fact", "User speaks Turkish and English.")]),
+    ("I own a Raspberry Pi 5", [("fact", "User owns a Raspberry Pi 5.")]),
+    ("I enjoy hiking", [("preference", "User enjoys hiking.")]),
+]
+NOT_FACTS = [
+    "I like this idea", "I have a question", "I'm learning how to do this", "I drive to work every day",
+    "I moved the file to src", "keep it simple", "never mind", "always the same error", "remember to call mom",
+    "do you remember me?", "can you remember what I said?", "I don't like this answer", "I play with it sometimes",
+    "never do that again", "he said he likes pizza", "I own it", "in the future, AI will be everywhere",
+    "always is a strong word", "I don't enjoy it",
+]
+
+
+@pytest.mark.parametrize(("message", "expected"), EAGER)
+def test_more_of_what_the_user_says_about_themselves_is_kept(message: str, expected: list[tuple[str, str]]) -> None:
+    assert [(fact.kind, fact.content) for fact in extract(message)] == expected
+
+
+@pytest.mark.parametrize("message", NOT_FACTS)
+def test_remarks_and_one_off_requests_still_are_not_facts(message: str) -> None:
+    assert extract(message) == []

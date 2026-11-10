@@ -186,12 +186,13 @@ _EDITOR_NAMES = {
     "jetbrains": "JetBrains", "pycharm": "PyCharm", "intellij": "IntelliJ", "zed": "Zed", "helix": "Helix",
     "nano": "nano",
 }
-_LIKE_FORMS = {"like": "likes", "love": "loves", "hate": "hates", "dislike": "dislikes"}
+_LIKE_FORMS = {"like": "likes", "love": "loves", "hate": "hates", "dislike": "dislikes", "enjoy": "enjoys"}
 _PREF_WORDS_RE = re.compile(r"\b(?:prefer\w*|likes?|loves?|hates?|wants?|always|never|dislikes?)\b", re.IGNORECASE)
 _START_WORDS = frozenset(
     {
         "i", "i'm", "i'd", "i've", "my", "call", "you", "please", "remember", "forget", "don't", "keep",
         "note", "stop", "always", "usually", "never", "answer", "reply", "respond", "talk", "speak",
+        "memorize", "memorise", "save", "store", "add", "put", "do", "from", "going", "in",
     }
 )
 # What may follow a name: nothing, punctuation, or a conjunction ("Bob the builder" is a nickname).
@@ -336,7 +337,8 @@ _NAME_RE = re.compile(
     r"(?:my name is|call me|i'?m called|i am called|you can call me)\s+(?P<rest>.+)", re.IGNORECASE
 )
 _LOCATION_RE = re.compile(
-    r"(?:i live in|i'?m based in|i am based in|i'?m living in|i am living in)\s+(?P<rest>.+)", re.IGNORECASE
+    r"(?:i live in|i'?m based in|i am based in|i'?m living in|i am living in|"
+    r"i (?:just |recently |have |'ve )?(?:moved|relocated) to)\s+(?P<rest>.+)", re.IGNORECASE
 )
 _HOMETOWN_RE = re.compile(r"(?:i'?m from|i am from|i come from)\s+(?P<rest>.+)", re.IGNORECASE)
 _EMPLOYER_RE = re.compile(r"(?:i work at|i work for)\s+(?P<rest>.+)", re.IGNORECASE)
@@ -669,8 +671,11 @@ def _self_fact(text: str) -> Fact | None:
 # --- explicit memory requests, preferences and projects -------------------------
 
 _SAVE_RE = re.compile(
-    r"(?:please\s+)?(?:remember(?!\s+(?:when|to|how|if|what|who|where|why)\b)(?:\s+that)?"
-    r"|don'?t\s+forget(?:\s+that)?|keep\s+in\s+mind(?:\s+that)?|note\s+that)\s+(?P<x>.+)",
+    r"(?:please\s+)?(?:(?:remember|memori[sz]e)(?!\s+(?:when|to|how|if|what|who|where|why|me|us|it|anything)\b)"
+    r"(?:\s+(?:this|the\s+following)\s*[:\-–—]|\s+that\s*[:\-–—]|\s+that\b)?"
+    r"|don'?t\s+forget(?:\s+that)?|do\s+not\s+forget(?:\s+that)?|keep\s+in\s+mind(?:\s+that)?|note\s+that"
+    r"|(?:save|store|add|put|keep)\s+(?:this\s+|that\s+|it\s+)?(?:to|in|into)\s+(?:your\s+|my\s+)?memory"
+    r"(?:\s+that|\s*[:\-–—])?)\s*(?P<x>.+)",
     re.IGNORECASE,
 )
 _FORGET_RE = re.compile(
@@ -678,12 +683,73 @@ _FORGET_RE = re.compile(
 )
 _PREFER_RE = re.compile(r"i (?:really )?prefer\s+(?P<rest>.+)", re.IGNORECASE)
 _PREFER_SPLIT_RE = re.compile(r"\s+(?:over|to|rather than|instead of)\s+", re.IGNORECASE)
-_LIKE_RE = re.compile(r"i (?:really )?(?P<verb>like|love|hate|dislike)\s+(?P<rest>.+)", re.IGNORECASE)
+_LIKE_RE = re.compile(
+    r"i (?:really )?(?:(?P<neg>don'?t|do not)\s+(?:really\s+)?)?(?P<verb>like|love|hate|dislike|enjoy)\s+(?P<rest>.+)",
+    re.IGNORECASE,
+)
 _HABIT_RE = re.compile(r"i (?P<adv>always|usually|never) use\s+(?P<rest>.+)", re.IGNORECASE)
 _PROJECT_RE = re.compile(
     r"(?:i'?m|i am) (?:working on|building|developing)\s+(?P<rest>.+)|my project is\s+(?P<rest2>.+)",
     re.IGNORECASE,
 )
+
+
+_WHEN_TAIL = r"(?:\s+(?:these\s+days|now|right\s+now|at\s+the\s+moment|currently|lately|this\s+year|last\s+\w+|recently))*\s*$"
+_LEARNING_RE = re.compile(
+    r"(?:i'?m|i am) (?:currently |now |also )?(?:learning|studying|taking (?:a |an )?(?:course|class) (?:in|on))\s+"
+    r"(?P<rest>.+?)" + _WHEN_TAIL, re.IGNORECASE)
+_OWN_RE = re.compile(
+    r"i (?P<verb>drive|own|ride|play|speak)\s+(?P<rest>.+?)" + _WHEN_TAIL, re.IGNORECASE)
+_OWN_FORMS = {"drive": "drives", "own": "owns", "ride": "rides", "play": "plays", "speak": "speaks"}
+# "Drive to work", "play with it", "use it to…": not a thing the user has.
+_OWN_BAD_START = frozenset("to with it this that them these those around for in on at into from".split())
+_STANDING_RE = re.compile(
+    r"^(?:(?:from now on|going forward|in (?:the )?future|always|never)\b,?\s*(?P<a>.+)|(?P<b>.+?),?\s+"
+    r"(?:from now on|going forward|in (?:the )?future)\s*)$",
+    re.IGNORECASE,
+)
+_STANDING_VERBS = re.compile(
+    r"^(?:(?:please\s+)?(?:keep|make|be|use|give|write|answer|reply|respond|talk|speak|say|call|show|add|put|"
+    r"don'?t|do not|stop|avoid|include|start|end|format|explain|ask|address|refer)\b)", re.IGNORECASE)
+
+
+_PEOPLE_RE = re.compile(r"\b(?:he|she|they|him|her|them|his|their)\b", re.IGNORECASE)
+
+
+def _more_self_fact(text: str) -> Fact | None:
+    """What the user is learning, drives, owns, plays or speaks."""
+    match = _LEARNING_RE.match(text)
+    if match is not None:
+        phrase = _phrase(match.group("rest"), 5)
+        if phrase is None or _has_block(phrase) or phrase.split()[0].lower() in ("how", "to", "about", "that", "what"):
+            return None
+        doing = "studying" if "stud" in match.group(0).lower() else "learning"
+        return _fact("fact", f"User is {doing} {phrase}")
+    match = _OWN_RE.match(text)
+    if match is not None:
+        verb = match.group("verb").lower()
+        phrase = (_listed(match.group("rest")) if verb in ("speak", "play") else None) or _phrase(match.group("rest"), 5)
+        if phrase is None or _has_block(phrase) or phrase.split()[0].lower() in _OWN_BAD_START:
+            return None
+        return _fact("fact", f"User {_OWN_FORMS[verb]} {phrase}")
+    return None
+
+
+def _standing_fact(text: str) -> Fact | None:
+    """A standing instruction for every chat ("keep answers short from now on", "never use emojis")."""
+    match = _STANDING_RE.match(text.strip().rstrip(".!"))
+    if match is None:
+        return None
+    lead = text.strip().split(None, 1)[0].lower()
+    body = (match.group("a") or match.group("b") or "").strip(" ,")
+    if lead in ("always", "never"):
+        body = f"{lead} {body}"
+        rest = body.split(None, 1)[1] if " " in body else ""
+    else:
+        rest = body
+    if not _STANDING_VERBS.match(rest) or not 2 <= len(body.split()) <= 14 or _PEOPLE_RE.search(body):
+        return None
+    return _fact("preference", f"User wants: {body[0].lower()}{body[1:]}")
 
 
 def _forget_fact(text: str) -> Fact | None:
@@ -703,7 +769,8 @@ def _save_fact(text: str) -> Fact | None:
     if world is not None:
         return world
     if _is_about_other(clause):
-        return None
+        # Asked in so many words: "remember that my sister's birthday is March 3" is kept too.
+        return None if _SPEECH_RE.search(clause) else _fact("person", _clause_content(clause))
     slot = _slot_fact(clause) or _self_fact(clause)
     if slot is not None:
         return slot
@@ -732,7 +799,10 @@ def _preference_fact(text: str) -> Fact | None:
         phrase = _phrase(match.group("rest"), 4)
         if phrase is None or _has_block(phrase):
             return None
-        return _fact("preference", f"User {_LIKE_FORMS[match.group('verb').lower()]} {phrase}")
+        verb = match.group("verb").lower()
+        if match.group("neg"):
+            return None if verb in ("hate", "dislike") else _fact("preference", f"User doesn't {verb} {phrase}")
+        return _fact("preference", f"User {_LIKE_FORMS[verb]} {phrase}")
     match = _HABIT_RE.match(text)
     if match is not None:
         phrase = _phrase(match.group("rest"), 5)
@@ -773,8 +843,17 @@ _CLAUSE_RE = re.compile(
     r"(?:\s*[,;]\s*|\s+)(?:and|but|so|plus)\s+(?=(?:i|i'm|i've|i am|my)\b)|\s*[,;]\s*(?=(?:i|i'm|i've|i am|my)\b)",
     re.IGNORECASE,
 )
-_COMMAND_RE = re.compile(r"^(?:please\s+)?(?:remember|forget|don't forget|keep in mind|note that|stop remembering)\b",
-                         re.IGNORECASE)
+_COMMAND_RE = re.compile(
+    r"^(?:please\s+)?(?:remember|memori[sz]e|forget|don't forget|do not forget|keep in mind|note that|stop remembering|"
+    r"(?:save|store|add|put|keep)\s+(?:this\s+|that\s+|it\s+)?(?:to|in|into)\s+(?:your\s+|my\s+)?memory)\b",
+    re.IGNORECASE,
+)
+# "Can you remember that I use tabs?" asks for a save as surely as "remember that I use tabs".
+_ASKED_SAVE_RE = re.compile(
+    r"^(?:(?:hey|ok(?:ay)?|so|and)\s*,?\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:also\s+)?"
+    r"(?=(?:remember|memori[sz]e|keep\s+in\s+mind|note\s+that|not\s+forget|save|store|add|put)\b)",
+    re.IGNORECASE,
+)
 
 
 def _clause_fact(clause: str) -> Fact | None:
@@ -788,7 +867,8 @@ def _clause_fact(clause: str) -> Fact | None:
         return world
     if _is_about_other(text):
         return None
-    for matcher in (_forget_fact, _save_fact, _slot_fact, _self_fact, _preference_fact, _project_fact):
+    for matcher in (_forget_fact, _save_fact, _slot_fact, _self_fact, _preference_fact, _project_fact,
+                    _more_self_fact, _standing_fact):
         fact = matcher(text)
         if fact is not None:
             return fact
@@ -830,6 +910,9 @@ def extract(message: str, *, limit: int = 5) -> list[Fact]:
     facts: list[Fact] = []
     seen: set[tuple[str, bool]] = set()
     for sentence, is_question in _sentences(_clean(message)):
+        asked = _ASKED_SAVE_RE.match(sentence)
+        if asked is not None:
+            sentence, is_question = sentence[asked.end():], False
         if is_question:
             continue
         for fact in _sentence_facts(sentence):

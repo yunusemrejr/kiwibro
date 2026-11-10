@@ -11,6 +11,8 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 
@@ -283,6 +285,115 @@ def bing_search(query: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
+def _rss_items(response: requests.Response) -> list[ET.Element]:
+    if response.status_code != 200:
+        raise SearchError(f"news feed returned HTTP {response.status_code}")
+    try:
+        return list(ET.fromstring(response.content).iter("item"))
+    except ET.ParseError as exc:
+        raise SearchError("news feed was not readable") from exc
+
+
+def _published(item: ET.Element) -> str:
+    """The item's publication time as an ISO string in UTC ("" when missing or unreadable)."""
+    try:
+        when = parsedate_to_datetime(item.findtext("pubDate") or "")
+    except (TypeError, ValueError):
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).isoformat()
+
+
+def google_news(query: str, limit: int, days: int | None = None) -> list[dict[str, str]]:
+    """Google News RSS: fresh, dated headlines with their outlet (no summary text).
+    An empty query reads the top stories."""
+    params = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
+    if query:
+        url = "https://news.google.com/rss/search"
+        params["q"] = f"{query} when:{days}d" if days else query
+    else:
+        url = "https://news.google.com/rss"
+    results: list[dict[str, str]] = []
+    for item in _rss_items(_get(url, params=params)):
+        title = _clean(item.findtext("title") or "", 300)
+        source = _clean(item.findtext("source") or "", 80)
+        if source and title.endswith(f" - {source}"):
+            title = title[: -len(source) - 3].rstrip()
+        link = _clean(item.findtext("link") or "", 1000)
+        if not title or not link.startswith("https://"):
+            continue
+        results.append({"title": title, "url": link, "snippet": "", "source": source, "published": _published(item)})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def bing_news(query: str, limit: int, days: int | None = None) -> list[dict[str, str]]:
+    """Bing News RSS: dated articles with a short summary and the article's own address."""
+    params = {"format": "rss", "q": query or "top stories", "setlang": "en-US", "cc": "US", "mkt": "en-US"}
+    if days:
+        params["qft"] = f'interval="{7 if days <= 1 else 8}"'  # 7: past 24 hours, 8: past week
+    results: list[dict[str, str]] = []
+    for item in _rss_items(_get("https://www.bing.com/news/search", params=params)):
+        title = _clean(item.findtext("title") or "", 300)
+        link = item.findtext("link") or ""
+        target = parse_qs(urlsplit(link).query).get("url", [""])[0]
+        url = _clean(unquote(target) or link, 1000)
+        source = next((_clean(child.text or "", 80) for child in item if child.tag.endswith("}Source")), "")
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+        results.append({
+            "title": title, "url": url, "snippet": _clean(item.findtext("description") or "", 400),
+            "source": source, "published": _published(item),
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
+NEWS_PROVIDERS: tuple[tuple[str, Callable[..., list[dict[str, str]]]], ...] = (
+    ("google_news", google_news),
+    ("bing_news", bing_news),
+)
+
+
+def _headline_key(title: str) -> str:
+    return " ".join(_WORDS.findall(title.lower())[:8])
+
+
+def merge_news(batches: list[list[dict[str, str]]], since: datetime | None = None) -> list[dict[str, str]]:
+    """One list from several feeds: the same story once (the copy with a summary wins),
+    newest first, and nothing published before ``since``. Undated items go last."""
+    best: dict[str, dict[str, str]] = {}
+    for batch in batches:
+        for item in batch:
+            key = _headline_key(item.get("title", ""))
+            if not key:
+                continue
+            held = best.get(key)
+            if held is None or (item.get("snippet") and not held.get("snippet")):
+                best[key] = item
+    items = list(best.values())
+    if since is not None:
+        floor = since.astimezone(timezone.utc).isoformat()
+        items = [item for item in items if item.get("published") and item["published"] >= floor]
+    return sorted(items, key=lambda item: item.get("published") or "", reverse=True)
+
+
+NEWS_EXTRA_HEADLINES = 4  # bare headlines added beside enough summarised articles
+
+
+def pick_news(items: list[dict[str, str]], limit: int) -> list[dict[str, str]]:
+    """Up to ``limit`` articles that carry a summary, newest first, plus a few bare headlines
+    (more of them when few articles have a summary). A headline alone invites a small model to
+    make up what the article says, so headlines never crowd out summaries."""
+    summarised = [item for item in items if item.get("snippet")][:limit]
+    bare = [item for item in items if not item.get("snippet")]
+    room = NEWS_EXTRA_HEADLINES if len(summarised) >= 3 else limit - len(summarised)
+    return sorted(summarised + bare[:room], key=lambda item: item.get("published") or "", reverse=True)
+
+
 def bing_rss_search(query: str, limit: int) -> list[dict[str, str]]:
     """Bing's RSS output: last-resort provider (HTML is frequently bot-blocked).
 
@@ -543,6 +654,48 @@ class SearchEngine:
                 self._cache.pop(oldest, None)
             self._cache[key] = (time.monotonic(), [dict(item) for item in results])
         return [dict(item) for item in results]
+
+    def news_search(
+        self, query: str, max_results: int = 8, *, days: int | None = None, since: datetime | None = None
+    ) -> list[dict[str, str]]:
+        """Dated news from every news feed at once, newest first. ``days`` narrows what the
+        feeds return; ``since`` drops anything older. Empty when no feed answered."""
+        query = (query or "").strip()
+        key = f"news|{query.lower()}|{days}|{since.isoformat() if since else ''}"
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and time.monotonic() - cached[0] < min(self._cache_ttl, 300.0):
+                return [dict(item) for item in pick_news(cached[1], max_results)]
+        futures = [_POOL.submit(self._run_news, name, feed, query, days) for name, feed in NEWS_PROVIDERS]
+        batches = []
+        for future in futures:
+            try:
+                batches.append(future.result(timeout=PROVIDER_TIMEOUT + 4))
+            except Exception:  # a slow feed: the other one may have answered
+                batches.append([])
+        results = merge_news(batches, since)
+        with self._lock:
+            if len(self._cache) >= SEARCH_CACHE_MAX:
+                oldest = min(self._cache, key=lambda item: self._cache[item][0])
+                self._cache.pop(oldest, None)
+            self._cache[key] = (time.monotonic(), [dict(item) for item in results])
+        return [dict(item) for item in pick_news(results, max_results)]
+
+    def _run_news(self, name: str, feed: Callable[..., list[dict[str, str]]], query: str, days: int | None) -> list[dict[str, str]]:
+        if self._cooldowns.get(name, 0.0) > time.monotonic():
+            return []
+        try:
+            results = feed(query, 30, days)
+        except (SearchError, requests.RequestException) as exc:
+            if any(marker in str(exc).lower() for marker in _BLOCK_MARKERS):
+                self._cooldowns[name] = time.monotonic() + PROVIDER_COOLDOWN_S
+            log.info("news feed %s unavailable: %s", name, exc)
+            return []
+        except Exception:  # pragma: no cover - feed format drift is non-fatal
+            log.warning("news feed %s failed", name, exc_info=True)
+            return []
+        log.info("news feed %s returned %d items", name, len(results))
+        return results  # the feed searched for the query itself; word overlap would drop "A.I." for "AI"
 
     def _run_provider(self, name: str, provider: Callable[[str, int], list[dict[str, str]]], query: str, limit: int) -> list[dict[str, str]]:
         try:

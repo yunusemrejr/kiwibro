@@ -61,7 +61,10 @@ def worth_extracting(window: list[dict[str, Any]]) -> bool:
             continue
         text = autofacts._URL_RE.sub(" ", autofacts._FENCE_RE.sub(" ", str(message.get("content") or "")))
         for sentence in _SENTENCE_RE.findall(autofacts._INLINE_CODE_RE.sub(" ", text)):
-            if not sentence.rstrip().endswith("?") and _MEMORABLE_RE.search(sentence.replace("’", "'")):
+            plain = sentence.replace("’", "'")
+            if _REMEMBER_INTENT_RE.search(plain):  # "can you remember that…?" asks for a save
+                return True
+            if not sentence.rstrip().endswith("?") and _MEMORABLE_RE.search(plain):
                 return True
     return False
 

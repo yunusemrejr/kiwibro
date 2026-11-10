@@ -4,6 +4,30 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Search for…" searches before anything is written.** A message that asks for a search,
+  or for news, is searched by Kiwibro before the model writes a word, and the model is
+  told to answer only from the results. Small models used to answer first from memory
+  and made up whole bulletins.
+- **News comes from dated news feeds.** News questions read Google News and Bing News with
+  the window the message gives ("today and yesterday only", "this week"), one copy per
+  story, newest first, grouped under Today and Yesterday with outlet, time, link and the
+  feed's own first sentence. A plain news request gets that bulletin as the reply, word
+  for word; a request for more (a summary, an explanation) gets the model's answer with
+  the real list under it. A quiet day widens to the past 24 hours and says so.
+- **Closing the window stops the model.** When no Kiwibro window is open (it said it was
+  closing and did not come back within 15 s, or it went silent for 3 minutes), the local
+  model server is stopped once it is idle and its memory is freed. It starts again with
+  the next message. A reply or memory pass still running is never cut off.
+- **Memories and notes are saved readily, whatever the model.** "Remember…", "could you
+  remember…", "don't forget…", "save this to your memory", standing wishes ("keep answers
+  short from now on"), moves, things learned, owned and spoken, and facts about people
+  the user names are saved before the reply. The model's memory pass now saves what the
+  user says about themselves unless it is clearly passing. Dictated and titled notes
+  ("note titled Groceries: …") and "make a note about X" are kept even when the model
+  only writes the text.
+
 ### Safety
 
 - **Kiwibro's own code, start-up files and credentials stay protected inside a working
