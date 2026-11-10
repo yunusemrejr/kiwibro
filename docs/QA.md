@@ -131,6 +131,7 @@ instance.
 | a 0.8B Qwen distil | sums and percentages, "who are you and what can you do?", a remembered pet's name, saving a note, a population lookup | correct; the sums are Kiwibro's own |
 | a 1.2B Qwen distil | dictated notes, facts about family, birthday and allergies and recalling them, two questions in one message, a lookup on the web | correct |
 | LFM2.5 1.2B | recall across chats, a note the model tried to save with the wrong tool, a self-description, a version lookup | correct; Kiwibro saved the note |
+| SmolLM2 360M (Q8, 386 MB) | found with the Hugging Face search, downloaded, loaded, asked a percentage and "who are you?", then deleted | download, load and delete worked and the space came back; the sum was right, the second question went unanswered |
 
 Limits of this check:
 

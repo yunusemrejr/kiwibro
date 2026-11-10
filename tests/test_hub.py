@@ -43,6 +43,8 @@ class _Handler(BaseHTTPRequestHandler):
             repo = path[len("/api/models/"):-len("/tree/main")]
             if repo in fake.trees:
                 return self._send_json(fake.trees[repo])
+            if repo.endswith("/unknown"):  # what Hugging Face sends a visitor for a name that does not exist
+                return self._send(401, b'{"error":"Invalid username or password."}', "application/json")
             return self._send(404, b'{"error":"Repository Not Found"}', "application/json")
         repo, marker, file = path.lstrip("/").partition("/resolve/main/")
         data = fake.blobs.get(f"{repo}/{file}") if marker else None
@@ -263,6 +265,9 @@ def test_files_errors(hub):
     with pytest.raises(HubError) as missing:
         hub.files("acme/missing")
     assert missing.value.code == "not_found"
+    with pytest.raises(HubError) as unknown:
+        hub.files("acme/unknown")
+    assert unknown.value.code == "not_found" and "401" not in str(unknown.value)
 
 
 @pytest.mark.parametrize("repo", ["nosep", "a/b/c", "../x", "a/..", "a/.", "-bad/x", "a b/c", "a/x\n"])

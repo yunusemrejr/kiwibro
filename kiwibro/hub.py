@@ -293,7 +293,7 @@ class Hub:
     def files(self, repo: str) -> list[dict[str, Any]]:
         _split_repo(repo)
         entries = self._get_json(f"/api/models/{quote(repo, safe='/')}/tree/main", {"recursive": "true"},
-                                 missing="That repository was not found on Hugging Face.")
+                                 missing="That repository was not found on Hugging Face, or it is private.")
         out: list[dict[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") != "file":
@@ -329,8 +329,8 @@ class Hub:
             raise HubError("offline", "Could not reach Hugging Face. Check the internet connection.") from exc
         except requests.RequestException as exc:
             raise HubError("failed", f"Hugging Face request failed: {exc}") from exc
-        if resp.status_code == 404 and missing:
-            raise HubError("not_found", missing)
+        if resp.status_code in (401, 404) and missing:  # 401 is what a visitor without an account gets
+            raise HubError("not_found", missing)   # for a name that does not exist
         if resp.status_code >= 400:
             raise HubError("failed", f"Hugging Face answered with HTTP {resp.status_code}.")
         try:
