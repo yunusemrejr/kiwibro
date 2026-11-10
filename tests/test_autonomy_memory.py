@@ -397,3 +397,25 @@ def test_capture_respects_memory_off(env: Env):
     events, _raw = chat_events(env, "My name is Yunus.")
     assert not [p for e, p in events if e == "memory"]
     assert env.svc.db.list_memories() == []
+
+
+def test_facts_saved_from_a_message_are_named_to_the_model_and_a_parroted_reply_is_put_right(env: Env):
+    env.fake.stream_script = [ChatResult(content="Based on what you said, I'm allergic to peanuts.")]
+    events, _raw = chat_events(env, "my dog's name is Biscuit. I'm allergic to peanuts.")
+    note = env.fake.stream_calls[0]["messages"][-1]["content"]
+    assert "Saved to memory from this message just now:" in note
+    assert "- User's dog is named Biscuit." in note and "- User is allergic to peanuts." in note
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["Based on what you said, you're allergic to peanuts."]
+    assert len(env.fake.stream_calls) == 1  # put right by code, without asking the model again
+
+
+def test_a_question_about_the_user_answered_as_the_user_is_turned_round(env: Env):
+    chat_events(env, "my dog's name is Biscuit")
+    env.fake.stream_script = [ChatResult(content="My dog's name is Biscuit.")]
+    events, _raw = chat_events(env, "what is my dog's name?")
+    assert "The user asks about themselves." in env.fake.stream_calls[-1]["messages"][-1]["content"]
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["Your dog's name is Biscuit."]

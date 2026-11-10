@@ -1808,7 +1808,7 @@ def _execute_note(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             refused = private_refusal()
             if refused is not None:
                 return refused
-            note = notes.save(content, title or None, conversation_id=ctx.conversation_id)
+            note = notes.save(content, title or None, origin="kiwibro", conversation_id=ctx.conversation_id)
             return ToolResult(
                 ok=True, content=f"Saved note “{note['title']}”.", preview=_preview(note["body"], 160),
                 meta={"note_id": note["id"]},

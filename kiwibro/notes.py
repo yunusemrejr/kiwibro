@@ -24,6 +24,46 @@ _TAG_SPLIT_RE = re.compile(r"[,\s]+")
 _TAG_DROP_RE = re.compile(r"[^\w-]+")
 
 
+# A note the user dictates word for word ("save a note: buy oat milk"), as opposed to one they
+# ask to have written ("make a note about the meeting"): only the first can be saved as typed.
+_POLITE = (r"(?:(?:hey|ok(?:ay)?|please|pls|kiwi(?:bro)?|(?:can|could|would|will)\s+you|"
+           r"i\s+(?:want|need)\s+you\s+to)\b[\s,]*)*")
+_SAID = r"(?:\s*[:\-–—]\s*|\s+(?:that|saying)\s+)"
+_DICTATED = tuple(re.compile(rf"^\s*{_POLITE}{pattern}(?P<text>.+)$", re.I | re.S) for pattern in (
+    r"(?:save|take|make|write|add|create|keep|store)\s+(?:down\s+)?(?:me\s+)?(?:a|an|this|the|the\s+following|a\s+new|a\s+quick)\s+"
+    rf"note\b(?:\s+to\s+self)?{_SAID}",
+    r"note(?:\s+(?:down|to\s+self))?\s*[:\-–—]\s*",
+    r"note\s+(?:down\s+)?that\s+",
+    r"(?:add|put|save|write)\s+(?:this\s+)?(?:to|in|into)\s+(?:my\s+)?notes?\s*[:\-–—]\s*",
+    r"(?:jot|write)\s+(?:this\s+|that\s+)?down\s*[:\-–—]\s*",
+))
+# "save that as a note": the note is what was just said.
+_THAT = r"(?:that|this|it|the\s+(?:answer|above|last\s+(?:answer|reply|message)))"
+_POINTED = tuple(re.compile(rf"^\s*{_POLITE}{pattern}[\s.!]*$", re.I) for pattern in (
+    rf"(?:save|keep|store|add|put|write)\s+{_THAT}\s+(?:down\s+)?(?:as|in|into|to)\s+(?:a\s+|my\s+)?(?:new\s+)?notes?(?:\s+(?:please|for\s+me))?",
+    rf"(?:note|jot)\s+{_THAT}\s+down(?:\s+(?:please|for\s+me))?",
+    rf"(?:make|take|save|create)\s+(?:a\s+)?note\s+of\s+{_THAT}(?:\s+(?:please|for\s+me))?",
+))
+
+
+def dictated(message: str) -> str | None:
+    """The note a message dictates, word for word; "" when it points at what was just said
+    ("save that as a note"); None when it does not ask for a note that code can save."""
+    text = (message or "").strip()
+    if not text or len(text) > MAX_BODY:
+        return None
+    if any(pattern.match(text) for pattern in _POINTED):
+        return ""
+    for pattern in _DICTATED:
+        found = pattern.match(text)
+        if found:
+            body = found.group("text").strip()
+            if len(body) >= 2 and _QUOTE_PAIRS.get(body[0]) == body[-1]:
+                body = body[1:-1].strip()
+            return body if len(body.split()) >= 2 else None
+    return None
+
+
 def _text(value: Any, field: str) -> str:
     if value is None:
         return ""

@@ -119,6 +119,23 @@ def test_describing_the_request_instead_of_answering_is_caught():
     assert kind("The user is asking about the weather. I should answer briefly.", facts) == steer.META_LEAK
 
 
+NOTE = """[Kiwibro context for this turn, added automatically, not written by the user]
+Local time: Tuesday 10 November 2026, 03:40.
+## Guidance for this turn
+- Research: use web_search (or multi_search + fetch_pages), cite evidence as [1], [2] with the URLs the tools returned."""
+
+
+def test_reading_out_its_own_note_is_caught_and_never_shown():
+    facts = steer.Facts(question="how old is he?", tools=WEB, note=NOTE)
+    echo = "## Guidance for this turn\n\n- Research: use web_search (or multi_search + fetch_pages), cite evidence as [1], [2] with the URLs the tools returned."
+    verdict = steer.review(echo, facts)
+    assert verdict.kind == steer.META_LEAK and "note" in verdict.note
+    assert steer.repair(echo, verdict, facts) == ""
+    assert steer.repair(f"{echo}\n\nHe is 56.", verdict, facts) == "He is 56."
+    assert steer.early("## Guidance for this turn\n\n- Res", facts)[0].kind == steer.META_LEAK  # cut off at once
+    assert kind("He was born in 1970, so he is 56.", facts) is None
+
+
 @pytest.mark.parametrize("reply", [
     "Hello! How can I help you today? Feel free to ask me anything you like.",
     "Great question! I would be happy to help you with that today, just give me a moment.",
@@ -277,6 +294,19 @@ def test_a_second_failure_keeps_only_what_is_true(env: Env):
     assert _stored_reply(env) == "Paris is the capital of France."
 
 
+def test_a_note_read_out_twice_is_never_what_the_user_sees(env: Env):
+    from kiwibro import guidance
+
+    echo = f"{guidance.HEADER}\n\n- {guidance.SNIPPETS['capabilities']}"
+    env.fake.stream_script = [ChatResult(content=echo), ChatResult(content=echo),
+                              ChatResult(content="I can search the web, work on files and remember things for you.")]
+    events, _raw = chat_events(env, "what can you do?")
+    conversation_id = env.svc.db.list_conversations()[0]["id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["I can search the web, work on files and remember things for you."]
+    assert _events_of(events, "done")[0]["inference"]["steered"] == [steer.META_LEAK]
+
+
 def test_nothing_true_left_falls_back_to_the_identity_line(env: Env):
     env.fake.stream_script = [ChatResult(content=CHATGPT), ChatResult(content=CHATGPT)]
     chat_events(env, "who are you?")
@@ -364,3 +394,98 @@ def test_wrong_with_and_without_the_adapter_is_the_models_own_doing(env: Env, mo
     assert blamed == [] and "adapters_turned_down" not in _events_of(events, "done")[0]["inference"]
     assert env.svc.db.traits("fake-1") == {steer.OTHER_IDENTITY: 1}
     assert _stored_reply(env) == "I'm Kiwibro, an AI agent running on your computer."
+
+
+# --- the model repeats, as its own, what the user said about themselves ----------------------
+
+TOLD = "my dog's name is Biscuit and my wife's name is Elif. I'm allergic to peanuts."
+LEARNED = ("User's dog is named Biscuit.", "User's wife is named Elif.", "User is allergic to peanuts.")
+
+
+def test_repeating_the_users_own_statement_as_itself_is_caught():
+    facts = steer.Facts(question=TOLD, learned=LEARNED, memory_saved=True)
+    verdict = steer.review("Based on the information you've provided, I'm allergic to peanuts.", facts)
+    assert verdict is not None and verdict.kind == steer.ADOPTED_USER
+    assert verdict.rewrite == "Based on the information you've provided, you're allergic to peanuts."
+    assert steer.repair("Fine. Based on the information you've provided, I'm allergic to peanuts.", verdict, facts) == (
+        "Fine. Based on the information you've provided, you're allergic to peanuts."
+    )
+
+
+@pytest.mark.parametrize(
+    "question, reply, said_to_the_user",
+    [
+        ("what is my dog's name?", "My dog's name is Biscuit.", "Your dog's name is Biscuit."),
+        ("who is my wife?", "**My wife** is Elif.", "**Your wife** is Elif."),
+        ("where do I live?", "I live in Izmir.", "You live in Izmir."),
+    ],
+)
+def test_an_answer_about_the_user_given_as_the_user_is_turned_round(question, reply, said_to_the_user):
+    facts = steer.Facts(question=question)
+    verdict = steer.review(reply, facts)
+    assert verdict is not None and verdict.kind == steer.ADOPTED_USER
+    assert steer.repair(reply, verdict, facts) == said_to_the_user
+
+
+@pytest.mark.parametrize(
+    "question, reply",
+    [
+        ("my understanding is that it is safe, what's yours?", "My understanding is that it is safe too."),
+        ("what should I do?", "I do not know yet."),
+        ("what's my name?", "I'm not sure yet."),
+        ("what is the capital of France?", "My answer is Paris."),
+    ],
+)
+def test_kiwibro_speaking_for_itself_is_left_alone(question, reply):
+    verdict = steer.review(reply, steer.Facts(question=question))
+    assert verdict is None or verdict.kind != steer.ADOPTED_USER
+
+
+@pytest.mark.parametrize(
+    "question, reply",
+    [
+        (TOLD, "Got it: your dog is Biscuit, your wife is Elif, and you're allergic to peanuts."),
+        (TOLD, "You said \"I'm allergic to peanuts\", so I'll keep peanuts out of any recipe."),
+        ("my name is Yunus", "Nice to meet you, Yunus. My name is Kiwibro."),
+        ("Write my bio. I live in Izmir and I work as a developer.", "I live in Izmir and I work as a developer."),
+    ],
+)
+def test_speaking_to_the_user_or_for_them_is_left_alone(question, reply):
+    facts = steer.Facts(question=question, learned=("User lives in Izmir.",), memory_saved=True)
+    verdict = steer.review(reply, facts)
+    assert verdict is None or verdict.kind != steer.ADOPTED_USER
+
+
+def test_nothing_is_read_as_parroting_when_no_fact_was_saved():
+    facts = steer.Facts(question="fix this sentence: I'm allergic to peanuts since birth")
+    verdict = steer.review("I'm allergic to peanuts since birth.", facts)
+    assert verdict is None or verdict.kind != steer.ADOPTED_USER
+
+
+# --- the user only told Kiwibro things; a note that was never saved ---------------------------
+
+
+def test_a_reply_that_ignores_what_the_user_told_is_replaced_by_what_is_remembered():
+    learned = ("User's sister lives in Ankara.", "User's birthday is 4 May.")
+    facts = steer.Facts(question="my sister lives in Ankara and my birthday is 4 May", learned=learned,
+                        told_only=True, memory_saved=True)
+    verdict = steer.review("Tuesday, 10 November 2026, 03:42 +03.", facts)
+    assert verdict is not None and verdict.kind == steer.OFF_TOPIC
+    assert steer.repair("Tuesday, 10 November 2026, 03:42 +03.", verdict, facts) == (
+        "Got it, I'll remember that your sister lives in Ankara and your birthday is 4 May."
+    )
+    assert steer.review("Happy early birthday for May! Ankara is a fine city.", facts) is None
+
+
+def test_a_reply_to_a_question_is_not_swapped_for_an_acknowledgement():
+    facts = steer.Facts(question="I live in Izmir. What's a good day trip?", learned=("User lives in Izmir.",),
+                        told_only=False, memory_saved=True)
+    verdict = steer.review("Try Ephesus: it is about an hour away by car.", facts)
+    assert verdict is None or not verdict.rewrite
+
+
+def test_claiming_a_saved_note_without_saving_one_is_caught():
+    facts = steer.Facts(question="save that as a note", tools=frozenset({"note"}))
+    verdict = steer.review("I've saved the note **\"User prefers Python\"** in my workspace notes.", facts)
+    assert verdict is not None and verdict.kind == steer.UNBACKED_CLAIM
+    assert steer.review("I've saved the note for you.", steer.Facts(question="save a note: milk", tools=frozenset({"note"}), tools_ran=1)) is None

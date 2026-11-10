@@ -606,6 +606,17 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     ]);
   }
 
+  // Kiwibro made a tool call the model was asked for and skipped (agent.py, _act_instead).
+  const ACTED = {
+    web_search: ["Searched by Kiwibro", "The model replied without searching, so Kiwibro ran the search you asked for and had it answer from the results."],
+    note: ["Saved by Kiwibro", "The model replied without saving the note, so Kiwibro saved it as you wrote it."],
+  };
+
+  function actedChip(tool) {
+    const [label, title] = ACTED[tool];
+    return el("span", { class: "chip chip-sense", title }, [icon("check"), el("span", { text: label })]);
+  }
+
   function appendChip(turn, chip) {
     const chips = ensureChips(turn);
     chips.append(chip);
@@ -959,8 +970,9 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       const chip = el("span", { class: "chip chip-memory" }, [icon("bookmark"), el("span", { text: label })]);
       appendChip(turn, chip);
     },
-    finishDone({ aborted = false, steered = [] } = {}) {
+    finishDone({ aborted = false, steered = [], acted = "" } = {}) {
       if (current && steered.length) appendChip(current, senseChip(steered));
+      if (current && ACTED[acted]) appendChip(current, actedChip(acted));
       finishTurn({ aborted });
     },
     prepareRetry() {

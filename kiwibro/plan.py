@@ -95,12 +95,13 @@ _FILE_NOUN = re.compile(
 _DOC_NOUN = re.compile(r"\b(docs?|documents?|reports?|summary|summari[sz]ing|article|essay|write-?up|overview)\b", re.I)
 _SEARCH_VERB = re.compile(r"\b(search|google|look\s+(?:it\s+|them\s+|this\s+)?up|research|browse|find\s+out)\b", re.I)
 _WEB_WORD = re.compile(
-    r"\b(web|internet|online|google|news|latest|newest|today'?s|this\s+(?:week|month)|recent(?:ly)?|websites?)\b|https?://",
+    r"\b(web|internet|online|google|news|latest|newest|today'?s|this\s+(?:week|month)|recent(?:ly)?|websites?|"
+    r"current(?:ly)?|right\s+now)\b|https?://",
     re.I,
 )
 _LOCAL_WORD = re.compile(
     r"\b(files?|folders?|director(?:y|ies)|code(?:base)?|repo(?:sitory)?|workspace|project|disk|memory|memories|"
-    r"chat|conversation|logs?)\b",
+    r"chat|conversation|logs?|notes?|reminders?)\b",
     re.I,
 )
 _ANSWER_VERB = re.compile(
@@ -220,8 +221,9 @@ def split_steps(message: str) -> list[str]:
         if not core:
             continue
         joins = steps and (not _is_instruction(core) or len(steps[-1].split()) < 2)
-        if joins:  # a continuation ("cats and dogs"), or the step before was a bare verb ("find and fix")
-            steps[-1] = f"{steps[-1]}{separator if separator.strip() in (',', 'and', '') else ' '}{piece.strip()}"
+        if joins:  # a continuation ("cats and dogs", "the next eclipse"), or the step before was a bare verb ("find and fix")
+            kept = not _is_instruction(core) or separator.strip() in (",", "and", "")
+            steps[-1] = f"{steps[-1]}{separator if kept else ' '}{piece.strip()}"
         elif _is_instruction(core):
             steps.append(core)
         elif not context:
@@ -292,6 +294,115 @@ def _kind(text: str, has_path: bool) -> str:
     if _QUESTION.match(core) or core.endswith("?") or _ANSWER_VERB.match(core):
         return "answer"
     return "other"  # a constraint or a step code cannot check ("make sure it ends with a newline")
+
+
+# The words that ask for a search, as opposed to what to search for.
+_SEARCH_PHRASE = re.compile(
+    r"\b(?:(?:do|run|make)\s+an?\s+(?:web\s+)?search|(?:web\s+)?search(?:ing)?(?:\s+(?:on\s+)?(?:the\s+)?(?:web|internet|online))?|"
+    r"google|look(?:ing)?\s+(?:(?:it|them|this|that)\s+)?up|(?:do\s+)?(?:some\s+)?research|"
+    r"browse(?:\s+the\s+web)?|find\s+out|(?:check|look)\s+online|"
+    r"(?:on|from)\s+the\s+(?:web|internet))\b(?:\s+online\b)?(?:\s+(?:for|about|on)\b)?",
+    re.I,
+)
+# A step Kiwibro may search for by itself. A search sends its words to a search engine, so
+# the bar is high: the step says to search, or it is a question about the world as it is
+# now, and it is not about the user's own things.
+_SEARCH_TOLD = re.compile(
+    r"\b(?:search|google|look(?:ing)?\s+(?:(?:it|them|this|that)\s+)?up|browse\s+the\s+web|"
+    r"(?:on|from)\s+the\s+(?:web|internet)|(?:check|look)\s+online)\b",
+    re.I,
+)
+_SEARCH_HINT = re.compile(
+    r"\b(?:find\s+out|(?:do|some)\s+research|research\s+(?:on|about|into|how|what|why|who|the))\b", re.I
+)
+_FRESH = re.compile(
+    r"\b(?:news|latest|newest|this\s+(?:week|month|year)|recent(?:ly)?|right\s+now|current(?:ly)?)\b", re.I
+)
+_OWN = re.compile(
+    r"\b(?:i|i'm|i've|i'd|my|mine|we|we're|we've|our|ours|us|above|earlier|attached|"
+    r"(?:did|have|had)\s+you|you\s+(?:said|told|wrote|found|mentioned))\b",
+    re.I,
+)
+_FRESH_LEAD = re.compile(r"(?:(?:tell|give|show|get)\s+me|(?:any|the)?\s*(?:latest|newest|recent|news))\b", re.I)
+_CLOCK = re.compile(r"\b(?:time|date|day|year|month)\b", re.I)
+
+
+def _asks_search(step: str) -> bool:
+    if _SEARCH_TOLD.search(step):
+        return True
+    if _OWN.search(step.replace("\u2019", "'")):
+        return False
+    core = _ASK.sub("", step)
+    if _CLOCK.search(core):  # the time and the date are in Kiwibro's own context
+        return False
+    return bool(_SEARCH_HINT.search(step)) or bool(
+        _FRESH.search(step) and (_QUESTION.match(core) or _FRESH_LEAD.match(core))
+    )
+
+
+QUERY_CHARS = 160
+_POINTS = re.compile(r"\b(?:he|she|it|they|them|him|her|his|its|their|that|this|those|these)\b", re.I)
+
+
+def _query_of(step: str) -> str:
+    """A step without the words that only ask for the search."""
+    text = _SEARCH_PHRASE.sub(" ", _ASK.sub("", _CODE.sub(" ", step)))
+    text = re.sub(
+        r"^\W*(?:(?:please|and|then|for|about|on|tell|give|show|get|me)\b\W*)+", " ", " ".join(text.split()), flags=re.I
+    )
+    return " ".join(text.split()).strip(" ?.!,:;-")[:QUERY_CHARS]
+
+
+def search_request(message: str) -> tuple[str, bool]:
+    """The web search a message asks for: (query, borrowed). ('', False) when it asks for
+    none, or names a page to open instead.
+
+    A step that only says to search ("look it up") borrows its subject from the step
+    beside it ("how old is he?"): the search is then how that question gets answered."""
+    if "://" in message:
+        return "", False
+    steps = split_steps(message)
+    for index, text in enumerate(steps):
+        if not _asks_search(text) or _kind(text, bool(_PATH.search(text)) or bool(_PLACE.search(text))) != "web":
+            continue
+        own = _query_of(text)
+        if directives.keywords(own) - _FILLER:
+            return own, False
+        for other in [*reversed(steps[:index]), *steps[index + 1:]]:
+            subject = _query_of(other)
+            if subject:
+                return subject, True
+        break
+    return "", False
+
+
+MAX_QUESTIONS = 5
+
+
+def questions(message: str) -> list[str]:
+    """The separate questions of a message that only asks ([] for one question, or for work to do)."""
+    steps = split_steps(message)
+    if not 2 <= len(steps) <= MAX_QUESTIONS:
+        return []
+    if any(_kind(step, bool(_PATH.search(step)) or bool(_PLACE.search(step))) != "answer" for step in steps):
+        return []
+    return steps
+
+
+def unanswered(asked: list[str], reply: str) -> list[str]:
+    """Questions a reply left out. Two signs are needed, because an answer rarely repeats the
+    question's words: the reply has fewer parts than there were questions, and none of a
+    question's own words appear in it."""
+    parts = [part for part in re.split(r"[.!?;:\n]+|,\s|\b(?:and|but)\b", reply) if len(part.split()) >= 2]
+    if len(parts) >= len(asked):
+        return []
+    low = reply.lower()
+    missing = [
+        question for question in asked
+        if (topic := _topic(question)) and not (len(topic) <= 2 and _POINTS.search(question))
+        and not any(word in low for word in topic)
+    ]
+    return missing if len(missing) < len(asked) else []
 
 
 def build(message: str, workspace_root: Path | str) -> TurnPlan | None:
@@ -464,7 +575,9 @@ class TurnPlan:
         for step in self.steps:
             if step.kind == "answer":
                 topic = _topic(step.text)  # catches an answer left out, not one worded differently
-                if topic and not any(w in reply for w in topic):
+                # "how old is he?" is answered by "56": a question that points has no words to look for.
+                pointing = len(topic) <= 2 and _POINTS.search(step.text) and reply.strip()
+                if topic and not pointing and not any(w in reply for w in topic):
                     problems.append((step, "your reply does not cover it yet"))
             elif step.kind == "other":
                 continue

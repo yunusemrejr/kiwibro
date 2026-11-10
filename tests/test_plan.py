@@ -180,28 +180,67 @@ def test_an_unnamed_place_outside_the_workspace_stays_refused(env: Env, home: Pa
     assert (home / "Desktop" / "goal" / "raspberry.md").exists()
 
 
-def test_stopping_early_gets_one_corrective_nudge(env: Env, home: Path, web: list[str]) -> None:
+def test_stopping_early_gets_one_corrective_nudge(env: Env, home: Path) -> None:
     env.fake.stream_script = [
-        ChatResult(content="I'll search for that and write the doc."),  # announces, does nothing
-        tool_call_result("web_search", {"query": "Raspberry Pi 5 news"}),
-        tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC}, "call_2"),
-        ChatResult(content="A Raspberry Pi is a small computer. Saved the news to your Desktop."),
+        ChatResult(content="I'll write that doc for you."),  # announces, does nothing
+        tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC}),
+        ChatResult(content="Saved the doc to your Desktop."),
     ]
-    events, _raw = chat_events(env, EXAMPLE)
+    chat_events(env, "Write a doc about the Raspberry Pi to ~/Desktop/goal/raspberry.md")
     nudge = env.fake.stream_calls[1]["messages"][-1]["content"]
-    assert nudge.startswith("The user's request is not finished.")
-    assert "2. search the web" in nudge and "3. write me a markdown doc" in nudge
+    assert nudge.startswith("The user's request is not finished.") and "1. Write a doc" in nudge
     assert (home / "Desktop" / "goal" / "raspberry.md").exists()
     stored = [m["content"] for m in env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])]
     assert not any("is not finished" in str(content) for content in stored)  # transient
 
 
-def test_an_unfinished_turn_says_so_honestly(env: Env, home: Path, web: list[str]) -> None:
-    env.fake.stream_script = [ChatResult(content="Sure!")] * 3  # never does the work
+def test_a_search_the_model_skipped_is_made_for_it(env: Env, home: Path, web: list[str]) -> None:
+    env.fake.stream_script = [
+        ChatResult(content="A Raspberry Pi is a small computer. I'll search for the news next."),  # no call
+        tool_call_result("write_file", {"path": "~/Desktop/goal/raspberry.md", "content": DOC}),
+        ChatResult(content="Saved the news to your Desktop."),
+    ]
     events, _raw = chat_events(env, EXAMPLE)
-    assert len(env.fake.stream_calls) == 1 + plan.MAX_FOLLOWUPS
+    assert web == ["the latest Raspberry Pi 5 news"]  # Kiwibro's own call, worded from the request
+    nudge = env.fake.stream_calls[1]["messages"][-1]["content"]
+    assert nudge == prompts.SEARCHED_FOR_YOU.format(then=prompts.SEARCHED_THEN_GO_ON)
+    messages = env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])
+    first = next(m for m in messages if m["role"] == "assistant")
+    assert first["content"].startswith("A Raspberry Pi is a small computer.")  # its answer to step 1 stays
+    assert first["tool_calls"][0]["function"]["name"] == "web_search"
+    assert (home / "Desktop" / "goal" / "raspberry.md").exists()
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "web_search"
+
+
+def test_an_answer_given_without_the_search_it_needed_is_dropped(env: Env, web: list[str]) -> None:
+    env.fake.stream_script = [ChatResult(content="Inception was directed by Christopher Nolan.")]
+    events, _raw = chat_events(env, "Who directed Inception?")
+    conversation_id = events[0][1]["conversation_id"]
+    assert web == []  # a plain question is not a search request
+    env.fake.stream_script = [ChatResult(content="He is 85 years old."),  # from recall, and wrong
+                              ChatResult(content="He was born on 30 July 1970, so he is 56.")]
+    chat_events(env, "how old is he? look it up", conversation_id=conversation_id)
+    assert len(web) == 1 and web[0].startswith("how old is he") and "Christopher Nolan" in web[0]
+    assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.SEARCHED_FOR_YOU.format(
+        then=prompts.SEARCHED_THEN_ANSWER)
+    stored = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert not any("85 years" in content for content in stored) and stored[-1].endswith("so he is 56.")
+
+
+def test_a_model_that_searches_by_itself_is_left_alone(env: Env, web: list[str]) -> None:
+    env.fake.stream_script = [tool_call_result("web_search", {"query": "tallest building in Turkey"}),
+                              ChatResult(content="It is the Çamlıca Tower.")]
+    events, _raw = chat_events(env, "look up the tallest building in Turkey")
+    assert web == ["tallest building in Turkey"]
+    assert "acted_instead" not in ([payload for event, payload in events if event == "done"][0]["inference"] or {})
+
+
+def test_an_unfinished_turn_says_so_honestly(env: Env, home: Path, web: list[str]) -> None:
+    env.fake.stream_script = [ChatResult(content="Sure!") for _ in range(4)]  # never does the work
+    events, _raw = chat_events(env, EXAMPLE)
+    assert len(env.fake.stream_calls) == 2 + plan.MAX_FOLLOWUPS  # the search was made for it; the doc was not
     text = "".join(payload.get("text", "") for event, payload in events if event == "delta")
-    assert "Not finished: 2. search the web" in text and "3. write me a markdown doc" in text
+    assert "Not finished: 3. write me a markdown doc" in text and "2. search the web" not in text
 
 
 def test_a_cut_off_write_never_saves_a_truncated_file(env: Env, home: Path, web: list[str]) -> None:
@@ -408,3 +447,70 @@ def test_routing_never_escapes_the_named_place(home: Path, tmp_path: Path) -> No
     for escape in ("~/Desktop/goal/../../.ssh/id_rsa", "~/Desktop/goal/other.md", "../.bashrc", "/etc/passwd"):
         assert built.route("write_file", {"path": escape, "content": "x"}, workspace) is None, escape
     assert built.route("run_command", {"path": "~/Desktop/goal/raspberry.md"}, workspace) is None  # file tools only
+
+
+@pytest.mark.parametrize(
+    "message, query",
+    [
+        ("search the web for the next solar eclipse", "the next solar eclipse"),
+        ("google the weather in Izmir", "the weather in Izmir"),
+        ("find out who wrote Dune", "who wrote Dune"),
+        ("do some research on heat pumps and write me a summary", "heat pumps"),
+        ("can you tell me the latest news on the Fed?", "the latest news on the Fed"),
+        ("who is the current president of France?", "who is the current president of France"),
+        ("look up my flight TK1234 status", "my flight TK1234 status"),  # told to, in so many words
+    ],
+)
+def test_a_search_kiwibro_may_run_by_itself(message, query):
+    assert plan.search_request(message) == (query, False)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # The user's own things never go to a search engine unasked.
+        "what did we decide this week?",
+        "show my recent notes",
+        "search my notes for the dentist",
+        "summarise this week's notes",
+        "find out what my sister said",
+        "what did you tell me recently?",
+        "latest version of my code looks wrong, why?",
+        "currently reading Dune, any tips?",
+        # Not a request to look anything up.
+        "Summarize the PHP2Shell news as a bulletin.",
+        "research plan for my thesis: outline it",
+        "explain what a web server is",
+        "is online banking safe?",
+        "what's the current time?",
+        "what is the current directory?",
+        "tell me about kiwi birds",
+        "read https://example.com/latest and summarise it",
+    ],
+)
+def test_no_search_is_made_unasked(message):
+    assert plan.search_request(message) == ("", False)
+
+
+def test_the_separate_questions_of_a_message_are_found():
+    assert plan.questions("who is my wife and what am I allergic to?") == ["who is my wife", "what am I allergic to?"]
+    assert plan.questions("what is 2+2?") == []
+    assert plan.questions("search the web for kiwi birds and write a summary to kiwi.md") == []  # work, not questions
+
+
+def test_a_question_the_reply_skipped_is_noticed_but_a_differently_worded_answer_is_not():
+    asked = plan.questions("who is my wife and what am I allergic to?")
+    assert plan.unanswered(asked, "Your wife is Elif.") == ["what am I allergic to?"]
+    assert plan.unanswered(asked, "Your wife is Elif and you are allergic to peanuts.") == []
+    asked = plan.questions("how tall is Everest and when was it first climbed?")
+    assert plan.unanswered(asked, "It is 8,849 m and was first summited in 1953.") == []
+
+
+def test_a_skipped_question_gets_one_push(env: Env):
+    env.fake.stream_script = [ChatResult(content="Your wife is Elif."),
+                              ChatResult(content="You are allergic to peanuts.")]
+    events, _raw = chat_events(env, "who is my wife and what am I allergic to?")
+    assert "The message asks 2 things." in env.fake.stream_calls[0]["messages"][-1]["content"]
+    assert env.fake.stream_calls[1]["messages"][-1]["content"].startswith("[Kiwibro: your reply left part")
+    assert "“what am I allergic to?”" in env.fake.stream_calls[1]["messages"][-1]["content"]
+    assert len(env.fake.stream_calls) == 2

@@ -98,6 +98,55 @@ def test_a_chat_turn_that_calls_note_stores_the_note(env: Env):
     assert hit["title"] == "Wi-Fi" and hit["body"] == "The password is on the fridge"
 
 
+def test_a_note_saved_from_the_chat_says_who_saved_it(env: Env):
+    _run(env, {"action": "save", "title": "Wi-Fi", "content": "The password is on the fridge door"})
+    [note] = env.svc.db.list_notes()
+    assert note["origin"] == "kiwibro" and note["source_conversation_id"] == "c_test"
+
+
+def test_a_dictated_note_is_saved_even_when_the_model_only_talks(env: Env):
+    env.fake.stream_script = [ChatResult(content="I'll save the note for you."),  # says so, calls nothing
+                              ChatResult(content="Saved your note.")]
+    events, _raw = chat_events(env, "save a note: buy oat milk and call the dentist on Friday")
+    [note] = env.svc.db.list_notes()
+    assert note["body"] == "buy oat milk and call the dentist on Friday"
+    assert env.fake.stream_calls[1]["messages"][-1]["content"].startswith("[Kiwibro: the user asked for a note")
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["", "Saved your note."]  # the empty promise is gone; the first message carries the call
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "note"
+
+
+def test_save_that_as_a_note_keeps_the_last_reply(env: Env):
+    env.fake.stream_script = [ChatResult(content="Rowi are the rarest kiwi: about 600 birds, all near Ōkārito.")]
+    events, _raw = chat_events(env, "tell me about the rarest kiwi")
+    conversation_id = events[0][1]["conversation_id"]
+    env.fake.stream_script = [ChatResult(content="Sure, noted!"), ChatResult(content="It's in your notes.")]
+    chat_events(env, "save that as a note", conversation_id=conversation_id)
+    [note] = env.svc.db.list_notes()
+    assert note["body"] == "Rowi are the rarest kiwi: about 600 birds, all near Ōkārito."
+
+
+def test_a_model_that_saves_the_note_itself_is_left_alone(env: Env):
+    env.fake.stream_script = [tool_call_result("note", {"action": "save", "title": "Shopping", "content": "oat milk"}),
+                              ChatResult(content="Saved.")]
+    events, _raw = chat_events(env, "save a note: oat milk and bread")
+    assert [note["title"] for note in env.svc.db.list_notes()] == ["Shopping"]
+    assert "acted_instead" not in ([payload for event, payload in events if event == "done"][0]["inference"] or {})
+
+
+def test_only_a_note_given_word_for_word_is_saved_as_typed():
+    from kiwibro import notes
+
+    assert notes.dictated("note: wifi password is kiwi-1234") == "wifi password is kiwi-1234"
+    assert notes.dictated("take a note that the car service is due in March") == "the car service is due in March"
+    assert notes.dictated('Could you save this note: "Meeting moved to 3pm"') == "Meeting moved to 3pm"
+    assert notes.dictated("add this to my notes please") == "" and notes.dictated("note that down") == ""
+    for composed in ("make a note about the numbers above", "write down the steps for making bread",
+                     "what's in my notes?", "save that", "notes on quantum computing please"):
+        assert notes.dictated(composed) is None
+
+
 def test_a_relevant_note_rides_on_the_newest_message_only(env: Env):
     env.svc.notes.save("Ferry to Bursa on Friday, hotel booked.", "Trip to Izmir")
     env.fake.stream_script = [ChatResult(content="Hello!")]
@@ -125,3 +174,12 @@ def test_note_is_auto_by_default_and_offered_in_the_full_profile(env: Env):
     assert tools.get_spec("note").risk == tools.get_spec("remember").risk
     assert "note" in tools.select_tool_names("auto")
     assert any(item["function"]["name"] == "note" for item in tools.tool_defs_for("full"))
+
+
+def test_save_that_with_nothing_said_before_says_so_instead_of_pretending(env: Env):
+    env.fake.stream_script = [ChatResult(content="I've saved the note in your notes.")]
+    events, _raw = chat_events(env, "save that as a note")
+    assert env.svc.db.list_notes() == []
+    conversation_id = events[0][1]["conversation_id"]
+    shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
+    assert shown == ["There is nothing earlier in this chat to save yet. Tell me what the note should say and I'll keep it."]

@@ -49,6 +49,10 @@ SNIPPETS: dict[str, str] = {
         "(action \"update\", old = the outdated fact) or remove one (action \"forget\"); use recall to "
         "look up earlier conversations instead of asking the user to repeat themselves."
     ),
+    "about_user": (
+        "The user asks about themselves. Answer from the memory in this note, speaking to them (“Your … "
+        "is …”). If it is not there, say you do not know it yet. Do not search the web for it."
+    ),
     "notes": (
         "The user wants a note kept or looked up: call the `note` tool (save, append, read or search) "
         "instead of answering from memory."
@@ -100,6 +104,17 @@ _MEMORY = re.compile(
     r"you\s+know\s+(?:that\s+)?my|what\s+do\s+you\s+know\s+about\s+me|my\s+name)\b",
     re.I,
 )
+# "What is my dog's name?", "where do I live?", "when is my birthday?"
+_ABOUT_USER = re.compile(
+    r"^\W*(?:what|what's|where|who|who's|when|when's|which|how\s+old|do\s+you\s+(?:know|remember))\b[^.?!]{0,60}"
+    r"\b(?:my|(?:do|did|am|was)\s+i)\b",
+    re.I,
+)
+_MACHINE = re.compile(
+    r"\b(?:ip|mac\s+address|hostname|battery|disk|cpu|gpu|ram|screen|wi-?fi|network|clipboard|password|"
+    r"computer|laptop|pc|system|os|kernel|browser|terminal)\b",
+    re.I,
+)
 _NOTES = re.compile(
     r"\b(?:take|make|write|jot|add|keep|save)\b[^.?!]{0,40}\bnotes?\b|\bnote\s+(?:this|that|it)\s+down\b|"
     r"\bmy\s+notes?\b|\bnotebook\b",
@@ -142,6 +157,10 @@ def select(
         keys.add("desktop")
     if _MEMORY.search(text):
         keys.add("memory")
+    if "memory" not in keys and _ABOUT_USER.search(text) and not any(
+        other.search(text) for other in (plan._LOCAL_WORD, _MACHINE, _DESKTOP, _CODE)
+    ):
+        keys.add("about_user")
     if _NOTES.search(text):
         keys.add("notes")
     if _VISUAL.search(text):

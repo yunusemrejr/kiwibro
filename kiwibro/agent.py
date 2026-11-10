@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
+    adapters, autofacts, checkpoints, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
     sessions, steer, terms, toolcall, tools, workspaces,
 )
 from .context import (
@@ -26,6 +26,7 @@ from .context import (
 from .db import Database
 from .llm import ADAPTER_TASK, ADAPTERS_OFF, ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
 from .memory import MemoryEngine
+from . import notes as notes_module
 from .notes import Notebook
 from .sandbox import SandboxError, Workspace
 from .search import SearchEngine
@@ -318,6 +319,9 @@ class Turn:
     think_budget: int = 0  # reasoning allowed before acting (0: no limit for this request)
     facts: steer.Facts | None = None  # what is true this turn; replies are checked against it
     steer_left: int = 1  # corrections Kiwi Sense may still ask for in this turn
+    acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
+    learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
+    questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
     steered: list[str] = field(default_factory=list)  # kinds of correction made this turn
     adapter_task: str | None = None  # the task this turn's adapters follow, read once from the user's words
     adapters_tried: list[Any] = field(default_factory=list)  # on when a reply went wrong; off from then on
@@ -590,6 +594,7 @@ class AgentManager:
         turn.reserve = estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) if tool_list else 0
         self._page_long_message(turn, user_message, model)
         turn.plan = self._plan_for(turn, settings)
+        turn.questions = plan.questions(turn.message) if turn.plan is None else []
         captured = self._capture_memory(turn, settings)
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
@@ -666,6 +671,7 @@ class AgentManager:
             )
             if result.tools_disabled:
                 tool_list = None
+            self._act_instead(turn, result)
             result = self._steer_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
             self._record_usage(turn, result, prepared)
             assistant_message = None
@@ -695,7 +701,7 @@ class AgentManager:
                         "" if turn.plan.checkable else self._review_nudge(turn, settings)
                     )
                 else:
-                    turn.pending_review = self._review_nudge(turn, settings)
+                    turn.pending_review = self._unanswered_nudge(turn) or self._review_nudge(turn, settings)
                 if not turn.pending_review:
                     self._close_plan(turn, model)
                     break
@@ -744,6 +750,72 @@ class AgentManager:
             },
         )
 
+    def _act_instead(self, turn: Turn, result: ChatResult) -> None:
+        """The user asked for something code can do exactly as asked (keep a dictated note,
+        search the web) and the model replied without a tool call: Kiwibro adds the call
+        itself, once per turn. A small model that only talks still gets the work done, and
+        the answer comes from results instead of from what it happens to recall."""
+        if result.tool_calls or turn.acted_instead or turn.tool_calls_made or turn.abort.is_set():
+            return
+        if turn.facts is None or turn.facts.small_talk:
+            return
+        try:
+            call = self._note_call(turn) or self._search_call(turn)
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not act for the model", turn.conversation_id, exc_info=True)
+            return
+        if call is None:
+            return
+        name, args, keep_reply, nudge = call
+        if not name:  # nothing code can do, and the reply would only pretend: say what is true
+            result.content = turn.partial_text = nudge
+            turn.emit("rewrite", {"text": nudge, "reasoning": ""})
+            return
+        turn.acted_instead = name
+        log.info("turn %s: the model made no call; Kiwibro calls %s %s", turn.conversation_id, name,
+                 json.dumps(args, ensure_ascii=False)[:160])
+        result.tool_calls = [{
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+        }]
+        result.finish_reason = "tool_calls"
+        if not keep_reply:  # written without the work it promised or needed
+            result.content = ""
+            turn.partial_text = ""
+            turn.emit("rewrite", {"text": "", "reasoning": ""})
+        turn.inference["acted_instead"] = name
+        turn.pending_review = nudge
+
+    def _note_call(self, turn: Turn) -> tuple[str, dict[str, Any], bool, str] | None:
+        """A `note` call for a note the user dictated, or for "save that as a note"."""
+        if "note" not in turn.facts.tools:
+            return None
+        body = notes_module.dictated(turn.message)
+        if body is None:
+            return None
+        if not body:  # it points at what was just said
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=8)
+                       if m.get("id") != turn.user_message_id and m.get("role") == "assistant"
+                       and str(m.get("content") or "").strip() and not (m.get("meta") or {}).get("plan_open")]
+            if not earlier:
+                return "", {}, True, prompts.NOTHING_TO_NOTE
+            body = str(earlier[-1]["content"]).strip()
+        return "note", {"action": "save", "content": body}, False, prompts.NOTED_FOR_YOU
+
+    def _search_call(self, turn: Turn) -> tuple[str, dict[str, Any], bool, str] | None:
+        """A `web_search` call for the search the message asks for."""
+        if "web_search" not in turn.facts.tools:
+            return None
+        query, borrowed = plan.search_request(turn.message)
+        if not query:
+            return None
+        more = turn.plan is not None and any(step.kind != "web" for step in turn.plan.remaining())
+        nudge = prompts.SEARCHED_FOR_YOU.format(
+            then=prompts.SEARCHED_THEN_GO_ON if more else prompts.SEARCHED_THEN_ANSWER)
+        # A reply to the very question the search is for was written without looking.
+        return "web_search", {"query": query}, not borrowed and turn.plan is not None, nudge
+
     def _plan_for(self, turn: Turn, settings: dict[str, Any]) -> plan.TurnPlan | None:
         """The request's step plan (None for chat, plain questions or when tools are off)."""
         if not settings.get("agent_enabled", True):
@@ -770,6 +842,19 @@ class AgentManager:
         note_message = self.db.add_message(turn.conversation_id, "assistant", left, model=model, meta={"plan_open": True})
         turn.last_message_id = note_message["id"]
         turn.emit("delta", {"text": "\n\n" + left})
+
+    @staticmethod
+    def _unanswered_nudge(turn: Turn) -> str:
+        """One push for a question the reply skipped ("who is my wife and what am I allergic to?"
+        answered with the wife alone). Asked once: the questions are cleared."""
+        asked, turn.questions = turn.questions, []
+        if not asked or turn.abort.is_set():
+            return ""
+        missing = plan.unanswered(asked, turn.reply_text)
+        if not missing:
+            return ""
+        log.info("turn %s: reply skipped %s", turn.conversation_id, missing)
+        return prompts.UNANSWERED.format(questions="; ".join(f"“{question.strip(' ?')}?”" for question in missing))
 
     def _review_nudge(self, turn: Turn, settings: dict[str, Any]) -> str:
         """One end-of-turn self-check against the directive ledger, after real work.
@@ -988,8 +1073,16 @@ class AgentManager:
             if calls:
                 log.info("turn %s: recovered %s tool call(s) written as text", turn.conversation_id, len(calls))
                 result.tool_calls, result.content = calls, cleaned
+        written = result.content
+        result.content = toolcall.unwrap(written)  # "<output>400</output>" is the answer 400
         if held_back is not None:
             release = held_back.flush() + ("" if result.tool_calls else held_back.held)
+            if held_back.opener and result.content != written:
+                release = release.replace(held_back.closer, "").rstrip()
+            elif held_back.opener and not result.tool_calls:
+                # It only began like a wrapper ("<output> is an HTML element…"): show the tag after all.
+                turn.partial_text = held_back.opener + turn.partial_text
+                turn.emit("rewrite", {"text": turn.partial_text, "reasoning": ""})
             if release:
                 turn.partial_text += release
                 turn.emit("delta", {"text": release})
@@ -1223,7 +1316,10 @@ class AgentManager:
         if not settings.get("memory_enabled", True):
             return {"added": 0, "updated": 0, "removed": 0}
         try:
-            return self.memory.capture(turn.message, conversation_id=turn.conversation_id)
+            counts = self.memory.capture(turn.message, conversation_id=turn.conversation_id)
+            if counts.get("added") or counts.get("updated"):
+                turn.learned = tuple(fact.content for fact in autofacts.extract(turn.message) if not fact.forget)
+            return counts
         except Exception:  # memory must never break a turn
             log.warning("turn %s: memory capture failed", turn.conversation_id, exc_info=True)
             return {"added": 0, "updated": 0, "removed": 0}
@@ -1246,9 +1342,13 @@ class AgentManager:
             plan_kinds=[step.kind for step in steps],
             plan_steps=len(steps),
         ))
+        learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
+        several = prompts.SEVERAL_QUESTIONS.format(
+            count=len(turn.questions), questions="\n".join(f"{i}. {q}" for i, q in enumerate(turn.questions, 1)),
+        ) if turn.questions else ""
         blocks = [
             inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
-            _directives_note(self.db, turn.conversation_id), plan_note, guidance_note,
+            _directives_note(self.db, turn.conversation_id), plan_note, several, guidance_note, learned,
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
@@ -1306,6 +1406,9 @@ class AgentManager:
             asked_before=tuple(asked),
             small_talk=plan.is_small_talk(turn.message),
             model=turn.model or "",
+            note=turn.turn_context or "",
+            learned=turn.learned,
+            told_only=bool(turn.learned) and autofacts.stated_only(turn.message),
         )
 
     def _trait(self, model: str | None, kind: str) -> int:
@@ -1418,7 +1521,9 @@ class AgentManager:
             return result
         if verdict.kind == steer.UNKEPT_PROMISE and self._plan_will_chase(turn, result):
             return result  # the plan's own follow-up names the open steps, which is the better push
-        while turn.steer_left > 0:
+        if verdict.rewrite:  # code can put it right exactly: no second attempt, no wait
+            self._note_steer(turn, verdict, model)
+        while turn.steer_left > 0 and not verdict.rewrite:
             turn.steer_left -= 1
             # With a task adapter on, the first new attempt only drops the adapter; the
             # corrected attempt follows if that was not it.
@@ -1446,8 +1551,9 @@ class AgentManager:
                 turn.emit("rewrite", {"text": result.content, "reasoning": ""})
         cleaned = steer.repair(result.content, verdict, facts)
         if not cleaned and verdict.kind in (steer.OTHER_IDENTITY, steer.ADOPTED_USER):
-            cleaned = prompts.IDENTITY_LINE
-        if cleaned and cleaned != result.content:
+            # Nothing true was left. What stands in is true: who Kiwibro is, or that the fact is saved.
+            cleaned = prompts.REMEMBERED_LINE if verdict.kind == steer.ADOPTED_USER and facts.learned else prompts.IDENTITY_LINE
+        if cleaned != result.content and (cleaned or verdict.kind == steer.META_LEAK):  # a copied note is never shown
             log.info("turn %s: removed what %s", turn.conversation_id, steer.LABELS.get(verdict.kind, verdict.kind))
             result.content = cleaned
             turn.partial_text = cleaned

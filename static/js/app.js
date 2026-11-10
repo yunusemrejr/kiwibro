@@ -1210,6 +1210,7 @@ function handleStreamEvent(event, data, activeStream) {
       chatView.finishDone({
         aborted: Boolean(data.aborted),
         steered: Array.isArray(data.inference?.steered) ? data.inference.steered : [],
+        acted: data.inference?.acted_instead || "",
       });
       inferenceUI.onDone(data);
       scheduleConversationRefresh();

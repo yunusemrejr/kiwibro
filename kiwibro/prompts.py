@@ -69,6 +69,16 @@ CUT_OFF_CALL = (
     "did not run (a truncated file would have been saved). Make the call again with shorter content: "
     "keep the file concise, or write the first part now and add the rest with a second call."
 )
+SEARCHED_FOR_YOU = (
+    "[Kiwibro: the user asked for a web search and you replied without one, so Kiwibro ran it: the results "
+    "are above. {then}]"
+)
+NOTED_FOR_YOU = (
+    "[Kiwibro: the user asked for a note and you replied without saving one, so Kiwibro saved it: see "
+    "above. Tell the user it is saved, in one short sentence.]"
+)
+SEARCHED_THEN_ANSWER = "Answer the user from them now, briefly, and name the source."
+SEARCHED_THEN_GO_ON = "Use them and go on with the rest of the request."
 SEARCH_REPEATED = (
     "Not searched: this turn already searched for almost the same thing ({query}). Use those results "
     "(they are above), search for something clearly different, or answer now."
@@ -89,6 +99,18 @@ TOOLS_PAUSED = (
 # Kiwi Sense corrections (steer.py) and the last-resort answer (agent.py): transient or shown as-is.
 STEER_NOTE = "[Kiwibro: {note}]"
 IDENTITY_LINE = "I'm Kiwibro, an AI agent running on your computer."
+REMEMBERED_LINE = "Got it, I'll remember that."
+NOTHING_TO_NOTE = "There is nothing earlier in this chat to save yet. Tell me what the note should say and I'll keep it."
+SEVERAL_QUESTIONS = "The message asks {count} things. Answer every one, in order:\n{questions}"
+UNANSWERED = (
+    "[Kiwibro: your reply left part of the message unanswered: {questions}. Answer that now in a sentence "
+    "or two. Do not repeat what you already said.]"
+)
+JUST_LEARNED = (
+    "Saved to memory from this message just now:\n{facts}\n"
+    "These are facts about the user, not about you. Unless the message asks for something else, reply with "
+    "one short sentence telling the user what you will remember."
+)
 ANSWER_NOW = (
     "[Kiwibro: you have not answered yet. Do not call a tool. Answer the user now in plain words from "
     "what you already have, and say what is still unknown.]"

@@ -148,3 +148,21 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
     assert stored[-1]["content"] == kept["content"] + "\n\nPatch to PHP 8.5.12 or later today."
     rewrites = [payload["text"] for event, payload in events if event == "rewrite"]
     assert rewrites == [kept["content"] + "\n\n"]  # the UI drops the loop, keeps the start
+
+
+def test_wrapper_tags_around_an_answer_are_neither_shown_nor_stored(env: Env):
+    env.fake.stream_script = [ChatResult(content="<output>\n400\n</output>")]
+    events, _raw = chat_events(env, "what is 17 * 23 + 9?")
+    shown = "".join(payload["text"] for event, payload in events if event == "delta")
+    assert shown.strip() == "400" and not [event for event, _ in events if event == "rewrite"]
+    conversation_id = events[0][1]["conversation_id"]
+    assert [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"] == ["400"]
+
+
+def test_a_reply_that_only_starts_like_a_wrapper_keeps_its_tag(env: Env):
+    text = "<output> is the HTML element for a calculation result."
+    env.fake.stream_script = [ChatResult(content=text)]
+    events, _raw = chat_events(env, "what is the output tag in HTML for?")
+    conversation_id = events[0][1]["conversation_id"]
+    assert [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"] == [text]
+    assert [payload["text"] for event, payload in events if event == "rewrite"][-1] == text

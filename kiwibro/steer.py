@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from . import autofacts
 from . import sense as sense_module
 
 OTHER_IDENTITY = "other_identity"
@@ -98,6 +99,13 @@ _OUTSIDE_WORLD = re.compile(
     r"\bpage\b|e-?mail|reminder|memory|\bnotes?\b|clipboard|screenshot|server|\bchanges\b|patch|\w+\.[a-z]{1,5}\b",
     re.IGNORECASE)
 _MEMORY_CLAIM = re.compile(r"memory|remember|noted|\bnotes?\b|stored your", re.IGNORECASE)
+# "I've saved the note in your notes": a claim in so many words, whatever the probe makes of it.
+_DID_IT = re.compile(
+    r"\bI(?:['’]ve| have)?\s+(?:just\s+|now\s+)?(?:saved|added|stored|created|written|recorded|jotted|updated|"
+    r"deleted|sent)\b[^.!?]{0,60}\b(?:notes?|files?|reminders?)\b",
+    re.IGNORECASE,
+)
+_BEFORE_NOW = re.compile(r"\b(?:already|earlier|before|previously|last time)\b", re.IGNORECASE)
 # A list under a line such as "What I can't do:" denies an ability in every item, without
 # repeating the "I can't". Each item is read with those words put back.
 _CANNOT_LEAD = re.compile(r"\b(?:can(?:['’]|no)t|can not|unable to|not able to|limitations?)\b", re.IGNORECASE)
@@ -122,6 +130,9 @@ class Facts:
     asked_before: tuple[str, ...] = ()  # what the user asked earlier in this chat (oldest first)
     small_talk: bool = False  # the message is a greeting or thanks
     model: str = ""
+    note: str = ""  # Kiwibro's context note for this turn (the model must never read it out)
+    learned: tuple[str, ...] = ()  # facts about the user that Kiwibro saved from this message
+    told_only: bool = False  # the message states those facts and asks nothing
 
 
 @dataclass(frozen=True)
@@ -130,6 +141,7 @@ class Verdict:
     note: str  # what the model is told before it tries again
     sentence: str = ""
     score: float = 1.0
+    rewrite: str = ""  # the sentence put right by code; when set, no new attempt is needed
 
 
 class Redirect(Exception):
@@ -218,6 +230,80 @@ def _adopted_user(sentence: str, facts: Facts) -> str:
     return ""
 
 
+_USER_SPEAKS = frozenset({"i", "i'm", "im", "i've", "my"})
+PARROT_WORDS = 4  # this many of the user's own words in a row, starting at "I" or "my"
+_QUOTING = re.compile(r"[\"“”«»]|:\s*(?:i|my)\b", re.IGNORECASE)  # the user's words, given as theirs
+# Requests where the reply is rightly written in the user's voice (a bio, a translation, a fix).
+_IN_USER_VOICE = re.compile(
+    r"\b(?:write|draft|compose|translate|rewrite|rephrase|reword|correct|fix|proofread|repeat|say|email|"
+    r"message|letter|bio|cv|resume|post|tweet|caption|speech|introduce|introduction)\b",
+    re.IGNORECASE,
+)
+
+
+def _plain(text: str) -> list[str]:
+    return re.sub(r"[^\w\s']", " ", text.lower().replace("\u2019", "'")).split()
+
+
+# "What is my dog's name?" answered "My dog's name is Biscuit": things an assistant has none of.
+# Thoughts are left out ("my understanding is…" may well be Kiwibro's own).
+_OWN_THOUGHTS = frozenset(
+    {
+        "understanding", "opinion", "view", "guess", "take", "answer", "suggestion", "advice", "recommendation",
+        "plan", "goal", "apologies", "apology", "point", "thought", "thoughts", "pleasure", "bad", "mistake",
+        "aim", "job", "role", "purpose", "task", "best", "knowledge", "memory", "response", "reply",
+    }
+)
+_ASKS_SELF = re.compile(r"\b(?:do|did|am|have|should|can|could|will|would)\s+i\s+(?P<verb>[a-z]+)", re.IGNORECASE)
+_SELF_VERBS = frozenset(
+    {"live", "work", "like", "love", "hate", "prefer", "use", "speak", "own", "drive", "study", "teach", "play",
+     "enjoy", "eat", "drink"}
+)
+_IS_QUESTION = re.compile(r"\?\s*$|^\W*(?:what|where|who|when|which|how|do|did|am|is|are|was|have|should|can)\b",
+                          re.IGNORECASE)
+
+
+def _spoke_as_user(sentence: str, facts: Facts) -> bool:
+    """The reply says, as its own, something that is the user's: what they just told Kiwibro about
+    themselves ("…, I'm allergic to peanuts"), or the thing they asked about ("My dog's name is Biscuit")."""
+    if _QUOTING.search(sentence) or _IN_USER_VOICE.search(facts.question):
+        return False
+    asked, words = _plain(facts.question), _plain(sentence)
+    said = " " + " ".join(asked) + " "
+    if facts.learned and any(
+        word in _USER_SPEAKS and len(words) - start >= PARROT_WORDS
+        and " " + " ".join(words[start:start + PARROT_WORDS]) + " " in said
+        for start, word in enumerate(words)
+    ):
+        return True
+    if len(words) < 3 or not _IS_QUESTION.search(facts.question.strip()):
+        return False
+    if words[0] == "my":
+        return words[1].split("'")[0] not in _OWN_THOUGHTS and f" my {words[1]} " in said
+    if words[0] == "i":
+        return words[1] in _SELF_VERBS and any(m.group("verb").lower() == words[1] for m in _ASKS_SELF.finditer(facts.question))
+    return False
+
+
+_TO_YOU = (
+    (r"\bI\s+am\b", "you are"), (r"\bI'm\b", "you're"), (r"\bI\s+was\b", "you were"), (r"\bI've\b", "you've"),
+    (r"\bI'd\b", "you'd"), (r"\bI'll\b", "you'll"), (r"\bmyself\b", "yourself"), (r"\bmine\b", "yours"),
+    (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bI\b", "you"),
+)
+
+
+def _to_you(sentence: str) -> str:
+    """The sentence said to the user instead of as the user: "My dog…" becomes "Your dog…"."""
+    text = sentence.replace("\u2019", "'")
+    for pattern, word in _TO_YOU:
+        text = re.sub(
+            pattern,
+            lambda m, word=word: word.capitalize() if not text[: m.start()].strip(" \t\n*_>-#") else word,
+            text, flags=re.IGNORECASE,
+        )
+    return text
+
+
 def _identity(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
     name = _adopted_user(sentence, facts)
     if name:
@@ -226,6 +312,12 @@ def _identity(reader: Any, sentence: str, facts: Facts) -> Verdict | None:
             f"You are Kiwibro, the assistant. {name} is the user you are talking to, not you. "
             f"Write your reply again as Kiwibro, speaking to {name}.",
             sentence,
+        )
+    if _spoke_as_user(sentence, facts):
+        return Verdict(
+            ADOPTED_USER,
+            "That is about the user, not about you. You are Kiwibro: say it to the user with “you” and “your”.",
+            sentence, rewrite=_to_you(sentence),
         )
     label, score = _probe(reader, sentence)
     if label != OTHER_IDENTITY or score < _threshold(reader) or "kiwibro" in sentence.lower():
@@ -270,6 +362,40 @@ def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> V
     return None
 
 
+ECHO_MIN_CHARS = 25  # a shorter line can match the note by chance
+_LINE_MARKS = re.compile(r"^[\s#>*+\-•–\d.)\[\]]+|[\s*_\]]+$")
+_NOTE_HEADINGS = ("guidance for this turn", "kiwibro context for this turn")
+
+
+def _bare(line: str) -> str:
+    return _LINE_MARKS.sub("", line).lower()
+
+
+def _echoed(reply: str, facts: Facts) -> list[str]:
+    """Lines of the reply copied from Kiwibro's own context note."""
+    if not facts.note:
+        return []
+    noted = {bare for bare in map(_bare, facts.note.splitlines()) if len(bare) >= ECHO_MIN_CHARS}
+    echoed = []
+    for line in reply.splitlines():
+        bare = _bare(line)
+        if bare and (bare in noted or bare.startswith(_NOTE_HEADINGS)):
+            echoed.append(line)
+    return echoed
+
+
+def _echo(reply: str, facts: Facts) -> Verdict | None:
+    lines = _echoed(reply, facts)
+    if not lines:
+        return None
+    return Verdict(
+        META_LEAK,
+        "You copied Kiwibro's note for this turn into your reply. The user must not see it. "
+        "Follow it silently: answer the user's message itself.",
+        lines[0].strip(),
+    )
+
+
 def _meta(reader: Any, sentence: str) -> Verdict | None:
     label, score = _probe(reader, sentence)
     if label != META_LEAK or score < _threshold(reader):
@@ -290,12 +416,18 @@ def early(text: str, facts: Facts, checked: int = 0) -> tuple[Verdict | None, in
     reader = _reader()
     if reader is None or len(text) > EARLY_CHARS:
         return None, checked
+    echo = _echo(text.rsplit("\n", 1)[0], facts) if "\n" in text else None  # whole lines only
+    if echo is not None:
+        return echo, checked
     complete = sense_module.sentences(text)
     if complete and text.rstrip(" ")[-1:] not in ".!?…\n":
         complete = complete[:-1]  # the last one is still being written
     for index in range(checked, len(complete)):
         sentence = complete[index]
-        verdict = _identity(reader, sentence, facts) or _denial(reader, sentence, facts)
+        verdict = _identity(reader, sentence, facts)
+        if verdict is not None and verdict.rewrite:
+            verdict = None  # code puts it right once the reply is whole: no reason to stop the stream
+        verdict = verdict or _denial(reader, sentence, facts)
         if verdict is None and index < 2:
             verdict = _meta(reader, sentence)
         if verdict is not None:
@@ -367,6 +499,9 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
     reader = _reader()
     if reader is None or not (reply or "").strip():
         return None
+    echo = _echo(reply, facts)
+    if echo is not None:
+        return echo
     read = _sentences(reply)
     for index, (sentence, listed) in enumerate(read):
         verdict = _identity(reader, sentence, facts) or _denial(reader, sentence, facts, listed)
@@ -380,7 +515,10 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
     threshold = _threshold(reader)
     for sentence in parts:
         label, score = _probe(reader, sentence)
-        if label != "action_claim" or score < threshold or facts.tools_ran or not _OUTSIDE_WORLD.search(sentence):
+        claimed = (label == "action_claim" and score >= threshold) or (
+            _DID_IT.search(sentence) is not None and not _BEFORE_NOW.search(sentence)
+        )
+        if not claimed or facts.tools_ran or not _OUTSIDE_WORLD.search(sentence):
             continue
         if facts.memory_saved and _MEMORY_CLAIM.search(sentence):
             continue  # true: Kiwibro saved it in code before the reply
@@ -399,18 +537,46 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
                 "You said what you would do next but did not do it. Do it now with a tool call, then answer.",
                 parts[-1], score,
             )
-    return _off_topic(reader, reply, facts)
+    return _unheard(reply, facts) or _off_topic(reader, reply, facts)
+
+
+_FACT_FILLER = frozenset({"user", "user's", "named", "name", "the", "and", "are", "has", "have", "from", "with"})
+
+
+def acknowledgement(learned: tuple[str, ...]) -> str:
+    """What Kiwibro says when the user only told it things: what it will remember, in a sentence."""
+    said = [autofacts.to_you(fact) for fact in learned[:4]]
+    listed = said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1]
+    return f"Got it, I'll remember that {listed}."
+
+
+def _unheard(reply: str, facts: Facts) -> Verdict | None:
+    """The user only told Kiwibro things about themselves, and the reply takes up none of it."""
+    if not (facts.told_only and facts.learned) or facts.tools_ran:
+        return None
+    told = {word for fact in facts.learned for word in _plain(fact) if len(word) >= 3} - _FACT_FILLER
+    if told & set(_plain(reply)):
+        return None
+    return Verdict(
+        OFF_TOPIC, "The user told you facts about themselves. Say in one sentence what you will remember.",
+        "", rewrite=acknowledgement(facts.learned),
+    )
 
 
 def repair(reply: str, verdict: Verdict, facts: Facts) -> str:
     """The reply without the sentences that fail in the way ``verdict`` names ("" if none is left).
 
     Used when a second attempt fails the same way: what remains is true, if shorter."""
+    if verdict.kind == OFF_TOPIC:
+        return verdict.rewrite or reply
     reader = _reader()
     if reader is None or verdict.kind not in (OTHER_IDENTITY, ADOPTED_USER, META_LEAK, DENIAL):
         return reply
     kept = reply
-    for index, (sentence, listed) in enumerate(_sentences(reply, limit=40)):
+    if verdict.kind == META_LEAK:
+        echoed = set(_echoed(reply, facts))
+        kept = "\n".join(line for line in reply.splitlines() if line not in echoed)
+    for index, (sentence, listed) in enumerate(_sentences(kept, limit=40)):
         if verdict.kind in (OTHER_IDENTITY, ADOPTED_USER):
             found = _identity(reader, sentence, facts)
         elif verdict.kind == DENIAL:
@@ -418,8 +584,13 @@ def repair(reply: str, verdict: Verdict, facts: Facts) -> str:
         else:
             found = _meta(reader, sentence) if index < 2 else None
         written = sentence[len(_CANNOT_FRAME):] if listed else sentence
-        if found is not None and found.kind == verdict.kind and written in kept:
-            kept = kept.replace(written, "", 1)
+        if found is None or found.kind != verdict.kind:
+            continue
+        if written in kept:
+            kept = kept.replace(written, found.rewrite, 1)
+        elif found.rewrite:  # written with markdown inside ("**My wife** is Elif"): turn its line round
+            plain = " ".join(_plain(written))
+            kept = "\n".join(_to_you(line) if plain in " ".join(_plain(line)) else line for line in kept.splitlines())
     kept = _without_empty_lists(kept)
     return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", kept)).strip()
 
