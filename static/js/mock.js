@@ -129,7 +129,7 @@ const DEFAULT_PERMISSIONS = {
 // The llama.cpp build the local engine would pick, and a server it already started.
 const DIRECT_RUNTIME = {
   path: "/usr/local/bin/llama-server",
-  label: "llama.cpp · CPU",
+  label: "llama.cpp · Vulkan",
   kind: "system",
   source: "PATH",
 };
@@ -585,11 +585,11 @@ export class MockBackend {
       idle_sleep_s: 1800,
       model_dirs: ["~/.cache/lm-studio/models"],
       models_count: this.models.length,
-      own_models_dir: "~/.kiwibro/models",
-      own_runtime_dir: "~/.kiwibro/runtime",
+      own_models_dir: "~/.local/share/kiwibro/models",
+      own_runtime_dir: "~/.local/share/kiwibro/runtime",
       adapters: [],
-      adapters_dir: "~/.kiwibro/adapters",
-      sources: [{ source: "kiwibro", label: "Kiwibro", path: "~/.kiwibro/models", models: this.models.length, bytes: 0 }],
+      adapters_dir: "~/.local/share/kiwibro/adapters",
+      sources: [{ source: "kiwibro", label: "Kiwibro", path: "~/.local/share/kiwibro/models", models: this.models.length, bytes: 0 }],
     };
   }
 
@@ -1053,7 +1053,7 @@ export class MockBackend {
     await this._streamText(turn, send, wait, "reasoning", reasoning, { size: 8, delay: 18 });
     await wait(200);
 
-    const answer = `I'm your local agent — nothing here leaves the machine.
+    const answer = `I'm Kiwibro, an AI agent that runs on this computer. Your chats stay here.
 
 Here's what I can do:
 
@@ -1072,7 +1072,7 @@ for note in notes:
     print(note.name)
 \`\`\`
 
-Ask me to *find something online*, *edit a file*, or *run a command* — I'll ask before touching anything.`;
+Ask me to *find something online*, *edit a file* or *run a command*. I ask before I change anything.`;
 
     await this._streamText(turn, send, wait, "delta", answer, { size: 6, delay: 26 });
     this._addMessage(turn.conversation, {

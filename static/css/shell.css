@@ -78,17 +78,6 @@
   color: var(--muted);
 }
 
-.sidebar-engine {
-  flex: none;
-  max-width: 44%;
-  overflow: hidden;
-  padding-right: 4px;
-  color: var(--faint);
-  font-size: 11px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 /* ---------- Home screen -------------------------------------------------- */
 .empty {
   padding: 16px 0 32px;

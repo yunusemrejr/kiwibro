@@ -166,7 +166,7 @@ def default_settings(server_url: str | None = None, workspace: str | None = None
     """Fresh settings values (permissions are merged separately).
 
     ``server_url`` is not a stored setting: it comes from ``KIWIBRO_SERVER_URL`` and
-    attaches Kiwibro to an llama.cpp-compatible server that is already running (tests,
+    attaches Kiwibro to a llama.cpp-compatible server that is already running (tests,
     a server on another machine) instead of starting its own."""
     url = (server_url if server_url is not None else os.environ.get("KIWIBRO_SERVER_URL") or "").strip().rstrip("/")
     ws = workspace or os.environ.get("KIWIBRO_WORKSPACE") or str(default_workspace())

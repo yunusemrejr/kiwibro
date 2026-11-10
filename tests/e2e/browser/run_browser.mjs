@@ -14,7 +14,7 @@
  * What it does
  *   checks  – console/page errors, failed requests, XSS renderer probes, SSE
  *             parser probes, API/UI contract, a11y basics, responsive overflow.
- *   flows   – hero, models, chat, approval, memory, settings, mobile; each flow
+ *   flows   – hero, models, chat, approval, memory, notes, library, how, settings, mobile; each flow
  *             saves a screenshot named exactly docs/screenshots/<name>.png.
  *
  * Usage
@@ -40,7 +40,7 @@ function parseArgs(argv) {
     mode: "mock",
     base: "",
     out: ".dev/qa/browser/shots",
-    only: "checks,hero,models,chat,approval,memory,settings,mobile",
+    only: "checks,hero,models,chat,approval,memory,notes,library,how,settings,mobile",
     settle: 550,
     chrome: process.env.CHROME_PATH || "/usr/bin/google-chrome",
     headless: true,
@@ -141,6 +141,7 @@ async function settle(page, ms) {
 
 async function shot(page, outDir, name, settleMs) {
   fs.mkdirSync(outDir, { recursive: true });
+  await page.waitForSelector(".toast", { state: "detached", timeout: 6000 }).catch(() => {}); // passing notices
   await settle(page, settleMs);
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -289,6 +290,7 @@ async function checkA11y(page) {
     const name = (node) =>
       (node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent || "").trim();
     for (const button of document.querySelectorAll("button")) {
+      if (button.closest("[hidden]")) continue; // not shown, so not in the accessibility tree
       if (!name(button)) problems.push(`unnamed button: ${button.outerHTML.slice(0, 80)}`);
     }
     for (const input of document.querySelectorAll("input, textarea, select")) {
@@ -509,7 +511,9 @@ async function flowChat(page, outDir, options) {
   const chatPrompt =
     options.mode === "live"
       ? "In one short sentence, what is a kiwi bird? Answer from your own knowledge, no tools needed."
-      : SIMPLE_PROMPT;
+      : options.mode === "mock"
+        ? "What can you do?" // the mock backend answers this one
+        : SIMPLE_PROMPT;
   await page.fill(SEL.composerInput, chatPrompt);
   await page.keyboard.press("Enter");
   await page.waitForSelector(SEL.userBubble, { timeout: 15000 });
@@ -541,11 +545,26 @@ async function flowApproval(page, outDir, options) {
       "for path in sorted(Path('.').glob('*.txt')):\n    " +
       "path.rename(path.with_name(f'{date.today()}-{path.name}'))\n```";
   } else if (options.mode === "fake") {
-    prompt = `${APPROVAL_PROMPT} [[scenario:tool_write]]`;
+    prompt = "Write the summary to a file [[scenario:tool_write]]";
   } else {
     await page.click(SEL.newChat).catch(() => {});
     await settle(page, 150);
   }
+  // a write in the workspace runs without asking by default: ask for each call during this flow
+  const setAutonomy = (mode) =>
+    page.evaluate(async (value) => {
+      const { api } = await import("/static/js/api.js");
+      await api.patchSettings({ autonomy: value });
+    }, mode);
+  if (options.mode !== "mock") await setAutonomy("supervised");
+  try {
+    return await approvalSteps(page, outDir, options, prompt, timeout);
+  } finally {
+    if (options.mode !== "mock") await setAutonomy("smart").catch(() => {});
+  }
+}
+
+async function approvalSteps(page, outDir, options, prompt, timeout) {
   await page.fill(SEL.composerInput, prompt);
   await page.keyboard.press("Enter");
   await page.waitForSelector(SEL.approval, { state: "visible", timeout });
@@ -616,6 +635,57 @@ async function flowMemory(page, outDir, options) {
   return file;
 }
 
+/** Open one of the wide panels from its place in the sidebar and wait for its content. */
+async function openPlace(page, place, sheet, ready) {
+  await resetUi(page);
+  await page.click(place);
+  await page.waitForSelector(`${sheet}[open]`, { timeout: 8000 });
+  await page.waitForSelector(`${sheet} ${ready}`, { timeout: 10000 });
+}
+
+async function closePanel(page) {
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(SEL.dialogOpen, { state: "detached", timeout: 5000 }).catch(() => {});
+}
+
+async function flowNotes(page, outDir, options) {
+  await openPlace(page, SEL.placeNotes, SEL.notesSheet, SEL.notesNew);
+  // write a note through the real panel, find it again, delete it
+  const title = "Bird feeder list";
+  await page.click(`${SEL.notesSheet} ${SEL.notesNew}`);
+  await page.fill(`${SEL.notesSheet} ${SEL.noteTitle}`, title);
+  await page.fill(`${SEL.notesSheet} ${SEL.noteBody}`, "Refill on Saturday.\n\n- sunflower seeds\n- suet\n- fresh water");
+  await page.waitForFunction(
+    (text) => Array.from(document.querySelectorAll("#notes-sheet .nt-list button")).some((row) => row.textContent.includes(text)),
+    title,
+    { timeout: 10000 },
+  );
+  const file = await shot(page, outDir, "notes", options.settle);
+  await page.click(`${SEL.notesSheet} ${SEL.noteDelete}`);
+  await page.click(`${SEL.notesSheet} ${SEL.noteDeleteConfirm}`);
+  await page.waitForFunction(
+    (text) => !Array.from(document.querySelectorAll("#notes-sheet .nt-list button")).some((row) => row.textContent.includes(text)),
+    title,
+    { timeout: 10000 },
+  );
+  await closePanel(page);
+  return file;
+}
+
+async function flowLibrary(page, outDir, options) {
+  await openPlace(page, SEL.placeModels, SEL.modelsSheet, ".panel-title");
+  const file = await shot(page, outDir, "library", options.settle);
+  await closePanel(page);
+  return file;
+}
+
+async function flowHow(page, outDir, options) {
+  await openPlace(page, SEL.placeHow, SEL.howSheet, "svg");
+  const file = await shot(page, outDir, "how", options.settle);
+  await closePanel(page);
+  return file;
+}
+
 async function flowSettings(page, outDir, options) {
   await resetUi(page);
   await page.click(SEL.settingsBtn);
@@ -642,13 +712,17 @@ async function flowSettings(page, outDir, options) {
       { timeout: 10000 },
     );
     const after = await agentSwitch.getAttribute("aria-checked");
-    const settings = await page.evaluate(async () => {
+    // the switch turns at once and saves in the background: wait for the save to land
+    const persisted = await page.evaluate(async (expected) => {
       const { api } = await import("/static/js/api.js");
-      const data = await api.settings();
-      return data.settings;
-    });
-    const expected = after === "true";
-    if (Boolean(settings.agent_enabled) !== expected) throw new Error("agent toggle did not persist");
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const data = await api.settings();
+        if (Boolean(data.settings.agent_enabled) === expected) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    }, after === "true");
+    if (!persisted) throw new Error("agent toggle did not persist");
     await agentSwitch.click();
     await page.waitForFunction(
       (previous) =>
@@ -785,6 +859,9 @@ async function main() {
       ["chat", flowChat],
       ["approval", flowApproval],
       ["memory", flowMemory],
+      ["notes", flowNotes],
+      ["library", flowLibrary],
+      ["how", flowHow],
       ["settings", flowSettings],
       ["mobile", flowMobile],
     ];

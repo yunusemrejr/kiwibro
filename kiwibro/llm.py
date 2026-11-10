@@ -1,7 +1,7 @@
 """Model client: discovery, streaming chat, non-streaming JSON helpers.
 
 Kiwibro runs llama.cpp itself (:mod:`kiwibro.engine`) and this client talks to the
-servers it starts. With ``KIWIBRO_SERVER_URL`` set it attaches to an llama.cpp-compatible
+servers it starts. With ``KIWIBRO_SERVER_URL`` set it attaches to a llama.cpp-compatible
 server that is already running instead; everything above this module is the same."""
 
 from __future__ import annotations

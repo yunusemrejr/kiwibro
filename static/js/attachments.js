@@ -200,7 +200,7 @@ export function createAttachments({ composer, input, anchor, onChange, disabled 
     });
     input.before(tray);
 
-    const fileInput = el("input", { type: "file", multiple: true, hidden: true });
+    const fileInput = el("input", { type: "file", multiple: true, hidden: true, "aria-label": "Attach files" });
     composer.append(fileInput);
     fileInput.addEventListener("change", () => {
       const picked = Array.from(fileInput.files || []);

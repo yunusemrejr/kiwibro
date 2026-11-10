@@ -31,27 +31,41 @@ Nothing is ever deleted by compaction. Compaction only changes what is
    All-or-nothing: history never advances past unsummarised content.
    Hysteresis targets 60% of the trigger so compaction (a full KV
    re-prefill) stays rare.
-3. **Episodic recall**: the newest user messages query `messages_fts`
-   (bm25) for messages *older than the window*; exact excerpts plus the
-   original-task anchor are appended to the newest user message only —
-   volatile text never enters the system prompt, keeping the server's KV
-   prefix byte-stable between turns. Tool-result caps likewise key on
-   user-turn age with a single transition.
+3. **Episodic recall**: the newest user message queries `messages_fts`
+   (bm25) for messages *older than the window*. When none of its words was
+   said before, Kiwi Sense compares its content words with the 240 newest
+   compacted messages and brings back the closest exchange (a matching
+   question together with the reply that followed it); only when that also
+   finds nothing does the message before it join the word search. Exact
+   excerpts plus the original-task anchor are appended to the newest user
+   message only — volatile text never enters the system prompt, keeping the
+   server's KV prefix byte-stable between turns. Tool-result caps likewise
+   key on user-turn age with a single transition.
 4. **Durable memory**: ranked retrieval (pinned → query-token coverage →
-   Jaccard → use count → recency) rendered within the scaled cap.
+   Jaccard → use count → recency) rendered within the scaled cap. A message
+   that shares no key term with any memory gets at most one memory by
+   meaning (`MemoryEngine._meaning_matches`, content words only, so the
+   "User" every memory starts with does not make unrelated lines look
+   alike).
+5. **Notes** (`kiwibro/notes.py`): up to two pinned notes, notes that share
+   words with the message, then notes close in meaning, as titles with a
+   short excerpt. The `note` tool reads a whole note on demand.
 
 ## Durable memory (`kiwibro/memory.py`)
 
 - **Code saves first, the model is the backup** (`kiwibro/autofacts.py`,
   `MemoryEngine.capture`). Before every reply, high-precision patterns read what the
   user just stated about themselves (name, location, hometown, job, employer, OS,
-  editor, reply / native language, favourites, preferences, projects, "remember …",
-  "forget …") and store it at once (origin `learned`, SSE `memory`), so the next turn
+  editor, reply / native language, favourites, preferences, projects, birthday, the
+  names of their people and pets, where those live, children, allergies and health
+  conditions, "remember …", "forget …") and store it at once (origin `learned`, SSE `memory`), so the next turn
   already knows it even when the model never calls `remember`. Questions,
   hypotheticals ("if I…"), reported speech ("my friend said…"), roleplay and code
   never yield a fact. Single-valued facts have a slot with a canonical wording
   ("User lives in …"): a later statement rewrites that memory instead of adding a
-  contradicting one. LLM extraction still runs, for what patterns cannot read, when the
+  contradicting one. Slots come in families too: one favourite per thing, one name per
+  person or pet, one home per person. When a message does nothing but state such
+  facts, the reply is checked to acknowledge them. LLM extraction still runs, for what patterns cannot read, when the
   signal described under "When extraction runs" says so.
 - **What rides along each turn.** Pinned memories and the profile (name, preferred
   reply language) always, plus up to three self-descriptions the user wrote in their
@@ -60,9 +74,10 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   shares a *key term* with the message. Key terms (`kiwibro/terms.py`) drop function
   words, fold inflections to one stem (lives, living, lived → `liv`) and tag a few
   everyday topics (food, home, job, family, health and others), so "where do I live?"
-  finds "User lives in Istanbul". The 8 recently used ones are no longer injected
-  regardless of relevance. Only memories that matched count as used, so `use_count` no
-  longer rewards whatever happened to be injected.
+  finds "User lives in Istanbul". A memory is never injected just because it was used recently, and only
+  memories that matched count as used (`use_count`). A question about the user
+  themselves ("what is my dog's name?") adds one line of guidance: answer from memory,
+  speaking to them, and do not search the web for it.
 - **When extraction runs**: extraction (a fresh ~3k-token prompt plus up to 400 output
   tokens, a minute or two of every CPU core on a laptop) runs only when the pending window
   holds a memorable user statement: a sentence that is not a question and is in the first
@@ -170,5 +185,5 @@ in `kiwibro/llm.py` — routing is only ranking + lifecycle.
 
 `GET /api/conversations/<id>?limit=N&before_seq=S` pages messages keyset
 style (`page: {has_more, oldest_seq}`); without `limit` the response is
-unchanged. Verified live against LM Studio with a 4B model: a fact
+unchanged. Verified live with a 4B model: a fact
 compacted out of the verbatim window was answered exactly via recall.

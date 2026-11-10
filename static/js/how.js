@@ -554,7 +554,7 @@ const STOPS = [
     question: "How can something that only writes text do things?",
     lines:
       "To act, the model writes a small request called a [[tool call]]: a tool's name and its inputs. Kiwibro checks it, asks you first when it is risky, runs it, and hands back the result. This back and forth is the [[agent loop]].",
-    fact: "Small models often fumble the format, so Kiwibro repairs near misses: a call typed as plain text, a slightly wrong tool name, a number sent as a word.",
+    fact: "Small models fumble the format, so Kiwibro repairs near misses, like a call typed as plain text. What code can do for certain, such as a sum or saving a note you dictated, Kiwibro does itself.",
     build: toolsLoop,
   },
   {
