@@ -228,7 +228,7 @@ Files the agent reads and writes live in `~/Kiwibro` by default. "Work on
 | **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first, and so are the workspace files a command is about to change or remove (`rm`, `sed -i`, `git reset --hard`). |
 | **Command sandbox** | Commands run sealed with bubblewrap: read-only system, writable workspace, credentials hidden, memory and process caps. |
 | **Servers** | The `remote` tool runs commands and copies files on hosts from your `~/.ssh/config`. |
-| **How it works** | Eight short animated figures inside the app explain the ideas behind Kiwibro, from the context window to adapters, with a live Kiwi Sense you can type into. |
+| **How it works** | Nine short animated figures inside the app explain the ideas behind Kiwibro, from the context window to adapters, with a live Kiwi Sense you can type into. |
 
 ## Configuration
 

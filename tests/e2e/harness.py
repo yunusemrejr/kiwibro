@@ -491,7 +491,14 @@ class SSEChat:
         return [data for name, data in self.events if name == event_name]
 
     def text(self) -> str:
-        return "".join(str(data.get("text", "")) for data in self.of("delta"))
+        """The reply as the page shows it: deltas in order, replaced whenever Kiwibro rewrites it."""
+        shown = ""
+        for name, data in self.events:
+            if name == "delta":
+                shown += str(data.get("text", ""))
+            elif name == "rewrite":
+                shown = str(data.get("text", ""))
+        return shown
 
     def close(self) -> None:
         try:

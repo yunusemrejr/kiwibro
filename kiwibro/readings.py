@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 # How sure a helper must be before code acts on it alone.
 WEB_SURE = 0.5  # search first when "asks for a search" and "needs live data" together reach this
 WEB_NOT_SURE = 0.9  # drop a search the word rules wanted when the helper is this sure it needs none
+FEEDBACK_SURE = 0.6  # a message read this surely as feedback on the last answer starts no search of its own
 KEEP_SKIP = 0.7  # do not save "facts" from a hypothetical, quoted or passing message
 NEW_TOPIC_SURE = 0.85  # the shift helper is the least sure of the five: only a clear change counts
 RELATE_FLOOR = 0.02  # a saved item the relate helper is this sure does not bear on the message is left out
@@ -150,6 +151,12 @@ def names_a_file_or_link(message: str) -> bool:
 def needs_no_search(turn_reading: TurnReading) -> bool:
     r = turn_reading.reading
     return r is not None and r.web in ("none", "own") and r.sure.get("web", 0.0) >= WEB_NOT_SURE
+
+
+def is_feedback(turn_reading: TurnReading) -> bool:
+    """The message is about the last answer (thanks, praise, a complaint), not a request of its own."""
+    r = turn_reading.reading
+    return r is not None and r.intent == "feedback" and r.sure.get("intent", 0.0) >= FEEDBACK_SURE
 
 
 def keep_nothing(turn_reading: TurnReading) -> bool:

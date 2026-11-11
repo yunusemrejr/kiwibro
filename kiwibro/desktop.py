@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,213 @@ def _human_bytes(size: float) -> str:
 # --- system_info ---------------------------------------------------------------
 
 
+def _read_text(path: Path) -> str:
+    """Contents of a pseudo-file, '' when it cannot be read."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ""
+
+
+def _count_unit(count: int, unit: str) -> str:
+    """``3 days`` / ``1 day``."""
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
+def _cpuinfo_fields(proc: Path) -> dict[str, str]:
+    """Key/value pairs of the first block of /proc/cpuinfo."""
+    fields: dict[str, str] = {}
+    for line in _read_text(proc / "cpuinfo").splitlines():
+        if not line.strip():
+            break
+        key, sep, value = line.partition(":")
+        if sep and key.strip() not in fields:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _cpuinfo_core_pairs(proc: Path) -> set[tuple[str, str]]:
+    """The distinct (physical id, core id) pairs of /proc/cpuinfo."""
+    pairs: set[tuple[str, str]] = set()
+    socket = ""
+    slot = ""
+    for line in _read_text(proc / "cpuinfo").splitlines() + [""]:
+        key, sep, value = line.partition(":")
+        if not line.strip():
+            if slot:
+                pairs.add((socket, slot))
+            socket = slot = ""
+            continue
+        if not sep:
+            continue
+        name = key.strip()
+        if name == "physical id":
+            socket = value.strip()
+        elif name == "core id":
+            slot = value.strip()
+    return pairs
+
+
+def _cpu_model(proc: Path = Path("/proc")) -> str:
+    """Brand of the processor; ARM boards report it under Hardware or Model."""
+    fields = _cpuinfo_fields(proc)
+    for name in ("model name", "Hardware", "Model"):
+        if fields.get(name):
+            return fields[name]
+    return ""
+
+
+def _cpu_cores(proc: Path = Path("/proc")) -> str:
+    """Physical cores and threads; only threads when the kernel hides the topology."""
+    threads = os.cpu_count() or 0
+    cores = len(_cpuinfo_core_pairs(proc))
+    if not cores:
+        return f"{threads} threads" if threads else ""
+    return f"{cores} cores, {threads} threads" if threads else f"{cores} cores"
+
+
+def _meminfo_kbytes(proc: Path, name: str) -> int | None:
+    """A /proc/meminfo line in bytes; the file states its values in kB."""
+    for line in _read_text(proc / "meminfo").splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == name:
+            fields = value.split()
+            try:
+                return int(fields[0]) * 1024 if fields else None
+            except ValueError:
+                return None
+    return None
+
+
+def _memory_total(proc: Path = Path("/proc")) -> str:
+    """Installed RAM."""
+    value = _meminfo_kbytes(proc, "MemTotal")
+    return _human_bytes(value) if value else ""
+
+
+def _memory_available(proc: Path = Path("/proc")) -> str:
+    """RAM the kernel can hand to a new process right now."""
+    value = _meminfo_kbytes(proc, "MemAvailable")
+    return _human_bytes(value) if value else ""
+
+
+def _swap_total(proc: Path = Path("/proc")) -> str:
+    """Swap space, '' when there is none."""
+    value = _meminfo_kbytes(proc, "SwapTotal")
+    return _human_bytes(value) if value and value > 0 else ""
+
+
+def _uevent_fields(path: Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in _read_text(path).splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _lspci_names(pci_id: str) -> str:
+    """``Vendor Device`` from lspci, '' when it is missing or says nothing."""
+    program = shutil.which("lspci")
+    if not program or not pci_id:
+        return ""
+    try:
+        completed = subprocess.run(
+            [program, "-mm", "-d", pci_id],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    quoted = re.findall(r'"([^"]*)"', completed.stdout or "")
+    if len(quoted) < 3:
+        return ""
+    vendor, device = quoted[1], quoted[2]
+    short = re.search(r"\[([^\]]*)\]", vendor)
+    if short:
+        vendor = short.group(1).split("/")[0].strip() or vendor
+    return f"{vendor} {device}".strip()
+
+
+def _gpu(sysfs: Path = Path("/sys")) -> str:
+    """One line per graphics adapter, '; '-joined; '' when none can be read."""
+    drm = sysfs / "class" / "drm"
+    try:
+        cards = sorted(child.name for child in drm.iterdir() if re.fullmatch(r"card\d+", child.name))
+    except OSError:
+        return ""
+    lines: list[str] = []
+    for card in cards:
+        fields = _uevent_fields(drm / card / "device" / "uevent")
+        pci_id = fields.get("PCI_ID", "")
+        if not pci_id:
+            continue
+        driver = fields.get("DRIVER", "")
+        label = _lspci_names(pci_id) or f"PCI {pci_id}"
+        line = f"{label} (driver {driver})" if driver else label
+        if line not in lines:
+            lines.append(line)
+    return "; ".join(lines)
+
+
+def _battery(sysfs: Path = Path("/sys")) -> str:
+    """Charge and state of each battery, '' on a machine without one."""
+    supplies = sysfs / "class" / "power_supply"
+    try:
+        names = sorted(child.name for child in supplies.iterdir() if child.name.startswith("BAT"))
+    except OSError:
+        return ""
+    parts: list[str] = []
+    for name in names:
+        raw = _read_text(supplies / name / "capacity").strip()
+        try:
+            percent = int(raw)
+        except ValueError:
+            continue
+        status = _read_text(supplies / name / "status").strip()
+        parts.append(f"{percent}% ({status.lower()})" if status else f"{percent}%")
+    return "; ".join(parts)
+
+
+def _uptime(proc: Path = Path("/proc")) -> str:
+    """How long the machine has been running."""
+    fields = _read_text(proc / "uptime").split()
+    try:
+        seconds = int(float(fields[0]))
+    except (IndexError, ValueError):
+        return ""
+    days, rest = divmod(max(0, seconds), 86_400)
+    hours, rest = divmod(rest, 3_600)
+    minutes = rest // 60
+    if days:
+        return f"{_count_unit(days, 'day')} {_count_unit(hours, 'hour')}"
+    if hours:
+        return f"{_count_unit(hours, 'hour')} {_count_unit(minutes, 'minute')}"
+    return _count_unit(minutes, "minute")
+
+
+def _machine_facts(proc: Path = Path("/proc"), sysfs: Path = Path("/sys")) -> dict[str, str]:
+    """Hardware read from procfs and sysfs; a fact that cannot be read is left out."""
+    return {
+        name: value
+        for name, value in (
+            ("cpu_model", _cpu_model(proc)),
+            ("cpu_cores", _cpu_cores(proc)),
+            ("memory_total", _memory_total(proc)),
+            ("memory_available", _memory_available(proc)),
+            ("swap_total", _swap_total(proc)),
+            ("gpu", _gpu(sysfs)),
+            ("battery", _battery(sysfs)),
+            ("uptime", _uptime(proc)),
+        )
+        if value
+    }
+
+
 def system_info(workspace: Workspace) -> dict[str, Any]:
     """Read-only snapshot of the machine and the workspace."""
     root = workspace.root
@@ -81,6 +289,7 @@ def system_info(workspace: Workspace) -> dict[str, Any]:
         "machine": platform.machine(),
         "python": sys.version.split()[0],
         "cpu_count": os.cpu_count() or 0,
+        **_machine_facts(),
         "desktop": os.environ.get("XDG_CURRENT_DESKTOP") or "(unknown)",
         "session": (
             "wayland" if os.environ.get("WAYLAND_DISPLAY")
@@ -99,6 +308,11 @@ def system_info(workspace: Workspace) -> dict[str, Any]:
         usage = shutil.disk_usage(root)
         info["disk_total"] = _human_bytes(usage.total)
         info["disk_free"] = _human_bytes(usage.free)
+        home = Path.home()
+        if home.is_dir() and home.stat().st_dev != root.stat().st_dev:  # the workspace sits on another disk
+            usage = shutil.disk_usage(home)
+            info["home_disk_total"] = _human_bytes(usage.total)
+            info["home_disk_free"] = _human_bytes(usage.free)
     except OSError:  # pragma: no cover - defensive
         pass
     file_count = 0

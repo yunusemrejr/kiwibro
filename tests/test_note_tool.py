@@ -111,10 +111,10 @@ def test_a_dictated_note_is_saved_even_when_the_model_only_talks(env: Env):
     events, _raw = chat_events(env, "save a note: buy oat milk and call the dentist on Friday")
     [note] = env.svc.db.list_notes()
     assert note["body"] == "buy oat milk and call the dentist on Friday"
-    assert env.fake.stream_calls[1]["messages"][-1]["content"].startswith("[Kiwibro: the user asked for a note")
+    assert len(env.fake.stream_calls) == 1  # Kiwibro kept the note, so it says so itself: the model is not asked again
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
-    assert shown == ["", "Saved your note."]  # the empty promise is gone; the first message carries the call
+    assert shown == ["", f"Saved note “{note['title']}”."]  # the empty promise is gone; the first message carries the call
     assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "note"
 
 
@@ -264,7 +264,7 @@ def test_a_dictated_note_is_saved_when_the_model_reaches_for_the_wrong_tool(env:
     assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "note"
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant" and m["content"]]
-    assert shown == ["It is in your notes now."]
+    assert shown == [f"Saved note “{env.svc.db.list_notes()[0]['title']}”."]  # said by Kiwibro, in the tool's own words
 
 
 @pytest.mark.parametrize(("message", "topic"), [
@@ -288,10 +288,10 @@ def test_a_note_the_model_wrote_but_never_saved_is_saved_for_it(env: Env):
     events, _raw = chat_events(env, "make a note about python decorators")
     [note] = env.svc.db.list_notes()
     assert note["title"] == "Python decorators" and note["body"] == text
-    assert env.fake.stream_calls[1]["messages"][-1]["content"] == prompts.NOTED_FOR_YOU
+    assert len(env.fake.stream_calls) == 1
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
-    assert shown == [text, "Saved it to your notes."]  # the note stays in the chat as well
+    assert shown == [text, "Saved note “Python decorators”."]  # the note stays in the chat as well
 
 
 def test_a_titled_dictated_note_keeps_its_title(env: Env):
@@ -299,3 +299,12 @@ def test_a_titled_dictated_note_keeps_its_title(env: Env):
     chat_events(env, "create a note called groceries with eggs, milk and bread")
     [note] = env.svc.db.list_notes()
     assert note["title"] == "groceries" and note["body"] == "eggs, milk and bread"
+
+
+def test_a_question_about_the_users_own_things_is_shown_the_note_this_chat_kept(env: Env):
+    env.fake.stream_script = [tool_call_result("note", {"action": "save", "title": "Groceries", "content": "milk, eggs, bread"}),
+                              ChatResult(content="Saved."), ChatResult(content="Milk, eggs and bread.")]
+    events, _raw = chat_events(env, "note titled Groceries: milk, eggs, bread")
+    conversation_id = events[0][1]["conversation_id"]
+    chat_events(env, "what did i ask you to buy", conversation_id)
+    assert "milk, eggs, bread" in env.fake.stream_calls[-1]["messages"][-1]["content"]  # no word shared, still shown

@@ -380,8 +380,11 @@ _POINTS = re.compile(r"\b(?:he|she|it|they|them|him|her|his|its|their|that|this|
 def _query_of(step: str) -> str:
     """A step without the words that only ask for the search."""
     text = _SEARCH_PHRASE.sub(" ", _ASK.sub("", _CODE.sub(" ", step)))
-    text = re.sub(
-        r"^\W*(?:(?:please|and|then|for|about|on|tell|give|show|get|me)\b\W*)+", " ", " ".join(text.split()), flags=re.I
+    text = re.sub(  # what is left of the asking once the search words are gone: "can … to find …", "could u …"
+        r"^\W*(?:(?:please|and|then|for|about|on|tell|give|show|get|me)\b\W*|"
+        r"(?:can|could|would|will)\s+(?:(?:you|u|we|i)\b\W*|(?=to\b))|"
+        r"to\s+(?:find(?:\s+out)?|see|check|learn|know)\b\W*|find\s+out\b\W*)+",
+        " ", " ".join(text.split()), flags=re.I
     )
     return " ".join(text.split()).strip(" ?.!,:;-")[:QUERY_CHARS]
 
@@ -688,6 +691,18 @@ def is_about_kiwibro(message: str) -> bool:
 def is_small_talk(message: str) -> bool:
     """A greeting or thanks: the reply needs no tools."""
     return bool(_SMALL_TALK.match((message or "").strip()))
+
+
+def small_talk_reply(message: str) -> str:
+    """A plain reply to a greeting, thanks or goodbye, for when the model wrote none."""
+    from . import prompts  # local: prompts imports nothing from here, the module list stays as it is
+
+    text = (message or "").strip().lower()
+    if re.match(r"(?:thanks?|thx|ty|cheers)\b", text):
+        return prompts.WELCOME
+    if re.match(r"(?:bye|goodbye|see\s+you|good\s+night)\b", text):
+        return prompts.GOODBYE
+    return prompts.HELLO
 
 
 def search_terms(name: str, args: dict[str, Any]) -> frozenset[str]:

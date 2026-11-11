@@ -625,6 +625,28 @@ def dedupe_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
     return unique
 
 
+_BLOCK_TAGS = ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "div", "section", "article", "blockquote",
+               "pre", "dt", "dd", "figcaption", "table", "ul", "ol", "br", "hr", "main", "title", "caption")
+_SPACE_BEFORE_MARK = re.compile(r"\s+([,.;:!?%)\]])")
+
+
+def readable_text(root: Any) -> str:
+    """A page's text the way it reads: one line per paragraph, heading, list item or table
+    row, with the words of links and emphasis kept inside their sentence. (Taking every piece
+    of text as a line of its own cuts each sentence at each link.)"""
+    for tag in root.find_all(_BLOCK_TAGS):
+        tag.insert_before("\n")
+        tag.insert_after("\n")
+    for cell in root.find_all(("td", "th")):
+        cell.insert_after(" | ")
+    lines = []
+    for line in root.get_text(" ").split("\n"):
+        line = _SPACE_BEFORE_MARK.sub(r"\1", " ".join(line.split())).strip(" |")
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 class SearchEngine:
     """Provider fallback chain, snippet enrichment and a small in-memory cache."""
 
@@ -660,12 +682,16 @@ class SearchEngine:
     ) -> list[dict[str, str]]:
         """Dated news from every news feed at once, newest first. ``days`` narrows what the
         feeds return; ``since`` drops anything older. Empty when no feed answered."""
+        return [dict(item) for item in pick_news(self.news_pool(query, days=days, since=since), max_results)]
+
+    def news_pool(self, query: str, *, days: int | None = None, since: datetime | None = None) -> list[dict[str, str]]:
+        """Every dated item the feeds have for a query, newest first: what ``news_search`` picks from."""
         query = (query or "").strip()
         key = f"news|{query.lower()}|{days}|{since.isoformat() if since else ''}"
         with self._lock:
             cached = self._cache.get(key)
             if cached and time.monotonic() - cached[0] < min(self._cache_ttl, 300.0):
-                return [dict(item) for item in pick_news(cached[1], max_results)]
+                return [dict(item) for item in cached[1]]
         futures = [_POOL.submit(self._run_news, name, feed, query, days) for name, feed in NEWS_PROVIDERS]
         batches = []
         for future in futures:
@@ -679,7 +705,7 @@ class SearchEngine:
                 oldest = min(self._cache, key=lambda item: self._cache[item][0])
                 self._cache.pop(oldest, None)
             self._cache[key] = (time.monotonic(), [dict(item) for item in results])
-        return [dict(item) for item in pick_news(results, max_results)]
+        return [dict(item) for item in results]
 
     def _run_news(self, name: str, feed: Callable[..., list[dict[str, str]]], query: str, days: int | None) -> list[dict[str, str]]:
         if self._cooldowns.get(name, 0.0) > time.monotonic():
@@ -830,6 +856,13 @@ class SearchEngine:
 
     @staticmethod
     def _decode(raw: bytes, encoding: str) -> str:
+        """Page bytes as text. Most pages are UTF-8 whatever their header says (a server that
+        names no charset is reported as Latin-1, which turns every accent and curly quote into
+        two wrong letters), so UTF-8 is tried first and the declared encoding is the fallback."""
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
         try:
             return raw.decode(encoding, errors="replace")
         except LookupError:
@@ -862,6 +895,12 @@ class SearchEngine:
         body = soup.body or soup
         return _clean(body.get_text(" ", strip=True), 400)
 
+    def weather(self, question: str) -> str:
+        """The weather a question asks about, from forecast data ("" when it asks about no place's weather)."""
+        from . import weather  # it sends its requests through this module
+
+        return weather.answer(question)
+
     def fetch_page(self, url: str, max_chars: int = 4000) -> dict[str, Any]:
         max_chars = max(200, min(int(max_chars or 4000), 8000))
         cache_key = f"{normalize_url(url)}|{max_chars}"
@@ -889,8 +928,7 @@ class SearchEngine:
         ):
             tag.decompose()
         root = soup.find("article") or soup.find("main") or soup.body or soup
-        extracted = root.get_text("\n", strip=True)
-        extracted = re.sub(r"\n{2,}", "\n\n", extracted).strip()
+        extracted = readable_text(root)
         if not extracted:
             raise SearchError("The page contained no readable text.")
         return {

@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 from test_backend import Env, chat_events, tool_call_result
 
-from kiwibro import plan, prompts
+from kiwibro import plan, prompts, research
 from kiwibro.context import ContextEngine
 from kiwibro.llm import ChatResult
+
+READ_RESULTS = research.read_results  # the real one: conftest switches page reading off for every other test
 
 EXAMPLE = (
     "Hey, tell me briefly what a Raspberry Pi is, then search the web for the latest Raspberry Pi 5 news, "
@@ -218,12 +220,12 @@ def test_a_follow_up_that_asks_to_look_it_up_is_searched_before_the_answer(env: 
     events, _raw = chat_events(env, "Who directed Inception?")
     conversation_id = events[0][1]["conversation_id"]
     assert web == []  # a plain question is not a search request
-    env.fake.stream_script = [ChatResult(content="He was born on 30 July 1970, so he is 56.")]
+    env.fake.stream_script = [ChatResult(content="The results only cover the 16GB Raspberry Pi 5, not his age.")]
     chat_events(env, "how old is he? look it up", conversation_id=conversation_id)
     assert len(web) == 1 and web[0].startswith("how old is he") and "Christopher Nolan" in web[0]
     assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.SEARCHED_FIRST.format(then="")
     stored = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
-    assert not any("85 years" in content for content in stored) and stored[-1].endswith("so he is 56.")
+    assert not any("85 years" in content for content in stored) and stored[-1].endswith("not his age.")
 
 
 def test_a_model_that_repeats_the_search_kiwibro_made_is_not_searched_twice(env: Env, web: list[str]) -> None:
@@ -553,3 +555,71 @@ def test_live_world_questions_are_searched(message):
 ])
 def test_timeless_own_and_clock_questions_are_not_searched(message):
     assert plan.search_request(message) == ("", False)
+
+
+FORECAST = ("Izmir, Türkiye right now: 18 °C (64 °F), clear sky, feels like 17 °C. Wind 9 km/h, humidity 60%.\n\n"
+            "- Today: 12 to 19 °C, clear sky, 0% chance of rain\n\nSource: Open-Meteo, as of 19:15 local time there.")
+
+
+def test_a_weather_question_is_answered_from_forecast_data(env: Env, web: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(env.svc.search, "weather", lambda question: asked.append(question) or FORECAST)
+    events, _raw = chat_events(env, "whats the weather in izmir")
+    assert asked == ["whats the weather in izmir"] and web == []  # the data, not a page of results
+    chat_events(env, "how hot is it in Dubai")  # worded without "weather": looked up all the same
+    assert asked[-1] == "how hot is it in Dubai" and web == [] and env.fake.stream_calls == []
+    assert env.fake.stream_calls == []  # no model wrote a number
+    messages = env.svc.db.list_messages(env.svc.db.list_conversations()[-1]["id"])
+    assert messages[-1]["content"] == FORECAST
+    assert [payload for event, payload in events if event == "done"][0]["inference"]["answered_from_look"] is True
+
+
+def test_without_forecast_data_a_weather_question_is_a_web_search(env: Env, web: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(env.svc.search, "weather", lambda question: "")
+    env.fake.stream_script = [ChatResult(content="The results do not give the temperature.")]
+    chat_events(env, "whats the weather in izmir")
+    assert len(web) == 1 and len(env.fake.stream_calls) == 1
+
+
+INVENTED = ("Elon Musk unveiled the Zorblax 9000 at Contoso Labs in Reykjavik for $999, and Satya Nadella "
+            "praised the Quantum Falcon chip from Wonka Industries at a Helsinki event with 4,200 guests.")
+
+
+def test_a_second_attempt_that_says_nothing_is_not_the_answer(env: Env, web: list[str]) -> None:
+    env.fake.stream_script = [ChatResult(content=INVENTED), ChatResult(content="The answer is.\n\nThe answer is.")]
+    events, _raw = chat_events(env, "look up the latest Raspberry Pi 5 news")
+    messages = env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])
+    shown = messages[-1]["content"]
+    assert "The answer is" not in shown and "Zorblax" not in shown
+    assert "16GB Raspberry Pi 5" in shown  # what the search found, in its own words
+    done = [payload for event, payload in events if event == "done"][0]
+    assert done["inference"]["grounding"]["shown_as_found"] is True
+
+
+def test_a_short_second_attempt_that_names_the_fact_is_kept(env: Env, web: list[str]) -> None:
+    env.fake.stream_script = [ChatResult(content=INVENTED), ChatResult(content="The 16GB Raspberry Pi 5 costs $120.")]
+    chat_events(env, "look up the latest Raspberry Pi 5 news")
+    messages = env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"])
+    assert messages[-1]["content"] == "The 16GB Raspberry Pi 5 costs $120."
+
+
+def test_kiwibros_own_search_reads_the_pages_and_the_models_does_not(env: Env, web: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+
+    def fetch_page(url: str, max_chars: int = 4000) -> dict:
+        opened.append(url)
+        return {"title": "16GB Raspberry Pi 5", "url": url, "truncated": False,
+                "text": "The 16GB Raspberry Pi 5 went on sale on 9 January and ships from approved resellers worldwide."}
+
+    monkeypatch.setattr(research, "read_results", READ_RESULTS)
+    monkeypatch.setattr(env.svc.search, "fetch_page", fetch_page)
+    env.fake.stream_script = [ChatResult(content="The 16GB Raspberry Pi 5 went on sale on 9 January.")]
+    chat_events(env, "look up the latest Raspberry Pi 5 news")
+    assert opened == ["https://www.raspberrypi.com/news/16gb"]
+    assert "On the page: The 16GB Raspberry Pi 5 went on sale on 9 January" in _tool_messages(env)[0]["content"]
+    opened.clear()
+    env.fake.stream_script = [tool_call_result("web_search", {"query": "raspberry pi 5 resellers"}),
+                              ChatResult(content="Sixteen gigabytes hum / approved resellers ship it / a small board, big dreams")]
+    chat_events(env, "Write a haiku about it.", conversation_id=env.svc.db.list_conversations()[0]["id"])
+    assert len(web) == 2
+    assert opened == []  # a search the model asks for stays a quick one

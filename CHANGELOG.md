@@ -46,6 +46,61 @@ All notable changes to Kiwibro are documented here.
   user says about themselves unless it is clearly passing. Dictated and titled notes
   ("note titled Groceries: …") and "make a note about X" are kept even when the model
   only writes the text.
+- **"That's wrong", "those are old", "no, the one about…" do the request again.** A message
+  that turns the last answer down is no longer searched for by its own words ("all wrong"
+  used to find a TV series). The request before it is done again: a news request lists
+  stories that were not shown, a message that says what was meant keeps the subject and
+  adds what it names, and the answer that was turned down is not shown to the model again.
+  A message with a question of its own ("no, mine is washed already, what then?") is
+  answered as asked, so reading a normal message as a complaint by mistake starts no
+  search. Typos in the complaint are read ("wrng", "serach agian").
+- **Questions about this computer are answered from what is there.** "How many files are
+  on my desktop", "which one is the biggest", "what CPU and how much RAM do I have", "how
+  much free disk space": Kiwibro looks first and writes the count, the file or the part
+  from the result's own figures, without asking the model, which used to answer with
+  instructions or made-up numbers. Anything more than the figures ("is that enough for
+  games?") still goes to the model with the result. Free space is that of the disk the
+  home folder is on.
+- **An answer has to come from the sources.** After a search, names, numbers and dates
+  found in no result are sent back once; if they are still there, they are removed, and
+  when nothing is left the stories or facts are shown as the sources give them, or the
+  reply says it was not found. A reply is never empty and never a fill-in template: a
+  greeting answered with one gets a plain greeting.
+- **A saved fact is the answer to a question about it.** "Where do I live?", "what's my
+  dog's name?": if the reply leaves out the saved fact, the model is shown it once more,
+  and after that Kiwibro says it ("From what you told me: you live in Bursa").
+- **"As one paragraph" gives one paragraph**, lines a model repeats word for word are kept
+  once, and an answer given earlier to another question is not given again.
+- **A note Kiwibro kept for you is confirmed in the tool's own words** ("Added to note
+  “Packing”: sunscreen."), instead of asking the model for a sentence it sometimes got
+  wrong.
+- **A bracketed stand-in is never the answer.** "Here is the summary as one paragraph.
+  [One coherent paragraph summarizing…]" used to reach the screen. A bracketed sentence
+  that stands where the answer should be is now asked for once more and then left out,
+  and a second attempt that kept the form and lost the substance ("The answer is.") is
+  replaced by what the sources say. Links, code and "[Reuters]" after a Reuters story pass.
+- **"Are they at the same commit?" is answered from git.** A question whether a checkout
+  matches its remote ("is my repo in ./site up to date with origin?") runs the read-only
+  compare first and is answered in its figures: the same commit or not, how many commits
+  ahead or behind, the last local commit, and uncommitted files.
+- **Weather comes from forecast data.** "What's the weather in Izmir" is answered from
+  Open-Meteo's figures for the place (now, and three days), with the source and its time.
+  Weather pages keep their numbers in scripts, so a search left the model guessing. Only
+  the place name is sent; if the service does not know a place by that name, the web
+  search runs as before.
+- **Kiwibro's own searches read the pages.** When Kiwibro searches before the model writes,
+  it now opens the three best results and passes on the passages that bear on the question
+  (9 seconds at most). The step existed but was never switched on.
+- **How it works: checked answers.** A ninth stop shows how a draft is compared with what
+  was found. The KV cache and retrieval texts now say what the code does.
+
+### Checks
+
+- `scripts/replay.py` replays made-up conversations (`tests/replay/scenarios.json`) against
+  a test instance, with the helpers on or off, and saves every reply for reading side by
+  side. `scripts/detectors.py` counts what the complaint and news readers catch, miss and
+  read wrongly on three sets of made-up messages (`tests/data/messages`), and how many
+  wrong readings would start a search.
 
 ### Safety
 

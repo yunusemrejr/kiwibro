@@ -1,5 +1,5 @@
 /**
- * How it works: eight small animated figures, one idea each.
+ * How it works: nine small animated figures, one idea each.
  *
  * Every figure is a pure function of time: draw(t) places its parts for second t of a
  * loop, so the picture can be paused, frozen for reduced motion, or rendered at any
@@ -344,7 +344,79 @@ function toolsLoop(frame) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 6. Kiwi Sense                                                              */
+/* 6. Checked answers                                                         */
+/* -------------------------------------------------------------------------- */
+
+function checkedAnswers(root) {
+  const ys = [94, 140, 186];
+  const cardRight = 186;
+  const rowLeft = 294;
+  text(root, 36, 62, "what was found", "hw-t-muted", "start");
+  text(root, rowLeft, 62, "the draft", "hw-t-muted", "start");
+  const cards = ys.map((y, index) => {
+    const group = s("g", { class: "hw-card" });
+    group.append(
+      s("rect", { x: 36, y: y - 18, width: 150, height: 36, rx: 6 }),
+      s("path", { d: `M48 ${y - 5}h${[112, 96, 104][index]}M48 ${y + 6}h${[70, 88, 58][index]}` }),
+    );
+    root.append(group);
+    return group;
+  });
+  const links = ys.map(() => {
+    const link = s("path", { class: "hw-proof" });
+    root.append(link);
+    return link;
+  });
+  const miss = s("path", { class: "hw-proof is-off" });
+  root.append(miss);
+  const rows = ys.map((y, index) => {
+    const group = s("g", { class: "hw-chip" });
+    group.append(
+      s("rect", { x: rowLeft, y: y - 14, width: 150, height: 28, rx: 8 }),
+      s("path", { d: `M${rowLeft + 12} ${y}h${[92, 78, 98][index]}` }),
+    );
+    const tick = s("path", { class: "hw-tick", d: `M${rowLeft + 124} ${y}l4 4 8-9` });
+    group.append(tick);
+    root.append(group);
+    return { group, tick };
+  });
+  const verdict = text(root, rowLeft + 75, 224, "", "hw-t-orange");
+  const reach = (link, y, k) => link.setAttribute("d", `M${rowLeft} ${y}H${mix(rowLeft, cardRight, k).toFixed(2)}`);
+
+  return {
+    duration: 11,
+    still: 9.2,
+    draw(t) {
+      const out = 1 - span(t, 10.4, 10.95);
+      rows.forEach(({ group }, index) => fade(group, span(t, 0.3 + index * 0.3, 0.8 + index * 0.3) * out));
+      // Two sentences find their source at once.
+      [1.6, 2.7].forEach((start, index) => {
+        const k = span(t, start, start + 0.8);
+        reach(links[index], ys[index], k);
+        fade(links[index], (k > 0 ? 1 : 0) * out);
+        fade(rows[index].tick, span(t, start + 0.8, start + 1.1));
+        on(cards[index], t > start + 0.8 && t < 10.4);
+      });
+      // The third reaches for one and finds none: sent back once, written again, then it holds.
+      const tried = span(t, 3.9, 4.7) * (1 - span(t, 4.9, 5.4));
+      reach(miss, ys[2], tried * 0.7);
+      fade(miss, tried > 0 ? 1 : 0);
+      const off = t >= 4.9 && t < 6.9;
+      rows[2].group.classList.toggle("is-off", off);
+      if (t >= 6.4 && t < 7.4) fade(rows[2].group, Math.abs(t - 6.9) / 0.5);
+      const held = span(t, 7.6, 8.4);
+      reach(links[2], ys[2], held);
+      fade(links[2], (held > 0 ? 1 : 0) * out);
+      fade(rows[2].tick, span(t, 8.4, 8.7));
+      on(cards[2], t > 8.4 && t < 10.4);
+      verdict.setAttribute("class", t < 6.4 ? "hw-t-orange" : "hw-t-tan");
+      verdict.textContent = t >= 4.9 && t < 6.4 ? "no source says this" : t >= 6.4 && t < 8.4 ? "written again" : "";
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 7. Kiwi Sense                                                              */
 /* -------------------------------------------------------------------------- */
 
 function kiwiSense(root) {
@@ -402,7 +474,7 @@ function kiwiSense(root) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 7. Memory and notes                                                        */
+/* 8. Memory and notes                                                        */
 /* -------------------------------------------------------------------------- */
 
 function memoryNotes(root) {
@@ -461,7 +533,7 @@ function memoryNotes(root) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 8. LoRA adapters                                                           */
+/* 9. LoRA adapters                                                           */
 /* -------------------------------------------------------------------------- */
 
 function adapters(root) {
@@ -512,7 +584,7 @@ function adapters(root) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* The eight stops                                                            */
+/* The nine stops                                                             */
 /* -------------------------------------------------------------------------- */
 
 // In `lines`, [[word]] marks a term the stop teaches.
@@ -545,8 +617,8 @@ const STOPS = [
     title: "KV cache",
     question: "Why is the next answer faster?",
     lines:
-      "Reading the prompt is the slow part. The model keeps its working notes on everything it has already read, the [[KV cache]], so when the beginning of the prompt is unchanged only the new part is read. Kiwibro never edits the beginning: whatever changes, like the time or a memory, goes at the end.",
-    fact: "Kiwibro's instructions stay byte for byte the same through a whole chat, so the cache is never thrown away.",
+      "Reading the prompt is the slow part. The model keeps its working notes on everything it has already read, the [[KV cache]], so when the beginning of the prompt is unchanged only the new part is read. Kiwibro keeps the beginning fixed: whatever changes from turn to turn, like the time or a memory, goes at the end.",
+    fact: "Kiwibro's instructions stay byte for byte the same through a whole chat. Only compaction, which is rare, makes the model reread the chat.",
     build: kvCache,
   },
   {
@@ -556,6 +628,14 @@ const STOPS = [
       "To act, the model writes a small request called a [[tool call]]: a tool's name and its inputs. Kiwibro checks it, asks you first when it is risky, runs it, and hands back the result. This back and forth is the [[agent loop]].",
     fact: "Small models fumble the format, so Kiwibro repairs near misses, like a call typed as plain text. What code can do for certain, such as a sum or saving a note you dictated, Kiwibro does itself.",
     build: toolsLoop,
+  },
+  {
+    title: "Checked answers",
+    question: "How does it avoid making things up?",
+    lines:
+      "A small model fills a gap with a plausible guess. So Kiwibro looks before the model writes: the web for news and live facts, this computer for your files and hardware. It then compares the draft with what the search returned, which is called [[grounding]]: a name or number that no [[source]] holds is sent back once to be written again, and left out if it is still there.",
+    fact: "When the look itself is the answer (how many files, which CPU, is this checkout at the same commit as its remote), Kiwibro writes it in the look's own figures. If nothing in a draft holds up, you see the sources as found.",
+    build: checkedAnswers,
   },
   {
     title: "Kiwi Sense",
@@ -570,7 +650,7 @@ const STOPS = [
     title: "Memory and notes",
     question: "How does it remember you?",
     lines:
-      "Facts about you ([[memory]]) and your [[notes]] live in a small database on this computer. Before each answer Kiwibro looks up the few that share a meaningful word with your message, which is called [[retrieval]], and attaches them to the end of it as a context note.",
+      "Facts about you ([[memory]]) and your [[notes]] live in a small database on this computer. Before each answer Kiwibro looks up the few that share a meaningful word with your message, or failing that mean something close to it. That is [[retrieval]]. They are attached to the end of your message as a context note.",
     fact: "Nothing from a chat marked Private is saved to memory or notes.",
     build: memoryNotes,
   },

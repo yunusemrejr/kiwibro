@@ -230,3 +230,45 @@ hates long emails".
 - Return {{"ops": []}} only when the user said nothing about themselves and asked for nothing to be kept."""
 
 APPROVAL_SUMMARY_TOOL = "The agent wants to {verb} {target}. Review the details before allowing."
+
+# Kiwibro acted before the model wrote (agent.py): what it did and how to answer from it.
+REDO_FIRST = (
+    "[Kiwibro: the user turned the last answer down, so Kiwibro searched again for what they asked: "
+    "“{request}”. The new results are above. Answer that request from them and only from them: every name, "
+    "number and date you give must be in them. Do not repeat or defend the earlier answer. If the results "
+    "do not cover it, say so plainly.{then}]"
+)
+LOOKED_FIRST = (
+    "[Kiwibro: Kiwibro looked this up on the computer before your answer: the result is above. Answer the "
+    "user from it in plain words, with the real values in it. Never write a placeholder.]"
+)
+UNSUPPORTED = (
+    "[Kiwibro: your answer says things the results above do not say, or joins two different results into "
+    "one claim: {items}. Write the answer again, as a direct answer to the user's question. Every statement "
+    "must say only what one result says, with that result's own names and numbers; leave out whatever they "
+    "do not say. Do not describe what the results cover.]"
+)
+SAID_BEFORE = (
+    "[Kiwibro: that is word for word what you answered earlier to “{earlier}”. The user now asks something "
+    "else: “{message}”. Answer this message.]"
+)
+FROM_MEMORY = (
+    "[Kiwibro: the user asks about something they told you, and your answer does not give it. Saved from "
+    "what they said:\n{facts}\nAnswer “{message}” from that, in one short sentence.]"
+)
+# Said by Kiwibro when the model wrote a template or nothing in reply to a greeting.
+HELLO = "Hi! What can I do for you?"
+WELCOME = "You're welcome!"
+GOODBYE = "Bye for now!"
+PLACEHOLDER = (
+    "[Kiwibro: your answer has a placeholder ({items}) where a real value belongs. Write it again with the "
+    "real value from the results above, or say plainly that you do not know it.]"
+)
+NOT_FOUND = "I looked, but what I found does not answer this clearly, so I won't guess."
+STORIES_AS_FOUND = "I could not sum these up reliably, so here are the stories as the sources report them."
+AS_FOUND = "Here is what I found:"
+IN_THEIR_WORDS = "In the sources' own words:"
+APPENDED_FOR_YOU = (
+    "[Kiwibro: the user asked to add to a note and you replied without doing it, so Kiwibro added it: see "
+    "above. Tell the user it is added, in one short sentence.]"
+)

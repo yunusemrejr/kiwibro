@@ -377,18 +377,23 @@ class Workspace:
         entries: list[dict[str, Any]] = []
         root = self.root
 
+        waiting = [0]  # entries of the folder itself still to come: what is inside subfolders never crowds them out
+
         def walk(directory: Path, level: int) -> None:
-            if len(entries) >= LIST_MAX_ENTRIES:
+            if len(entries) + (waiting[0] if level > 1 else 0) >= LIST_MAX_ENTRIES:
                 return
             try:
                 children = sorted(directory.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
             except OSError:
                 return
+            children = [child for child in children if not (child.name.startswith(".") or child.name in PRUNED_DIRS)]
+            if level == 1:
+                waiting[0] = len(children)
             for child in children:
-                if len(entries) >= LIST_MAX_ENTRIES:
+                if level == 1:
+                    waiting[0] -= 1
+                if len(entries) + (waiting[0] if level > 1 else 0) >= LIST_MAX_ENTRIES:
                     return
-                if child.name.startswith(".") or child.name in PRUNED_DIRS:
-                    continue
                 try:
                     resolved_child = child.resolve()
                     if resolved_child != root and not resolved_child.is_relative_to(root):
@@ -410,6 +415,30 @@ class Workspace:
 
         walk(resolved, 1)
         return entries
+
+    def count_children(self, path: str = ".") -> tuple[int, int]:
+        """(files, folders) directly in a folder, counted in full: a listing stops at
+        LIST_MAX_ENTRIES and goes into subfolders, so it cannot answer "how many files are here"."""
+        resolved = self.resolve(path, must_exist=True)
+        files = folders = 0
+        try:
+            children = list(resolved.iterdir())
+        except OSError:
+            return 0, 0
+        for child in children:
+            if child.name.startswith(".") or child.name in PRUNED_DIRS:
+                continue
+            try:
+                inside = child.resolve()
+                if inside != self.root and not inside.is_relative_to(self.root):
+                    continue
+                if child.is_dir():
+                    folders += 1
+                else:
+                    files += 1
+            except OSError:
+                continue
+        return files, folders
 
     def write_file(self, path: str, content: str) -> dict[str, Any]:
         if not isinstance(content, str):

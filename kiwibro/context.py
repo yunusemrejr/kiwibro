@@ -114,6 +114,9 @@ def capped_tool_content(content: str, cap: int = TOOL_RESULT_CAP) -> str:
     return content[:head] + marker + content[-tail:]
 
 
+REJECTED_STUB = "[An answer the user turned down as wrong or out of date stood here. It is not repeated.]"
+
+
 def to_llm_message(message: dict[str, Any], tool_cap: int = TOOL_RESULT_CAP) -> dict[str, Any] | None:
     role = message.get("role")
     if role not in ("user", "assistant", "tool"):
@@ -129,6 +132,8 @@ def to_llm_message(message: dict[str, Any], tool_cap: int = TOOL_RESULT_CAP) -> 
     if role == "assistant":
         if not content and not tool_calls:
             return None
+        if content and isinstance(message.get("meta"), dict) and message["meta"].get("rejected"):
+            content = REJECTED_STUB  # the user turned it down: repeating it would bring it back
         result: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             normalised = []

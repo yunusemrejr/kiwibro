@@ -214,3 +214,57 @@ def test_summarised_articles_come_first_and_bare_headlines_are_few():
 ])
 def test_a_request_for_news_is_told_from_a_remark_about_it(message: str, asks: bool):
     assert research.asks_for_news(message) is asks
+
+
+class _Feeds:
+    """Stands in for the search engine: a pool of dated items per wording."""
+
+    def __init__(self, pools: dict[str, list[dict[str, str]]]) -> None:
+        self.pools, self.asked = pools, []
+
+    def news_pool(self, query: str, *, days=None, since=None) -> list[dict[str, str]]:
+        self.asked.append(query)
+        return [dict(item) for item in self.pools.get(query, [])]
+
+    def news_search(self, query: str, max_results: int = 8, *, days=None, since=None) -> list[dict[str, str]]:
+        return search.pick_news(self.news_pool(query, days=days, since=since), max_results)
+
+
+def _stories(names: str, hours_ago: float = 1) -> list[dict[str, str]]:
+    return [_item(f"{name} harbour story", hours_ago + index) for index, name in enumerate(names.split())]
+
+
+def test_a_news_search_done_again_lists_what_was_not_shown():
+    feeds = _Feeds({"chess": _stories("Alta Bodo Molde Voss Floro Rana Forde Sogndal Odda Stord")})
+    ask = research.news_request("chess news", NOW)
+    first, note = research.news_search(feeds, ask, 4)
+    shown = research.format_news(first, note)
+    again, note = research.again(feeds, ask, first, note, 4, shown_before=shown)
+    assert research.NOT_SHOWN_BEFORE in note and again
+    assert not {item["title"] for item in again} & {item["title"] for item in first}
+
+
+def test_a_news_search_done_again_tries_other_words_before_giving_the_same_list():
+    feeds = _Feeds({"chess": _stories("Alta Bodo Molde"), "chess news": _stories("Alta Voss Floro Rana")})
+    ask = research.news_request("chess news", NOW)
+    first, note = research.news_search(feeds, ask, 4)
+    again, note = research.again(feeds, ask, first, note, 4, shown_before=research.format_news(first, note))
+    assert "chess news" in feeds.asked and research.NOT_SHOWN_BEFORE in note
+    assert [item["title"].split()[0] for item in again] == ["Voss", "Floro", "Rana"]
+
+
+def test_a_news_search_done_again_says_so_when_the_feeds_have_nothing_else():
+    feeds = _Feeds({"chess": _stories("Alta Bodo Molde")})
+    ask = research.news_request("chess news", NOW)
+    first, note = research.news_search(feeds, ask, 4)
+    again, note = research.again(feeds, ask, first, note, 4, shown_before=research.format_news(first, note))
+    assert research.NOTHING_NEWER in note and again == first
+
+
+def test_a_refined_news_search_stays_on_the_subject_of_the_request():
+    pool = [_item("Voss bakery closes after software switch", 2), _item("Alta harbour story", 1),
+            _item("Bakery owner in Voss speaks out", 3)]
+    feeds = _Feeds({"voss bakery owner": pool})
+    ask = research.news_request("voss news bakery owner", NOW)
+    again, _note = research.again(feeds, ask, pool[:2], "", 4, must_mention=("voss",))
+    assert [item["title"] for item in again] == ["Voss bakery closes after software switch", "Bakery owner in Voss speaks out"]

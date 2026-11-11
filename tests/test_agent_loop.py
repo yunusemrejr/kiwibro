@@ -137,6 +137,7 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
         return ChatResult(content=text)
 
     monkeypatch.setattr(env.svc.llm, "stream_chat", stream_chat)
+    monkeypatch.setattr(env.svc.search, "web_search", lambda query, max_results=5: [])  # nothing to check the reply against
     events, _raw = chat_events(env, "Summarize the PHP2Shell news as a bulletin.")
     assert len(calls) == 2
     kept = calls[1]["messages"][-2]

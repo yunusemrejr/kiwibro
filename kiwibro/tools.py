@@ -34,6 +34,9 @@ class ToolContext:
     llm: LLMClient | None = None
     current_model: str | None = None
     notes: Any = None  # notes.Notebook, wired by AgentManager
+    deep: bool = False  # a search Kiwibro runs itself: the best pages are opened and their passages attached
+    shown_before: str = ""  # an answer the user turned down: a new search lists what was not in it first
+    must_mention: tuple[str, ...] = ()  # the subject of the request being done again: results stay on it
 
 
 @dataclass
@@ -474,17 +477,20 @@ _SPECS: tuple[ToolSpec, ...] = (
         name="git",
         description=(
             "Inspect a git repository in the workspace (read-only): status, diff stat, "
-            "recent log, branches, or show a commit. Use run_command for git writes."
+            "recent log, branches, or show a commit. compare: is the local copy at the same commit as "
+            "a remote repository (a GitHub address or owner/repo), and how far ahead or behind. "
+            "Use run_command for git writes."
         ),
         parameters=_schema(
             {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "diff", "log", "show", "branch"],
+                    "enum": ["status", "diff", "log", "show", "branch", "compare"],
                     "description": "What to inspect (default status)",
                 },
                 "path": _str("Repository folder (default workspace root)"),
                 "ref": _str("Commit/branch for diff or show"),
+                "remote": _str("For compare: the remote's address, owner/repo, or remote name (default origin)"),
                 "limit": _int("Log entries (1-50, default 10)", 1, 50),
             },
         ),
@@ -1149,11 +1155,12 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
     if name == "git":
         action = args.get("action") or "status"
         if action not in codebase.GIT_ACTIONS:
-            raise ValueError("action must be status, diff, log, show or branch")
+            raise ValueError("action must be status, diff, log, show, branch or compare")
         return {
             "action": action,
             "path": _opt_str(args, "path") or ".",
             "ref": _opt_str(args, "ref"),
+            "remote": _opt_str(args, "remote"),
             "limit": _as_int(args.get("limit"), "limit", 10, 1, 50),
         }
     if name == "run_command":
@@ -1341,6 +1348,72 @@ def _search_lines(results: list[dict[str, str]]) -> str:
     return research.format_search_results(results)
 
 
+def _listing_summary(entries: list[dict[str, Any]], here: tuple[int, int] | None = None) -> tuple[str, dict[str, Any]]:
+    """What a folder listing adds up to, plus those numbers as meta. ``here`` is (files, folders)
+    directly in the folder: "how many files are on my desktop" asks for that, not for what the
+    subfolders hold as well."""
+    from datetime import datetime, timezone  # local: the module's import list stays as it is
+
+    from .sandbox import LIST_MAX_ENTRIES
+
+    largest: tuple[str, int] | None = None
+    newest: tuple[datetime, str] | None = None
+    files = folders = total_bytes = 0
+    for entry in entries:
+        kind = str(entry.get("type") or "")
+        path = str(entry.get("path") or "")
+        try:
+            size = int(entry.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if kind == "file":
+            files += 1
+            total_bytes += size
+            if largest is None or size > largest[1]:
+                largest = (path, size)
+        elif kind == "dir":
+            folders += 1
+        try:
+            moment = datetime.fromisoformat(str(entry.get("modified") or ""))
+        except (TypeError, ValueError):
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if newest is None or moment > newest[0]:
+            newest = (moment, path)
+    counted = f"{desktop._count_unit(files, 'file')} and {desktop._count_unit(folders, 'folder')}"
+    if here is None or here == (files, folders):
+        line = f"{counted}, {desktop._human_bytes(total_bytes)} in total"
+    else:
+        from .sandbox import LIST_MAX_DEPTH
+
+        line = (
+            f"Directly in this folder: {desktop._count_unit(here[0], 'file')} and "
+            f"{desktop._count_unit(here[1], 'folder')} (hidden ones not counted). "
+            f"Counting what is inside its folders too, {LIST_MAX_DEPTH} levels deep: {counted}, "
+            f"{desktop._human_bytes(total_bytes)} in total"
+        )
+    if largest is not None:
+        line += f". Largest file: {largest[0]} ({desktop._human_bytes(largest[1])})"
+    if newest is not None:
+        line += f". Newest: {newest[1]} ({newest[0].astimezone().strftime('%Y-%m-%d %H:%M')})"
+    line += "."
+    if len(entries) >= LIST_MAX_ENTRIES:
+        line += f" The listing stops at {LIST_MAX_ENTRIES} entries; there may be more."
+    meta = {
+        "files_here": here[0] if here else files,
+        "folders_here": here[1] if here else folders,
+        "files": files,
+        "folders": folders,
+        "total_bytes": total_bytes,
+        "largest": largest[0] if largest else "",
+        "largest_size": desktop._human_bytes(largest[1]) if largest else "",
+        "newest": newest[1] if newest else "",
+        "newest_time": newest[0].astimezone().strftime("%Y-%m-%d %H:%M") if newest else "",
+    }
+    return line, meta
+
+
 def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name in _EXTENSIONS:
         outcome = _EXTENSIONS[name].execute(args, ctx)
@@ -1348,23 +1421,25 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             raise ValueError(f"extension tool {name} returned an invalid result")
         return outcome
     if name == "web_search":
+        weather = research.weather_report(ctx.search, args["query"])
+        if weather:
+            return ToolResult(ok=True, content=weather, preview=_preview(weather), meta={"count": 1, "weather": True})
         news = research.news_request(args["query"])
         if news is not None:
-            items, note = research.news_search(ctx.search, news, max(args["max_results"], research.NEWS_ITEMS))
+            limit = max(args["max_results"], research.NEWS_ITEMS)
+            items, note = research.news_search(ctx.search, news, limit)
+            if ctx.shown_before or ctx.must_mention:
+                items, note = research.again(ctx.search, news, items, note, limit, ctx.shown_before, ctx.must_mention)
             if items:
                 content = research.format_news(items, note)
                 return ToolResult(ok=True, content=content, preview=_preview(content),
                                   meta={"count": len(items), "results": items, "news": True})
-        results = ctx.search.web_search(args["query"], args["max_results"])
+        results = research.search(ctx.search, args["query"], args["max_results"], deep=ctx.deep)
+        if ctx.shown_before:  # what the user has not been shown comes first
+            results = sorted(results, key=lambda result: str(result.get("url") or "#") in ctx.shown_before)
         if not results:
             return ToolResult(ok=True, content=research.NO_RESULTS, preview="No results", meta={"count": 0})
-        lines = []
-        for index, result in enumerate(results, start=1):
-            lines.append(f"{index}. {result['title']}\n{result['url']}")
-            if result.get("snippet"):
-                lines.append(result["snippet"])
-            lines.append("")
-        content = "\n".join(lines).strip()
+        content = research.format_read_results(results)
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"count": len(results), "results": results})
     if name == "multi_search":
         bundle = research.multi_search(ctx.search, args["queries"], max_results=args["max_results"])
@@ -1404,12 +1479,18 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=True, content=result["content"], preview=_preview(result["content"]),
                           meta={"paths": result.get("paths", paths), "lines": result["total_lines"]})
     if name == "list_files":
-        entries = ctx.workspace.list_files(args.get("path") or ".")
+        folder = args.get("path") or "."
+        entries = ctx.workspace.list_files(folder)
         if not entries:
             # Spelled out: tiny models read a bare "(empty)" as "try again", not "0 files".
             return ToolResult(ok=True, content="The folder is empty (0 files, 0 folders).", preview="Empty folder", meta={"count": 0})
-        content = "\n".join(f"{entry['type']}\t{entry['path']}\t{entry['size']}" for entry in entries)
-        return ToolResult(ok=True, content=content, preview=_preview(content), meta={"count": len(entries)})
+        summary, facts = _listing_summary(entries, ctx.workspace.count_children(folder))
+        # Sizes as people read them, and none on a folder: a small model reads "dir asp 0" as "0 files in asp".
+        listing = "\n".join(
+            f"dir\t{entry['path']}/" if entry["type"] == "dir"
+            else f"file\t{entry['path']}\t{desktop._human_bytes(entry['size'])}" for entry in entries)
+        content = f"{summary}\n\n{listing}"
+        return ToolResult(ok=True, content=content, preview=_preview(content), meta={"count": len(entries), **facts})
     if name == "glob_files":
         found = codebase.glob_files(ctx.workspace, args["pattern"], path=args["path"])
         if not found["results"]:
@@ -1468,8 +1549,10 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             message = f"Deleted {managed['path']}."
         return ToolResult(ok=True, content=message, preview=message, meta=managed)
     if name == "git":
-        info = codebase.git_info(ctx.workspace, args["action"], path=args["path"], ref=args["ref"], limit=args["limit"])
-        content = f"git {info['action']} in {info['cwd']}:\n{info['output']}"
+        info = codebase.git_info(ctx.workspace, args["action"], path=args["path"], ref=args["ref"],
+                                 limit=args["limit"], remote=args.get("remote"))
+        # A comparison leads with its verdict: the first line is what survives in a long chat.
+        content = info["output"] if info["action"] == "compare" else f"git {info['action']} in {info['cwd']}:\n{info['output']}"
         return ToolResult(ok=True, content=content, preview=_preview(info["output"]), meta=info)
     if name == "run_command":
         result = ctx.workspace.run_command(args["command"], args.get("cwd"))

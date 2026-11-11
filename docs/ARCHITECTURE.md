@@ -121,7 +121,7 @@ kiwibro/
 │   │   ├── attachments.js    # composer attachments: pick, paste, drop, upload
 │   │   ├── chat.js           # transcript: messages, streaming, tool activity, approvals
 │   │   ├── export.js         # chat export as Markdown (pure functions)
-│   │   ├── how.js            # How it works: eight small animated figures
+│   │   ├── how.js            # How it works: nine small animated figures
 │   │   ├── inference.js      # thinking control, reply speed, context window size
 │   │   ├── markdown.js       # escape-first Markdown renderer for chat replies
 │   │   ├── mathml.js         # LaTeX maths to MathML, without dependencies

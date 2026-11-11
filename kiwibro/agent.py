@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, library, plan, prompts, readings, research, safety,
-    sessions, steer, terms, toolcall, tools, workspaces,
+    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, grounding, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
+    sessions, shape, steer, terms, toolcall, tools, weather, workspaces,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -28,7 +28,7 @@ from .llm import ADAPTER_TASK, ADAPTERS_OFF, ChatResult, ContextLimitError, LLME
 from .memory import MemoryEngine
 from . import notes as notes_module
 from .notes import Notebook
-from .sandbox import SandboxError, Workspace
+from .sandbox import LIST_MAX_DEPTH, SandboxError, Workspace
 from .search import SearchEngine
 from .tools import ToolContext, ToolResult
 
@@ -334,6 +334,7 @@ class Turn:
     interim: list[tuple[str, str]] = field(default_factory=list)  # (message id, text) written beside tool calls
     acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
     bulletin: str = ""  # the news Kiwibro found, shown under the model's answer as its sources
+    own_search: bool = False  # the search running now is Kiwibro's own: the best pages are opened and read
     learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
     questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
     worked: tuple[tuple[str, str], ...] = ()  # sums the message asks for, worked out exactly before the reply
@@ -344,6 +345,17 @@ class Turn:
     adapters_tried: list[Any] = field(default_factory=list)  # on when a reply went wrong; off from then on
     adapters_judged: bool = False  # whether that reply was the adapters' doing is settled
     sense_checked: int = 0  # sentences of the streaming reply already read
+    reaction: Any = None  # reactions.Reaction when the message turns the last answer down
+    evidence: list[str] = field(default_factory=list)  # what this turn's tools returned; the answer is checked against it
+    evidence_items: list[dict[str, Any]] = field(default_factory=list)  # search results, for showing them as found
+    looked: dict[str, dict[str, Any]] = field(default_factory=dict)  # the figures of this turn's looks at the computer, by tool
+    shown_before: str = ""  # the answer the user turned down (a redo lists what was not in it)
+    must_mention: tuple[str, ...] = ()  # the subject a refined redo stays on
+    redoing: bool = False  # this turn searches again for the request before (the user turned its answer down)
+    recalled: list[dict[str, Any]] = field(default_factory=list)  # the saved memories this turn's context shows
+    done_note: str = ""  # what the note tool did this turn, in a sentence ("Added to note “Shopping”: cheese.")
+    ground_left: int = 1  # new attempts the source check may still ask for
+    routes: dict[str, Any] = field(default_factory=dict)  # call id -> the user's folder a code-made look reads
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -594,6 +606,7 @@ class AgentManager:
         if self._english_only(turn, conversation, settings, model):
             return
         turn.reading = self._read_message(turn, settings)
+        turn.reaction = self._read_reaction(turn, settings)
 
         model_info = self.llm.model_info(model)
         if turn.attachments:
@@ -653,7 +666,8 @@ class AgentManager:
             max_rounds = config.MAX_TOOL_ROUNDS
         max_rounds = max(config.TOOL_ROUNDS_RANGE[0], min(max_rounds, config.TOOL_ROUNDS_RANGE[1]))
 
-        if self._search_first(turn, settings):
+        looked = self._look_first(turn, settings)
+        if self._search_first(turn, settings) or looked:
             self._raise_if_aborted(turn)
             if turn.reply_text.strip():  # answered from the results alone
                 max_rounds = 0
@@ -704,6 +718,10 @@ class AgentManager:
                 tool_list = None
             self._act_instead(turn, result)
             result = self._steer_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
+            result = self._from_memory(turn, model, prepared, round_index, result, text_mode)
+            result = self._not_said_before(turn, model, prepared, round_index, result, text_mode)
+            result = self._ground_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
+            self._shape_reply(turn, result)
             self._record_usage(turn, result, prepared)
             assistant_message = None
             if result.content or result.reasoning or result.tool_calls:
@@ -745,6 +763,17 @@ class AgentManager:
             turn.truncated_calls = result.finish_reason == "length"
             self._handle_tool_calls(turn, result.tool_calls, settings)
             self._raise_if_aborted(turn)
+            if (turn.done_note and turn.acted_instead == "note" and turn.plan is None
+                    and turn.pending_review in (prompts.APPENDED_FOR_YOU, prompts.NOTED_FOR_YOU)):
+                # Kiwibro kept the dictated note itself: it says so itself too, in the tool's own words.
+                turn.pending_review = ""
+                said = self.db.add_message(turn.conversation_id, "assistant", turn.done_note, model=model,
+                                           meta={"done_for_you": True})
+                turn.last_message_id = said["id"]
+                turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + turn.done_note})
+                turn.reply_text += "\n" + turn.done_note
+                turn.inference["said_by_kiwibro"] = "note"
+                break
             if round_index == max_rounds - 1:
                 note = "I reached the tool-use limit for this turn, so I stopped here."
                 left = turn.plan.summary_line(turn.reply_text) if turn.plan is not None else ""
@@ -841,23 +870,182 @@ class AgentManager:
         answer is written from the results instead, whatever the model."""
         if turn.facts is None or turn.facts.small_talk or "web_search" not in turn.facts.tools:
             return False
+        # A reaction that carries a question of its own is answered as asked: nothing is done again,
+        # so reading a normal message as a complaint by mistake starts no search and hides no answer.
+        redo = turn.reaction if turn.reaction is not None and not turn.reaction.asks else None
         try:
-            query, _borrowed = plan.search_request(turn.message)
             reading = turn.reading or readings.TurnReading()
-            if query and readings.needs_no_search(reading) and not plan.told_to_search(turn.message):
-                log.info("turn %s: the helpers see no need for the web; no search first", turn.conversation_id)
-                query = ""
-            elif (not query and readings.wants_search(reading) and not readings.follows_up(reading)
-                  and not readings.names_a_file_or_link(turn.message)):
-                query = plan.query_of(turn.message)  # live data or an explicit ask the word rules missed
-            query = research.with_time_words(query, turn.message) if query else ""
-            if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
-                query = turn.message.strip().rstrip("?.! ")
+            if redo is not None:
+                query = reactions.redo_query(redo) if self._redo_on_web(turn, redo) else ""
+                if query and redo.fresher and not re.search(r"\b(?:today|latest|current|now|this\s+(?:week|year))\b", query, re.I):
+                    query = f"{query} latest"
+            elif turn.reaction is None and reactions.score(turn.message, reading) >= reactions.SURE:
+                query = ""  # a complaint with nothing before it: its own words are not a search
+            else:
+                query = self._own_search(turn, reading)
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not read the search the message asks for", turn.conversation_id, exc_info=True)
             return False
+        if redo is None and weather.place_asked(turn.message):
+            query = turn.message.strip()  # always looked up, as asked: the search reads the place from it
         if not query:
             return False
+        if redo is not None:
+            turn.redoing = True
+            self._set_aside_rejected(turn)
+        return self._run_search_first(turn, settings, query)
+
+    def _redo_on_web(self, turn: Turn, reaction: Any) -> bool:
+        """Whether doing the request again means searching: it asked for the web or for something
+        only the web knows, the user now says to use the web, or the answer before came from a search."""
+        if reaction.wants_web or reaction.fresher:
+            return True
+        if plan.search_request(reaction.request)[0] or research.asks_for_news(reaction.request):
+            return True
+        return bool(self._last_search(turn))
+
+    def _last_search(self, turn: Turn) -> str:
+        """The query of the web search the turn before this one ran ("" if it ran none)."""
+        earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=14)
+                   if m.get("id") != turn.user_message_id]
+        users = [i for i, m in enumerate(earlier) if m.get("role") == "user"]
+        for message in reversed(earlier[users[-1]:] if users else []):
+            for call in message.get("tool_calls") or []:
+                function = (call or {}).get("function") or {}
+                if function.get("name") == "web_search":
+                    try:
+                        return str(json.loads(function.get("arguments") or "{}").get("query") or "")
+                    except (TypeError, ValueError):
+                        return ""
+        return ""
+
+    def _set_aside_rejected(self, turn: Turn) -> None:
+        """The answer the user turned down is not shown to the model again: everything Kiwibro
+        said in the turn before this one. A plain rejection also keeps what was shown, so the
+        new search lists other stories first; a message that says what was meant keeps the
+        subject of the request, so the new results stay on it."""
+        shown: list[str] = []
+        earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=14) if m.get("id") != turn.user_message_id]
+        for message in reversed(earlier):
+            if message.get("role") == "user":
+                break
+            text = str(message.get("content") or "").strip()
+            if message.get("role") == "assistant" and text:
+                self.db.update_message(message["id"], meta={**(message.get("meta") or {}), "rejected": True})
+            if text:
+                shown.append(text)
+        reaction = turn.reaction
+        if reaction is None:
+            return
+        if reaction.kind == reactions.REFINE:
+            asked = research.news_request(plan.query_of(reaction.request) or reaction.request)
+            subject = asked.topic if asked is not None and asked.topic else plan.query_of(reaction.request)
+            turn.must_mention = tuple(word for word in terms.content_words(subject) if len(word) >= 3)[:6]
+        else:
+            turn.shown_before = "\n".join(shown)
+
+    def _read_reaction(self, turn: Turn, settings: dict[str, Any]) -> Any:
+        """Whether the message turns the last answer down (reactions.py), and the request it is about.
+        The helpers' reading adds to the signs in the words; with the helpers off the words decide alone."""
+        try:
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=14)
+                       if m.get("role") in ("user", "assistant") and m.get("id") != turn.user_message_id]
+            found = reactions.read(turn.message, turn.reading, earlier)
+            if found is None:
+                return None
+            current = self.db.get_message(turn.user_message_id) or {}
+            self.db.update_message(turn.user_message_id, meta={**(current.get("meta") or {}), "reaction": found.kind})
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not read the reaction", turn.conversation_id, exc_info=True)
+            return None
+        log.info("turn %s: the message turns the last answer down (%s, %.2f)", turn.conversation_id, found.kind, found.score)
+        turn.inference["reaction"] = found.kind
+        return found
+
+    def _look_first(self, turn: Turn, settings: dict[str, Any]) -> bool:
+        """A question about this computer or one of the user's folders: Kiwibro makes the
+        read-only call first, so the answer is written from what is really there."""
+        if turn.facts is None or turn.facts.small_talk or turn.plan is not None:
+            return False
+        if turn.reaction is not None and not turn.reaction.asks:
+            return False
+        try:
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=8)
+                       if m.get("role") == "user" and m.get("id") != turn.user_message_id]
+            before = str(earlier[-1].get("content") or "") if earlier else ""
+            # Not only the tools listed for the model: every read-only look the user has not switched off.
+            allowed = frozenset(name for name in ("system_info", "list_files", "git")
+                                if name in tools.TOOL_SPECS and tools.permission_mode(settings, name) != "deny")
+            looks = lookfirst.calls(turn.message, self._workspace(turn.conversation_id).root, allowed, before)
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not look first", turn.conversation_id, exc_info=True)
+            return False
+        if not looks:
+            return False
+        calls = []
+        for look in looks:
+            call = {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+                    "function": {"name": look.name, "arguments": json.dumps(look.args, ensure_ascii=False)}}
+            if look.folder is not None:
+                turn.routes[call["id"]] = plan.Route(Workspace(look.folder), dict(look.args), look.shown)
+            calls.append(call)
+        log.info("turn %s: looking first with %s", turn.conversation_id, [look.name for look in looks])
+        message = self.db.add_message(turn.conversation_id, "assistant", "", tool_calls=calls, model=turn.model)
+        turn.last_message_id = message["id"]
+        turn.inference["looked_first"] = [look.name for look in looks]
+        self._handle_tool_calls(turn, calls, settings)
+        said = ""
+        try:
+            for look in looks:  # a folder inside the workspace is named by its path
+                if look.name == "list_files" and "list_files" in turn.looked and not turn.looked["list_files"].get("shown"):
+                    turn.looked["list_files"]["shown"] = look.shown or str(look.args.get("path") or "")
+            if all(look.name in turn.looked for look in looks):
+                said = lookfirst.answer(turn.message, turn.looked)
+        except Exception:  # a convenience; the model answers from the result instead
+            log.warning("turn %s: could not answer from the look", turn.conversation_id, exc_info=True)
+        if said:
+            log.info("turn %s: the look is the answer", turn.conversation_id)
+            reply = self.db.add_message(turn.conversation_id, "assistant", said, model=turn.model, meta={"from_look": True})
+            turn.last_message_id = reply["id"]
+            turn.reply_text = said
+            turn.inference["answered_from_look"] = True
+            turn.emit("delta", {"text": said})
+            return True
+        turn.pending_review = prompts.LOOKED_FIRST
+        return True
+
+    def _own_search(self, turn: Turn, reading: Any) -> str:
+        """The search the message itself asks for ("" for none)."""
+        query, _borrowed = plan.search_request(turn.message)
+        if query and readings.needs_no_search(reading) and not plan.told_to_search(turn.message):
+            log.info("turn %s: the helpers see no need for the web; no search first", turn.conversation_id)
+            query = ""
+        elif (not query and readings.wants_search(reading) and not readings.follows_up(reading)
+              and not readings.is_feedback(reading) and not readings.names_a_file_or_link(turn.message)):
+            query = plan.query_of(turn.message)  # live data or an explicit ask the word rules missed
+        query = research.with_time_words(query, turn.message) if query else ""
+        if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
+            query = turn.message.strip().rstrip("?.! ")
+        if not query:
+            query = self._follow_up_search(turn, reading)
+        return query
+
+    def _follow_up_search(self, turn: Turn, reading: Any) -> str:
+        """"And who came second?" after an answer that came from a search: the same subject is
+        searched again with the new question, instead of being answered from memory."""
+        text = turn.message.strip()
+        if len(text.split()) > 12 or reactions.reworks(text) or plan._OWN.search(text):
+            return ""
+        asks = text.endswith("?") or bool(plan._QUESTION.match(text))
+        leads = bool(re.match(r"(?:and|what\s+about|how\s+about|also|but|then)\b", text, re.I))
+        if not ((asks or leads) and (leads or readings.follows_up(reading) or readings.continues(reading))):
+            return ""
+        previous = self._last_search(turn)
+        if not previous:
+            return ""
+        return " ".join(f"{research.broader(previous)} {plan.query_of(text) or text}".split())[:200]
+
+    def _run_search_first(self, turn: Turn, settings: dict[str, Any], query: str) -> bool:
         call = {
             "id": f"call_{uuid.uuid4().hex[:12]}",
             "type": "function",
@@ -868,7 +1056,11 @@ class AgentManager:
         turn.last_message_id = message["id"]
         turn.acted_instead = "web_search"
         turn.inference["searched_first"] = True
-        self._handle_tool_calls(turn, [call], settings)
+        turn.own_search = True
+        try:
+            self._handle_tool_calls(turn, [call], settings)
+        finally:
+            turn.own_search = False
         more = turn.plan is not None and any(step.kind != "web" for step in turn.plan.remaining())
         found = [m for m in self.db.recent_messages(turn.conversation_id, limit=2) if m.get("role") == "tool"]
         news = bool(found) and str(found[-1].get("content") or "").startswith(research.NEWS_HEAD)
@@ -883,18 +1075,286 @@ class AgentManager:
             turn.inference["news_bulletin"] = True
             turn.emit("delta", {"text": bulletin})
             return True
+        told = str(found[-1].get("content") or "") if found else ""
+        if told.startswith(research.WEATHER_HEAD) and not more and len(plan.questions(turn.message)) <= 1:
+            said = told.split("\n\n", 1)[-1].strip()
+            log.info("turn %s: the forecast data is the answer", turn.conversation_id)
+            reply = self.db.add_message(turn.conversation_id, "assistant", said, model=turn.model, meta={"from_look": True})
+            turn.last_message_id = reply["id"]
+            turn.reply_text = said
+            turn.inference["answered_from_look"] = True
+            turn.emit("delta", {"text": said})
+            return True
         if news and not more:
             turn.bulletin = bulletin
-        nudge = prompts.NEWS_FIRST if news else prompts.SEARCHED_FIRST
-        turn.pending_review = nudge.format(then=prompts.SEARCHED_FIRST_THEN if more else "")
+        then = prompts.SEARCHED_FIRST_THEN if more else ""
+        if turn.redoing and turn.reaction is not None and not news:
+            turn.pending_review = prompts.REDO_FIRST.format(request=turn.reaction.request.strip()[:300], then=then)
+        else:
+            turn.pending_review = (prompts.NEWS_FIRST if news else prompts.SEARCHED_FIRST).format(then=then)
         return True
+
+    _PLACEHOLDER = re.compile(r"\[(?!Kiwibro)[A-Za-z][A-Za-z _/'-]{2,40}\](?!\()|\{\{[^{}\n]{1,40}\}\}|<(?:insert|your|placeholder)[^<>\n]{0,40}>", re.I)
+
+    _ONLY_A_BRACKET = re.compile(r"\s*\[(?!Kiwibro)[^\[\]]{3,300}\]\s*")
+    # "[One coherent paragraph summarizing the news from the results.]": a sentence in brackets
+    # that describes the answer instead of giving it. No digits, quotes or code in it, and not a link.
+    _BRACKET_SENTENCE = re.compile(r"\[(?!Kiwibro)([A-Za-z][^\[\]\n\d\"=`]{24,300})\](?!\()")
+    _CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]+`", re.S)
+    BRACKET_SENTENCE_WORDS = 5
+
+    def _blanks(self, text: str) -> list[str]:
+        """The placeholders in a reply: a slot left to fill ("[Name]", "{{city}}"), or a bracketed
+        line that says what should be written there."""
+        prose = self._CODE.sub(" ", text or "")
+        found = list(self._PLACEHOLDER.findall(prose))
+        found += [inner[:60] for inner in self._BRACKET_SENTENCE.findall(prose)
+                  if len(inner.split()) >= self.BRACKET_SENTENCE_WORDS]
+        if not found and self._ONLY_A_BRACKET.fullmatch(text or ""):
+            found = [text.strip()[:60]]  # the whole reply is a template line
+        return list(dict.fromkeys(found))
+
+    def _sources(self, turn: Turn) -> tuple[list[str], bool]:
+        """What the answer must come from, and whether it may say nothing else. This turn's tool
+        results; for "summarize them", what the turn before found and said."""
+        if turn.evidence and (plan.WEB_TOOLS.intersection(turn.tools_ok) or turn.inference.get("looked_first")):
+            return turn.evidence, bool(plan.WEB_TOOLS.intersection(turn.tools_ok))
+        if turn.evidence:  # other tools ran: the model may still answer from what it knows
+            return [], False
+        if not reactions.reworks(turn.message):
+            return [], False
+        earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=10)
+                   if m.get("id") != turn.user_message_id and m.get("role") in ("assistant", "tool")]
+        texts = [str(m.get("content") or "") for m in earlier if str(m.get("content") or "").strip()]
+        return (texts, True) if any(m.get("role") == "tool" for m in earlier) else ([], False)
+
+    def _known(self, turn: Turn) -> list[str]:
+        known = [turn.message, turn.turn_context, *(turn.facts.asked_before if turn.facts else ())]
+        known += [f"{asked} {result}" for asked, result in turn.worked]
+        if turn.reaction is not None:
+            known.append(turn.reaction.request)
+        return known
+
+    REPEAT_MIN_CHARS = 20
+
+    def _not_said_before(self, turn: Turn, model: str, prepared: PreparedContext, round_index: int,
+                         result: ChatResult, text_mode: bool) -> ChatResult:
+        """A small model deep in a session sometimes answers a new question with an old answer,
+        word for word ("where do I live?" gets the cat's name it gave three turns ago). Such a
+        reply is written once more, with the two questions set side by side."""
+        def bare(words: str) -> str:  # "**Pamuk**." and "pamuk" are the same answer
+            return " ".join(re.sub(r"[^\w\s]", "", words.lower()).split())
+
+        text = bare(result.content or "")
+        if result.tool_calls or len(text) < self.REPEAT_MIN_CHARS or turn.tools_ok or turn.abort.is_set():
+            return result
+        if turn.facts is not None and turn.facts.small_talk:
+            return result  # two greetings may well get the same greeting back
+        try:
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=24)
+                       if m.get("id") != turn.user_message_id and m.get("role") in ("user", "assistant")]
+            asked = ""
+            for message in earlier:
+                if message.get("role") == "user":
+                    asked = " ".join(str(message.get("content") or "").split())
+                elif bare(str(message.get("content") or "")) == text and asked and bare(asked) != bare(turn.message):
+                    break
+            else:
+                return result
+            log.info("turn %s: the reply repeats an answer to an earlier question; asking again", turn.conversation_id)
+            turn.inference["repeated_answer"] = True
+            self._record_usage(turn, result, prepared)
+            turn.partial_text = ""
+            turn.emit("rewrite", {"text": "", "reasoning": ""})
+            retry = self._stream_with_recovery(
+                turn, model, prepared, None, round_index, text_mode=text_mode,
+                nudge=prompts.SAID_BEFORE.format(earlier=asked[:200], message=turn.message.strip()[:300]))
+            if retry.content.strip() and not retry.tool_calls and bare(retry.content) != text:
+                return retry
+        except (TurnAborted, LLMError):
+            raise
+        except Exception:  # a check must never break a reply
+            log.warning("turn %s: repeat check failed", turn.conversation_id, exc_info=True)
+        return result
+
+    def _from_memory(self, turn: Turn, model: str, prepared: PreparedContext, round_index: int,
+                     result: ChatResult, text_mode: bool) -> ChatResult:
+        """"Where do I live?" is answered by a saved fact. A reply without that fact's own name or
+        figure gets the fact shown once more; if it is still missing, Kiwibro says the fact itself."""
+        if result.tool_calls or turn.tools_ok or turn.abort.is_set() or not turn.recalled:
+            return result
+        try:
+            if not recall.asks_for_a_fact(turn.message):
+                return result
+            newest = sorted(turn.recalled, key=lambda memory: str(memory.get("updated_at") or ""), reverse=True)
+            found = recall.answers(turn.message, [str(memory.get("content") or "") for memory in newest])
+            if not found or recall.said(result.content or "", found):
+                return result
+            log.info("turn %s: the reply leaves out the saved fact it was asked for; showing it again", turn.conversation_id)
+            turn.inference["from_memory"] = "asked again"
+            self._record_usage(turn, result, prepared)
+            turn.partial_text = ""
+            turn.emit("rewrite", {"text": "", "reasoning": ""})
+            retry = self._stream_with_recovery(
+                turn, model, prepared, None, round_index, text_mode=text_mode, cool=True,
+                nudge=prompts.FROM_MEMORY.format(facts="\n".join(f"- {fact}" for fact, _telling in found[:3]),
+                                                 message=turn.message.strip()[:300]))
+            if retry.content.strip() and not retry.tool_calls and recall.said(retry.content, found):
+                return retry
+            turn.inference["from_memory"] = "said by Kiwibro"
+            retry.content, retry.tool_calls = recall.told(found), []
+            turn.partial_text = retry.content
+            turn.emit("rewrite", {"text": retry.content, "reasoning": ""})
+            return retry
+        except (TurnAborted, LLMError):
+            raise
+        except Exception:  # a check must never break a reply
+            log.warning("turn %s: memory check failed", turn.conversation_id, exc_info=True)
+        return result
+
+    def _ground_reply(
+        self, turn: Turn, model: str, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
+        round_index: int, result: ChatResult, text_mode: bool,
+    ) -> ChatResult:
+        """A final answer written after tools ran is checked against what they returned. Names
+        and figures found nowhere in the results get one new attempt; if they are still there,
+        they are removed, and when too little is left the results are shown as found."""
+        if result.tool_calls or not (result.content or "").strip() or turn.abort.is_set() or turn.facts is None:
+            return result
+        try:
+            sources, strict = self._sources(turn)
+            known = self._known(turn)
+            # One text per result: a statement has to hold within the result it is about.
+            separate = ([" ".join(str(entry.get(key) or "") for key in ("title", "source", "snippet", "passage", "url"))
+                         for entry in turn.evidence_items] if turn.evidence_items and sources is turn.evidence
+                        else grounding.results_in(sources)) if strict else []
+
+            cited = " ".join(str(text or "") for text in (*sources, *known)).lower()
+
+            def named(text: str) -> list[str]:  # "[Reuters]" after a story from Reuters is a reference, not a blank
+                return [blank for blank in self._blanks(text) if blank.strip("[]{}<> ").lower() not in cited]
+
+            def judge(text: str) -> tuple[list[Any], list[str]]:
+                return (grounding.check(text, sources, known, separate) if sources else []), named(text)
+
+            findings, blanks = judge(result.content)
+            if not findings and not blanks:
+                return result
+            draft = result.content
+            turn.inference["grounding"] = {"unsupported": grounding.missing(findings)[:8], "placeholders": blanks[:4]}
+            log.info("turn %s: the answer says what no result has: %s %s", turn.conversation_id,
+                     grounding.missing(findings)[:8], blanks[:4])
+            if blanks and turn.facts.small_talk:  # "hi" answered with a template: there is no value to ask for
+                result.content = turn.partial_text = plan.small_talk_reply(turn.message)
+                turn.emit("rewrite", {"text": result.content, "reasoning": ""})
+                return result
+            if turn.ground_left > 0:
+                turn.ground_left -= 1
+                nudge = (prompts.PLACEHOLDER.format(items=", ".join(blanks[:4])) if blanks
+                         else prompts.UNSUPPORTED.format(items=grounding.listed(findings)))
+                self._record_usage(turn, result, prepared)
+                turn.partial_text = ""
+                turn.emit("rewrite", {"text": "", "reasoning": ""})
+                turn.emit("status", {"phase": "thinking", "label": "Checking against the sources"})
+                retry = self._stream_with_recovery(turn, model, prepared, None, round_index, text_mode=text_mode,
+                                                   nudge=nudge, cool=True)
+                if retry.content.strip() and not retry.tool_calls:
+                    again, blanks_again = judge(retry.content)
+                    if len(again) + len(blanks_again) <= len(findings) + len(blanks):
+                        result, findings, blanks = retry, again, blanks_again
+                if not findings and not blanks and not self._hollow(result.content, draft):
+                    turn.inference["grounding"]["fixed"] = True
+                    return result
+            cleaned = result.content
+            if blanks:
+                # the lines with a placeholder go, and with them a line that only announced one
+                kept = [line for line in cleaned.split("\n") if not named(line)]
+                while kept and (not kept[-1].strip() or kept[-1].rstrip().endswith(":")):
+                    kept.pop()
+                cleaned = grounding.tidy(kept)
+            if findings and strict:
+                cleaned = grounding.strip(cleaned, grounding.check(cleaned, sources, known, separate)) if cleaned else ""
+            if cleaned and self._hollow(cleaned, draft):
+                cleaned = ""
+            if not cleaned:  # turned down twice: the facts as the sources give them, or that it was not found
+                cleaned = self._as_found(turn, sources) if (sources or turn.evidence) else self._plain_fallback(turn)
+                turn.inference["grounding"]["shown_as_found"] = True
+            if cleaned != result.content:
+                result.content = cleaned
+            turn.partial_text = result.content
+            turn.emit("rewrite", {"text": result.content, "reasoning": ""})
+        except (TurnAborted, LLMError):
+            raise
+        except Exception:  # a check must never break a reply
+            log.warning("turn %s: source check failed", turn.conversation_id, exc_info=True)
+        return result
+
+    @staticmethod
+    def _hollow(text: str, draft: str) -> bool:
+        """Whether a second attempt kept the form and lost the substance: "The answer is." after a
+        draft full of names says nothing, and is no more an answer than an empty reply."""
+        def said(words: str) -> set[str]:
+            return set(terms.content_words(words)) | set(re.findall(r"\d+", words))
+
+        return len(said(text)) < 2 and len(said(draft)) >= 8
+
+    def _plain_fallback(self, turn: Turn) -> str:
+        """What Kiwibro says when the model's words could not be used and there are no sources to
+        show: a plain reply to a greeting, what was just done, or that no answer came."""
+        if turn.facts is not None and turn.facts.small_talk:
+            return plan.small_talk_reply(turn.message)
+        if turn.done_note:
+            return turn.done_note
+        return prompts.NO_ANSWER_WITH_TOOLS if turn.tool_calls_made else prompts.NO_ANSWER
+
+    AS_FOUND_CHARS = 700
+
+    def _as_found(self, turn: Turn, sources: list[str]) -> str:
+        """What Kiwibro found, in the sources' own words: shown when no wording of the model's
+        could be trusted. Never empty: with nothing to show it says that it was not found."""
+        if turn.bulletin:
+            return prompts.STORIES_AS_FOUND  # the bulletin itself follows
+        if turn.evidence_items:
+            shown = grounding.digest(turn.evidence_items)
+            if shown:
+                return shown
+        if turn.evidence:  # a look at the computer: the tool's own summary and first lines
+            newest = "\n".join(line for line in turn.evidence[-1].split("\n") if not line.startswith("[Kiwibro"))
+            head = newest.strip()[: self.AS_FOUND_CHARS]
+            if len(newest.strip()) > self.AS_FOUND_CHARS:
+                head = head.rsplit("\n", 1)[0] if "\n" in head else head.rsplit(" ", 1)[0] + "…"
+            if head:
+                return f"{prompts.AS_FOUND}\n\n{head}"
+        titles = grounding.headlines(sources)
+        if titles:  # "summarize them": the stories by their own titles
+            return f"{prompts.IN_THEIR_WORDS} " + "; ".join(titles) + "."
+        return prompts.NOT_FOUND
+
+    def _shape_reply(self, turn: Turn, result: ChatResult) -> None:
+        """The final reply in the form that was asked for (shape.py): no line said twice, and one
+        paragraph when the user asked for one."""
+        if result.tool_calls or not (result.content or "").strip() or turn.abort.is_set():
+            return
+        try:
+            shaped = shape.without_repeats(result.content)
+            reading = getattr(turn.reading, "reading", None)
+            if shape.wants_one_paragraph(turn.message, tuple(getattr(reading, "asks", None) or ())):
+                shaped = shape.as_one_paragraph(shaped)
+        except Exception:  # tidying up; never break a reply
+            log.warning("turn %s: could not shape the reply", turn.conversation_id, exc_info=True)
+            return
+        if shaped != result.content:
+            turn.inference["shaped"] = True
+            result.content = turn.partial_text = shaped
+            turn.emit("rewrite", {"text": shaped, "reasoning": ""})
 
     def _show_bulletin(self, turn: Turn, model: str) -> None:
         """The news the model was asked to summarise or explain, under its answer: whatever the
         model made of it, the user sees the real stories, dated and linked."""
         if not turn.bulletin or turn.abort.is_set():
             return
-        text = f"{prompts.NEWS_SOURCES}\n\n{turn.bulletin}"
+        as_found = bool((turn.inference.get("grounding") or {}).get("shown_as_found"))
+        text = turn.bulletin if as_found else f"{prompts.NEWS_SOURCES}\n\n{turn.bulletin}"
         message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta={"news_bulletin": True})
         turn.last_message_id = message["id"]
         turn.reply_text += "\n" + text
@@ -941,6 +1401,13 @@ class AgentManager:
         """A `note` call for a note the user dictated, or for "save that as a note"."""
         if "note" not in turn.facts.tools or "note" in turn.tools_ok:
             return None
+        added = re.match(r"\W*(?:please\s+)?(?:add|append|put)\s+(.+?)\s+(?:to|in|into|on)\s+(?:that|the|my|this)\s+"
+                         r"(?:(.+?)\s+)?(?:note|list)\W*$", turn.message.strip(), re.I)
+        if added:  # "add cheese to that note": the note meant is the named one, or the last one used
+            title = (added.group(2) or "").strip() or self._last_note_title(turn)
+            if not title:
+                return None
+            return "note", {"action": "append", "title": title, "content": added.group(1).strip()}, False, prompts.APPENDED_FOR_YOU
         found = notes_module.dictation(turn.message)
         if found is None:
             return None
@@ -953,6 +1420,20 @@ class AgentManager:
                 return "", {}, True, prompts.NOTHING_TO_NOTE
             body = str(earlier[-1]["content"]).strip()
         return "note", {"action": "save", "content": body, **({"title": title} if title else {})}, False, prompts.NOTED_FOR_YOU
+
+    def _last_note_title(self, turn: Turn) -> str:
+        """The title of the note this chat last saved or read ("" if none)."""
+        for message in reversed(self.db.recent_messages(turn.conversation_id, limit=30)):
+            for call in message.get("tool_calls") or []:
+                function = (call or {}).get("function") or {}
+                if function.get("name") == "note":
+                    try:
+                        title = str(json.loads(function.get("arguments") or "{}").get("title") or "").strip()
+                    except (TypeError, ValueError):
+                        title = ""
+                    if title:
+                        return title
+        return ""
 
     def _written_note_call(self, turn: Turn, result: ChatResult) -> tuple[str, dict[str, Any], bool, str] | None:
         """A `note` call saving the reply itself, when the user asked for a note to be written and
@@ -1521,7 +2002,7 @@ class AgentManager:
         reading = turn.reading or readings.TurnReading()
         # "and in Rust?" finds what the question before it was about
         lookup = f"{turn.before[:300]} {turn.message}" if readings.continues(reading) and turn.before else turn.message
-        memory_block, _memories = self.memory.build_block(
+        memory_block, turn.recalled = self.memory.build_block(
             lookup,
             enabled=bool(settings.get("memory_enabled", True)),
             # Budget-scaled cap: a fixed 800-token block would starve the
@@ -1547,7 +2028,7 @@ class AgentManager:
         blocks = [
             inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
             _directives_note(self.db, turn.conversation_id), plan_note, several, worked, readings.note(reading),
-            guidance_note, learned,
+            guidance_note, learned, turn.reaction.note() if turn.reaction is not None else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
@@ -1563,6 +2044,13 @@ class AgentManager:
             reading = turn.reading or readings.TurnReading()
             lookup = f"{turn.before[:300]} {turn.message}" if readings.continues(reading) and turn.before else turn.message
             found = self.notes.relevant(lookup, limit=2)
+            text = turn.message.strip()
+            if not found and plan._OWN.search(text) and (text.endswith("?") or plan._QUESTION.match(text)):
+                # "what did I ask you to buy?" shares no word with "Groceries: milk, eggs": a question about
+                # the user's own things is shown the note this chat last kept or read.
+                title = self._last_note_title(turn)
+                last = self.notes.find(title) if title else None
+                found = [last] if last else []
             return f"{NOTES_HEADER}\n{Notebook.render_block(found, max_chars=600)}" if found else ""
         except Exception:  # notes must never break a turn
             log.warning("turn %s: notes lookup failed", turn.conversation_id, exc_info=True)
@@ -1796,7 +2284,7 @@ class AgentManager:
             log.warning("turn %s: could not force an answer", turn.conversation_id, exc_info=True)
         meta = None
         if not text:
-            text = prompts.NO_ANSWER_WITH_TOOLS if turn.tool_calls_made else prompts.NO_ANSWER
+            text = self._plain_fallback(turn)
             meta = {"fallback": True}
             turn.emit("rewrite", {"text": "", "reasoning": ""})
             turn.emit("delta", {"text": text})
@@ -1911,6 +2399,9 @@ class AgentManager:
                 llm=self.llm,
                 current_model=turn.model,
                 notes=self.notes,
+                shown_before=turn.shown_before,
+                must_mention=turn.must_mention,
+                deep=turn.own_search,
             )
             if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
@@ -1950,6 +2441,18 @@ class AgentManager:
             turn.tool_calls_made += 1
             if result.ok:
                 turn.tools_ok.append(item["name"])
+                if item["name"] == "note" and item["args"].get("action") in ("save", "append"):
+                    added = str(item["args"].get("content") or "").strip() if item["args"].get("action") == "append" else ""
+                    turn.done_note = (f"{result.content.rstrip('.')}: {added}." if added and len(added) <= 200
+                                      else result.content)
+                if item["name"] in ("system_info", "list_files", "git") and isinstance(result.meta, dict):
+                    turn.looked[item["name"]] = {**result.meta, "shown": item["location"] or "",
+                                                 "depth": LIST_MAX_DEPTH}
+                if item["name"] not in ("note", "memory") and (result.meta or {}).get("count") != 0:  # found something
+                    turn.evidence.append(result.content)
+                    found = (result.meta or {}).get("results")
+                    if isinstance(found, list):
+                        turn.evidence_items.extend(entry for entry in found if isinstance(entry, dict))
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
@@ -2048,7 +2551,8 @@ class AgentManager:
         if pacing:
             return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
         workspace, state = self._workspace(turn.conversation_id), turn.safety
-        route = turn.plan.route(name, item["args"], workspace) if turn.plan is not None else None
+        route = turn.routes.get(item["id"]) or (
+            turn.plan.route(name, item["args"], workspace) if turn.plan is not None else None)
         if route is not None:  # a file or folder the user named outside the workspace
             workspace, item["args"], item["location"] = route.workspace, route.args, route.shown
             turn.safety.setdefault("counters", {"writes": 0, "deletes": 0})  # shared by the copy below

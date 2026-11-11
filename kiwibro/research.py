@@ -10,15 +10,16 @@ tasks instead of one search/fetch per round.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import requests
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from . import terms
-from .search import SearchEngine, SearchError, dedupe_results, rerank_results
+from .search import SearchEngine, SearchError, dedupe_results, pick_news, rerank_results
 
 log = logging.getLogger(__name__)
 
@@ -185,17 +186,51 @@ def format_search_results(results: list[dict[str, str]]) -> str:
 # --- news -------------------------------------------------------------------
 # A news question goes to dated news feeds instead of a web index: a web index answers
 # "today's AI news" with evergreen pages, and a small model then fills the gap from memory.
-_NEWS_ASK = re.compile(r"\b(?:news|headlines?|bulletin|breaking|what(?:'s|\s+is)\s+new|announcements?|announced)\b", re.I)
+_NEWS_ASK = re.compile(
+    r"\b(?:news\b(?=\W*$|\s*[?.!,;:]|\s+(?:about|on|in|from|for|of|at|around|regarding|today|tonight|this|now|lately|"
+    r"recently|yesterday|and|or|pls|plz|please|stories|headlines|updates?|bulletin|summary|roundup|digest|only|so|"
+    r"i|we|you|to|is|are|was|has|have|there|here|out|with|that)\b)|headlines|"
+    r"(?<!\ba\s)headline|bulletin|breaking|top\s+stories|announc(?:e|es|ed|ing|ements?)|"
+    r"what(?:'?s|\s+is)\s+new\b(?=\s*(?:$|[?.!,]|(?:in|with|on|at|about|from|for|today|this|lately|recently)\b)))",
+    re.I)
+# Asked about the word or the trade, not for the news: "what does the word news mean".
+_ABOUT_NEWS = re.compile(r"\b(?:the\s+word|word|term|meaning\s+of|definition\s+of|write|writing|wrote|draft)\b", re.I)
+_MINE = re.compile(r"\b(?:my|our|mine|i'?m)\b", re.I)
+_LATELY = re.compile(r"\b(?:lately|recently|these\s+days|this\s+(?:month|weekend|year|season)|so\s+far|right\s+now|"
+                     r"this\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b", re.I)
 _TODAY = re.compile(r"\b(?:today'?s?|tonight'?s?|this\s+(?:morning|evening|afternoon)|so\s+far\s+today)\b", re.I)
 _YESTERDAY = re.compile(r"\b(?:yesterday'?s?|last\s+night|past\s+(?:two|2)\s+days|last\s+(?:two|2)\s+days|48\s+hours)\b", re.I)
 _HAPPENED = re.compile(r"\bhappen(?:ed|ing|s)?\b", re.I)
+# A question about how things stand now, asked without the word "news" ("what is going on
+# in the AI world", "any updates on the strike", "what's the latest on Mars"): only dated
+# reports answer it.
+_GOING_ON = re.compile(
+    r"\b(?:what(?:'?s|\s+is|\s+has\s+been)?\s+(?:going\s+on|happening)|what\s+went\s+on|"
+    r"what(?:'?s|\s+is)\s+the\s+latest(?=\s+(?:on|in|about|from|with)\b|\s*[?.!]*$)|"
+    r"(?:going\s+on|happening)\s+(?:in|with|at|around)|(?:the\s+)?latest\s+(?:on|in|about|from|with)|"
+    r"any\s+(?:updates?|developments?)|(?:updates?|developments?)\s+(?:on|in|about|with)|"
+    r"catch\s+me\s+up|bring\s+me\s+up\s+to\s+(?:date|speed))\b",
+    re.I,
+)
+# "in the AI world", "the world of chess", "in the crypto space": the field named is the
+# topic, the frame around it is not.
+_WORLD_OF = re.compile(r"\b(?:(?:in|on|around|across|from|about)\s+)?the\s+world\s+of\b", re.I)
+_FIELD_FRAME = re.compile(
+    r"\b(?:in|on|around|across|from)\s+the\s+(?P<field>[\w.+#&'-]{2,30}(?:\s+[\w.+#&'-]{2,30})?)\s+"
+    r"(?:world|scene|space|industry|sector|field|community)\b",
+    re.I,
+)
+# What the user has in front of them is not news: "what is going on in my code", "… in this function".
+_OWN_THING = re.compile(r"\b(?:my|our|this|that|these|those|here|i|i'?m|i'?ve|we|me|us|it|its|your|you)\b", re.I)
 _DAY = re.compile(r"\b(?:(?:past|last)\s+(?:day|24\s+hours))\b", re.I)
 _WEEK = re.compile(r"\b(?:this|past|last)\s+(?:week|7\s+days|few\s+days)\b", re.I)
 _NEWS_FILLER = re.compile(
-    r"\b(?:news|headlines?|bulletin|breaking|announcements?|latest|newest|recent|top|current|any|the|some|"
+    r"\b(?:news|headlines?|bulletin|breaking|announc(?:e|es|ed|ing|ements?)|latest|newest|recent|top|current|any|the|some|"
     r"about|on|of|for|in|from|only|and|or|me|please|stories|updates?|developments?|what'?s|what\s+is|what|new|happened|"
     r"explain|why|how|does|do|did|is|are|was|were|it|that|this|matters?|summari[sz]e|tell|give|show|list|get|"
-    r"brief|catch|up|bring|i|my|you|can|could|would|need|want|to|a|an|search|look|find|google)\b",
+    r"brief|catch|up|bring|i|my|you|can|could|would|need|want|to|a|an|search|look|find|google|"
+    r"going|happening|has|been|with|around|at|lately|currently|right\s+now|these\s+days|date|speed|"
+    r"went|there|pls|plz|whats|top\s+stories|world)\b",
     re.I,
 )
 
@@ -208,11 +243,27 @@ class NewsAsk:
     window: str  # in words, for the model ("today", "today and yesterday", "the past week", "")
 
 
-def news_request(query: str, now: datetime | None = None) -> NewsAsk | None:
-    """The news a search asks for, with its time window; None for a search that is not about news."""
+def news_request(query: str, now: datetime | None = None, *, message: bool = False) -> NewsAsk | None:
+    """The news a search asks for, with its time window; None for a search that is not about news.
+    A search query that says "news" is after news; in a whole ``message`` the word has to be what
+    is asked for ("news team" and "news programmes" name other things)."""
     text = (query or "").replace("\u2019", "'")
-    if not _NEWS_ASK.search(text) and not (_HAPPENED.search(text) and (_TODAY.search(text) or _YESTERDAY.search(text))):
+    dated = bool(_TODAY.search(text) or _YESTERDAY.search(text) or _DAY.search(text) or _WEEK.search(text))
+    # "this week" and "tell me" are not the user's own thing; "my code" and "this function" are.
+    timeless = text
+    for pattern in (_TODAY, _YESTERDAY, _DAY, _WEEK, _LATELY, _NEWS_REQUEST_START):
+        timeless = pattern.sub(" ", timeless)
+    timeless = re.sub(r"\b(?:tell|give|show)\s+me\b|\bfor\s+me\b|\bcan\s+you\b|\bcould\s+you\b", " ", timeless, flags=re.I)
+    own = bool(_OWN_THING.search(_GOING_ON.sub(" ", timeless)))
+    going_on = bool(_GOING_ON.search(text)) and not own
+    happened = bool(_HAPPENED.search(text)) and (dated or bool(_LATELY.search(text))) and not own
+    # "news" before another word of its own ("news team", "news programmes") names a thing, unless a
+    # day is asked for ("why today's ai news matters").
+    named = bool(_NEWS_ASK.search(text) or ((dated or not message) and re.search(r"\bnews\b", text, re.I))) \
+        and not _ABOUT_NEWS.search(text) and not (_MINE.search(text) and not dated)
+    if not named and not going_on and not happened:
         return None
+    text = _FIELD_FRAME.sub(lambda found: f" {found.group('field')} ", _WORLD_OF.sub(" ", text))
     now = (now or datetime.now()).astimezone()
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if _YESTERDAY.search(text):
@@ -225,14 +276,18 @@ def news_request(query: str, now: datetime | None = None) -> NewsAsk | None:
         days, since, window = 7, now - timedelta(days=7), "the past week"
     else:
         days, since, window = 7, None, ""
-    topic = _NEWS_FILLER.sub(" ", _WEEK.sub(" ", _DAY.sub(" ", _YESTERDAY.sub(" ", _TODAY.sub(" ", text)))))
-    topic = " ".join(re.sub(r"[^\w.+#&'-]+", " ", topic).split()).strip(" '-")
+    topic = _NEWS_FILLER.sub(" ", _LATELY.sub(" ", _WEEK.sub(" ", _DAY.sub(" ", _YESTERDAY.sub(" ", _TODAY.sub(" ", text))))))
+    topic = " ".join(word for word in re.sub(r"[^\w.+#&'-]+", " ", topic).split()
+                     if any(ch.isalnum() for ch in word)).strip(" '-.")
+    if not topic and not dated and not named:
+        return None  # "what is going on?" alone asks about the conversation, not the world
     return NewsAsk(topic, days, since, window)
 
 
 _NEWS_REQUEST_START = re.compile(
     r"^\s*(?:(?:please|hey|ok|okay|so)\W+)*(?:summari[sz]e|explain|tell|give|show|list|what|whats|what's|any|get|"
-    r"brief|catch|bring|read|find|search|look|check|fetch|can|could|would|will|i\s+(?:want|need)|let'?s)\b",
+    r"brief|catch|bring|read|find|search|look|check|fetch|can|could|would|will|i\s+(?:want|need)|let'?s|"
+    r"are\s+there|is\s+there|has\s+there|have\s+there)\b",
     re.IGNORECASE,
 )
 
@@ -240,7 +295,21 @@ _NEWS_REQUEST_START = re.compile(
 def asks_for_news(message: str) -> bool:
     """The message is a request for news (not a remark that mentions it: "I read the news today")."""
     text = message.strip()
-    return news_request(text) is not None and (text.endswith("?") or bool(_NEWS_REQUEST_START.match(text)))
+    if news_request(text, message=True) is None:
+        return False
+    # "global ai news today. find news": the request can be any sentence of the message.
+    if text.endswith("?") or any(_NEWS_REQUEST_START.match(part) for part in re.split(r"(?<=[.!?;])\s+", text)):
+        return True
+    # "tech headlines for today pls", "latest news in the ai world": a bare phrase that names the news
+    # asks for it. "good news, I got the job" tells some.
+    return bool(_NEWS_PHRASE.match(text)) and not _TELLS.search(text)
+
+
+_NEWS_PHRASE = re.compile(
+    r"^\W*(?!(?:good|great|bad|sad|big|huge|exciting|amazing|terrible|awful|fake|old|no|some|sorry|happy|wonderful)\b)"
+    r"(?:[\w'.+#&-]+\s+){0,4}(?:news|headlines|stories)\b", re.I)
+_TELLS = re.compile(r"\b(?:i|we|he|she|they)\s+(?:got|have|had|am|was|were|just|heard|read|saw|watched|is|are)\b|\b(?:i'?m|we'?re)\b",
+                    re.I)
 
 
 def with_time_words(query: str, message: str) -> str:
@@ -273,6 +342,56 @@ def news_search(engine: SearchEngine, ask: NewsAsk, limit: int = 8) -> tuple[lis
                     f"Nothing is dated {ask.window} yet, so the past 24 hours are listed.")
             items = wider
     return items, note
+
+
+NOT_SHOWN_BEFORE = "These were not in the answer before."
+NOTHING_NEWER = "A new search just now found no other stories: these are the newest dated reports the news feeds have."
+# A request done again is also searched in other words: the feeds answer each wording with other stories.
+REWORDINGS = ("{topic} news", "latest {topic} developments")
+
+
+def again(engine: SearchEngine, ask: NewsAsk, items: list[dict[str, str]], note: str, limit: int,
+          shown_before: str = "", must_mention: tuple[str, ...] = ()) -> tuple[list[dict[str, str]], str]:
+    """News for a request that is being done again because the user turned the answer down:
+    stories that stay on the request's subject, and ones not yet shown instead of the same list.
+    ``items`` and ``note`` are what the plain search gave."""
+    def on_subject(found: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [item for item in found
+                if any(word in f"{item.get('title', '')} {item.get('snippet', '')}".lower() for word in must_mention)]
+
+    def unseen(found: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [item for item in found if item.get("title", "").replace("[", "(").replace("]", ")") not in shown_before]
+
+    pool_of = getattr(engine, "news_pool", None)
+    since = ask.since
+    if since is not None and "past 24 hours" in note:  # the plain search already had to look further back
+        since = min(since, datetime.now().astimezone() - timedelta(days=1))
+
+    def pool(topic: str) -> list[dict[str, str]]:
+        if pool_of is None:
+            return engine.news_search(topic, limit * 3, days=ask.days, since=since)
+        return pool_of(topic, days=ask.days, since=since)
+
+    if must_mention:
+        kept = on_subject(pool(ask.topic)) or on_subject(items)
+        return (pick_news(kept, limit), note) if kept else (items[:limit], note)
+    if not shown_before:
+        return items[:limit], note
+    found: dict[str, dict[str, str]] = {}
+    for wording in ("{topic}", *(REWORDINGS if ask.topic else ())):
+        try:
+            more = pool(wording.format(topic=ask.topic).strip())
+        except Exception:  # one wording failing must not lose the others
+            log.info("news search in other words failed", exc_info=True)
+            continue
+        for item in unseen(more):
+            found.setdefault(item.get("title", ""), item)
+        if len(found) >= limit:
+            break
+    fresh = sorted(found.values(), key=lambda item: item.get("published") or "", reverse=True)
+    if len(fresh) >= NEWS_MIN_ITEMS:
+        return pick_news(fresh, limit), " ".join(filter(None, (note, NOT_SHOWN_BEFORE)))
+    return items[:limit], " ".join(filter(None, (note, NOTHING_NEWER)))
 
 
 def _moment(published: str, now: datetime) -> datetime | None:
@@ -319,6 +438,7 @@ def bulletin_is_the_answer(message: str) -> bool:
 
 
 NEWS_HEAD = "News bulletin, newest first"
+WEATHER_HEAD = "Weather, from forecast data"
 
 
 def format_news(items: list[dict[str, str]], note: str = "", now: datetime | None = None) -> str:
@@ -373,6 +493,121 @@ def drop_seen_snippets(content: str, seen: set[str]) -> str:
     return "\n\n".join(blocks)
 
 
+# --- reading the pages a search found ------------------------------------------
+# A result's snippet is a line or two chosen by the search engine; the answer is usually
+# further down the page. Kiwibro opens the best pages itself and hands the model the
+# passages that bear on the question, so a small model has the facts in front of it
+# instead of a headline to guess from.
+DEEP_PAGES = 3  # pages opened for one search
+DEEP_DEADLINE_S = 9.0  # all of them together; a page that is slower is left out
+DEEP_PAGE_CHARS = 8000
+PASSAGE_CHARS = 360
+PASSAGES_PER_PAGE = 2
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[\"“(\[]?[A-Z0-9])|\n+")
+
+
+def passages(query: str, text: str, limit: int = PASSAGES_PER_PAGE, chars: int = PASSAGE_CHARS) -> list[str]:
+    """The parts of a page that bear on a query, best first.
+
+    The page is cut into sentences; each window of neighbouring sentences is scored by the
+    query's words it holds, a rare word counting for more than one found everywhere on the
+    page, and a window with a figure in it slightly ahead of one without. Windows that hold
+    none of the query's words are never returned."""
+    wanted = {terms.stem(word) for word in terms.content_words(query)}
+    sentences = [" ".join(part.split()) for part in _SENTENCE_END.split(text or "")]
+    sentences = [part for part in sentences if len(part) >= 25]
+    if not wanted or not sentences:
+        return []
+    held = [{terms.stem(word) for word in terms.words(part)} & wanted for part in sentences]
+    weight = {word: math.log(1.0 + len(sentences) / (1.0 + sum(word in found for found in held))) for word in wanted}
+    windows: list[tuple[float, int, int]] = []
+    for start in range(len(sentences)):
+        end, size, found = start, 0, set()
+        while end < len(sentences) and (end == start or size + len(sentences[end]) + 1 <= chars):
+            size += len(sentences[end]) + 1
+            found |= held[end]
+            end += 1
+        if not found:
+            continue
+        score = sum(weight[word] for word in found) * (1.1 if any(ch.isdigit() for ch in " ".join(sentences[start:end])) else 1.0)
+        windows.append((score, start, end))
+    picked: list[tuple[int, int]] = []
+    for _score, start, end in sorted(windows, key=lambda item: (-item[0], item[1])):
+        if len(picked) >= limit:
+            break
+        if all(end <= other_start or start >= other_end for other_start, other_end in picked):
+            picked.append((start, end))
+    out = []
+    for start, end in picked:
+        passage = " ".join(sentences[start:end])
+        out.append(passage if len(passage) <= chars else passage[: chars - 1].rsplit(" ", 1)[0] + "…")
+    return out
+
+
+def broader(query: str) -> str:
+    """A query cut down to the words that carry it, for a search that found too little."""
+    kept = [word for word in terms.content_words(query)]
+    return " ".join(dict.fromkeys(kept))[:160]
+
+
+def read_results(
+    engine: SearchEngine, query: str, results: list[dict[str, str]], *,
+    depth: int = DEEP_PAGES, deadline: float = DEEP_DEADLINE_S,
+) -> list[dict[str, str]]:
+    """Open the best results and attach to each the passages that bear on the query
+    (``passage``: one string, passages joined by " … "). Results come back in their order; a
+    page that cannot be read in time keeps its snippet and nothing else."""
+    targets = [result for result in results if str(result.get("url") or "").startswith(("http://", "https://"))][:depth]
+    if not targets:
+        return results
+    pool = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(targets)), thread_name_prefix="kiwibro-read")
+    try:
+        futures = {pool.submit(engine.fetch_page, result["url"], DEEP_PAGE_CHARS): result for result in targets}
+        done, _late = wait(futures, timeout=deadline)
+        for future in done:
+            try:
+                page = future.result()
+            except Exception:  # an unreadable page: its snippet stays
+                continue
+            found = passages(query, str(page.get("text") or ""))
+            if found:
+                futures[future]["passage"] = " … ".join(found)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results
+
+
+THIN_RESULTS = 3  # fewer than this: the question's own wording was too narrow for the index
+
+
+def search(engine: SearchEngine, query: str, max_results: int = 5, *, deep: bool = False) -> list[dict[str, str]]:
+    """A web search that does not give up on a thin answer: when the query as asked finds
+    too little, its key words are searched as well and the two lists are merged. With
+    ``deep`` the best pages are opened and their passages attached (see read_results)."""
+    results = engine.web_search(query, max_results)
+    if deep and len(results) < THIN_RESULTS:
+        wider = broader(query)
+        if wider and wider.lower() != query.lower().strip():
+            try:
+                results = dedupe_results([*results, *engine.web_search(wider, max_results)])[:max_results]
+            except SearchError:
+                pass
+    return read_results(engine, query, results) if deep and results else results
+
+
+def format_read_results(results: list[dict[str, str]]) -> str:
+    """Numbered results in the web_search layout, with what was read on each page under it."""
+    lines: list[str] = []
+    for index, result in enumerate(results, start=1):
+        lines.append(f"{index}. {result.get('title', '')}\n{result.get('url', '')}")
+        if result.get("snippet"):
+            lines.append(result["snippet"])
+        if result.get("passage"):
+            lines.append(f"On the page: {result['passage']}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def format_evidence(pages: list[dict[str, Any]]) -> str:
     """Numbered evidence pack: one section per fetched source."""
     if not pages:
@@ -419,3 +654,15 @@ def web_research(
         "evidence": evidence,
     }
 
+
+
+def weather_report(engine: Any, query: str) -> str:
+    """The weather a search asks about, read from forecast data instead of web pages, which hold
+    their figures in scripts. "" when the search is about no place's weather, or the data is not there."""
+    look = getattr(engine, "weather", None)
+    try:
+        report = look(query) if callable(look) else ""
+    except Exception:  # a convenience; the web search runs instead
+        log.warning("the weather could not be looked up", exc_info=True)
+        return ""
+    return f"{WEATHER_HEAD}.\n\n{report}" if isinstance(report, str) and report else ""

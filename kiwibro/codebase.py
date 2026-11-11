@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import difflib
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -485,7 +486,7 @@ def _prune_runs(runs: Path, *, keep: int) -> None:
 # --- read-only git --------------------------------------------------------------
 
 _GIT_REF = re.compile(r"^[A-Za-z0-9._/@^~:-]{1,120}$")
-GIT_ACTIONS = ("status", "diff", "log", "show", "branch")
+GIT_ACTIONS = ("status", "diff", "log", "show", "branch", "compare")
 
 
 def git_info(
@@ -495,6 +496,7 @@ def git_info(
     path: str = ".",
     ref: str | None = None,
     limit: int = 10,
+    remote: str | None = None,
 ) -> dict[str, Any]:
     """Read-only git inspection inside the workspace (never a shell)."""
     if action not in GIT_ACTIONS:
@@ -503,6 +505,8 @@ def git_info(
     if workdir.is_file():
         workdir = workdir.parent
     limit = max(1, min(int(limit), 50))
+    if action == "compare":
+        return _git_compare(workspace, workdir, "origin" if remote is None else remote)
     if action == "status":
         argv = ["git", "status", "--short", "--branch"]
     elif action == "diff":
@@ -543,3 +547,186 @@ def git_info(
         "output": (output or "(no output)")[:GIT_OUTPUT_CAP],
         "truncated": len(output) > GIT_OUTPUT_CAP,
     }
+
+
+# --- git compare: local copy against the remote --------------------------------------
+
+GIT_REMOTE_TIMEOUT_S = 20
+GIT_LIST_CAP = 8
+_HEADS = "refs/heads/"
+_SHA = re.compile(r"[0-9a-f]{40,64}")
+_REMOTE_NAME = re.compile(r"[A-Za-z0-9][\w.-]{0,60}", re.ASCII)
+_SHORTHAND = re.compile(r"([A-Za-z0-9_][\w.-]*)/([A-Za-z0-9_][\w.-]*)", re.ASCII)
+_REMOTE_HOST = r"[A-Za-z0-9][A-Za-z0-9.-]*"
+_REMOTE_PATH = r"[\w./~-]+"
+_REMOTE_ADDRESS = re.compile(
+    rf"https://{_REMOTE_HOST}(?::\d{{1,5}})?/{_REMOTE_PATH}"
+    rf"|ssh://(?:[A-Za-z0-9_][\w.-]*@)?{_REMOTE_HOST}(?::\d{{1,5}})?/{_REMOTE_PATH}"
+    rf"|[A-Za-z0-9_][\w.-]*@{_REMOTE_HOST}:{_REMOTE_PATH}",
+    re.ASCII,
+)
+
+
+class _CompareError(Exception):
+    """A compare that cannot finish; the text follows "Could not compare:"."""
+
+
+def _remote_address(text: str) -> tuple[str, str | None]:
+    """Check a remote name or repository address; return what git should ask and the branch a web link names."""
+    if _REMOTE_NAME.fullmatch(text):
+        return text, None
+    if _SHORTHAND.fullmatch(text):
+        return f"https://github.com/{text}", None
+    if not _REMOTE_ADDRESS.fullmatch(text):
+        raise SandboxError("remote must be a remote name (such as origin), owner/repo, or an https:// address")
+    if not text.startswith("https://"):
+        # An ssh address offers the user's keys to whatever host it names: only the checkout's
+        # own remotes, by name, go over ssh.
+        raise SandboxError("for an ssh address, give the remote's name instead (for example origin)")
+    prefix = "https://github.com/"
+    if not text.startswith(prefix):
+        return text, None
+    parts = text[len(prefix):].split("/")
+    if len(parts) <= 2:
+        return text, None
+    branch = parts[3] if len(parts) > 3 and parts[2] in ("tree", "blob") else None
+    return f"{prefix}{parts[0]}/{parts[1]}", branch
+
+
+def _git(
+    argv: list[str], cwd: Path, *, timeout: int = GIT_TIMEOUT_S, env: dict[str, str] | None = None
+) -> tuple[int | None, str, str]:
+    """Run git from an argument list; returns (exit code, stdout, stderr); the code is None on timeout."""
+    try:
+        completed = subprocess.run(
+            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL
+        )
+    except FileNotFoundError as exc:
+        raise SandboxError("git is not installed on this machine") from exc
+    except subprocess.TimeoutExpired:
+        return None, "", ""
+    return completed.returncode, (completed.stdout or "").strip(), (completed.stderr or "").strip()
+
+
+def _local(argv: list[str], workdir: Path) -> str:
+    """Read one value from the local copy; failures become plain words."""
+    code, out, err = _git(argv, workdir)
+    if code is None:
+        raise _CompareError("git did not finish in time.")
+    if code != 0:
+        if "not a git repository" in err.lower():
+            raise _CompareError("this folder is not a git repository.")
+        raise _CompareError("the local copy has no commit yet, or git could not read it.")
+    return out
+
+
+def _commits(count: int) -> str:
+    return f"{count} commit" if count == 1 else f"{count} commits"
+
+
+def _compare(workdir: Path, remote: str) -> dict[str, Any]:
+    """Compare HEAD with the chosen remote branch; raises _CompareError when that cannot be done."""
+    address, named_branch = _remote_address(remote)
+    local = _local(["git", "rev-parse", "HEAD"], workdir)
+    branch = _local(["git", "rev-parse", "--abbrev-ref", "HEAD"], workdir)
+    changed = len(_local(["git", "--no-optional-locks", "status", "--porcelain"], workdir).splitlines())
+    last = _local(["git", "log", "-1", "--format=%h %s (%cr)"], workdir)
+    if _REMOTE_NAME.fullmatch(remote):
+        code, _, _ = _git(["git", "config", "--get", f"remote.{remote}.url"], workdir)
+        if code != 0:
+            raise _CompareError(f"this checkout has no remote named {remote}.")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/true"}
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=10")  # never wait for a passphrase
+    code, out, _ = _git(
+        ["git", "-c", "protocol.ext.allow=never", "ls-remote", "--symref", "--", address],
+        workdir,
+        timeout=GIT_REMOTE_TIMEOUT_S,
+        env=env,
+    )
+    if code is None:
+        raise _CompareError(f"the remote did not answer within {GIT_REMOTE_TIMEOUT_S} seconds (timed out).")
+    if code != 0:
+        raise _CompareError(f"the remote {remote} could not be reached, or it does not exist or is private.")
+    default = ""
+    heads: dict[str, str] = {}
+    for line in out.splitlines():
+        if line.startswith("ref: "):
+            target, _, name = line[5:].partition("\t")
+            if name == "HEAD" and target.startswith(_HEADS):
+                default = target[len(_HEADS):]
+            continue
+        sha, _, ref = line.partition("\t")
+        if ref.startswith(_HEADS) and _SHA.fullmatch(sha):
+            heads[ref[len(_HEADS):]] = sha
+    if not heads:
+        raise _CompareError("the remote has no branches.")
+    if named_branch:
+        wanted = named_branch
+    elif branch != "HEAD" and branch in heads:
+        wanted = branch
+    else:
+        wanted = default
+    if wanted not in heads:
+        if named_branch:
+            raise _CompareError(f"the remote has no branch named {wanted}.")
+        raise _CompareError("the remote's default branch is unknown, so there is nothing to compare with.")
+    remote_sha = heads[wanted]
+    same = local == remote_sha
+    lines = []
+    if same:
+        lines.append(f"Same commit: yes. The local copy and {remote} ({wanted}) are both at {local[:9]}.")
+    else:
+        label = "detached HEAD" if branch == "HEAD" else branch
+        lines.append(
+            f"Same commit: no. The local copy is at {local[:9]} ({label}), "
+            f"{remote} ({wanted}) is at {remote_sha[:9]}."
+        )
+        code, _, _ = _git(["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"], workdir)
+        if code is None:
+            raise _CompareError("git did not finish in time.")
+        if code == 0:
+            counts = _local(["git", "rev-list", "--left-right", "--count", f"HEAD...{remote_sha}"], workdir)
+            ahead, behind = (int(count) for count in counts.split())
+            phrases = []
+            if ahead:
+                phrases.append(f"{_commits(ahead)} ahead")
+            if behind:
+                phrases.append(f"{_commits(behind)} behind")
+            lines.append(f"The local copy is {' and '.join(phrases)}.")
+        else:
+            lines.append(
+                "The remote commit is not in the local copy (it has not been fetched), "
+                "so the remote has work the local copy lacks or the histories differ."
+            )
+    lines.append(f"Local: {last}")
+    uncommitted = "none" if not changed else "1 file" if changed == 1 else f"{changed} files"
+    lines.append(f"Uncommitted changes in the local copy: {uncommitted}")
+    names = list(heads)
+    listed = ", ".join(names[:GIT_LIST_CAP])
+    if len(names) > GIT_LIST_CAP:
+        listed += f" (and {len(names) - GIT_LIST_CAP} more)"
+    lines.append(f"Remote branches: {listed}")
+    return {
+        "output": "\n".join(lines),
+        "same": same,
+        "local": local,
+        "remote_sha": remote_sha,
+        "branch": branch,
+        "remote_branch": wanted,
+    }
+
+
+def _git_compare(workspace: Workspace, workdir: Path, remote: str) -> dict[str, Any]:
+    """Say whether the local copy and a remote branch are at the same commit."""
+    try:
+        found = _compare(workdir, remote)
+    except _CompareError as exc:
+        found = {
+            "output": f"Could not compare: {exc}",
+            "same": None,
+            "local": "",
+            "remote_sha": "",
+            "branch": "",
+            "remote_branch": "",
+        }
+    return {"action": "compare", "cwd": workspace.public(workdir), "truncated": False, **found}

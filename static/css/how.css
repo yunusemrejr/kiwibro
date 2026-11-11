@@ -115,9 +115,11 @@
 }
 
 .how-fact {
-  margin-top: 12px;
-  padding-left: 12px;
-  border-left: 2px solid var(--tan);
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--tan-line);
+  border-radius: 10px;
+  background: var(--tan-dim);
   color: var(--muted);
   font-size: 13.5px;
   line-height: 1.55;
@@ -416,6 +418,24 @@
 .hw-gate.is-off .hw-gate-ring {
   fill: var(--orange-dim);
   stroke: var(--orange);
+}
+
+.hw-proof {
+  fill: none;
+  stroke: var(--tan);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.hw-proof.is-off {
+  stroke: var(--orange);
+  stroke-dasharray: 2 6;
+}
+
+.hw-chip .hw-tick {
+  stroke: var(--text);
+  stroke-width: 2.2;
+  stroke-linejoin: round;
 }
 
 .hw-card rect {

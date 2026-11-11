@@ -1,0 +1,37 @@
+[
+ {"name": "news", "messages": [
+   "whats happening in the space industry today",
+   "thats all wrong and outdated",
+   "space news today. search for it",
+   "sumarize them in one paragraph"]},
+ {"name": "newsfix", "messages": [
+   "summarize todays science news",
+   "these arent from today",
+   "no. search the web"]},
+ {"name": "refine", "messages": [
+   "search the internet for recent news about lego and denmark and give me a summary",
+   "nope there was something about a factory worker"]},
+ {"name": "computer", "messages": [
+   "how many files are on my desktop",
+   "which one is the largest",
+   "how much free disk space do i have",
+   "what cpu and how much ram does this computer have"]},
+ {"name": "memory", "messages": [
+   "hi",
+   "i'm Selin, I work as a nurse in Izmir and my dog is named Zeytin",
+   "note titled Packing: socks, charger, passport",
+   "what is the capital of canada and what is 15% of 1280",
+   "what's my dog's name?",
+   "what did i ask you to pack",
+   "add sunscreen to that note",
+   "actually i moved to Bursa last month",
+   "where do i live?"]},
+ {"name": "live", "messages": [
+   "who won the last motogp race",
+   "and who came second",
+   "ethereum price",
+   "whats the weather in izmir"]},
+ {"name": "repo", "messages": [
+   "on github i changed the readme and in my local copy in ./demo-app i changed some files too, are they at the same commit?",
+   "is my repo in ./demo-app up to date with origin?"]}
+]

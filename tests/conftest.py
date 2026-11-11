@@ -36,3 +36,8 @@ def no_search_providers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(search, "_get", offline)
     monkeypatch.setattr(search, "_post", offline)
+    # ...and none opens the pages of a result: the test that covers page reading puts this back.
+    from kiwibro import research
+
+    monkeypatch.setattr(research, "read_results", lambda engine, query, results, **_kwargs: results)
+    monkeypatch.setattr(research, "THIN_RESULTS", 0)  # nor searches a second time for a thin first answer
