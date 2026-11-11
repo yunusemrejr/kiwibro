@@ -7,7 +7,7 @@ never call the language model. Here their readings become decisions made in code
     search       whether the answer needs the web (with the regex rules in plan.py)
     time         the time phrases of the message, turned into real dates
     demands      what the answer must honour (format, length, tools, audience)
-    shift        whether the message follows up, stays on the topic or starts a new one
+    shift        whether the message follows up, stays on the subject or starts a new one
     keep         whether the message says something about the user worth remembering
     relates      whether a saved memory or note bears on the message
 
@@ -29,7 +29,7 @@ from . import sense
 log = logging.getLogger(__name__)
 
 # How sure a helper must be before code acts on it alone.
-WEB_SURE = 0.6  # search first when the message needs live data or asks for a search
+WEB_SURE = 0.5  # search first when "asks for a search" and "needs live data" together reach this
 WEB_NOT_SURE = 0.9  # drop a search the word rules wanted when the helper is this sure it needs none
 KEEP_SKIP = 0.7  # do not save "facts" from a hypothetical, quoted or passing message
 NEW_TOPIC_SURE = 0.85  # the shift helper is the least sure of the five: only a clear change counts
@@ -121,9 +121,30 @@ def relates(message: str, item: str) -> float | None:
 # ---- decisions ----
 
 
+def web_need(reading) -> float:
+    """How sure the helper is that the answer needs the web now: the message asks for a search,
+    or wants something only a search knows (news, weather, prices, who won). Both lead to the
+    same search, so their chances count together."""
+    scores = reading.scores.get("web", {}) if reading is not None else {}
+    return scores.get("asked", 0.0) + scores.get("live", 0.0)
+
+
 def wants_search(turn_reading: TurnReading) -> bool:
-    r = turn_reading.reading
-    return r is not None and r.web in ("asked", "live") and r.sure.get("web", 0.0) >= WEB_SURE
+    return web_need(turn_reading.reading) >= WEB_SURE
+
+
+# A link, a path or a file name ("notes.md", not "node.js"): Kiwibro opens those with its own tools.
+_LOCAL_TARGET = re.compile(
+    r"(?:https?://|www\.)\S+|(?:^|\s)(?:~|\.{1,2})?/[\w.-]+/[\w./-]*|"
+    r"\b[\w-]+\.(?:py|ts|md|txt|json|html|css|rs|go|java|sh|yml|yaml|toml|csv|tsv|pdf|png|jpe?g|log|docx?|xlsx?|ipynb)\b",
+    re.I,
+)
+
+
+def names_a_file_or_link(message: str) -> bool:
+    """The message names a file, a path or a link, so it is about something Kiwibro can open
+    itself: the helpers alone start no web search for it."""
+    return bool(_LOCAL_TARGET.search(message or ""))
 
 
 def needs_no_search(turn_reading: TurnReading) -> bool:
@@ -148,7 +169,15 @@ def new_topic(turn_reading: TurnReading) -> bool:
 
 
 def follows_up(turn_reading: TurnReading) -> bool:
+    """The message cannot be understood without the exchange before it ("and in Rust?")."""
     return turn_reading.shift is not None and turn_reading.shift[0] == "followup"
+
+
+def continues(turn_reading: TurnReading) -> bool:
+    """The message carries on the conversation, as a follow-up or on the same subject. The line
+    between those two is the helper's least sure call, and either way the exchange before it
+    helps to find what the message is about."""
+    return turn_reading.shift is not None and turn_reading.shift[0] != "new"
 
 
 def note(turn_reading: TurnReading) -> str:

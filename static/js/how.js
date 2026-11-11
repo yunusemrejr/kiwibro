@@ -562,7 +562,7 @@ const STOPS = [
     question: "What keeps a small model on track?",
     lines:
       "Beside the big model runs a tiny one that only reads. It turns each sentence into 64 numbers that capture its meaning (an [[embedding]]), and a small classifier (a [[probe]]) spots drift: posing as another assistant, claiming an action that never happened, announcing a step and not taking it. Kiwibro then stops the draft and asks again with a short note: [[steering]]. Five more tiny readers, the [[helpers]], read your message first: is it English, does it need the web, which dates it means, did the topic change.",
-    fact: "Kiwi Sense is 25 KB of WebAssembly with 4.8 MB of data, and it works the same with every model. It reads English.",
+    fact: "Kiwi Sense is 25 KB of WebAssembly with 5.5 MB of data, and it works the same with every model. It reads English.",
     build: kiwiSense,
     extra: senseBench,
   },

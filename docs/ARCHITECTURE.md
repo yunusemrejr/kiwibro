@@ -523,31 +523,44 @@ milliseconds on the CPU. Each is a hashed feature table (int8) feeding one small
   `english_only` and the language code. The `english_only` setting (on by default) turns it off.
 - **Search first.** A search the word rules want is dropped when `Hmsg` is at least 0.9 sure the
   message needs no web (`WEB_NOT_SURE`) and the user did not say to search; a message the word
-  rules miss is searched when `Hmsg` is at least 0.6 sure it asks for a search or for live data
-  (`WEB_SURE`) and it is not a follow-up.
+  rules miss is searched when the chances `Hmsg` gives "asks for a search" and "needs live data"
+  add up to at least 0.5 (`readings.web_need`, `WEB_SURE`), it is not a follow-up and it names
+  no file, path or link (Kiwibro opens those with its own tools). With the
+  word rules this catches 63% of the held-out messages the teacher says need a live search (the
+  word rules alone catch 31%), and the searches it adds are right at least as often as theirs.
 - **Memory.** Facts are not captured from a message `Hmsg` is at least 0.7 sure is hypothetical,
   about someone else or a passing mood (`KEEP_SKIP`). A memory or note that only shares a word
   with the message is left out when `Hrel` is at least 98% sure it does not bear on it
   (`RELATE_FLOOR` 0.02: dropping a true memory costs more than letting a lookalike in); pinned
   items and the user's profile always stay.
-- **Follow-ups.** When `Hshf` reads a follow-up ("and in Rust?"), memories and notes are looked
-  up with the exchange before it as well, and the helpers start no search from the bare
-  follow-up.
+- **Follow-ups and the same subject.** When `Hshf` reads a message as carrying on the
+  conversation (a follow-up such as "and in Rust?", or another question on the same subject:
+  `readings.continues`), memories and notes are looked up with the exchange before it as well.
+  The helpers start no search from a bare follow-up (`readings.follows_up`).
 - **The turn's note** gains up to three lines: the demands the answer must honour, the dates the
   message means (`resolve_time` works "last week", "since March", "3 days ago" out from today's
   date), and, when `Hshf` is at least 0.85 sure the topic changed (`NEW_TOPIC_SURE`), that the
-  message stands on its own. `Hshf` is the least certain helper (it agrees with the teacher on
-  62% of held-out pairs, and short elliptical follow-ups such as "and in Rust?" come out close to
-  a tie), so a new topic is only marked when it is plain.
+  message stands on its own. `Hshf` is the least certain helper. On held-out real conversations
+  it agrees with the teacher on 62% of pairs across the three readings (the teacher, asked
+  again with the options reordered, agrees with itself on 87%); most of the gap is the line
+  between a follow-up and a standalone question on the same subject, which Kiwibro treats
+  alike. Carrying on versus a new topic it gets right 86% of the time (teacher: 96%), and at
+  0.85 a marked new topic is right 94% of the time: two of 888 held-out pairs had a follow-up
+  marked new.
 
-The whole reading is in `done.inference.reading`. Without the helpers in `sense.bin`, or with
+The whole reading is in `done.inference.reading`; intent and topic are recorded there but no
+code decides on them yet. Without the helpers in `sense.bin`, or with
 Kiwi Sense off, every function gives a neutral answer and Kiwibro behaves as before.
 
 Training (`scripts/helpers/`, run on Google Colab): `label.py` collects real messages from open
 chat datasets and has a teacher model label them (intents, web need, time, topic, keep, phrases,
-topic shifts, which memories bear on a question); `train.py` trains each head with the feature
-table quantised while training, packs the heads into `sense.bin` and reports how often each
-agrees with held-out labels. The language helper learns from labelled sentences in 55
+topic shifts, which memories bear on a question; eight messages to a prompt for the message
+fields). Real conversations hold too few short follow-ups, so for other real exchanges the
+teacher also writes five next messages of set kinds (an elliptical follow-up, one that points
+back, one on the same subject, a new topic, a short new topic). `train.py` trains each head
+with the feature table quantised while training, keeps every conversation on one side of the
+held-out split, packs the heads into `sense.bin` and reports how often each agrees with
+held-out labels and how Kiwibro's decisions come out at its own thresholds. The language helper learns from labelled sentences in 55
 languages, with English full of names, code words and quoted foreign phrases so that it does not
 turn English back.
 

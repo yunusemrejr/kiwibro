@@ -7,7 +7,10 @@ Runs on a GPU machine (it was run on Google Colab), never inside Kiwibro:
     python label.py synth     # the teacher writes messages for the rare cases
     python label.py messages  # the teacher labels every message (intent, web, time, topic, keep, spans)
     python label.py facts     # memory facts written from messages that state them
+    python label.py lite      # the teacher labels many more messages, without the spans (for the reading head)
     python label.py shift     # the teacher labels message pairs: follow-up, same topic or new topic
+    python label.py threads   # the teacher writes five next messages for one real exchange: two follow-ups,
+                              # one on the same subject, two on a new one
     python label.py relate    # the teacher labels (message, saved item) pairs: bears on the answer or not
     python label.py all
 
@@ -38,6 +41,8 @@ MAX_CHARS = 1200
 N_POOL = int(os.environ.get("KS_N_POOL", 7000))
 N_SYNTH = int(os.environ.get("KS_N_SYNTH", 5000))
 N_PAIRS = int(os.environ.get("KS_N_PAIRS", 7000))
+N_LITE = int(os.environ.get("KS_N_LITE", 20000))
+N_THREADS = int(os.environ.get("KS_N_THREADS", 6000))
 N_QUERIES = int(os.environ.get("KS_N_QUERIES", 3500))
 N_PERSONA = int(os.environ.get("KS_N_PERSONA", 1500))
 N_TRIPLES = int(os.environ.get("KS_N_TRIPLES", 2500))
@@ -108,6 +113,17 @@ How does NEXT relate to the previous exchange?
   new: NEXT starts a different topic or task
 """
 
+# The same pair, five ways: what tells a follow-up from a new topic is then the only difference.
+THREAD_GUIDE = """Below is the start of a chat between a person and an AI assistant. Write five different possible next messages from the person:
+  elliptical: a short follow-up (1 to 6 words) that only makes sense right after this exchange because it leaves out what it is about ("and in Rust?", "why?", "shorter please", "what about the second one?", "ok do it", "and for kids?", "any cheaper ones?")
+  pointing: a follow-up that refers back to the exchange (it, that, this, those, the above, your answer, the third step, a detail of the reply) and cannot be answered without it
+  same: a new question or request on the same subject that is complete on its own and names what it is about
+  new: a message about a completely different subject
+  new_short: a short, casual message (2 to 8 words) about a completely different subject
+Write the way real people type: vary the tone and the length; some lowercase, some with small typos. English only.
+"""
+THREAD_KINDS = {"elliptical": "followup", "pointing": "followup", "same": "same", "new": "new", "new_short": "new"}
+
 RELATE_GUIDE = """A personal AI assistant keeps saved items about its user: memories (short facts) and notes. The user now sends a message. Should this saved item be shown to the assistant while it answers?
   yes: the item bears on the answer: it would change, personalise or complete the reply, or the message asks about it
   no: it does not bear on the answer, even when it shares words or the general subject
@@ -162,6 +178,9 @@ SYNTH_THEMES = [
     "uses words like may, march, spring, fall, sunday or second in a sense that has nothing to do with time",
     "asks for a summary, comparison or explanation of a document, article or text they mention",
 ]
+
+
+GUIDE_LITE = re.sub(r"\ntime_phrases:.*?(?=\nMESSAGE:)", "", GUIDE, flags=re.S)
 
 
 def log(*parts) -> None:
@@ -363,11 +382,16 @@ def json_params(schema: dict, temperature: float = 0.0, max_tokens: int = 400):
                               guided_decoding=GuidedDecodingParams(json=schema))
 
 
-def ask(prompts: list[str], schema: dict, temperature: float = 0.0, max_tokens: int = 400,
+def ask(prompts: list[str], schema: dict | list[dict], temperature: float = 0.0, max_tokens: int | list[int] = 400,
         system: str = SYSTEM) -> list[dict | None]:
+    """One answer per prompt; ``schema`` and ``max_tokens`` may be lists, one per prompt."""
     conversations = [[{"role": "system", "content": system}, {"role": "user", "content": p}] for p in prompts]
-    outputs = teacher().chat(conversations, json_params(schema, temperature, max_tokens), use_tqdm=True,
-                             chat_template_kwargs={"enable_thinking": False})
+    if isinstance(schema, list):
+        tokens = max_tokens if isinstance(max_tokens, list) else [max_tokens] * len(prompts)
+        params = [json_params(one, temperature, size) for one, size in zip(schema, tokens)]
+    else:
+        params = json_params(schema, temperature, max_tokens)
+    outputs = teacher().chat(conversations, params, use_tqdm=True, chat_template_kwargs={"enable_thinking": False})
     answers: list[dict | None] = []
     for out in outputs:
         try:
@@ -428,6 +452,52 @@ def messages() -> None:
         log(field, Counter(row[field] for row in out).most_common())
 
 
+LITE_SCHEMA = {
+    "type": "object",
+    "properties": {"intent": enum(INTENTS), "web": enum(WEB), "time": enum(TIME), "topic": enum(TOPICS), "keep": enum(KEEP)},
+    "required": ["intent", "web", "time", "topic", "keep"],
+    "additionalProperties": False,
+}
+
+
+LITE_BATCH, LITE_CHARS = 8, 4800  # messages per prompt; their total length keeps the prompt in the window
+
+
+def lite_prompt(texts: list[str]) -> str:
+    head = GUIDE_LITE.replace(
+        "Label the MESSAGE at the end. Judge the message alone, exactly as the user wrote it.",
+        f"Label each of the {len(texts)} MESSAGES at the end, in order. They come from different people: "
+        "judge each one alone, exactly as its user wrote it.")
+    head = head[:head.rindex("MESSAGE:")]
+    return head + "\n".join(f"MESSAGE {i}:\n<<<\n{text}\n>>>" for i, text in enumerate(texts, 1))
+
+
+def lite() -> None:
+    """The five readings (no spans) for many more messages than the full stage labels. The long
+    guide is read once per batch of messages: the teacher cannot cache it."""
+    rows = read_jsonl(DATA / "pool_messages.jsonl")[:N_LITE] + read_jsonl(DATA / "synth_messages.jsonl")
+    batches: list[list[dict]] = [[]]
+    for row in rows:
+        size = sum(len(r["text"]) for r in batches[-1])
+        if len(batches[-1]) >= LITE_BATCH or (batches[-1] and size + len(row["text"]) > LITE_CHARS):
+            batches.append([])
+        batches[-1].append(row)
+    schemas = [{"type": "object", "properties": {"labels": {"type": "array", "items": LITE_SCHEMA,
+                                                             "minItems": len(b), "maxItems": len(b)}},
+                "required": ["labels"]} for b in batches]
+    answers = ask([lite_prompt([r["text"] for r in b]) for b in batches], schemas,
+                  max_tokens=[48 * len(b) for b in batches])
+    out = []
+    for batch, answer in zip(batches, answers):
+        labels = (answer or {}).get("labels", [])
+        if len(labels) == len(batch):
+            out += [{**row, **label} for row, label in zip(batch, labels)]
+    write_jsonl(DATA / "labeled_lite.jsonl", out)
+    log("labelled (lite):", len(out), "of", len(rows))
+    for field in ("intent", "web", "time", "topic", "keep"):
+        log(field, Counter(row[field] for row in out).most_common())
+
+
 def facts() -> None:
     labelled = read_jsonl(DATA / "labeled_messages.jsonl")
     stating = [row["text"] for row in labelled if row["keep"] in ("fact", "preference")]
@@ -468,6 +538,31 @@ def shift() -> None:
     out = [{**pair, "label": answer["label"]} for pair, answer in zip(pairs, answers) if answer]
     write_jsonl(DATA / "labeled_shift.jsonl", out)
     log("shift:", Counter(row["label"] for row in out).most_common())
+
+
+def threads() -> None:
+    rng = random.Random(SEED + 4)
+    contexts = [p for p in read_jsonl(DATA / "pool_pairs.jsonl") if p["source"] != "spliced"]
+    rng.shuffle(contexts)
+    contexts = contexts[:N_THREADS]
+    prompts = []
+    for pair in contexts:
+        reply = f"ASSISTANT (beginning): {pair['reply'][:400]}\n" if pair["reply"] else ""
+        prompts.append(f"{THREAD_GUIDE}\nPERSON: {pair['prev'][:800]}\n{reply}")
+    text = {"type": "string", "maxLength": 240}
+    schema = {"type": "object", "properties": {kind: text for kind in THREAD_KINDS},
+              "required": list(THREAD_KINDS), "additionalProperties": False}
+    answers = ask(prompts, schema, temperature=0.9, max_tokens=260,
+                  system="You write realistic example messages. You answer only with JSON.")
+    out = []
+    for pair, answer in zip(contexts, answers):
+        for kind, label in THREAD_KINDS.items():
+            message = clean((answer or {}).get(kind, "")).strip('"')
+            if usable(message):
+                out.append({"prev": pair["prev"][:800], "reply": pair["reply"], "next": message, "label": label,
+                            "kind": kind, "source": "thread"})
+    write_jsonl(DATA / "labeled_threads.jsonl", out)
+    log("threads:", Counter(row["kind"] for row in out).most_common())
 
 
 def relate() -> None:
@@ -517,8 +612,10 @@ STAGES = {
     "pool": (pool, "pool_messages.jsonl"),
     "synth": (synth, "synth_messages.jsonl"),
     "messages": (messages, "labeled_messages.jsonl"),
+    "lite": (lite, "labeled_lite.jsonl"),
     "facts": (facts, "triples.jsonl"),
     "shift": (shift, "labeled_shift.jsonl"),
+    "threads": (threads, "labeled_threads.jsonl"),
     "relate": (relate, "labeled_relate.jsonl"),
 }
 

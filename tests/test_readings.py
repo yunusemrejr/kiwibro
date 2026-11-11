@@ -168,23 +168,88 @@ def test_demands_and_times_are_found():
     assert any("last week" in phrase for phrase in reading.times), reading.times
 
 
-BEFORE = "how do I read a csv file in python? Use pandas.read_csv('file.csv') to load it into a DataFrame."
+CSV = "how do I read a csv file in python? Use pandas.read_csv('file.csv') to load it into a DataFrame."
+TRIP = ("I'm going to Lisbon in March, what should I see? Lisbon's highlights are the Alfama quarter, "
+        "Belém Tower, the Jerónimos Monastery and the view from the São Jorge castle.")
+PROTEIN = ("how much protein should I eat a day? Most adults need about 0.8 g per kg of body weight, "
+           "more if you train hard.")
+SHIFTS = [  # (before, message, what it is)
+    (CSV, "and in rust?", "followup"),
+    (CSV, "what about rust?", "followup"),
+    (CSV, "can you show the same in rust", "followup"),
+    (CSV, "why does it need pandas?", "followup"),
+    (CSV, "explain the second line", "followup"),
+    (CSV, "shorter please", "followup"),
+    (CSV, "does that work for big files?", "followup"),
+    (CSV, "and if the file has no header?", "followup"),
+    (TRIP, "how many days do I need for that?", "followup"),
+    (TRIP, "and porto?", "followup"),
+    (TRIP, "which of those is free?", "followup"),
+    (PROTEIN, "and if I lift weights?", "followup"),
+    (PROTEIN, "what does that mean for 70 kg?", "followup"),
+    (CSV, "how do I read an excel file in python with pandas?", "same"),
+    (TRIP, "what's the best way to get from Lisbon airport to the city centre?", "same"),
+    (PROTEIN, "which foods have the most protein per calorie?", "same"),
+    (CSV, "what's a good recipe for banana bread?", "new"),
+    (CSV, "who won the world cup in 2018?", "new"),
+    (CSV, "my cat keeps sneezing, should I worry?", "new"),
+    (TRIP, "how do I reset my router?", "new"),
+    (TRIP, "explain quantum entanglement simply", "new"),
+    (PROTEIN, "fix this python error: KeyError 'name'", "new"),
+    (PROTEIN, "write a short poem about the sea", "new"),
+]
 
 
-def test_new_topics_are_told_apart():
+@pytest.mark.parametrize("before, message, meant", SHIFTS, ids=[message for _, message, _ in SHIFTS])
+def test_follow_ups_and_new_topics_are_told_apart(before, message, meant):
+    found, sure = _helpers().shift(before, message)
+    reading = readings.TurnReading(shift=(found, sure))
+    if meant == "new":
+        assert found == "new", (message, found, round(sure, 2))
+    else:  # follow-up or same subject: looked up with the exchange before, never told to drop it
+        assert readings.continues(reading) and not readings.new_topic(reading), (message, found, round(sure, 2))
+
+
+def test_most_follow_ups_are_read_as_follow_ups():
+    """Follow-up or same subject is the helper's least sure call (a follow-up read as "same"
+    still carries the exchange before into lookups). At most one handwritten follow-up may slip."""
     helpers = _helpers()
-    assert helpers.shift(BEFORE, "what's a good recipe for banana bread?")[0] == "new"
-    assert helpers.shift(BEFORE, "why does it need pandas?")[0] == "followup"
-    # only a plain change of topic gets the "answer it on its own" line
-    assert not readings.new_topic(readings.TurnReading(shift=helpers.shift(BEFORE, "explain the second line")))
-
-
-@pytest.mark.xfail(reason="short elliptical follow-ups come out close to a tie; the shift helper needs more of them in training")
-def test_elliptical_follow_ups():
-    assert _helpers().shift(BEFORE, "and in rust?")[0] == "followup"
+    slipped = [message for before, message, meant in SHIFTS
+               if meant == "followup" and helpers.shift(before, message)[0] != "followup"]
+    assert len(slipped) <= 1, slipped
 
 
 def test_relate_tells_bearing_items_from_lookalikes():
     helpers = _helpers()
     assert helpers.relates("what should I cook tonight?", "User is vegetarian.") > 0.5
     assert helpers.relates("what should I cook tonight?", "User works as a sound engineer.") < 0.5
+
+
+def test_a_message_that_carries_on_is_looked_up_with_the_exchange_before(env: Env, monkeypatch):
+    lookups = []
+    memory = env.svc.agent.memory
+    found = memory.build_block
+    monkeypatch.setattr(memory, "build_block", lambda query, **kw: (lookups.append(query), found(query, **kw))[1])
+    for shift in (("same", 0.6), ("followup", 0.5), ("new", 0.95)):
+        monkeypatch.setattr(readings, "read", lambda message, before="": readings.TurnReading())
+        env.fake.stream_script = [ChatResult(content="Use pandas.read_csv('file.csv').")]
+        events, _raw = chat_events(env, "how do I read a csv file in python?")
+        monkeypatch.setattr(readings, "read", lambda message, before="", s=shift: readings.TurnReading(shift=s))
+        env.fake.stream_script = [ChatResult(content="Done.")]
+        chat_events(env, "does it handle big files?", events[0][1]["conversation_id"])
+    carried, followed, alone = lookups[1::2]
+    assert "read a csv file" in carried and "read a csv file" in followed
+    assert alone == "does it handle big files?"
+
+
+@pytest.mark.parametrize("message, local", [
+    ("write smart.txt", True),
+    ("summarise ~/projects/kiwi/notes.md", True),
+    ("what does https://example.com/status say?", True),
+    ("open ./src/main.py", True),
+    ("what's new in node.js 24?", False),
+    ("bitcoin price now", False),
+    ("is 1/2 cup enough?", False),
+])
+def test_files_paths_and_links_are_for_kiwibros_own_tools(message, local):
+    assert readings.names_a_file_or_link(message) is local

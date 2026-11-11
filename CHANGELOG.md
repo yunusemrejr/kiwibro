@@ -18,8 +18,9 @@ All notable changes to Kiwibro are documented here.
 - **Dates worked out, demands passed on.** "Last week", "since March", "3 days ago" are
   turned into real dates in the turn's note, with what the answer must honour ("3 bullet
   points", "under 100 words").
-- **Topic switches.** A follow-up is looked up together with the question before it; a
-  new topic is marked so the model answers it on its own. Memories that only share a
+- **Topic switches.** A follow-up, or another question on the same subject, is looked up
+  together with the exchange before it; a new topic is marked only when it is plain, so the
+  model answers it on its own. Memories that only share a
   word with the message, and facts from hypotheticals or passing moods, stay out.
 
 ### Fixed

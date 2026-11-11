@@ -22,6 +22,7 @@ import json
 import multiprocessing as mp
 import os
 import random
+import re
 import struct
 import sys
 import time
@@ -49,13 +50,18 @@ from kiwibro.sense.blob import fnv  # noqa: E402
 SEED = 11
 BLOB = REPO / "static" / "sense" / "sense.bin"
 
-SPECS = {
+SPECS = {  # drop: dropout before the last layer; table_lr: learning rate of the n-gram table
     "Hlng": dict(kind=KIND_TEXT, flags=F_WORDS | F_CHARS, buckets=32768, dim=24, hidden=64, cap=900),
-    "Hmsg": dict(kind=KIND_TEXT, flags=F_EMB | F_WORDS, buckets=16384, dim=32, hidden=96, cap=600),
+    "Hmsg": dict(kind=KIND_TEXT, flags=F_EMB | F_WORDS, buckets=32768, dim=32, hidden=128, cap=600,
+                 drop=0.3, table_lr=3e-3),
     "Htag": dict(kind=KIND_TOKENS, flags=F_EMB | F_WORDS, buckets=16384, dim=24, hidden=64, cap=11),
-    "Hshf": dict(kind=KIND_PAIR, flags=F_EMB | F_WORDS, buckets=8192, dim=16, hidden=48, cap=600),
+    "Hshf": dict(kind=KIND_PAIR, flags=F_EMB | F_WORDS | F_WORDS_A, buckets=16384, dim=16, hidden=64, cap=600,
+                 drop=0.3, table_lr=3e-3),
     "Hrel": dict(kind=KIND_PAIR, flags=F_EMB | F_WORDS | F_WORDS_A, buckets=8192, dim=16, hidden=48, cap=600),
 }
+
+for _tag, _spec in SPECS.items():  # KS_SPEC_Hmsg='{"hidden": 128}' tries another size
+    _spec.update(json.loads(os.environ.get(f"KS_SPEC_{_tag}", "{}")))
 
 LANG_NAMES = {
     "en": "English", "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az": "Azerbaijani", "bg": "Bulgarian",
@@ -268,8 +274,9 @@ def pack(rows: list, cap: int, buckets: int):
 # ---------------------------------------------------------------- the network
 
 def train_head(tag: str, rows: list, targets: np.ndarray, sizes: list[int], dev_share: float = 0.08,
-               epochs: int = 8, weights: list | None = None) -> dict:
-    """targets [N, len(sizes)]: one class index per output group (-1 = no label)."""
+               epochs: int = 8, weights: list | None = None, keys: list[str] | None = None) -> dict:
+    """targets [N, len(sizes)]: one class index per output group (-1 = no label).
+    keys: rows with the same key land on the same side of the dev split (one conversation)."""
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -279,9 +286,13 @@ def train_head(tag: str, rows: list, targets: np.ndarray, sizes: list[int], dev_
     buckets, dim, hidden = spec["buckets"], spec["dim"], spec["hidden"]
     dense, groups = pack(rows, spec["cap"], buckets)
     n = len(rows)
-    order = np.random.RandomState(SEED).permutation(n)
-    cut = int(n * dev_share)
-    dev, tr = order[:cut], order[cut:]
+    if keys is None:
+        order = np.random.RandomState(SEED).permutation(n)
+        cut = int(n * dev_share)
+        dev, tr = order[:cut], order[cut:]
+    else:
+        held = np.asarray([fnv(key.encode("utf-8")) % 1000 < dev_share * 1000 for key in keys])
+        dev, tr = np.flatnonzero(held), np.flatnonzero(~held)
     classes = sum(sizes)
     inputs = dense.shape[1] + dim * len(groups)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -292,7 +303,7 @@ def train_head(tag: str, rows: list, targets: np.ndarray, sizes: list[int], dev_
             self.table = nn.Parameter(torch.randn(buckets, dim) * 0.25)
             self.l1 = nn.Linear(inputs, hidden)
             self.l2 = nn.Linear(hidden, classes)
-            self.drop = nn.Dropout(0.1)
+            self.drop = nn.Dropout(spec.get("drop", 0.1))
 
         def quantized(self):
             t = self.table.clamp(-1, 1)
@@ -309,7 +320,7 @@ def train_head(tag: str, rows: list, targets: np.ndarray, sizes: list[int], dev_
 
     net = Net().to(device)
     opt = torch.optim.Adam([
-        {"params": [net.table], "lr": 1e-2},
+        {"params": [net.table], "lr": spec.get("table_lr", 1e-2)},
         {"params": list(net.l1.parameters()) + list(net.l2.parameters()), "lr": 2e-3, "weight_decay": 1e-5},
     ])
     X = torch.from_numpy(dense)
@@ -409,13 +420,25 @@ def lang() -> None:
     write_jsonl(OUT / "Hlng.dev.jsonl", [rows[keep[i]] for i in split["dev"][:4000]])
 
 
-def labelled_messages() -> list[dict]:
-    rows = read_jsonl(DATA / "labeled_messages.jsonl")
+def labelled_messages(name: str = "labeled_messages.jsonl") -> list[dict]:
+    rows = read_jsonl(DATA / name)
     return [r for r in rows if normalize(r["text"])]
 
 
+def reading_rows() -> list[dict]:
+    """Every message with the five readings: the lite labels plus the full ones, once each."""
+    rows, seen = [], set()
+    for name in ("labeled_lite.jsonl", "labeled_messages.jsonl"):
+        if (DATA / name).exists():
+            for row in labelled_messages(name):
+                if row["text"] not in seen:
+                    seen.add(row["text"])
+                    rows.append(row)
+    return rows
+
+
 def msg() -> None:
-    rows = labelled_messages()
+    rows = reading_rows()
     spec = SPECS["Hmsg"]
     feats = featurize(feats_text, [(normalize(r["text"]), spec["flags"], spec["buckets"]) for r in rows])
     y = np.asarray([[labels.index(r[name]) for name, labels in GROUPS] for r in rows])
@@ -464,15 +487,31 @@ def shift_before(row: dict) -> str:
     return (row["prev"][:600] + " " + row.get("reply", "")[:300]).strip()
 
 
+def shift_rows() -> list[dict]:
+    """Real next messages labelled by the teacher, and the teacher's five written next messages
+    for other real exchanges."""
+    real = read_jsonl(DATA / "labeled_shift.jsonl")
+    written = read_jsonl(DATA / "labeled_threads.jsonl") if (DATA / "labeled_threads.jsonl").exists() else []
+    # Real next messages are what Kiwibro meets: KS_SHIFT_REAL copies of each weigh them up.
+    copies = int(os.environ.get("KS_SHIFT_REAL", 2))
+    rows = [{**r, "row": i} for i, r in enumerate(real + written)]
+    rows = [r for r in rows if r["row"] < len(real) for _ in range(copies - 1)] + rows
+    return [r for r in rows if normalize(r["next"])]
+
+
 def shift() -> None:
-    rows = read_jsonl(DATA / "labeled_shift.jsonl")
+    rows = shift_rows()
     spec = SPECS["Hshf"]
     feats = featurize(feats_pair, [(normalize(shift_before(r)), normalize(r["next"]), spec["flags"], spec["buckets"])
                                    for r in rows])
     y = np.asarray([[SHIFT.index(r["label"])] for r in rows])
-    log("  shift labels:", Counter(r["label"] for r in rows).most_common())
-    split = train_head("Hshf", feats, y, [len(SHIFT)], epochs=10)
-    write_jsonl(OUT / "Hshf.dev.jsonl", [rows[i] for i in split["dev"]])
+    counts = Counter(y[:, 0])
+    log("  shift labels:", Counter((r.get("source") == "thread", r["label"]) for r in rows).most_common())
+    weights = [[(len(y) / (len(SHIFT) * max(1, counts[c]))) ** 0.5 for c in range(len(SHIFT))]]
+    split = train_head("Hshf", feats, y, [len(SHIFT)], epochs=int(os.environ.get("KS_SHIFT_EPOCHS", 8)),
+                       weights=weights, keys=[r["prev"][:200] for r in rows])
+    held = {rows[i]["row"]: rows[i] for i in split["dev"]}  # each held-out row once
+    write_jsonl(OUT / "Hshf.dev.jsonl", held.values())
 
 
 def rel() -> None:
@@ -492,7 +531,9 @@ def export() -> None:
     old = blobfile.unpack(BLOB.read_bytes())
     sections = {tag: bytes(data) for tag, data in old.items() if not tag.startswith("H")}
     meta = json.loads(bytes(old["META"])) if "META" in old else {}
-    languages = json.loads((OUT / "Hlng.json").read_text())["languages"]
+    kept = meta.get("helpers", {})
+    languages = (json.loads((OUT / "Hlng.json").read_text())["languages"] if (OUT / "Hlng.json").exists()
+                 else kept["languages"])
     meta["helpers"] = {
         "languages": languages,
         "language_names": {c: LANG_NAMES.get(c, "") for c in languages},
@@ -500,15 +541,28 @@ def export() -> None:
         "trained_on": "teacher labels (Qwen3.8-27B) of open chat datasets; see scripts/helpers",
     }
     for tag in ("Hlng", "Hmsg", "Htag", "Hshf", "Hrel"):
-        sections[tag] = (OUT / f"{tag}.bin").read_bytes()
+        fresh = OUT / f"{tag}.bin"
+        sections[tag] = fresh.read_bytes() if fresh.exists() else bytes(old[tag])
+        log(" ", tag, "trained now" if fresh.exists() else "kept from the current file")
     sections["META"] = json.dumps(meta, sort_keys=True).encode("utf-8")
     data = blobfile.pack(sections)
     BLOB.write_bytes(data)
     log("wrote", BLOB, len(data), "bytes")
 
 
+def thresholds() -> dict[str, float]:
+    """The cut-offs Kiwibro acts on (kiwibro/readings.py), so the check measures what it does."""
+    text = (REPO / "kiwibro" / "readings.py").read_text()
+    return {name: float(value) for name, value in re.findall(r"^([A-Z_]+) = ([0-9.]+)", text, re.M)}
+
+
+def rate(hits: int, total: int) -> str:
+    return f"{hits / total:.3f} ({hits}/{total})" if total else "n/a"
+
+
 def check() -> None:
-    """Accuracy of the written file, run by the Python twin exactly as Kiwibro runs it."""
+    """The written file, run by the Python twin exactly as Kiwibro runs it: agreement with the
+    teacher on held-out rows, and the decisions Kiwibro takes at its own thresholds."""
     import importlib
 
     import kiwibro.sense as sense_pkg
@@ -516,37 +570,56 @@ def check() -> None:
     importlib.reload(sense_pkg)
     sense = sense_pkg.Sense(BLOB.parent, engine="python")
     helpers = sense.helpers
-    log("heads:", helpers.tags)
-    dev = read_jsonl(OUT / "Hmsg.dev.jsonl")[:1500]
-    hits = Counter()
-    for row in dev:
-        reading = helpers.read(row["text"])
-        for name, _ in GROUPS:
-            hits[name] += getattr(reading, name) == row[name]
-    log("message (teacher agreement):", {k: round(v / len(dev), 3) for k, v in hits.items()})
-    web_yes = lambda w: w in ("asked", "live", "lookup")  # noqa: E731
-    tp = sum(1 for r in dev if web_yes(r["web"]) and web_yes(helpers.read(r["text"]).web))
-    pos = sum(1 for r in dev if web_yes(r["web"]))
-    pred = sum(1 for r in dev if web_yes(helpers.read(r["text"]).web))
-    log(f"web search needed: recall {tp / max(1, pos):.3f} precision {tp / max(1, pred):.3f}")
-    keep_yes = lambda k: k in ("fact", "preference")  # noqa: E731
-    tp = sum(1 for r in dev if keep_yes(r["keep"]) and keep_yes(helpers.read(r["text"]).keep))
-    pos = sum(1 for r in dev if keep_yes(r["keep"]))
-    pred = sum(1 for r in dev if keep_yes(helpers.read(r["text"]).keep))
-    log(f"worth keeping: recall {tp / max(1, pos):.3f} precision {tp / max(1, pred):.3f}")
-    lang_dev = read_jsonl(OUT / "Hlng.dev.jsonl")
-    wrong_en = sum(1 for r in lang_dev if r["lang"] == "en" and not helpers.language(r["text"]).english)
-    caught = sum(1 for r in lang_dev if r["lang"] != "en" and len(r["text"].split()) >= 3
-                 and not helpers.language(r["text"]).english)
-    foreign = sum(1 for r in lang_dev if r["lang"] != "en" and len(r["text"].split()) >= 3)
-    english = sum(1 for r in lang_dev if r["lang"] == "en")
-    log(f"language: English turned back {wrong_en}/{english}; foreign (3+ words) caught {caught}/{foreign}")
-    shift_dev = read_jsonl(OUT / "Hshf.dev.jsonl")[:1500]
-    log("shift agreement:", round(sum(helpers.shift(shift_before(r), r["next"])[0] == r["label"]
-                                      for r in shift_dev) / len(shift_dev), 3))
-    rel_dev = read_jsonl(OUT / "Hrel.dev.jsonl")[:1500]
-    log("relate agreement:", round(sum((helpers.relates(r["message"], r["item"]) >= 0.5) == (r["label"] == "yes")
-                                       for r in rel_dev) / len(rel_dev), 3))
+    cut = thresholds()
+    log("heads:", helpers.tags, "thresholds:", {k: v for k, v in cut.items() if k != "MAX_ASKS"})
+    if (OUT / "Hmsg.dev.jsonl").exists():
+        dev = read_jsonl(OUT / "Hmsg.dev.jsonl")[:3000]
+        reads = [helpers.read(row["text"]) for row in dev]
+        log("message, teacher agreement:", {name: round(sum(getattr(r, name) == row[name] for r, row in zip(reads, dev))
+                                                        / len(dev), 3) for name, _ in GROUPS})
+        top2 = sum(row["topic"] in sorted(r.scores["topic"], key=r.scores["topic"].get)[-2:] for r, row in zip(reads, dev))
+        log("  topic in the top two:", rate(top2, len(dev)))
+        first = [r.scores["web"]["asked"] + r.scores["web"]["live"] >= cut["WEB_SURE"] for r in reads]
+        wanted = [row["web"] in ("asked", "live") for row in dev]
+        log("  search first (asked or live):",
+            "recall", rate(sum(f and w for f, w in zip(first, wanted)), sum(wanted)),
+            "precision", rate(sum(f and w for f, w in zip(first, wanted)), sum(first)))
+        dropped = [r.web in ("none", "own") and r.sure["web"] >= cut["WEB_NOT_SURE"] for r in reads]
+        log("  search dropped as needless:", sum(dropped), "of which the teacher wanted one:",
+            rate(sum(d and w for d, w in zip(dropped, wanted)), sum(dropped)))
+        skip = [r.keep in ("unsure", "passing") and r.sure["keep"] >= cut["KEEP_SKIP"] for r in reads]
+        lasting = [row["keep"] in ("fact", "preference") for row in dev]
+        log("  memory capture skipped:", sum(skip), "of which a lasting fact:",
+            rate(sum(k and f for k, f in zip(skip, lasting)), sum(skip)))
+    if (OUT / "Hshf.dev.jsonl").exists():
+        rows = read_jsonl(OUT / "Hshf.dev.jsonl")
+        for name, part in (("real pairs", [r for r in rows if r.get("source") != "thread"][:2500]),
+                           ("written threads", [r for r in rows if r.get("source") == "thread"][:2500])):
+            if not part:
+                continue
+            got = [helpers.shift(shift_before(r), r["next"]) for r in part]
+            log(f"shift, {name}: agreement", rate(sum(g[0] == r["label"] for g, r in zip(got, part)), len(part)))
+            follow = [g[0] == "followup" for g in got]
+            is_follow = [r["label"] == "followup" for r in part]
+            log("  follow-up recall", rate(sum(f and t for f, t in zip(follow, is_follow)), sum(is_follow)),
+                "precision", rate(sum(f and t for f, t in zip(follow, is_follow)), sum(follow)))
+            for sure in (0.6, 0.7, 0.8, cut["NEW_TOPIC_SURE"], 0.9):
+                new = [g[0] == "new" and g[1] >= sure for g in got]
+                is_new = [r["label"] == "new" for r in part]
+                log(f"  new topic at {sure}: precision", rate(sum(n and t for n, t in zip(new, is_new)), sum(new)),
+                    "recall", rate(sum(n and t for n, t in zip(new, is_new)), sum(is_new)),
+                    "follow-ups called new", sum(n and f for n, f in zip(new, is_follow)))
+    if (OUT / "Hlng.dev.jsonl").exists():
+        lang_dev = read_jsonl(OUT / "Hlng.dev.jsonl")
+        wrong_en = sum(1 for r in lang_dev if r["lang"] == "en" and not helpers.language(r["text"]).english)
+        foreign = [r for r in lang_dev if r["lang"] != "en" and len(r["text"].split()) >= 3]
+        caught = sum(1 for r in foreign if not helpers.language(r["text"]).english)
+        log(f"language: English turned back {wrong_en}/{sum(r['lang'] == 'en' for r in lang_dev)};"
+            f" foreign (3+ words) caught {caught}/{len(foreign)}")
+    if (OUT / "Hrel.dev.jsonl").exists():
+        rel_dev = read_jsonl(OUT / "Hrel.dev.jsonl")[:1500]
+        log("relate agreement:", rate(sum((helpers.relates(r["message"], r["item"]) >= 0.5) == (r["label"] == "yes")
+                                          for r in rel_dev), len(rel_dev)))
 
 
 STAGES = {"langdata": langdata, "lang": lang, "msg": msg, "tag": tag, "shift": shift, "rel": rel,

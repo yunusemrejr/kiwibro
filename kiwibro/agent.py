@@ -847,7 +847,8 @@ class AgentManager:
             if query and readings.needs_no_search(reading) and not plan.told_to_search(turn.message):
                 log.info("turn %s: the helpers see no need for the web; no search first", turn.conversation_id)
                 query = ""
-            elif not query and readings.wants_search(reading) and not readings.follows_up(reading):
+            elif (not query and readings.wants_search(reading) and not readings.follows_up(reading)
+                  and not readings.names_a_file_or_link(turn.message)):
                 query = plan.query_of(turn.message)  # live data or an explicit ask the word rules missed
             query = research.with_time_words(query, turn.message) if query else ""
             if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
@@ -1519,7 +1520,7 @@ class AgentManager:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
         reading = turn.reading or readings.TurnReading()
         # "and in Rust?" finds what the question before it was about
-        lookup = f"{turn.before[:300]} {turn.message}" if readings.follows_up(reading) and turn.before else turn.message
+        lookup = f"{turn.before[:300]} {turn.message}" if readings.continues(reading) and turn.before else turn.message
         memory_block, _memories = self.memory.build_block(
             lookup,
             enabled=bool(settings.get("memory_enabled", True)),
@@ -1560,7 +1561,7 @@ class AgentManager:
             if self.memory.is_private(turn.conversation_id):
                 return ""
             reading = turn.reading or readings.TurnReading()
-            lookup = f"{turn.before[:300]} {turn.message}" if readings.follows_up(reading) and turn.before else turn.message
+            lookup = f"{turn.before[:300]} {turn.message}" if readings.continues(reading) and turn.before else turn.message
             found = self.notes.relevant(lookup, limit=2)
             return f"{NOTES_HEADER}\n{Notebook.render_block(found, max_chars=600)}" if found else ""
         except Exception:  # notes must never break a turn

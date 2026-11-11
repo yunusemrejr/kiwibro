@@ -25,7 +25,7 @@ no other app is needed.
 - **Any model, same Kiwibro.** Download a model from Hugging Face inside the app, or use
   the ones LM Studio already downloaded. Swap mid-chat; memories, notes and transcripts
   stay.
-- **Kiwi Sense.** A 4.8 MB reading model (WebAssembly) reads each message before the model
+- **Kiwi Sense.** A 5.5 MB reading model (WebAssembly) reads each message before the model
   does and watches each reply as it streams.
   A model that claims to be another assistant, says it cannot search when it can, or
   announces work it never did is stopped after that sentence and put right.
@@ -165,8 +165,8 @@ does. They only decide, never write, and take a few milliseconds:
   the model.
 - **What the answer must honour.** "3 bullet points", "under 100 words", "for a
   beginner" are picked out and passed on.
-- **Topic switches.** A follow-up ("and in Rust?") is read with the question before it; a
-  new topic is answered on its own.
+- **Topic switches.** A follow-up ("and in Rust?") or another question on the same subject
+  is read with the exchange before it; only a plain change of topic is answered on its own.
 - **What to remember and recall.** Nothing is saved from a hypothetical or a passing
   mood, and a memory or note that only shares a word with your message stays out.
 
