@@ -4,6 +4,24 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Kiwi Sense helpers.** Five tiny trained deciders read every message before the model,
+  in a few milliseconds and the same way for every model: its language, what it wants
+  (intent, web, time, topic, whether it says something worth remembering), its time
+  phrases and demands, whether it follows up or changes topic, and which saved memories
+  and notes bear on it. They ride in `sense.bin` and run in the WebAssembly core and its
+  Python twin.
+- **English only.** A message that is not in English gets a short reply, written by code,
+  asking for English and naming the language it reads as. Quoted words, names, code and
+  links inside English messages pass. A new *English only* switch in Settings turns it off.
+- **Dates worked out, demands passed on.** "Last week", "since March", "3 days ago" are
+  turned into real dates in the turn's note, with what the answer must honour ("3 bullet
+  points", "under 100 words").
+- **Topic switches.** A follow-up is looked up together with the question before it; a
+  new topic is marked so the model answers it on its own. Memories that only share a
+  word with the message, and facts from hypotheticals or passing moods, stay out.
+
 ### Fixed
 
 - **"Search for…" searches before anything is written.** A message that asks for a search,

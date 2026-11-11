@@ -25,7 +25,8 @@ no other app is needed.
 - **Any model, same Kiwibro.** Download a model from Hugging Face inside the app, or use
   the ones LM Studio already downloaded. Swap mid-chat; memories, notes and transcripts
   stay.
-- **Kiwi Sense.** A 2.7 MB reading model (WebAssembly) watches each reply as it streams.
+- **Kiwi Sense.** A 4.8 MB reading model (WebAssembly) reads each message before the model
+  does and watches each reply as it streams.
   A model that claims to be another assistant, says it cannot search when it can, or
   announces work it never did is stopped after that sentence and put right.
 - **Memory and notes.** Facts about you are learned in the background and found again by
@@ -151,6 +152,23 @@ again; if it fails the same way, the wrong sentences are removed. A model that n
 correction before is reminded at the start of later turns. Kiwi Sense also finds
 memories and notes by meaning, ranks search results, and reads which task a message is
 about.
+
+Kiwi Sense also carries five tiny helpers that read every message before the model
+does. They only decide, never write, and take a few milliseconds:
+
+- **English only.** A message in another language gets a short reply, written by code,
+  asking you to write in English. Quoted foreign words, names, code and links inside an
+  English message are fine. *Settings* can switch it off.
+- **Search or not.** Questions about live things (weather, prices, scores) are searched
+  first, and a question the model can answer on its own is not.
+- **Dates.** "Last week", "since March" or "3 days ago" are worked out to real dates for
+  the model.
+- **What the answer must honour.** "3 bullet points", "under 100 words", "for a
+  beginner" are picked out and passed on.
+- **Topic switches.** A follow-up ("and in Rust?") is read with the question before it; a
+  new topic is answered on its own.
+- **What to remember and recall.** Nothing is saved from a hypothetical or a passing
+  mood, and a memory or note that only shares a word with your message stays out.
 
 ### Memory and notes
 

@@ -205,6 +205,14 @@ def _note_keys(note: dict[str, Any]) -> set[str]:
     return terms.key_terms(" ".join([note["title"], note["body"], *note["tags"]]))
 
 
+def _bears(query: str, note: dict[str, Any]) -> bool:
+    """False when the relate helper sees that a note does not bear on the message."""
+    from . import readings
+
+    score = readings.relates(query, f"{note['title']}. {note['body'][:400]}")
+    return score is None or score >= readings.RELATE_FLOOR
+
+
 class Notebook:
     """Writes, lookups and prompt selection for notes; storage stays in Database."""
 
@@ -306,7 +314,7 @@ class Notebook:
         if len(chosen) < limit and keys:
             others = [note for note in recent if note["id"] not in seen]
             chosen += self._meaning_matches(query, others, limit - len(chosen))
-        return chosen[:limit]
+        return [note for note in chosen if note["pinned"] or _bears(query, note)][:limit]
 
     @staticmethod
     def _meaning_matches(query: str, notes: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:

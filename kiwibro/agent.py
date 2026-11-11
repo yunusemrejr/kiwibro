@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, library, plan, prompts, research, safety,
+    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, library, plan, prompts, readings, research, safety,
     sessions, steer, terms, toolcall, tools, workspaces,
 )
 from .context import (
@@ -337,6 +337,8 @@ class Turn:
     learned: tuple[str, ...] = ()  # facts about the user saved from this message, before the reply
     questions: list[str] = field(default_factory=list)  # the separate questions of a message that only asks
     worked: tuple[tuple[str, str], ...] = ()  # sums the message asks for, worked out exactly before the reply
+    reading: Any = None  # what the Kiwi Sense helpers make of the message (readings.TurnReading)
+    before: str = ""  # the exchange before this message (for follow-ups and topic shifts)
     steered: list[str] = field(default_factory=list)  # kinds of correction made this turn
     adapter_task: str | None = None  # the task this turn's adapters follow, read once from the user's words
     adapters_tried: list[Any] = field(default_factory=list)  # on when a reply went wrong; off from then on
@@ -589,6 +591,9 @@ class AgentManager:
                 self.db.update_conversation(turn.conversation_id, model=model, touch=False) or conversation
             )
         self._raise_if_aborted(turn)
+        if self._english_only(turn, conversation, settings, model):
+            return
+        turn.reading = self._read_message(turn, settings)
 
         model_info = self.llm.model_info(model)
         if turn.attachments:
@@ -780,6 +785,55 @@ class AgentManager:
             },
         )
 
+    def _english_only(self, turn: Turn, conversation: dict[str, Any], settings: dict[str, Any], model: str) -> bool:
+        """A message that is not in English gets one fixed reply asking for English, written by
+        code: no model is asked, so it is the same whatever model is loaded."""
+        if not settings.get("english_only", True) or not settings.get("sense_enabled", True):
+            return False
+        found = readings.language(turn.message)
+        if found is None:
+            return False
+        text = readings.english_only_reply(found)
+        log.info("turn %s: not English (%s, %.2f); asked for English", turn.conversation_id, found.code,
+                 found.confidence)
+        self._emit_meta(turn, conversation, settings, model=model)
+        reply = self.db.add_message(turn.conversation_id, "assistant", text, model=model,
+                                    meta={"english_only": True, "language": found.code})
+        turn.last_message_id = reply["id"]
+        turn.reply_text = text
+        turn.inference["english_only"] = found.code
+        turn.emit("delta", {"text": text})
+        turn.emit("done", {
+            "message_id": reply["id"], "aborted": False, "model": model, "usage": self._usage_payload(turn),
+            "stats": {"tool_calls": 0, "tool_rounds": 0,
+                      "duration_ms": int((time.monotonic() - turn.started_at) * 1000)},
+            "inference": turn.inference,
+        })
+        return True
+
+    def _read_message(self, turn: Turn, settings: dict[str, Any]) -> readings.TurnReading:
+        """The helpers' reading of the message, with the exchange before it for topic shifts."""
+        if not settings.get("sense_enabled", True):
+            return readings.TurnReading()
+        before = ""
+        try:
+            earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=6)
+                       if m.get("role") in ("user", "assistant") and m.get("id") != turn.user_message_id
+                       and str(m.get("content") or "").strip()]
+            users = [i for i, m in enumerate(earlier) if m["role"] == "user"]
+            if users:
+                after = [m for m in earlier[users[-1] + 1:] if m["role"] == "assistant"]
+                reply = str(after[-1]["content"]) if after else ""
+                before = f"{str(earlier[users[-1]]['content'])[:600]} {reply[:300]}".strip()
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not read the exchange before", turn.conversation_id, exc_info=True)
+        found = readings.read(turn.message, before)
+        turn.before = before
+        summary = found.summary()
+        if summary:
+            turn.inference["reading"] = summary
+        return found
+
     def _search_first(self, turn: Turn, settings: dict[str, Any]) -> bool:
         """The message asks for a search, or about something only a search knows (news, weather,
         prices, who won): Kiwibro runs it before the model writes a word. A model that answers
@@ -789,6 +843,12 @@ class AgentManager:
             return False
         try:
             query, _borrowed = plan.search_request(turn.message)
+            reading = turn.reading or readings.TurnReading()
+            if query and readings.needs_no_search(reading) and not plan.told_to_search(turn.message):
+                log.info("turn %s: the helpers see no need for the web; no search first", turn.conversation_id)
+                query = ""
+            elif not query and readings.wants_search(reading) and not readings.follows_up(reading):
+                query = plan.query_of(turn.message)  # live data or an explicit ask the word rules missed
             query = research.with_time_words(query, turn.message) if query else ""
             if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
                 query = turn.message.strip().rstrip("?.! ")
@@ -1443,6 +1503,9 @@ class AgentManager:
         """Facts the user just stated, saved by code before the reply (memory.capture)."""
         if not settings.get("memory_enabled", True):
             return {"added": 0, "updated": 0, "removed": 0}
+        if turn.reading is not None and readings.keep_nothing(turn.reading):
+            log.info("turn %s: nothing about the user to keep (%s)", turn.conversation_id, turn.reading.reading.keep)
+            return {"added": 0, "updated": 0, "removed": 0}
         try:
             counts = self.memory.capture(turn.message, conversation_id=turn.conversation_id)
             if counts.get("added") or counts.get("updated"):
@@ -1454,8 +1517,11 @@ class AgentManager:
 
     def _turn_context(self, turn: Turn, settings: dict[str, Any]) -> str:
         """Volatile per-turn note: clock, retrieved memories, directive ledger (never message 0)."""
+        reading = turn.reading or readings.TurnReading()
+        # "and in Rust?" finds what the question before it was about
+        lookup = f"{turn.before[:300]} {turn.message}" if readings.follows_up(reading) and turn.before else turn.message
         memory_block, _memories = self.memory.build_block(
-            turn.message,
+            lookup,
             enabled=bool(settings.get("memory_enabled", True)),
             # Budget-scaled cap: a fixed 800-token block would starve the
             # working window on small-context models.
@@ -1479,7 +1545,8 @@ class AgentManager:
         ) if turn.questions else ""
         blocks = [
             inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
-            _directives_note(self.db, turn.conversation_id), plan_note, several, worked, guidance_note, learned,
+            _directives_note(self.db, turn.conversation_id), plan_note, several, worked, readings.note(reading),
+            guidance_note, learned,
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
@@ -1492,7 +1559,9 @@ class AgentManager:
         try:
             if self.memory.is_private(turn.conversation_id):
                 return ""
-            found = self.notes.relevant(turn.message, limit=2)
+            reading = turn.reading or readings.TurnReading()
+            lookup = f"{turn.before[:300]} {turn.message}" if readings.follows_up(reading) and turn.before else turn.message
+            found = self.notes.relevant(lookup, limit=2)
             return f"{NOTES_HEADER}\n{Notebook.render_block(found, max_chars=600)}" if found else ""
         except Exception:  # notes must never break a turn
             log.warning("turn %s: notes lookup failed", turn.conversation_id, exc_info=True)

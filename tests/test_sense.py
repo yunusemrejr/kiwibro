@@ -229,7 +229,25 @@ def test_shared_reader_loads_once():
 def _cases() -> dict:
     texts = [sense.normalize(text) for text in TEXTS]
     pairs = [[texts[i], texts[(i * 7 + 3) % len(texts)]] for i in range(len(texts))]
-    return {"texts": texts, "pairs": pairs}
+    from kiwibro.sense.helpers import lang_text
+
+    raw = [lang_text(text) for text in TEXTS + ["Bunu İngilizceye çevirir misin?", "Ça va très bien, merci !",
+                                                 "Как дела? Всё хорошо.", "今天天气怎么样？", "what does 'günaydın' mean"]]
+    return {"texts": texts, "pairs": pairs, "raw": raw}
+
+
+def _head_results(engine) -> list:
+    cases = _cases()
+    out = []
+    for index, head in enumerate(engine.heads):
+        if head.kind == 2:
+            results = [engine.head_pair(index, a.encode("utf-8"), b.encode("utf-8")) for a, b in cases["pairs"]]
+        elif head.kind == 1:
+            results = [engine.head_text(index, t.encode("utf-8")) for t in cases["texts"] + cases["raw"]]
+        else:
+            results = [engine.head_tokens(index, t.encode("utf-8")) for t in cases["texts"] + cases["raw"]]
+        out.append({"tag": head.tag, "kind": head.kind, "results": results})
+    return out
 
 
 def _python_results(engine) -> dict:
@@ -265,6 +283,9 @@ def test_wasm_core_matches_the_python_twin_exactly(tmp_path):
     assert from_wasm["dims"] == 64 and from_wasm["classes"] == 6
     assert from_wasm["texts"] == from_python["texts"]
     assert from_wasm["pairs"] == from_python["pairs"]
+    from_python_heads = _head_results(PyEngine((DATA / "sense.bin").read_bytes()))
+    assert [h["tag"] for h in from_wasm["heads"]] == ["Hlng", "Hmsg", "Htag", "Hshf", "Hrel"]
+    assert from_wasm["heads"] == from_python_heads
 
 
 def test_wasmtime_host_matches_the_python_twin_exactly():
@@ -273,6 +294,7 @@ def test_wasmtime_host_matches_the_python_twin_exactly():
 
     blob = (DATA / "sense.bin").read_bytes()
     assert _python_results(WasmEngine(DATA / "sense.wasm", blob)) == _python_results(PyEngine(blob))
+    assert _head_results(WasmEngine(DATA / "sense.wasm", blob)) == _head_results(PyEngine(blob))
     assert sense.Sense(engine="wasm").engine == "wasm"
 
 

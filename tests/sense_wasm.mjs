@@ -60,4 +60,42 @@ for (const [a, b] of cases.pairs) {
   ks.ks_reset();
   out.pairs.push({ similarity, lexsim });
 }
+// the helpers: every head over every text (one-text and per-word heads) or pair
+out.heads = [];
+const tagName = (v) => String.fromCharCode(v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255);
+for (let i = 0; i < ks.ks_heads(); i++) {
+  const kind = ks.ks_head_kind(i);
+  const width = ks.ks_head_classes(i);
+  const results = [];
+  if (kind === 2) {
+    for (const [a, b] of cases.pairs) {
+      const first = encoder.encode(a);
+      const second = encoder.encode(b);
+      const pa = put(first);
+      const pb = put(second);
+      const result = ks.ks_alloc(8 * width);
+      ks.ks_head_pair(i, pa, first.length, pb, second.length, result);
+      results.push(doubles(result, width));
+      ks.ks_reset();
+    }
+  } else {
+    for (const text of cases.texts.concat(cases.raw || [])) {
+      const bytes = encoder.encode(text);
+      const at = put(bytes);
+      const result = ks.ks_alloc(8 * width * 128);
+      if (kind === 1) {
+        ks.ks_head_text(i, at, bytes.length, result);
+        results.push(doubles(result, width));
+      } else {
+        const count = ks.ks_head_tokens(i, at, bytes.length, result);
+        const flat = doubles(result, width * count);
+        const rows = [];
+        for (let k = 0; k < count; k++) rows.push(flat.slice(k * width, (k + 1) * width));
+        results.push(rows);
+      }
+      ks.ks_reset();
+    }
+  }
+  out.heads.push({ tag: tagName(ks.ks_head_tag(i)), kind, results });
+}
 process.stdout.write(JSON.stringify(out));

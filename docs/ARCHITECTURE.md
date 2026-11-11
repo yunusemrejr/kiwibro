@@ -63,13 +63,15 @@ kiwibro/
 │   ├── delegate.py           # agent-facing delegation to other installed local models
 │   │   # Kiwi Sense & steering
 │   ├── sense/                # Kiwi Sense: a small reading model that watches the model
-│   │   ├── __init__.py       # the Sense front door: embed, similarity, probe, repeat
+│   │   ├── __init__.py       # the Sense front door: embed, similarity, probe, repeat, heads
+│   │   ├── helpers.py        # the five helper heads: language, message, words, shift, relate
 │   │   ├── blob.py           # the data file: named sections behind a table of contents
 │   │   ├── pyengine.py       # the Sense core in plain Python (twin of core.c)
 │   │   ├── wasmengine.py     # the Sense core run as WebAssembly on the server (wasmtime)
 │   │   ├── core.c            # the Sense core, compiled to WebAssembly
 │   │   └── build.sh          # compiles core.c to static/sense/sense.wasm
 │   ├── steer.py              # steering: finds a wrong reply and writes the correction
+│   ├── readings.py           # the helpers' readings put to work: English only, search, memory, dates
 │   │   # context & memory
 │   ├── context.py            # token estimation, budgets, compaction, recall of earlier messages
 │   ├── memory.py             # durable memory: extraction, dedupe, retrieval, user CRUD
@@ -472,9 +474,9 @@ parallel slot (4 by default); a background request in between did not evict a ch
 ## 4a. Kiwi Sense and steering
 
 Kiwi Sense is a small reading model that runs beside the language model. It never asks that model
-anything, so it works the same for every model. It is used in two places: to judge the replies
-(steering, below) and to match meaning when no word matches (memory and message recall, search
-ranking, notes).
+anything, so it works the same for every model. It is used in three places: to read each user
+message before the model sees it (the helpers, below), to judge the replies (steering) and to
+match meaning when no word matches (memory and message recall, search ranking, notes).
 
 ### The Sense core (`kiwibro/sense/`)
 
@@ -495,6 +497,59 @@ ranking, notes).
 - **Meaning matches.** `memory` (`MEANING_MATCH` 0.41) and `context` recall (§6) use Sense to
   find the one memory or earlier message that answers the question in other words. Search ranking
   adds Sense closeness to the word overlap (§7).
+
+### Helpers (`sense/helpers.py`, `readings.py`)
+
+Five tiny trained deciders ride in `sense.bin` as extra sections (tags starting with `H`) and
+run in the same core, on the server and in the browser. They never write text and never call
+the language model, so they read every message the same way whatever model is loaded, in a few
+milliseconds on the CPU. Each is a hashed feature table (int8) feeding one small hidden layer.
+
+| helper | reads | decides |
+|---|---|---|
+| `Hlng` | one text (word and character pieces, accents kept) | which of 55 languages it is in |
+| `Hmsg` | the message | intent (10 kinds), web need (`none`, `own`, `asked`, `live`, `lookup`), time (`none`, `clock`, `now`, `recent`, `past`, `future`), topic (18), and whether it says something about the user worth keeping (`fact`, `preference`, `passing`, `unsure`) |
+| `Htag` | each word of the message | time phrases, demands on the answer (format, length, audience, tools) and the words that name its subject |
+| `Hshf` | the exchange before and the message | `followup`, `same` topic or `new` topic |
+| `Hrel` | a saved memory or note and the message | whether the item bears on the message |
+
+`readings.py` turns their readings into decisions made in code:
+
+- **English only.** `Helpers.language` judges only what the user wrote: code, links, paths,
+  file names and quotations are taken out, short messages in the Latin script ("ok", "ciao")
+  pass, and English around foreign words is English. A message that is not English gets one
+  fixed reply asking for English (`readings.ENGLISH_ONLY`, naming the language when the helper is
+  sure), written by code before any model is asked; the reply's meta carries
+  `english_only` and the language code. The `english_only` setting (on by default) turns it off.
+- **Search first.** A search the word rules want is dropped when `Hmsg` is at least 0.9 sure the
+  message needs no web (`WEB_NOT_SURE`) and the user did not say to search; a message the word
+  rules miss is searched when `Hmsg` is at least 0.6 sure it asks for a search or for live data
+  (`WEB_SURE`) and it is not a follow-up.
+- **Memory.** Facts are not captured from a message `Hmsg` is at least 0.7 sure is hypothetical,
+  about someone else or a passing mood (`KEEP_SKIP`). A memory or note that only shares a word
+  with the message is left out when `Hrel` is at least 98% sure it does not bear on it
+  (`RELATE_FLOOR` 0.02: dropping a true memory costs more than letting a lookalike in); pinned
+  items and the user's profile always stay.
+- **Follow-ups.** When `Hshf` reads a follow-up ("and in Rust?"), memories and notes are looked
+  up with the exchange before it as well, and the helpers start no search from the bare
+  follow-up.
+- **The turn's note** gains up to three lines: the demands the answer must honour, the dates the
+  message means (`resolve_time` works "last week", "since March", "3 days ago" out from today's
+  date), and, when `Hshf` is at least 0.85 sure the topic changed (`NEW_TOPIC_SURE`), that the
+  message stands on its own. `Hshf` is the least certain helper (it agrees with the teacher on
+  62% of held-out pairs, and short elliptical follow-ups such as "and in Rust?" come out close to
+  a tie), so a new topic is only marked when it is plain.
+
+The whole reading is in `done.inference.reading`. Without the helpers in `sense.bin`, or with
+Kiwi Sense off, every function gives a neutral answer and Kiwibro behaves as before.
+
+Training (`scripts/helpers/`, run on Google Colab): `label.py` collects real messages from open
+chat datasets and has a teacher model label them (intents, web need, time, topic, keep, phrases,
+topic shifts, which memories bear on a question); `train.py` trains each head with the feature
+table quantised while training, packs the heads into `sense.bin` and reports how often each
+agrees with held-out labels. The language helper learns from labelled sentences in 55
+languages, with English full of names, code words and quoted foreign phrases so that it does not
+turn English back.
 
 ### Steering (`steer.py`, `agent._steer_reply`)
 
@@ -1128,6 +1183,8 @@ Design language:
   prints one line on completion. Must not require root.
 - `scripts/sense/` — builds the Kiwi Sense data file (§4a); `kiwibro/sense/build.sh` compiles the
   WebAssembly core. Both outputs are committed, so running Kiwibro needs neither.
+- `scripts/helpers/` — labels data with a teacher model and trains the Kiwi Sense helpers into
+  the same data file (§4a), on Google Colab.
 - Optional: the `wasmtime` package runs the Kiwi Sense WebAssembly core on the server;
   without it the Python twin runs.
 - `README.md` — hero screenshot, features, install, run, engine setup (*Install engine* or an

@@ -1051,6 +1051,16 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
           });
         },
       }),
+      switchRow({
+        name: "English only",
+        description: "A message in another language gets a short reply asking for English.",
+        checked: data.settings.english_only !== false,
+        onChange: async (next, control) => {
+          await patch({ english_only: next }, () => {
+            control.setAttribute("aria-checked", String(!next));
+          });
+        },
+      }),
     );
     behaviour.append(
       choiceRow(

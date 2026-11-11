@@ -448,6 +448,21 @@ def _transcript_cost(message: dict[str, Any]) -> int:
     return len("Assistant: ") + min(len(content), EXTRACT_LINE_CHARS) + 1
 
 
+def _bearing(query: str, matched: list[dict[str, Any]], ids: set[str]) -> set[str]:
+    """Memories that only share a word with the message are left out when the relate helper
+    sees that they do not bear on it ("my cat" for a question about cat the shell command)."""
+    from . import readings
+
+    if not (query or "").strip() or not matched:
+        return ids
+    kept = set(ids)
+    for memory in matched:
+        score = readings.relates(query, str(memory.get("content") or ""))
+        if score is not None and score < readings.RELATE_FLOOR:
+            kept.discard(memory["id"])
+    return kept
+
+
 class MemoryEngine:
     def __init__(
         self,
@@ -529,6 +544,8 @@ class MemoryEngine:
             for memory in self._meaning_matches(query):
                 relevant_ids.add(memory["id"])
                 add([memory])
+        relevant_ids = _bearing(query, [m for m in candidates if m["id"] in relevant_ids and not m.get("pinned")
+                                        and not is_profile(m)], relevant_ids)
         kept = [m for m in candidates if m.get("pinned") or is_profile(m) or m["id"] in relevant_ids]
         result = self._rank(kept, query)[:limit]
         # Only a memory that matched counts as used; counting every injected one made the

@@ -12,6 +12,8 @@
  *   probe    hashed word n-grams + that vector -> a small network -> behaviour classes
  *   repeat   how much of a text is the same four words coming round again
  *   lexsim   byte-trigram overlap of two texts (works in any language)
+ *   heads    the helpers: small trained deciders that read the user's messages
+ *            (one text -> classes, two texts -> classes, one text -> a class per word)
  */
 
 #include <stddef.h>
@@ -149,13 +151,16 @@ static int load_probe(const uint8_t *s, uint32_t len) {
     return 0;
 }
 
+static int load_head(const uint8_t *entry, const uint8_t *s, uint32_t len);
+static uint32_t head_count;
+
 /* Blob: "KSNS", version, section count, then (tag, offset, length) per section. */
 EXPORT(ks_init) int32_t ks_init(const uint8_t *blob, uint32_t len) {
-    v_size = e_count = e_dims = p_classes = 0;
+    v_size = e_count = e_dims = p_classes = head_count = 0;
     if (len < 12 || !tag_is(blob, "KSNS")) return -1;
     if (rd32(blob + 4) != 1) return -2;
     uint32_t sections = rd32(blob + 8);
-    if (sections > 16 || 12ull + 12ull * sections > len) return -3;
+    if (sections > 32 || 12ull + 12ull * sections > len) return -3;
     for (uint32_t pass = 0; pass < 2; pass++) { /* the probe needs the embedding size first */
         for (uint32_t i = 0; i < sections; i++) {
             const uint8_t *entry = blob + 12 + 12 * i;
@@ -165,6 +170,7 @@ EXPORT(ks_init) int32_t ks_init(const uint8_t *blob, uint32_t len) {
             if (pass == 0 && tag_is(entry, "VOCB")) status = load_vocab(blob + offset, size);
             else if (pass == 0 && tag_is(entry, "EMBD")) status = load_embeddings(blob + offset, size);
             else if (pass == 1 && tag_is(entry, "PROB")) status = load_probe(blob + offset, size);
+            else if (pass == 1 && entry[0] == 'H') status = load_head(entry, blob + offset, size);
             if (status) return status;
         }
     }
@@ -173,7 +179,7 @@ EXPORT(ks_init) int32_t ks_init(const uint8_t *blob, uint32_t len) {
     return 0;
 }
 
-EXPORT(ks_version) uint32_t ks_version(void) { return 1; }
+EXPORT(ks_version) uint32_t ks_version(void) { return 2; }
 EXPORT(ks_dims) uint32_t ks_dims(void) { return e_dims; }
 EXPORT(ks_classes) uint32_t ks_classes(void) { return p_classes; }
 
@@ -428,4 +434,338 @@ EXPORT(ks_lexsim) double ks_lexsim(const uint8_t *a, uint32_t alen, const uint8_
     }
     if (!na || !nb) return 0.0;
     return (double)dot / (__builtin_sqrt((double)na) * __builtin_sqrt((double)nb));
+}
+
+/* ---- heads: the helpers ----
+ *
+ * A head is one section whose tag starts with 'H'. Layout (little-endian):
+ *   u32 kind     1 = one text, 2 = two texts (earlier, newer), 3 = one class per word
+ *   u32 flags    F_EMB meaning vector(s); F_WORDS word n-grams (of the newer text for kind 2);
+ *                F_CHARS byte n-grams inside words; F_WORDS_A word n-grams of the earlier text
+ *   u32 buckets, dim, hidden, classes, scalars (PAIR_SCALARS for kind 2, else 0)
+ *   f32 scale    of the int8 table
+ *   int8 table[buckets * dim], padded to 4 bytes
+ *   f32 w1[hidden * inputs], b1[hidden], w2[classes * hidden], b2[classes]
+ * Each feature group is the mean of its table rows; the network has one ReLU layer.
+ */
+
+#define MAX_HEADS 12
+#define H_MAX_CLASSES 64
+#define H_MAX_HIDDEN 128
+#define H_MAX_DIM 64
+#define MAX_TOKENS 128
+#define PAIR_SCALARS 8
+#define CHAR_BYTES 32
+#define BOS_HASH 0x2545F491u
+#define EOS_HASH 0x6C8E9CF5u
+#define H_MAX_INPUTS (2 * MAX_DIMS + PAIR_SCALARS + 2 * H_MAX_DIM)
+
+enum { KIND_TEXT = 1, KIND_PAIR = 2, KIND_TOKENS = 3 };
+enum { F_EMB = 1, F_WORDS = 2, F_CHARS = 4, F_WORDS_A = 8 };
+
+typedef struct {
+    uint32_t tag, kind, flags, buckets, dim, hidden, classes, inputs;
+    double scale;
+    const int8_t *table;
+    const uint8_t *w1, *b1, *w2, *b2;
+} head_t;
+
+static head_t heads[MAX_HEADS];
+
+static int load_head(const uint8_t *entry, const uint8_t *s, uint32_t len) {
+    if (head_count >= MAX_HEADS) return -40;
+    if (len < 32) return -41;
+    head_t *h = &heads[head_count];
+    h->tag = rd32(entry);
+    h->kind = rd32(s);
+    h->flags = rd32(s + 4);
+    h->buckets = rd32(s + 8);
+    h->dim = rd32(s + 12);
+    h->hidden = rd32(s + 16);
+    h->classes = rd32(s + 20);
+    uint32_t scalars = rd32(s + 24);
+    h->scale = rdf32(s + 28);
+    if (h->kind < KIND_TEXT || h->kind > KIND_TOKENS) return -42;
+    if (!h->buckets || !h->dim || h->dim > H_MAX_DIM || !h->hidden || h->hidden > H_MAX_HIDDEN) return -43;
+    if (!h->classes || h->classes > H_MAX_CLASSES) return -44;
+    if ((h->flags & F_EMB) && !e_dims) return -45;
+    uint32_t edim = (h->flags & F_EMB) ? e_dims : 0, groups = 0;
+    if (h->kind == KIND_TEXT) {
+        groups = ((h->flags & F_WORDS) ? 1u : 0u) + ((h->flags & F_CHARS) ? 1u : 0u);
+        if (scalars) return -46;
+        h->inputs = edim + h->dim * groups;
+    } else if (h->kind == KIND_PAIR) {
+        groups = ((h->flags & F_WORDS) ? 1u : 0u) + ((h->flags & F_WORDS_A) ? 1u : 0u);
+        if (scalars != PAIR_SCALARS) return -46;
+        h->inputs = 2 * edim + PAIR_SCALARS + h->dim * groups;
+    } else {
+        groups = (h->flags & F_WORDS) ? 1u : 0u;
+        if (scalars) return -46;
+        h->inputs = edim + h->dim * groups;
+    }
+    if (!h->inputs || h->inputs > H_MAX_INPUTS) return -47;
+    uint32_t table = (h->buckets * h->dim + 3u) & ~3u;
+    uint64_t need = 32ull + table + 4ull * ((uint64_t)h->hidden * h->inputs + h->hidden
+                                              + (uint64_t)h->classes * h->hidden + h->classes);
+    if (need > len) return -48;
+    h->table = (const int8_t *)(s + 32);
+    h->w1 = s + 32 + table;
+    h->b1 = h->w1 + 4u * h->hidden * h->inputs;
+    h->w2 = h->b1 + 4u * h->hidden;
+    h->b2 = h->w2 + 4u * h->classes * h->hidden;
+    head_count++;
+    return 0;
+}
+
+EXPORT(ks_heads) uint32_t ks_heads(void) { return head_count; }
+EXPORT(ks_head_tag) uint32_t ks_head_tag(uint32_t i) { return i < head_count ? heads[i].tag : 0; }
+EXPORT(ks_head_kind) uint32_t ks_head_kind(uint32_t i) { return i < head_count ? heads[i].kind : 0; }
+EXPORT(ks_head_classes) uint32_t ks_head_classes(uint32_t i) { return i < head_count ? heads[i].classes : 0; }
+
+/* words of a normalised text: their hashes, where they start and how long they are */
+static uint32_t t_hash[MAX_WORDS], t_start[MAX_WORDS], t_len[MAX_WORDS];
+
+static uint32_t split_words(const uint8_t *text, uint32_t len) {
+    uint32_t n = 0, i = 0;
+    while (i < len && n < MAX_WORDS) {
+        while (i < len && text[i] == ' ') i++;
+        uint32_t start = i;
+        while (i < len && text[i] != ' ') i++;
+        if (i == start) break;
+        t_hash[n] = fnv(text + start, i - start, FNV_SEED);
+        t_start[n] = start;
+        t_len[n] = i - start;
+        n++;
+    }
+    return n;
+}
+
+static int32_t h_sum[H_MAX_DIM];
+static uint32_t h_count;
+
+static void h_clear(const head_t *h) {
+    for (uint32_t d = 0; d < h->dim; d++) h_sum[d] = 0;
+    h_count = 0;
+}
+
+static void h_add(const head_t *h, uint32_t feature) {
+    const int8_t *row = h->table + (size_t)(feature % h->buckets) * h->dim;
+    for (uint32_t d = 0; d < h->dim; d++) h_sum[d] += row[d];
+    h_count++;
+}
+
+static void h_mean(const head_t *h, double *out) {
+    for (uint32_t d = 0; d < h->dim; d++) {
+        out[d] = h_count ? (double)h_sum[d] * h->scale / (double)h_count : 0.0;
+    }
+}
+
+/* the probe's word n-grams, for the words now in t_hash */
+static void h_words(const head_t *h, uint32_t n) {
+    for (uint32_t k = 0; k < n; k++) {
+        h_add(h, mix(1, t_hash[k]));
+        if (k + 1 < n) h_add(h, mix(2, mix(t_hash[k], t_hash[k + 1])));
+        if (k + 2 < n) h_add(h, mix(3, mix(mix(t_hash[k], t_hash[k + 1]), t_hash[k + 2])));
+    }
+    if (n) {
+        h_add(h, mix(4, t_hash[0]));
+        h_add(h, mix(6, t_hash[n - 1]));
+    }
+    if (n > 1) {
+        h_add(h, mix(5, mix(t_hash[0], t_hash[1])));
+        h_add(h, mix(7, mix(t_hash[n - 2], t_hash[n - 1])));
+    }
+}
+
+/* byte 2-, 3- and 4-grams inside each word, the word framed by spaces (spelling: which language) */
+static void h_chars(const head_t *h, const uint8_t *text, uint32_t n) {
+    for (uint32_t k = 0; k < n; k++) {
+        const uint8_t *word = text + t_start[k];
+        uint32_t len = t_len[k] < CHAR_BYTES ? t_len[k] : CHAR_BYTES;
+        uint32_t padded = len + 2;
+        h_add(h, mix(9, t_hash[k]));
+        for (uint32_t size = 2; size <= 4; size++) {
+            for (uint32_t at = 0; at + size <= padded; at++) {
+                uint32_t g = FNV_SEED;
+                for (uint32_t j = 0; j < size; j++) {
+                    uint32_t p = at + j;
+                    uint8_t byte = (p == 0 || p == padded - 1) ? (uint8_t)' ' : word[p - 1];
+                    g = (g ^ byte) * FNV_PRIME;
+                }
+                h_add(h, mix(10 + size, g));
+            }
+        }
+    }
+}
+
+static double h_input[H_MAX_INPUTS], h_mid[H_MAX_HIDDEN];
+
+static void h_forward(const head_t *h, double *out) {
+    for (uint32_t j = 0; j < h->hidden; j++) {
+        double total = rdf32(h->b1 + 4 * j);
+        const uint8_t *w = h->w1 + 4u * j * h->inputs;
+        for (uint32_t d = 0; d < h->inputs; d++) total += rdf32(w + 4 * d) * h_input[d];
+        h_mid[j] = total > 0.0 ? total : 0.0;
+    }
+    for (uint32_t c = 0; c < h->classes; c++) {
+        double total = rdf32(h->b2 + 4 * c);
+        const uint8_t *w = h->w2 + 4u * c * h->hidden;
+        for (uint32_t j = 0; j < h->hidden; j++) total += rdf32(w + 4 * j) * h_mid[j];
+        out[c] = total;
+    }
+}
+
+/* One text -> ks_head_classes(i) raw scores. Returns 0, or -1 for a head of another kind. */
+EXPORT(ks_head_text) int32_t ks_head_text(uint32_t i, const uint8_t *text, uint32_t len, double *out) {
+    if (i >= head_count || heads[i].kind != KIND_TEXT) return -1;
+    const head_t *h = &heads[i];
+    uint32_t at = 0;
+    if (h->flags & F_EMB) {
+        embed_into(text, len, h_input);
+        at = e_dims;
+    }
+    uint32_t n = split_words(text, len);
+    if (h->flags & F_WORDS) {
+        h_clear(h);
+        h_words(h, n);
+        h_mean(h, h_input + at);
+        at += h->dim;
+    }
+    if (h->flags & F_CHARS) {
+        h_clear(h);
+        h_chars(h, text, n);
+        h_mean(h, h_input + at);
+    }
+    h_forward(h, out);
+    return 0;
+}
+
+/* distinct hashes of the words of four bytes or more */
+static uint32_t long_words(uint32_t n, uint32_t *out) {
+    uint32_t count = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        if (t_len[k] < 4) continue;
+        uint32_t seen = 0;
+        for (uint32_t m = 0; m < count; m++) {
+            if (out[m] == t_hash[k]) { seen = 1; break; }
+        }
+        if (!seen) out[count++] = t_hash[k];
+    }
+    return count;
+}
+
+static uint32_t long_a[MAX_WORDS], long_b[MAX_WORDS];
+
+/* Two texts (a = the earlier or saved one, b = the newer message) -> raw scores. */
+EXPORT(ks_head_pair) int32_t ks_head_pair(uint32_t i, const uint8_t *a, uint32_t alen,
+                                          const uint8_t *b, uint32_t blen, double *out) {
+    if (i >= head_count || heads[i].kind != KIND_PAIR) return -1;
+    const head_t *h = &heads[i];
+    embed_into(a, alen, vec_a);
+    uint32_t words_a = last_words;
+    embed_into(b, blen, vec_b);
+    uint32_t words_b = last_words, known_b = last_known;
+    uint32_t at = 0;
+    double dot = 0.0;
+    for (uint32_t d = 0; d < e_dims; d++) dot += vec_a[d] * vec_b[d];
+    if (h->flags & F_EMB) {
+        for (uint32_t d = 0; d < e_dims; d++) h_input[d] = vec_a[d] * vec_b[d];
+        for (uint32_t d = 0; d < e_dims; d++) {
+            double diff = vec_a[d] - vec_b[d];
+            h_input[e_dims + d] = diff < 0.0 ? -diff : diff;
+        }
+        at = 2 * e_dims;
+    }
+    uint32_t na = split_words(a, alen);
+    uint32_t distinct_a = long_words(na, long_a);
+    double words_feature_a[H_MAX_DIM];
+    if (h->flags & F_WORDS_A) {
+        h_clear(h);
+        h_words(h, na);
+        h_mean(h, words_feature_a);
+    }
+    uint32_t nb = split_words(b, blen);
+    uint32_t distinct_b = long_words(nb, long_b), shared = 0;
+    for (uint32_t k = 0; k < distinct_b; k++) {
+        for (uint32_t m = 0; m < distinct_a; m++) {
+            if (long_b[k] == long_a[m]) { shared++; break; }
+        }
+    }
+    h_input[at++] = dot;
+    h_input[at++] = ks_lexsim(a, alen, b, blen);
+    h_input[at++] = distinct_b ? (double)shared / (double)distinct_b : 0.0;
+    h_input[at++] = distinct_a ? (double)shared / (double)distinct_a : 0.0;
+    h_input[at++] = (double)(words_b < 64 ? words_b : 64) / 64.0;
+    h_input[at++] = (double)(words_a < 64 ? words_a : 64) / 64.0;
+    h_input[at++] = words_b ? (double)known_b / (double)words_b : 0.0;
+    h_input[at++] = words_b <= 3 ? 1.0 : 0.0;
+    if (h->flags & F_WORDS) {
+        h_clear(h);
+        h_words(h, nb);
+        h_mean(h, h_input + at);
+        at += h->dim;
+    }
+    if (h->flags & F_WORDS_A) {
+        for (uint32_t d = 0; d < h->dim; d++) h_input[at + d] = words_feature_a[d];
+    }
+    h_forward(h, out);
+    return 0;
+}
+
+static uint32_t word_shape(const uint8_t *word, uint32_t len) {
+    uint32_t digits = 0, ascii_other = 0;
+    for (uint32_t k = 0; k < len; k++) {
+        uint8_t c = word[k];
+        if (c >= '0' && c <= '9') digits++;
+        else if (c < 128 && !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) ascii_other++;
+    }
+    uint32_t kind = digits == len ? 1u : digits ? 2u : (len == 1 && ascii_other == 1) ? 3u : 4u;
+    return kind * 16u + (len < 12 ? len : 12u);
+}
+
+static double tok_out[H_MAX_CLASSES];
+
+/* One class per word: writes min(words, MAX_TOKENS) * classes raw scores; returns the word count. */
+EXPORT(ks_head_tokens) int32_t ks_head_tokens(uint32_t i, const uint8_t *text, uint32_t len, double *out) {
+    if (i >= head_count || heads[i].kind != KIND_TOKENS) return -1;
+    const head_t *h = &heads[i];
+    uint32_t n = split_words(text, len);
+    if (n > MAX_TOKENS) n = MAX_TOKENS;
+    static uint32_t hashes[MAX_TOKENS], shapes[MAX_TOKENS], starts[MAX_TOKENS], lens[MAX_TOKENS];
+    for (uint32_t k = 0; k < n; k++) {
+        hashes[k] = t_hash[k];
+        starts[k] = t_start[k];
+        lens[k] = t_len[k];
+        shapes[k] = word_shape(text + t_start[k], t_len[k]);
+    }
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t at = 0;
+        if (h->flags & F_EMB) {
+            embed_into(text + starts[k], lens[k], h_input);
+            at = e_dims;
+        }
+        if (h->flags & F_WORDS) {
+            uint32_t prev = k ? hashes[k - 1] : BOS_HASH, next = k + 1 < n ? hashes[k + 1] : EOS_HASH;
+            uint32_t prev2 = k > 1 ? hashes[k - 2] : BOS_HASH, next2 = k + 2 < n ? hashes[k + 2] : EOS_HASH;
+            uint32_t next_shape = k + 1 < n ? shapes[k + 1] : 0;
+            const uint8_t *word = text + starts[k];
+            uint32_t cut = lens[k] < 3 ? lens[k] : 3;
+            h_clear(h);
+            h_add(h, mix(21, hashes[k]));
+            h_add(h, mix(22, prev));
+            h_add(h, mix(23, next));
+            h_add(h, mix(24, prev2));
+            h_add(h, mix(25, next2));
+            h_add(h, mix(26, mix(prev, hashes[k])));
+            h_add(h, mix(27, mix(hashes[k], next)));
+            h_add(h, mix(28, shapes[k]));
+            h_add(h, mix(29, fnv(word + lens[k] - cut, cut, FNV_SEED)));
+            h_add(h, mix(30, fnv(word, cut, FNV_SEED)));
+            h_add(h, mix(31, mix(shapes[k], next_shape)));
+            h_mean(h, h_input + at);
+        }
+        h_forward(h, tok_out);
+        for (uint32_t c = 0; c < h->classes; c++) out[k * h->classes + c] = tok_out[c];
+    }
+    return (int32_t)n;
 }

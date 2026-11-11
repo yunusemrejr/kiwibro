@@ -52,7 +52,7 @@ def unpack(blob: bytes) -> dict[str, memoryview]:
     version, count = struct.unpack_from("<II", view, 4)
     if version != VERSION:
         raise ValueError(f"unsupported Kiwi Sense data version {version}")
-    if count > 16 or 12 + 12 * count > len(view):
+    if count > 32 or 12 + 12 * count > len(view):
         raise ValueError("damaged Kiwi Sense data file")
     sections: dict[str, memoryview] = {}
     for index in range(count):

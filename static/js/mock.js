@@ -280,6 +280,7 @@ export class MockBackend {
       agent_enabled: true,
       memory_enabled: true,
       sense_enabled: true,
+      english_only: true,
       max_output_tokens: 2048,
       temperature: 0.6,
       workspace: "~/Kiwibro",

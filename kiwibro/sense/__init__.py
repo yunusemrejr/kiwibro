@@ -208,6 +208,44 @@ class Sense:
         with self._lock:
             return self._engine.repeat(normalize(text).encode("utf-8"))
 
+    # ---- helpers (trained heads; texts arrive already prepared) ----
+
+    def head_index(self, tag: str) -> int | None:
+        for index, head in enumerate(getattr(self._engine, "heads", [])):
+            if head.tag == tag:
+                return index
+        return None
+
+    def head_text(self, tag: str, text: str) -> list[float] | None:
+        index = self.head_index(tag)
+        if index is None or not text:
+            return None
+        with self._lock:
+            return self._engine.head_text(index, text.encode("utf-8"))
+
+    def head_pair(self, tag: str, a: str, b: str) -> list[float] | None:
+        index = self.head_index(tag)
+        if index is None:
+            return None
+        with self._lock:
+            return self._engine.head_pair(index, a.encode("utf-8"), b.encode("utf-8"))
+
+    def head_tokens(self, tag: str, text: str) -> list[list[float]] | None:
+        index = self.head_index(tag)
+        if index is None or not text:
+            return None
+        with self._lock:
+            return self._engine.head_tokens(index, text.encode("utf-8"))
+
+    @property
+    def helpers(self):
+        """The helper deciders (kiwibro.sense.helpers.Helpers) of this data file."""
+        if getattr(self, "_helpers", None) is None:
+            from .helpers import Helpers
+
+            self._helpers = Helpers(self)
+        return self._helpers
+
 
 _shared: Sense | None = None
 _shared_lock = threading.Lock()

@@ -386,6 +386,20 @@ def _query_of(step: str) -> str:
     return " ".join(text.split()).strip(" ?.!,:;-")[:QUERY_CHARS]
 
 
+def told_to_search(message: str) -> bool:
+    """The user says in so many words to search ("look it up", "google", "check online")."""
+    return bool(_SEARCH_TOLD.search(message or ""))
+
+
+def query_of(message: str) -> str:
+    """A search query from a whole message: the words that only ask are dropped."""
+    for step in split_steps(message):
+        query = _query_of(step)
+        if directives.keywords(query) - _FILLER:
+            return query
+    return _query_of(message)
+
+
 def search_request(message: str) -> tuple[str, bool]:
     """The web search a message asks for: (query, borrowed). ('', False) when it asks for
     none, or names a page to open instead.
