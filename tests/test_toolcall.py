@@ -491,3 +491,63 @@ def test_text_that_only_looks_like_the_start_of_a_tag_streams_normally():
     stream, shown = _streamed(["<", "b>bold</b> and 1 < 2"])
     assert shown == "<b>bold</b> and 1 < 2"
     assert stream.opener == "" and stream.held == ""
+
+
+# --- a call whose text is damaged: no closers or repeated tail inside a string argument ----------------------
+
+
+def _wrapped(body: str) -> str:
+    return f"<tool_call>\n{body}\n</tool_call>"
+
+
+def _only_call(content: str) -> dict:
+    calls, _cleaned = tc.extract_calls(content, NAMES)
+    assert len(calls) == 1
+    return calls[0]
+
+
+@pytest.mark.parametrize(
+    "body, content",
+    [
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "print(1)\\n}}', "print(1)\n", id="closers-in-the-string"),
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "print(1)\\n"}}}', "print(1)\n", id="one-closer-too-many"),
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.js", "content": "if (x) { y(); }"}}', "if (x) { y(); }", id="a-brace-that-is-code"),
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.js", "content": "if (x) { y(); }}}', "if (x) { y(); }", id="code-then-closers"),
+    ],
+)
+def test_closers_never_end_up_inside_a_string_argument(body, content):
+    call = _only_call(_wrapped(body))
+    arguments = json.loads(call["function"]["arguments"])
+    assert arguments["content"] == content
+    assert "damaged" not in call
+
+
+@pytest.mark.parametrize(
+    "body, reason",
+    [
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "def f(x):\\n    return x', tc.DAMAGE_CUT, id="stops-inside-a-string"),
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n"}} "}}', tc.DAMAGE_TAIL, id="closers-after-the-end"),
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n"}}\nx = 1\\n"}}', tc.DAMAGE_TAIL, id="the-end-repeated"),
+    ],
+)
+def test_a_call_that_cannot_be_repaired_cleanly_is_marked_damaged(body, reason):
+    call = _only_call(_wrapped(body))
+    assert call["damaged"] == reason
+    prepared = tc.prepare_call(call, SPECS)
+    assert prepared.damaged == reason
+
+
+def test_single_quotes_and_two_calls_in_one_tag_are_not_damage():
+    quoted = _only_call(_wrapped("{'name': 'read_file', 'arguments': {'path': 'a.txt'}}"))
+    assert "damaged" not in quoted
+    calls, _cleaned = tc.extract_calls(
+        _wrapped('{"name": "list_files", "arguments": {"path": "."}}\n{"name": "list_files", "arguments": {"path": "src"}}'), NAMES
+    )
+    assert [json.loads(c["function"]["arguments"]) for c in calls] == [{"path": "."}, {"path": "src"}]
+    assert not any("damaged" in c for c in calls)
+
+
+def test_a_clean_call_is_not_marked():
+    call = _only_call(_wrapped('{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n"}}'))
+    assert "damaged" not in call
+    assert tc.prepare_call(call, SPECS).damaged == ""

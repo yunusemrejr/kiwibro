@@ -24,6 +24,10 @@ from typing import Any, Collection, Iterable, Iterator, Mapping
 POSITIONAL = "__positional__"  # carries positional values from name(a, b) style calls
 MAX_PARSE_CHARS = 200_000
 MAX_DEPTH = 64
+# Why a call that was repaired cannot be run (see _json_damage).
+DAMAGE_CUT = "it stops inside a string"
+DAMAGE_STRAY = "it holds text that belongs to no argument"
+DAMAGE_TAIL = "text follows the end of the call"
 
 # --- lenient JSON ---------------------------------------------------------------------
 
@@ -51,6 +55,7 @@ class _Lenient:
         self.text = text
         self.pos = pos
         self.containers: list[str] = []
+        self.damage = ""  # why the text cannot be trusted ("" when it read cleanly)
 
     def parse(self) -> tuple[Any, int]:
         value = self.value()
@@ -109,6 +114,7 @@ class _Lenient:
                 result[str(key)] = None if self.peek() in (",", "}", "]", "") else self.value()
             elif key != "":
                 result[str(key)] = None
+                self.damage = self.damage or DAMAGE_STRAY
         self.containers.pop()
         return result
 
@@ -134,7 +140,20 @@ class _Lenient:
                 return "".join(chars)
             chars.append(char)
             self.pos += 1
-        return "".join(chars)
+        return self.unclosed("".join(chars))
+
+    def unclosed(self, value: str) -> str:
+        """A string the text ran out in: its closing quote is missing, and the closers the model wrote after
+        it (``}}``) are not part of it. Fewer closers than open containers means the call stops half way."""
+        core = value
+        for opener in reversed(self.containers):
+            core = core.rstrip()
+            closer = "}" if opener == "{" else "]"
+            if not core.endswith(closer):
+                self.damage = self.damage or DAMAGE_CUT
+                return value
+            core = core[:-1]
+        return core
 
     def closes_at(self, index: int) -> bool:
         """A quote ends a string only when what follows looks like JSON structure."""
@@ -622,6 +641,7 @@ class PreparedCall:
     args: dict[str, Any]
     notes: list[str] = field(default_factory=list)
     error: str | None = None
+    damaged: str = ""  # why the call text could not be trusted (extract_calls); it does not run
 
 
 def prepare_call(call: Mapping[str, Any], specs: Mapping[str, Any]) -> PreparedCall:
@@ -630,14 +650,15 @@ def prepare_call(call: Mapping[str, Any], specs: Mapping[str, Any]) -> PreparedC
     raw_name = str(function.get("name") or "").strip()
     call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}")
     args, notes = parse_arguments(function.get("arguments"))
+    damaged = str(call.get("damaged") or "")
     name = resolve_name(raw_name, specs)
     if name is None:
         args.pop(POSITIONAL, None)
-        return PreparedCall(call_id, raw_name, raw_name, args, notes, unknown_tool_error(raw_name, specs))
+        return PreparedCall(call_id, raw_name, raw_name, args, notes, unknown_tool_error(raw_name, specs), damaged)
     if name != raw_name:
         notes.insert(0, f"tool '{raw_name}' → '{name}'")
     args, more = normalize_args(args, specs[name].parameters)
-    return PreparedCall(call_id, raw_name, name, args, notes + more)
+    return PreparedCall(call_id, raw_name, name, args, notes + more, damaged=damaged)
 
 
 # --- usage text -----------------------------------------------------------------------
@@ -704,6 +725,7 @@ class _Found:
     args: Any
     start: int
     end: int
+    damage: str = ""
 
 
 _NAME_KEYS = ("name", "tool", "tool_name", "function", "function_name", "action", "recipient_name")
@@ -858,6 +880,36 @@ def _parse_body(body: str) -> list[tuple[str, Any]]:
     return _pythonic_calls(body)
 
 
+def _json_damage(body: str) -> str:
+    """Why a JSON call body cannot be trusted although it could be read, or "". A string that ends where the
+    text ends, a field that is only a stray word, or words after the end of the call mean the model lost the
+    thread: what such a call would write is a guess, so it is not run."""
+    text = body.strip()
+    if text[:1] not in ("{", "["):
+        return ""
+    try:
+        json.loads(text)
+        return ""
+    except ValueError:
+        pass
+    position = 0
+    while True:
+        while position < len(text) and text[position] in " \t\r\n,}]":
+            position += 1
+        if position >= len(text):
+            return ""
+        if text[position] not in ("{", "["):
+            return DAMAGE_TAIL
+        parser = _Lenient(text, position)
+        try:
+            parser.parse()
+        except (ValueError, RecursionError):
+            return ""  # nothing was read, so nothing runs
+        if parser.damage:
+            return parser.damage
+        position = parser.pos
+
+
 def _wrapped_blocks(text: str) -> Iterator[tuple[str, int, int]]:
     """Yield (body, start, end) for every <tool_call>…</tool_call>-style block."""
     position = 0
@@ -905,7 +957,8 @@ def _strong_calls(text: str) -> list[_Found]:
     """Explicitly marked call formats: always treated as calls."""
     found: list[_Found] = []
     for body, start, end in _wrapped_blocks(text):
-        found += [_Found(name, args, start, end) for name, args in _parse_body(body)]
+        damage = _json_damage(body)
+        found += [_Found(name, args, start, end, damage) for name, args in _parse_body(body)]
     if not found:
         for match in _FUNCTION_TAG_RE.finditer(text):
             found += [_Found(name, args, match.start(), match.end()) for name, args in _parse_body(match.group(0))]
@@ -922,7 +975,8 @@ def _strong_calls(text: str) -> list[_Found]:
     for match in _DEEPSEEK_RE.finditer(text):
         found += [_Found(n, a, match.start(), match.end()) for n, a in _deepseek_call(match.group(1))]
     for match in _TOOL_FENCE_RE.finditer(text):
-        found += [_Found(n, a, match.start(), match.end()) for n, a in _parse_body(match.group(1))]
+        damage = _json_damage(match.group(1))
+        found += [_Found(n, a, match.start(), match.end(), damage) for n, a in _parse_body(match.group(1))]
     return found
 
 
@@ -999,9 +1053,11 @@ def extract_calls(content: str, names: Collection[str]) -> tuple[list[dict[str, 
         if key in seen:
             continue
         seen.add(key)
-        calls.append(
-            {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function", "function": {"name": item.name, "arguments": arguments}}
-        )
+        call = {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+                "function": {"name": item.name, "arguments": arguments}}
+        if item.damage:
+            call["damaged"] = item.damage  # prepare_call refuses it: a guess is never written to a file
+        calls.append(call)
     return calls, _without_spans(text, found)
 
 

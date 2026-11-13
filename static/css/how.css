@@ -131,6 +131,57 @@
   font-weight: 600;
 }
 
+.how-tech {
+  margin-top: 24px;
+}
+
+.how-tech-title,
+.how-tech-layer,
+.how-tech-list {
+  margin: 0;
+}
+
+.how-tech-title {
+  color: var(--text-2);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.how-tech-layer {
+  margin-top: 14px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.how-tech-name {
+  margin-top: 10px;
+  color: var(--green-bright);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.how-tech-list > dt:first-child {
+  margin-top: 0;
+}
+
+.how-tech-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@media (min-width: 900px) {
+  .how-tech-groups {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 32px;
+    align-items: start;
+  }
+}
+
 .how-nav {
   display: flex;
   align-items: center;
@@ -625,6 +676,10 @@
 
   .how-step[aria-current="step"] {
     background: transparent;
+  }
+
+  .how-stage {
+    min-height: 0;
   }
 
   .how-scroll {

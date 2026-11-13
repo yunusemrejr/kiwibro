@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 
 from . import (
     adapters, autofacts, checkpoints, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
-    sessions, shape, steer, terms, toolcall, tools, weather, workspaces, safemode,
+    sessions, shape, steer, syntaxcheck, terms, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -369,6 +369,11 @@ class Turn:
     done_note: str = ""  # what the note tool did this turn, in a sentence ("Added to note “Shopping”: cheese.")
     ground_left: int = 1  # new attempts the source check may still ask for
     routes: dict[str, Any] = field(default_factory=dict)  # call id -> the user's folder a code-made look reads
+    syntax: dict[str, tuple[syntaxcheck.Problem | None, Path]] = field(default_factory=dict)  # file written this turn -> its latest check and the folder it was checked in
+    web_tried: int = 0  # web tool calls the model made this turn
+    web_offline: int = 0  # web calls that ran and failed because there is no connection
+    web_failed: int = 0  # web calls that ran and failed for another reason
+    said_offline: bool = False  # a reply of this turn already starts with the no-connection line
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -739,6 +744,7 @@ class AgentManager:
             result = self._not_said_before(turn, model, prepared, round_index, result, text_mode)
             result = self._ground_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
             self._shape_reply(turn, result)
+            self._honest_reply(turn, result)
             self._record_usage(turn, result, prepared)
             assistant_message = None
             if result.content or result.reasoning or result.tool_calls:
@@ -805,6 +811,7 @@ class AgentManager:
         if not turn.reply_text.strip():
             self._answer_anyway(turn, model, prepared, tool_list, text_mode)
         self._show_bulletin(turn, model)
+        self._report_broken_files(turn, model)
 
         # Final answer phase. Title is deterministic-first so `done` stays fast; memory
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
@@ -1376,6 +1383,90 @@ class AgentManager:
         as_found = bool((turn.inference.get("grounding") or {}).get("shown_as_found"))
         text = turn.bulletin if as_found else f"{prompts.NEWS_SOURCES}\n\n{turn.bulletin}"
         message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta={"news_bulletin": True})
+        turn.last_message_id = message["id"]
+        turn.reply_text += "\n" + text
+        turn.emit("delta", {"text": "\n\n" + text})
+
+    def _honest_reply(self, turn: Turn, result: ChatResult) -> None:
+        """What only code knows about a final reply, put right in code: a citation marker with no source
+        behind it is taken out, and a reply written while the web could not be reached starts by saying so."""
+        if result.tool_calls or not (result.content or "").strip() or turn.abort.is_set():
+            return
+        try:
+            text = result.content
+            # only a turn that looked something up has sources to count: a reference list the user asked for is theirs
+            looked_up = turn.web_tried > 0 or bool(turn.evidence_items) or (
+                turn.reading is not None and readings.wants_search(turn.reading))
+            if looked_up and not turn.bulletin:  # the stories under the answer are the sources of its markers
+                web_ok = len(plan.WEB_TOOLS.intersection(turn.tools_ok))
+                text = grounding.without_unsourced_markers(text, max(len(turn.evidence_items), web_ok))
+            if self._no_connection(turn) and not turn.said_offline:
+                turn.said_offline = True
+                text = f"{prompts.NO_CONNECTION_LINE}\n\n{text}"
+        except Exception:  # a check must never break a reply
+            log.warning("turn %s: honesty check failed", turn.conversation_id, exc_info=True)
+            return
+        if text != result.content:
+            turn.inference["honest"] = True
+            result.content = turn.partial_text = text
+            turn.emit("rewrite", {"text": text, "reasoning": ""})
+
+    @staticmethod
+    def _no_connection(turn: Turn) -> bool:
+        """The web was wanted and could not be reached: no web tool worked this turn, and the computer is
+        offline or every web call that ran failed for that reason."""
+        if plan.WEB_TOOLS.intersection(turn.tools_ok):
+            return False
+        wanted = turn.web_tried > 0 or (turn.reading is not None and readings.wants_search(turn.reading))
+        every_call = turn.web_offline > 0 and turn.web_failed == 0
+        return wanted and (not connectivity.online() or every_call)
+
+    def _check_written(self, turn: Turn, item: dict[str, Any], result: ToolResult) -> ToolResult:
+        """After a file was written: does it parse? A file that does not gets one plain line in the tool result,
+        so the model repairs it in its next round; the latest answer per file is kept for the end of the turn."""
+        workspace = item["workspace"] or self._workspace(turn.conversation_id)
+        try:
+            target = plan.written_path(item["name"], item["args"], workspace)
+            if target is None:
+                return result
+            shown = item["location"] or str(item["args"].get("path") or target.name)
+            problem = syntaxcheck.check(target, shown, confine=self._confiner(workspace.root))
+        except Exception:  # a check must never break a turn
+            log.warning("turn %s: could not check the written file", turn.conversation_id, exc_info=True)
+            return result
+        turn.syntax[str(target)] = (problem, workspace.root)
+        if problem is None:
+            return result
+        line = problem.for_tool()
+        return replace(result, content=f"{result.content}\n{line}", preview=f"{result.preview} {line}".strip(),
+                       meta={**(result.meta or {}), "syntax_error": True})
+
+    @staticmethod
+    def _confiner(root: Path) -> Callable[[list[str]], list[str]]:
+        """The confinement the file tools use for a command: only the folder is writable, no network."""
+        return lambda argv: safety.confine(argv, writable=[root], cwd=root, network=False)
+
+    def _report_broken_files(self, turn: Turn, model: str) -> None:
+        """A file written this turn that still does not parse is named under the reply, in Kiwibro's own words:
+        whatever the model said about the file, the user is told. Each file is checked once more first, so a
+        file mended by a command after the check is not reported."""
+        if turn.abort.is_set():
+            return
+        lines = []
+        for target, (problem, root) in turn.syntax.items():
+            if problem is None:
+                continue
+            try:
+                problem = syntaxcheck.check(Path(target), problem.path, confine=self._confiner(root))
+            except Exception:  # a check must never break a turn
+                log.warning("turn %s: could not check %s again", turn.conversation_id, target, exc_info=True)
+            if problem is not None:
+                lines.append(problem.for_reply())
+        if not lines:
+            return
+        text = "\n".join(lines)
+        turn.inference["broken_files"] = lines
+        message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta={"checked_by_kiwibro": True})
         turn.last_message_id = message["id"]
         turn.reply_text += "\n" + text
         turn.emit("delta", {"text": "\n\n" + text})
@@ -2062,10 +2153,10 @@ class AgentManager:
             clock = f"{clock}\n{connectivity.OFFLINE_LINE}"
         conversation = self.db.get_conversation(turn.conversation_id) or {}
         session_so_far = ledger.block(self.db, turn.conversation_id, int(conversation.get("summary_through_seq") or 0))
-        blocks = [
-            clock, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
+        blocks = [  # the first blocks are in the order the Kiwi Mind skills were trained on
+            clock, worked, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
             safemode.context_line(self.db, turn.conversation_id),
-            _directives_note(self.db, turn.conversation_id), plan_note, several, worked, readings.note(reading),
+            _directives_note(self.db, turn.conversation_id), plan_note, several, readings.note(reading),
             guidance_note, learned, turn.reaction.note() if turn.reaction is not None else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
@@ -2491,6 +2582,15 @@ class AgentManager:
                     found = (result.meta or {}).get("results")
                     if isinstance(found, list):
                         turn.evidence_items.extend(entry for entry in found if isinstance(entry, dict))
+            if item["name"] in plan.WEB_TOOLS:
+                turn.web_tried += 1
+                if item["result"] is None and not result.ok:  # it ran, and did not work
+                    if connectivity.OFFLINE_ERROR in result.content:
+                        turn.web_offline += 1
+                    else:
+                        turn.web_failed += 1
+            if result.ok and item["name"] in plan.WRITE_TOOLS and item["name"] != "convert_document":
+                result = self._check_written(turn, item, result)
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
@@ -2518,6 +2618,7 @@ class AgentManager:
         advanced = False
         for item, result, _duration in finished:
             ok = result.ok and (result.meta or {}).get("count") != 0  # a search that found nothing
+            ok = ok and not (result.meta or {}).get("syntax_error")  # a file that does not parse is not written yet
             written = None
             if ok and item["name"] in plan.WRITE_TOOLS:
                 written = plan.written_path(item["name"], item["args"], item["workspace"] or self._workspace(turn.conversation_id))
@@ -2574,6 +2675,9 @@ class AgentManager:
         if turn.failure_streak >= FAILURE_PAUSE_AT:  # stop a guessing loop; make the model answer
             return refuse(prompts.TOOLS_PAUSED, "Tools paused after repeated failures")
         spec = tools.TOOL_SPECS.get(name)
+        if rescued.damaged and spec is not None and not cut_off:  # a guess is never written, run or searched for
+            message = toolcall.correction(spec, prompts.DAMAGED_CALL.format(reason=rescued.damaged))
+            return refuse_shown(message, message.splitlines()[0], "read")
         try:
             if rescued.error or spec is None:
                 raise ValueError(rescued.error or f"unknown tool: {name}")
@@ -2666,8 +2770,8 @@ class AgentManager:
             return prompts.SMALL_TALK_NO_TOOLS
         if plan.is_about_kiwibro(turn.message):
             return prompts.ABOUT_YOU_NO_TOOLS
-        if name not in plan.SEARCH_TOOLS:
-            return ""
+        if name not in plan.SEARCH_TOOLS or not connectivity.online():
+            return ""  # offline, the tool itself answers (the same words every time) and costs nothing
         limit = plan.SEARCH_ROUNDS_MAX
         if turn.plan_done_at is not None:
             limit = min(limit, turn.plan_done_at + plan.SEARCH_ROUNDS_AFTER_PLAN)

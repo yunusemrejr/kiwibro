@@ -672,6 +672,14 @@ const STOPS = [
     lines:
       "Your message never reaches the model alone. Kiwibro first adds what it knows (the [[context]]), the model writes, and a small reader called [[Kiwi Sense]] checks the draft. If the model asks for a [[tool]], Kiwibro runs it and the model continues with the result.",
     fact: "The model and your data stay on this computer. Only web lookups go online.",
+    tech: {
+      model: [["Kiwi Mind", "A 0.6-billion-parameter transformer (Qwen3-0.6B) with seven LoRA skills, run in WebAssembly on the CPU."]],
+      app: [
+        ["Local server", "Flask on 127.0.0.1. The reply is streamed to the window as server-sent events (SSE)."],
+        ["One database", "Chats, memory and notes are in a single SQLite file on this computer."],
+        ["Agent loop", "Look first, write, check: up to 16 tool rounds for one message."],
+      ],
+    },
     build: bigPicture,
   },
   {
@@ -680,6 +688,17 @@ const STOPS = [
     lines:
       "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 16 layers read your conversation once. A small [[control head]] looks at what they understood and picks one of seven [[skills]]: chat, web, code, terminal, computer, tools or write. The skill is a thin layer slid into the upper 12 layers, so switching takes a moment, not a reload. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
     fact: "464 MB on disk, 4 bits per weight, on the CPU in WebAssembly.",
+    tech: {
+      model: [
+        ["Quantization-aware training (QAT)", "The model was trained on the 4-bit grid it is stored in, so the file holds exactly what was trained."],
+        ["LoRA skill swapping", "Each skill is a low-rank adapter of rank 16 on layers 16 to 27. Swapping one recomputes those 12 layers only."],
+        ["Control head", "A two-layer network reads the state entering layer 16 and scores the seven skills plus \"heavy\". It is the gating idea of a mixture of experts (MoE), with the adapters as the experts and one chosen per message."],
+      ],
+      app: [
+        ["WebAssembly with SIMD and threads", "The engine is C compiled to WebAssembly and run by Node.js on 2 to 8 threads."],
+        ["Conductor", "Changes skill only when another one clearly leads, and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
+      ],
+    },
     build: kiwiMind,
   },
   {
@@ -688,6 +707,13 @@ const STOPS = [
     lines:
       "A model is billions of numbers called [[weights]]. [[Quantization]] stores each one with fewer bits, like rounding a smooth curve to steps: at 4 bits instead of 16 the file is four times smaller and the answers are only slightly less exact. [[GGUF]] is the file format that holds them.",
     fact: "Kiwibro runs GGUF files and shows, before you download one, whether it fits in this computer's memory.",
+    tech: {
+      model: [
+        ["4-bit weights", "In Kiwi Mind every weight is one of 16 levels, and each group of 32 shares one scale. The word table keeps 8 bits."],
+        ["GGUF", "Helper models come as GGUF, the file format of llama.cpp, mostly at 4 bits as well (Q4_K_M)."],
+      ],
+      app: [["Fit check", "Before a download, the file's size is compared with this computer's free memory."]],
+    },
     build: modelFile,
   },
   {
@@ -696,6 +722,14 @@ const STOPS = [
     lines:
       "A model reads text as [[tokens]] (pieces of words) and holds only a fixed number of them at once: its [[context window]]. When a long chat fills three quarters of it, Kiwibro folds the oldest turns into a short summary. That is [[compaction]], and it lets a chat go on without losing its thread.",
     fact: "The ring beside the send button shows how full the window is.",
+    tech: {
+      model: [["Context length", "Kiwi Mind holds 8,192 tokens at once."]],
+      app: [
+        ["Compaction", "At 75% full, the oldest turns become a summary of up to 600 tokens. The last four messages stay word for word."],
+        ["Session ledger", "Every step is stored in full. After compaction a short index stays in view: what was asked, files changed, commands run, pages read."],
+        ["recall", "A tool that reads any earlier step again, word for word."],
+      ],
+    },
     build: contextWindow,
   },
   {
@@ -704,6 +738,16 @@ const STOPS = [
     lines:
       "Reading the prompt is the slow part. The model keeps its working notes on everything it has already read, the [[KV cache]], so when the beginning of the prompt is unchanged only the new part is read. Kiwibro keeps the beginning fixed: whatever changes from turn to turn, like the time or a memory, goes at the end.",
     fact: "Kiwibro's instructions stay byte for byte the same through a whole chat. Only compaction, which is rare, makes the model reread the chat.",
+    tech: {
+      model: [
+        ["KV cache", "The attention keys and values of every token already read. Kiwi Mind stores them in 8 bits to save memory."],
+        ["Shared lower layers", "On a skill change the cache of layers 0 to 15 is kept. Only the 12 upper layers are read again."],
+      ],
+      app: [
+        ["Prefix caching", "The first message (instructions and tool list) is byte for byte the same every turn. The clock, memories and notes ride on the newest message."],
+        ["Slots", "Four conversations each keep a cache of their own over one copy of the weights."],
+      ],
+    },
     build: kvCache,
   },
   {
@@ -712,6 +756,14 @@ const STOPS = [
     lines:
       "To act, the model writes a small request called a [[tool call]]: a tool's name and its inputs. Kiwibro checks it, asks you first when it is risky, runs it, and hands back the result. This back and forth is the [[agent loop]].",
     fact: "Small models fumble the format, so Kiwibro repairs near misses, like a call typed as plain text. What code can do for certain, such as a sum or saving a note you dictated, Kiwibro does itself.",
+    tech: {
+      model: [["Function calling", "The model writes a tool's name and inputs as JSON between tool-call tags. Kiwi Mind was trained on Kiwibro's own tool list."]],
+      app: [
+        ["Risk grades", "Every call is graded safe, low, medium, high or critical. Risky ones ask you first. Critical ones never run."],
+        ["Sandbox", "Commands run inside bubblewrap in a systemd scope: the system is read-only, only the workspace can be written, memory is capped."],
+        ["Safe copy", "Work happens in a copy tracked by git. The real folder changes only after you have seen the diff and an undo command that was tried first."],
+      ],
+    },
     build: toolsLoop,
   },
   {
@@ -720,6 +772,16 @@ const STOPS = [
     lines:
       "A small model fills a gap with a plausible guess. So Kiwibro looks before the model writes: the web for news and live facts, this computer for your files and hardware. It then compares the draft with what the search returned, which is called [[grounding]]: a name or number that no [[source]] holds is sent back once to be written again, and left out if it is still there.",
     fact: "When the look itself is the answer (how many files, which CPU, is this checkout at the same commit as its remote), Kiwibro writes it in the look's own figures. If nothing in a draft holds up, you see the sources as found.",
+    tech: {
+      model: [["Web skill", "The LoRA skill that was trained on search-then-cite conversations."]],
+      app: [
+        ["Retrieval before generation (RAG)", "Kiwibro searches first (Yahoo, Brave, Bing, DuckDuckGo, Wikipedia, and dated RSS feeds for news) and hands the model short passages to write from."],
+        ["Grounding check", "A name, figure or link that no source holds is sent back once, then removed."],
+        ["Answers by code", "When a lookup is the answer (a file count, the CPU), code writes it and the model is not asked."],
+        ["Syntax check", "A file Kiwibro writes is parsed at once. A broken one goes back to the model with the line number."],
+        ["Offline line", "Without a connection, an answer that needed the web says so in its first line."],
+      ],
+    },
     build: checkedAnswers,
   },
   {
@@ -728,6 +790,17 @@ const STOPS = [
     lines:
       "Beside the big model runs a tiny one that only reads. It turns each sentence into 64 numbers that capture its meaning (an [[embedding]]), and a small classifier (a [[probe]]) spots drift: posing as another assistant, claiming an action that never happened, announcing a step and not taking it. Kiwibro then stops the draft and asks again with a short note: [[steering]]. Five more tiny readers, the [[helpers]], read your message first: is it English, does it need the web, which dates it means, did the topic change.",
     fact: "Kiwi Sense is 25 KB of WebAssembly with 5.5 MB of data, and it works the same with every model. It reads English.",
+    tech: {
+      model: [
+        ["Static embeddings", "29,528 word pieces with 64 numbers each, distilled from the embedding model potion-base-2M and stored in 8 bits."],
+        ["Probe", "A six-class classifier on the sentence embedding that spots drift."],
+        ["Five helpers", "Hashed text features into one hidden layer each: language, intent, time phrases, topic change, memory relevance."],
+      ],
+      app: [
+        ["Steering", "When the probe fires, the draft is stopped and asked again with a short note."],
+        ["One file, two places", "25 KB of C compiled to WebAssembly. The same file runs in the window and on the server."],
+      ],
+    },
     build: kiwiSense,
     extra: senseBench,
   },
@@ -737,6 +810,14 @@ const STOPS = [
     lines:
       "Facts about you ([[memory]]) and your [[notes]] live in a small database on this computer. Before each answer Kiwibro looks up the few that share a meaningful word with your message, or failing that mean something close to it. That is [[retrieval]]. They are attached to the end of your message as a context note.",
     fact: "Nothing from a chat marked Private is saved to memory or notes.",
+    tech: {
+      model: [["Relevance helper", "A tiny classifier drops a memory that only shares a word with your message."]],
+      app: [
+        ["Full-text search (SQLite FTS5)", "The words of your message are matched against an index of memories and notes."],
+        ["Embedding fallback", "When no word matches, Kiwi Sense picks the closest memory by cosine similarity."],
+        ["Extraction", "After a reply, new facts are saved as add, update or delete steps, five at most. Near-duplicates are merged."],
+      ],
+    },
     build: memoryNotes,
   },
   {
@@ -745,6 +826,16 @@ const STOPS = [
     lines:
       "A [[LoRA adapter]] is a small add-on file that nudges a model toward one kind of work, such as code or translation, without changing the model itself. Kiwibro reads the task from your message and switches the matching adapter on for that one request.",
     fact: "Adapters adjust themselves: when a reply goes wrong with one and comes out right without it, Kiwibro turns that adapter down, then off.",
+    tech: {
+      model: [
+        ["LoRA (low-rank adaptation)", "Instead of changing a weight matrix, two thin matrices are added beside it. They hold a small fraction of the model's numbers."],
+        ["In Kiwi Mind", "Its seven skills are LoRA adapters of rank 16."],
+      ],
+      app: [
+        ["Per-request switching", "For a helper model the adapter is switched on for one request and off again."],
+        ["Self-tuning", "An adapter that makes replies worse is turned down, then off."],
+      ],
+    },
     build: adapters,
   },
 ];
@@ -757,6 +848,34 @@ const TERM_NOTES = {
   skills: "Seven thin sets of extra weights, 9 MB each, one per kind of work. One is active at a time.",
   "helper model": "Any other model you downloaded. Optional.",
 };
+
+// The optional "Under the hood" block: tech names per layer, model first.
+function techBlock(tech) {
+  const groups = [
+    ["Model layer", tech.model],
+    ["App layer", tech.app],
+  ].filter(([, rows]) => rows && rows.length);
+  return el("div", { class: "how-tech" }, [
+    el("h4", { class: "how-tech-title", text: "Under the hood" }),
+    el(
+      "div",
+      { class: "how-tech-groups" },
+      groups.map(([label, rows]) =>
+        el("section", { class: "how-tech-group" }, [
+          el("h5", { class: "how-tech-layer", text: label }),
+          el(
+            "dl",
+            { class: "how-tech-list" },
+            rows.flatMap(([name, text]) => [
+              el("dt", { class: "how-tech-name", text: name }),
+              el("dd", { class: "how-tech-text", text }),
+            ]),
+          ),
+        ]),
+      ),
+    ),
+  ]);
+}
 
 function withTerms(line) {
   return line.split(/(\[\[.+?\]\])/).map((part) => {
@@ -886,7 +1005,7 @@ export function createHowView({ dialog }) {
   function tick(now) {
     frame = 0;
     if (!scene || !dialog.open) return;
-    scene.draw(((now - origin) / 1000) % scene.duration);
+    scene.draw((Math.max(0, now - origin) / 1000) % scene.duration);
     if (!paused && !document.hidden && !stillOnly.matches) frame = window.requestAnimationFrame(tick);
   }
 
@@ -927,6 +1046,7 @@ export function createHowView({ dialog }) {
       el("p", { class: "how-lines" }, withTerms(stop.lines)),
       el("p", { class: "how-fact" }, [el("span", { class: "how-fact-tag", text: "In Kiwibro" }), stop.fact]),
     );
+    if (stop.tech) copy.append(techBlock(stop.tech));
     if (stop.extra) {
       const extra = stop.extra();
       copy.append(extra.node);

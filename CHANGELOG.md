@@ -32,7 +32,18 @@ All notable changes to Kiwibro are documented here.
   for word.
 - **Without internet.** Kiwibro notices a lost connection within seconds, tells the model,
   and web tools fail at once with a plain message instead of timing out. Kiwi Mind, files,
-  notes, memory and documents work as before.
+  notes, memory and documents work as before. A reply that needed the web then starts with
+  "No internet connection, so I could not look this up. What follows is from memory and may
+  be out of date.", and citation marks that point at no source are removed.
+- **Checks on what the model wrote.** A file Kiwibro writes is parsed right away (Python,
+  JSON, TOML, shell, JavaScript; nothing is run). If it does not parse, the model is told
+  the line and the reason so it can repair the file, and a file that is still broken at the
+  end is named under the reply by Kiwibro itself. A tool call that arrives damaged is not
+  run: the model is asked to make it again.
+- **How it works, under the hood.** Each of the ten stops now names what is behind it, in
+  two columns, model layer and app layer: quantization-aware training, LoRA skill
+  swapping, the control head (the gating idea of a mixture of experts), the KV cache and
+  prefix caching, retrieval before generation, full-text search, the sandbox.
 - **Kiwi Sense helpers.** Five tiny trained deciders read every message before the model,
   in a few milliseconds and the same way for every model: its language, what it wants
   (intent, web, time, topic, whether it says something worth remembering), its time

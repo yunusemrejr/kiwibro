@@ -309,7 +309,8 @@ def budget_payload(profile: ModelProfile, *, think: bool, must_act: bool) -> dic
 def time_line(now: datetime | None = None) -> str:
     """The clock for the per-turn note (never message 0: it changes every minute)."""
     moment = (now or datetime.now()).astimezone()
-    return "Local time: " + moment.strftime("%A, %d %B %Y, %H:%M %Z")
+    # the day of the month without a leading zero: "3 March", as the Kiwi Mind skills were trained on it
+    return f"Local time: {moment:%A}, {moment.day} {moment:%B %Y, %H:%M %Z}"
 
 
 # --- prefix reuse telemetry --------------------------------------------------------

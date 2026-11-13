@@ -550,6 +550,41 @@ def tidy(lines: list[str]) -> str:
     return _tidy(lines)
 
 
+_MARKS = re.compile(r"([ \t]*)(?<![\w)\]])((?:\[\d{1,3}\])+)(?![\w(:\[])")
+_ENTRY = re.compile(r"^[ \t]*\[(\d{1,3})\][ \t]+\S")
+_INLINE_CODE = re.compile(r"(`[^`\n]*`)")
+
+
+def without_unsourced_markers(text: str, sources: int) -> str:
+    """The reply without citation markers that point at a source the turn does not have.
+
+    With ``sources`` results in front of the model, ``[4]`` has nothing behind it, and neither has a
+    reference line that starts with it. Code, links and indexes such as ``items[1]`` are not markers."""
+
+    def keep(found: re.Match[str]) -> str:
+        marks = [mark for mark in re.findall(r"\d+", found.group(2)) if int(mark) <= sources]
+        return found.group(1) + "".join(f"[{mark}]" for mark in marks) if marks else ""
+
+    kept: list[str] = []
+    fenced = dropped = False
+    for line in (text or "").split("\n"):
+        entry = _ENTRY.match(line)
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            kept.append(line)
+        elif fenced:
+            kept.append(line)
+        elif entry and int(entry.group(1)) > sources:
+            dropped = True  # a reference line ("[1] https://...") for a result that does not exist
+        else:
+            parts = _INLINE_CODE.split(line)
+            kept.append("".join(part if index % 2 else _MARKS.sub(keep, part) for index, part in enumerate(parts)))
+    while dropped and kept and (not kept[-1].strip() or kept[-1].rstrip().endswith(":")):
+        kept.pop()  # the "Sources:" that introduced the lines that went
+    cleaned = tidy(kept) if dropped else "\n".join(kept)
+    return cleaned if cleaned.strip() or not (text or "").strip() else text
+
+
 DIGEST_HEAD = "Here is what the sources say:"
 DIGEST_ITEMS = 5
 DIGEST_CHARS = 320

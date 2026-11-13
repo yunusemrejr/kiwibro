@@ -108,21 +108,37 @@ def _system_facts(messages: list[dict[str, Any]]) -> tuple[str, str]:
     return (workspace.group(1) if workspace else ""), (summary.group(1).strip() if summary else "")
 
 
+def split_notes(content: str) -> tuple[str, list[str]]:
+    """A tool result and the lines Kiwibro put under it (``[Kiwibro plan: ...]``, a corrected call, a warning).
+    In training a result is the tool's output alone, and what Kiwibro adds comes as a message of its own."""
+    lines = content.split("\n")
+    notes: list[str] = []
+    while lines and lines[-1].startswith("[Kiwibro") and lines[-1].endswith("]"):
+        notes.insert(0, lines.pop())
+    return "\n".join(lines), notes
+
+
 def turns(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> list[tuple[str, str]]:
     """The conversation as (role, text) turns: tool results become user turns, as Qwen reads them."""
     workspace, summary = _system_facts(messages)
     out: list[tuple[str, str]] = [("system", system_text(tools, workspace, summary))]
     results: list[str] = []
+    asides: list[str] = []
 
     def flush() -> None:
         if results:
             out.append(("user", "\n".join(results)))
             results.clear()
+        if asides:  # what Kiwibro says about the results: a turn of its own, as the skills saw it
+            out.append(("user", "\n".join(asides)))
+            asides.clear()
 
     for message in messages:
         role = message.get("role")
         if role == "tool":
-            results.append(f"<tool_response>\n{plain(message.get('content'))}\n</tool_response>")
+            body, notes = split_notes(plain(message.get("content")))
+            results.append(f"<tool_response>\n{body}\n</tool_response>")
+            asides.extend(notes)
             continue
         flush()
         if role == "user":

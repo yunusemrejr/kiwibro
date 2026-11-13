@@ -701,6 +701,16 @@ anything in it; the model picked in the header is a helper for it.
   usable. The agent gives it the full tool catalog (`tools.tool_defs_for("full")`), and
   the reply is parsed by `render.parse_reply` into text and tool calls like any other
   model's.
+- **Checked in code.** What a 0.6B model gets wrong in form is caught by the app, for
+  every brain. A damaged tool call is refused before it runs (`toolcall`,
+  `prompts.DAMAGED_CALL`). A written file is parsed (`syntaxcheck.check`: Python by
+  `compile`, JSON, TOML, `bash -n`, `node --check`, confined like the file tools); a
+  problem goes into the tool result and, if it is still there at the end, under the reply
+  (`_report_broken_files`). A reply written while the web could not be reached starts with
+  `prompts.NO_CONNECTION_LINE`, and markers with no source behind them are removed
+  (`_honest_reply`, `grounding.without_unsourced_markers`). The prompt keeps the layout
+  the skills were trained on (`render.split_notes`, the clock line, the order of the first
+  blocks); tests pin it against `scripts/mind/train.py`.
 - **Choosing the skill.** At the first generation after a user message the conductor asks
   `/control`. A running conversation changes skill only when the new skill's share beats
   the current one's by `SWITCH_MARGIN` (0.15); the skill then stays through the tool steps

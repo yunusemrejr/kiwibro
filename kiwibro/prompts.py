@@ -69,6 +69,10 @@ CUT_OFF_CALL = (
     "did not run (a truncated file would have been saved). Make the call again with shorter content: "
     "keep the file concise, or write the first part now and add the rest with a second call."
 )
+DAMAGED_CALL = (
+    "this call was damaged ({reason}), so it did not run and nothing was changed. Make the call again, with the "
+    "arguments as valid JSON."
+)
 SEARCHED_FOR_YOU = (
     "[Kiwibro: the user asked for a web search and you replied without one, so Kiwibro ran it: the results "
     "are above. {then}]"
@@ -263,6 +267,9 @@ GOODBYE = "Bye for now!"
 PLACEHOLDER = (
     "[Kiwibro: your answer has a placeholder ({items}) where a real value belongs. Write it again with the "
     "real value from the results above, or say plainly that you do not know it.]"
+)
+NO_CONNECTION_LINE = (
+    "No internet connection, so I could not look this up. What follows is from memory and may be out of date."
 )
 NOT_FOUND = "I looked, but what I found does not answer this clearly, so I won't guess."
 STORIES_AS_FOUND = "I could not sum these up reliably, so here are the stories as the sources report them."

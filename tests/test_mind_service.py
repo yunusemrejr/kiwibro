@@ -7,8 +7,11 @@ import http.server
 import importlib.util
 import json
 import os
+import random
+import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -601,6 +604,55 @@ def test_a_session_with_recorded_steps_adds_lines_the_training_notes_do_not_have
     trained = train.with_note("hello there", when, long=True)
     assert sent.startswith(trained) and sent != trained
     assert sent[len(trained):].startswith("\nAsked: ")
+
+
+def test_what_the_app_says_to_the_model_is_what_the_skills_were_trained_to_read(env: Any) -> None:
+    """The sentences and names the training script uses for the offline case, the web tools and the clock are the
+    app's own, word for word: a drift in one of them would show the model a structure it never saw."""
+    from kiwibro import connectivity, plan
+
+    train = load_train()
+    assert train.OFFLINE_ERROR == f"Error: {connectivity.OFFLINE_ERROR}"
+    assert train.OFFLINE_LINE == connectivity.OFFLINE_LINE
+    assert set(train.WEB_TOOLS) == set(plan.WEB_TOOLS)
+    # "Tuesday, 3 November 2026, 14:05 +03": the day of the month has no leading zero, in training or in the app
+    shape = re.compile(r"[A-Z][a-z]+, [1-9]\d? [A-Z][a-z]+ \d{4}, \d\d:\d\d \S+")
+    rng = random.Random(1)
+    assert all(shape.fullmatch(train.local_time(rng)) for _ in range(200))
+    line = inference.time_line(datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc))
+    assert line.startswith("Local time: ") and shape.fullmatch(line.removeprefix("Local time: "))
+
+
+def test_what_kiwibro_adds_under_a_tool_result_is_a_turn_of_its_own_as_in_training() -> None:
+    train = load_train()
+    call = {"id": "call_1", "type": "function", "function": {"name": "web_search", "arguments": '{"query": "kiwi"}'}}
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "kiwi harvest"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call_1", "content": f"1. Kiwi picked in May\n{train.PRESEARCH}"},
+    ]
+    turns = render.turns(messages, None)
+    assert turns[-2:] == [("user", "<tool_response>\n1. Kiwi picked in May\n</tool_response>"), ("user", train.PRESEARCH)]
+    body, notes = render.split_notes("text\n[Kiwibro: a]\n[Kiwibro plan: b]")
+    assert (body, notes) == ("text", ["[Kiwibro: a]", "[Kiwibro plan: b]"])
+    # only trailing lines that are whole notes are lifted: a result that mentions one in its own text keeps it
+    kept = "[Kiwibro is a kiwi bird]\nthe end\n[Kiwibro unfinished"
+    assert render.split_notes(kept) == (kept, [])
+    assert render.split_notes("[Kiwibro: only a note]") == ("", ["[Kiwibro: only a note]"])
+
+
+def test_exact_results_come_before_the_facts_as_in_training(env: Any) -> None:
+    from kiwibro.agent import Turn
+
+    train = load_train()
+    env.svc.memory.remember("The user likes green tea.", "preference")
+    turn = Turn(conversation_id=env.svc.db.create_conversation()["id"], message="green tea", requested_model=None)
+    turn.worked = (("12 * 7", "84"),)
+    note = env.svc.agent._turn_context(turn, {})
+    sent = context.place_turn_context([{"role": "user", "content": "green tea"}], note)[-1]["content"]
+    when = next(line for line in note.splitlines() if line.startswith("Local time: ")).removeprefix("Local time: ")
+    assert sent == train.with_note("green tea", when, facts=["The user likes green tea."], exact=["12 * 7 = 84"])
 
 
 # ------------------------------------------------------------------------------------------- the API

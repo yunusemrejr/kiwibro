@@ -300,3 +300,34 @@ def test_initials_are_backed_by_a_name_spelled_out_inside_a_headline():
     assert grounding.check("The UN faces a turning point on fishing, Harbour Press reports.", sources) == []
     assert grounding.check("The US and Norway agreed on cod quotas.", sources) == []
     assert grounding.missing(grounding.check("The talks moved to NATO this week.", sources)) == ["NATO"]
+
+
+# ---- citation markers that point at nothing ----
+
+def test_a_marker_with_no_source_behind_it_is_taken_out():
+    text = "Version 3.12 is the newest [1] and 3.13 is in testing [2]."
+    assert grounding.without_unsourced_markers(text, 0) == "Version 3.12 is the newest and 3.13 is in testing."
+    assert grounding.without_unsourced_markers(text, 1) == "Version 3.12 is the newest [1] and 3.13 is in testing."
+    assert grounding.without_unsourced_markers(text, 2) == text
+
+
+def test_a_run_of_markers_keeps_only_the_ones_with_a_source():
+    assert grounding.without_unsourced_markers("It rains in May [1][3].", 2) == "It rains in May [1]."
+
+
+def test_reference_lines_for_missing_sources_go_with_their_lead_in():
+    text = "The pass opens in June [1].\n\nSources:\n[1] https://example.org/pass\n[2] https://example.org/road"
+    assert grounding.without_unsourced_markers(text, 0) == "The pass opens in June."
+    assert grounding.without_unsourced_markers(text, 1) == (
+        "The pass opens in June [1].\n\nSources:\n[1] https://example.org/pass"
+    )
+
+
+def test_code_links_and_indexes_are_not_markers():
+    text = "Use `items[1]` or items[2].\n\n```python\nvalues = [1, 2][1]\nprint(values[1])\n```\n\nSee [1](https://example.org)."
+    assert grounding.without_unsourced_markers(text, 0) == text
+
+
+def test_a_reply_is_never_blanked():
+    assert grounding.without_unsourced_markers("[1]", 0) == "[1]"
+    assert grounding.without_unsourced_markers("", 0) == ""
