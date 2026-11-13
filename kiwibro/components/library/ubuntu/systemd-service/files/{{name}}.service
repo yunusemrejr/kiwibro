@@ -1,0 +1,8 @@
+# KIWIBRO: this description is what `systemctl --user status` and journalctl show
+[Unit]
+Description={{name}}
+
+[Service]
+Type=oneshot
+ExecStart={{command}}
+# KIWIBRO: use Type=simple instead of oneshot if the program keeps running

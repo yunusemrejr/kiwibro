@@ -1,0 +1,18 @@
+{
+  "name": "terminal/port-and-process",
+  "kind": "recipe",
+  "title": "Port and process",
+  "summary": "Find which process uses a port or the most memory, and hand the user the command that would stop it.",
+  "when": "Use when a port is already in use or a process is eating memory and the user wants to know what and why.",
+  "blanks": {},
+  "steps": [
+    "Call run_command with ss -ltnp to list listening ports, or lsof -i :PORT for the port the user names.",
+    "Call run_command with ps aux --sort=-%mem | head -15 to find the processes using the most memory.",
+    "Call run_command with ps -o pid,ppid,user,cmd -p PID and readlink /proc/PID/cwd to see what started it.",
+    "Call run_command with systemctl status name or docker ps when the process looks like a service or a container.",
+    "Check the pid, user and start time against what the user expects, and say which process is the one they mean.",
+    "If nothing listens on the port, say so plainly and call run_command with journalctl -u name -n 50 before guessing.",
+    "Give the user the exact command that stops the process in a code block and say what it does; do not run it."
+  ],
+  "next": "The final answer must name the pid, user and command line holding the port or the memory, and give the exact stop command without running it."
+}

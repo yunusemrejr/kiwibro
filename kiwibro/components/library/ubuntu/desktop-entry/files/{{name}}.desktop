@@ -1,0 +1,10 @@
+[Desktop Entry]
+# KIWIBRO: Name and Comment are what the app grid shows; Exec is the program to start
+Type=Application
+Name={{name}}
+Comment=Start {{name}}
+Exec={{command}}
+Icon={{name}}
+Terminal=false
+Categories=Utility;
+StartupNotify=true

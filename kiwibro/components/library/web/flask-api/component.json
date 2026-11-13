@@ -1,0 +1,18 @@
+{
+  "name": "web/flask-api",
+  "kind": "kit",
+  "title": "Flask JSON API",
+  "summary": "Flask JSON API with SQLite, input validation and tests.",
+  "when": "Use when the project needs a small JSON API with a database and no ORM.",
+  "blanks": {
+    "name": {
+      "about": "The service name, used in the README title and the health response.",
+      "default": "Example API"
+    },
+    "resource": {
+      "about": "The collection name, used for the SQLite table and the route paths (a valid identifier, plural).",
+      "default": "items"
+    }
+  },
+  "next": "Write the files, create a virtual environment and install requirements.txt, run pytest, then replace the sample fields and resource name with the project's own data."
+}

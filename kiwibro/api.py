@@ -10,7 +10,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
-from . import config, media, routing
+from . import config, connectivity, media, routing, safemode, safecopy
 from .agent import BusyError, ConversationNotFound
 from .llm import LLMError
 from .sandbox import SandboxError, Workspace
@@ -30,6 +30,15 @@ class ApiError(Exception):
 
 def services():
     return current_app.extensions["kiwibro"]
+
+
+NO_MIND = {"usable": False, "running": False, "pid": None}
+
+
+def _mind(svc: Any) -> Any:
+    """Kiwi Mind of this app's model client (None for a client that has none)."""
+    maker = getattr(svc.llm, "mind", None)
+    return maker() if callable(maker) else None
 
 
 def error_body(code: str, message: str) -> dict[str, Any]:
@@ -136,9 +145,13 @@ def _note_view(note: dict[str, Any]) -> dict[str, Any]:
 
 def _current_model(models: list[dict[str, Any]] | None) -> str | None:
     svc = services()
+    chosen = svc.settings_provider().get("model")
+    mind = _mind(svc)
+    if chosen == "none" and mind is not None and mind.usable():
+        return chosen  # Kiwi Mind alone: no helper model is in use
     if models:
         return svc.llm.pick_model(models)
-    return svc.settings_provider().get("model")
+    return chosen
 
 
 # --- health & bootstrap -----------------------------------------------------
@@ -187,6 +200,7 @@ def window_closing() -> Response:
 @bp.get("/health")
 def health() -> Response:
     svc = services()
+    mind = _mind(svc)
     settings = svc.settings_provider()
     ok, models, error = svc.llm.models_status()
     payload: dict[str, Any] = {
@@ -194,7 +208,9 @@ def health() -> Response:
         **_runtime_status(svc),
         "engine_ok": ok,
         "engine": svc.llm.engine_mode(),
+        "online": connectivity.state()["online"],
         "model": _current_model(models) if ok else settings.get("model"),
+        "mind": mind.health() if mind else NO_MIND,
     }
     if error:
         payload["engine_error"] = error
@@ -282,11 +298,39 @@ def select_model() -> Response:
     if not isinstance(model_id, str) or not model_id.strip():
         raise ApiError("bad_request", "id is required", 400)
     model_id = model_id.strip()
+    mind = _mind(svc)
+    if model_id == "none" and mind is not None and mind.usable():  # Kiwi Mind alone, no helper model
+        svc.db.set_setting("model", model_id)
+        return jsonify({"ok": True, "current": model_id, "readiness": svc.agent.readiness.status()})
     ok, models, _error = svc.llm.models_status(force=True)
     if ok and model_id not in {model["id"] for model in models}:
         raise ApiError("unknown_model", f"Unknown model: {model_id}", 400)
     svc.db.set_setting("model", model_id)
     return jsonify({"ok": True, "current": model_id, "readiness": _prepare_model(svc, model_id)})
+
+
+@bp.get("/api/mind")
+def mind_status() -> Response:
+    mind = _mind(services())
+    if mind is None:
+        raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
+    return jsonify(mind.describe())
+
+
+@bp.post("/api/mind/download")
+def mind_download() -> Response:
+    mind = _mind(services())
+    if mind is None:
+        raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
+    return jsonify({"ok": True, "download": mind.pack.start_download()})
+
+
+@bp.post("/api/mind/download/cancel")
+def mind_download_cancel() -> Response:
+    mind = _mind(services())
+    if mind is None:
+        raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
+    return jsonify({"ok": mind.pack.cancel_download(), "download": mind.pack.download_state()})
 
 
 @bp.post("/api/models/context")
@@ -867,6 +911,80 @@ def workspace_files() -> Response:
     return jsonify({"ok": True, "root": str(Path(root).expanduser().resolve()), "files": files})
 
 
+# --- safe copy --------------------------------------------------------------
+
+
+def _conversation_id_from(data: Any, key: str = "conversation_id") -> str:
+    value = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        raise ApiError("bad_request", "conversation_id is required.", 400)
+    return value.strip()
+
+
+@bp.post("/api/safecopy/start")
+def safe_copy_start() -> Response:
+    """Open a safe copy of a folder for this chat, or return the session it already has."""
+    svc = services()
+    data = _json_body()
+    conversation_id = _conversation_id_from(data)
+    folder = data.get("folder")
+    if not isinstance(folder, str) or not folder.strip():
+        raise ApiError("bad_request", "folder is required.", 400)
+    result = safemode.start(svc.db, conversation_id, folder.strip())
+    return jsonify({"ok": True, **result})
+
+
+@bp.get("/api/safecopy/status")
+def safe_copy_status() -> Response:
+    svc = services()
+    conversation_id = request.args.get("conversation_id", "").strip()
+    if not conversation_id:
+        raise ApiError("bad_request", "conversation_id is required.", 400)
+    return jsonify({"ok": True, **safemode.status(svc.db, conversation_id)})
+
+
+@bp.get("/api/safecopy/proof")
+def safe_copy_proof() -> Response:
+    """The proof the user reads: what changed, where, and the exact undo command."""
+    svc = services()
+    conversation_id = request.args.get("conversation_id", "").strip()
+    if not conversation_id:
+        raise ApiError("bad_request", "conversation_id is required.", 400)
+    return jsonify({"ok": True, "proof": safemode.proof(svc.db, conversation_id)})
+
+
+@bp.post("/api/safecopy/apply")
+def safe_copy_apply() -> Response:
+    """Write the approved proof into the real folder and say in the chat how to undo it."""
+    svc = services()
+    data = _json_body()
+    conversation_id = _conversation_id_from(data)
+    fingerprint = data.get("fingerprint")
+    result = safemode.apply(svc.db, conversation_id, fingerprint if isinstance(fingerprint, str) else "")
+    return jsonify({"ok": True, "applied": result})
+
+
+@bp.post("/api/safecopy/undo")
+def safe_copy_undo() -> Response:
+    """Put the last apply's files back; added files stay and come back as commands."""
+    svc = services()
+    data = _json_body()
+    conversation_id = _conversation_id_from(data)
+    return jsonify({"ok": True, "undo": safemode.undo(svc.db, conversation_id)})
+
+
+@bp.post("/api/safecopy/end")
+def safe_copy_end() -> Response:
+    """Detach the chat from its safe copy, and remove the copy when asked."""
+    svc = services()
+    data = _json_body()
+    conversation_id = _conversation_id_from(data)
+    discard = data.get("discard", False)
+    if not isinstance(discard, bool):
+        raise ApiError("bad_request", "discard must be a boolean.", 400)
+    return jsonify({"ok": True, **safemode.end(svc.db, conversation_id, discard)})
+
+
 # --- terminals --------------------------------------------------------------
 
 
@@ -947,6 +1065,13 @@ def favicon() -> Response:
 @bp.errorhandler(ApiError)
 def handle_api_error(exc: ApiError) -> Response:
     return jsonify(error_body(exc.code, exc.message)), exc.status
+
+
+@bp.errorhandler(safecopy.SafeCopyError)
+def handle_safe_copy_error(exc: safecopy.SafeCopyError) -> Response:
+    """A safe copy refusal the user can act on: 4xx with the code and the plain sentence."""
+    status = {"not_found": 404, "stale": 409, "conflict": 409, "partial": 409}.get(exc.code, 400)
+    return jsonify(error_body(exc.code, exc.message)), status
 
 
 @bp.errorhandler(HTTPException)

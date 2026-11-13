@@ -1,0 +1,14 @@
+{
+  "name": "code/sqlite-store",
+  "kind": "kit",
+  "title": "SQLite data layer",
+  "summary": "Small SQLite data layer in Python: schema, migrations, typed queries and tests.",
+  "when": "Use when the user needs local records saved between runs and does not want an ORM.",
+  "blanks": {
+    "table": {
+      "about": "Name of the table that holds the records (lowercase identifier; rows are archived instead of deleted).",
+      "default": "notes"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, run python3 -m pytest -q, then add the columns the user actually needs inside the version 1 migration and the queries beside it."
+}

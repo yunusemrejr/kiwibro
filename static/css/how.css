@@ -651,3 +651,49 @@
     transition: none !important;
   }
 }
+
+/* ---------- Kiwi Mind figure: larger labels so they read at 360 px -------- */
+.hw-t-big {
+  fill: var(--text-2);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hw-t-big-muted {
+  fill: var(--muted);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.hw-t-big-ink {
+  fill: var(--green-ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.hw-node.is-on .hw-t-big {
+  fill: var(--text);
+}
+
+.hw-slab {
+  fill: var(--tan-dim);
+  stroke: var(--tan-line);
+  stroke-width: 1.2;
+}
+
+.hw-slot {
+  fill: var(--green);
+  stroke: var(--green);
+}
+
+.hw-dash {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.6;
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
+}
+
+.hw-mask {
+  fill: var(--bg);
+}

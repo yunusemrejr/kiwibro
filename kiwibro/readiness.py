@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import inference, routing
-from .llm import LLMError, TurnAborted
+from .llm import LLMError, TurnAborted, bind_turn
+from .mind import KIWIMIND
 
 log = logging.getLogger(__name__)
 
@@ -202,11 +203,13 @@ class Readiness:
             self._set(model=job.model, phase="error", detail=exc.message, context_length=None)
             return
         job.model = model
-        info = self._info(model, force=True)
+        own = model == KIWIMIND  # Kiwi Mind is started by its own host on the first request, not loaded here
+        info = self.llm.model_info(model) if own else self._info(model, force=True)
         if info is None:
             self._set(model=model, phase="error", detail=f"{model} is not installed.")
             return
-        info = self._ensure_loaded(model, info, job)
+        if not own:
+            info = self._ensure_loaded(model, info, job)
         if job.abort.is_set():
             return
         context = (info.get("loaded_config") or {}).get("context_length") or info.get("context")
@@ -226,6 +229,7 @@ class Readiness:
         reuse = inference.PREFIX_TRACKER.observe(model, messages, tools, extra)
         started = time.monotonic()
         try:
+            bind_turn(job.conversation_id)  # Kiwi Mind: warm this chat's own cache slot
             self.llm.prefill(model=model, messages=messages, tools=tools, extra=extra or None, abort=job.abort)
         except TurnAborted:
             self._set(phase="ready", detail="")
@@ -240,7 +244,7 @@ class Readiness:
             new_tokens=int(reuse.get("prompt_tokens_est", 0)) - int(reuse.get("reused_tokens_est", 0)),
             ttft_ms=elapsed_ms, tokens_per_s=None,
         )
-        info = self._info(model, force=True) or info
+        info = (info if own else self._info(model, force=True)) or info
         context = (info.get("loaded_config") or {}).get("context_length") or info.get("context")
         with self._lock:
             self._warm[signature(model, messages, tools, extra, context)] = time.time()

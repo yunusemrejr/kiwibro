@@ -137,6 +137,7 @@ export const api = {
   version: () => request("/api/version"),
 
   models: () => request("/api/models"),
+  mind: () => request("/api/mind"),
   modelReady: () => request("/api/models/ready"),
   selectModel: (id) => request("/api/models/select", { method: "POST", body: { id } }),
   resizeContext: (id, contextLength) =>
@@ -219,6 +220,9 @@ export const api = {
 
   // Models on this computer, the Hugging Face catalogue, downloads and the engine build.
   library: () => request("/api/library"),
+  // Kiwi Mind's download.
+  mindDownload: () => request("/api/mind/download", { method: "POST", body: {} }),
+  mindCancel: () => request("/api/mind/download/cancel", { method: "POST", body: {} }),
   deleteModel: (id) => request("/api/library/models", { method: "DELETE", body: { id } }),
   resetAdapter: (path) => request("/api/library/adapters/reset", { method: "POST", body: { path } }),
   deleteAdapter: (path) => request("/api/library/adapters", { method: "DELETE", body: { path } }),
@@ -245,6 +249,18 @@ export const api = {
   settings: () => request("/api/settings"),
   patchSettings: (patch) => request("/api/settings", { method: "PATCH", body: patch }),
   workspace: () => request("/api/workspace"),
+
+  createConversation: () => request("/api/conversations", { method: "POST", body: {} }),
+  safeCopyStatus: (conversationId) => request(`/api/safecopy/status${query({ conversation_id: conversationId })}`),
+  safeCopyStart: (conversationId, folder) =>
+    request("/api/safecopy/start", { method: "POST", body: { conversation_id: conversationId, folder } }),
+  safeCopyProof: (conversationId) => request(`/api/safecopy/proof${query({ conversation_id: conversationId })}`),
+  safeCopyApply: (conversationId, fingerprint) =>
+    request("/api/safecopy/apply", { method: "POST", body: { conversation_id: conversationId, fingerprint } }),
+  safeCopyUndo: (conversationId) =>
+    request("/api/safecopy/undo", { method: "POST", body: { conversation_id: conversationId } }),
+  safeCopyEnd: (conversationId, discard) =>
+    request("/api/safecopy/end", { method: "POST", body: { conversation_id: conversationId, discard } }),
 };
 
 export { chatError };

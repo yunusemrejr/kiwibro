@@ -12,6 +12,12 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const nowIso = () => new Date().toISOString();
 const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
 
+// Kiwi Mind: the page's ?mind= parameter picks the state; a download runs for about MIND_SIM_MS.
+const MIND_BYTES = 486110000;
+const MIND_PARTIAL = 201000000;
+const MIND_SIM_MS = 6000;
+const MIND_SKILLS = ["chat", "web", "code", "terminal", "computer", "tools", "write"];
+
 class MockApiError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -124,6 +130,7 @@ const DEFAULT_PERMISSIONS = {
   remote: "ask",
   workspace: "auto",
   undo_changes: "auto",
+  component: "ask",
 };
 
 // The llama.cpp build the local engine would pick, and a server it already started.
@@ -274,6 +281,9 @@ export class MockBackend {
     this.offline = params.get("offline") === "1";
     this.models = this.offline ? [] : clone(MODELS);
     this.currentModel = this.offline ? null : "qwen3.8-2b";
+    this.mindParam = params.get("mind") || "usable"; // Kiwi Mind state shown on the page
+    this.mindDl = null; // a simulated download: { state, base, startedAt }
+    this.mindFinished = false; // the simulated download has completed
     this.settings = {
       model: "qwen3.8-2b",
       server_url: "", // empty: local mode; an address switches to a llama.cpp-compatible server
@@ -559,16 +569,94 @@ export class MockBackend {
       : "The engine isn't installed yet";
   }
 
+  /* Kiwi Mind: what the page sees. Bytes on disk come from the download in progress, if any. */
+  _mindDone() {
+    const dl = this.mindDl;
+    if (!dl) return this.mindParam === "downloading" || this.mindParam === "error" ? MIND_PARTIAL : 0;
+    if (dl.state !== "running") return dl.base;
+    return Math.min(MIND_BYTES, dl.base + ((Date.now() - dl.startedAt) * MIND_BYTES) / MIND_SIM_MS);
+  }
+
+  _mindState() {
+    if (this.mindDl?.state === "running" && this._mindDone() >= MIND_BYTES) {
+      this.mindFinished = true;
+      this.mindDl = null;
+    }
+    const param = this.mindParam;
+    const installed = this.mindFinished || ["usable", "nonode", "damaged"].includes(param);
+    const usable = installed && !["nonode", "damaged"].includes(param);
+    let download = null;
+    if (!installed) {
+      if (this.mindDl) {
+        download = { state: this.mindDl.state, done_bytes: Math.round(this._mindDone()), total_bytes: MIND_BYTES };
+      } else if (param === "downloading") {
+        download = { state: "running", done_bytes: MIND_PARTIAL, total_bytes: MIND_BYTES };
+      } else if (param === "error") {
+        download = {
+          state: "error",
+          done_bytes: MIND_PARTIAL,
+          total_bytes: MIND_BYTES,
+          error: "The download stopped: no internet connection.",
+        };
+      }
+    }
+    const model = this.models.find((entry) => entry.id === this.currentModel);
+    const reasons = {
+      nonode: "Kiwi Mind needs Node.js, which is not installed.",
+      damaged: "Kiwi Mind's files are damaged. Download it again.",
+    };
+    let reason = "";
+    if (!installed) reason = "Kiwi Mind is not installed.";
+    else if (!usable) reason = reasons[param];
+    return {
+      usable,
+      installed,
+      version: installed ? "1.0.0" : null,
+      bytes: installed ? MIND_BYTES : 0,
+      node: param === "nonode" ? null : "/usr/bin/node",
+      running: usable,
+      pid: usable ? 4242 : null,
+      rss_bytes: usable ? 1010000000 : 0,
+      skills: installed ? [...MIND_SKILLS] : [],
+      helper: model ? { id: model.id, name: model.name || model.id } : null,
+      reason,
+      download: installed ? null : download,
+    };
+  }
+
+  _mindBrief() {
+    const { usable, running, pid } = this._mindState();
+    return { usable, running, pid };
+  }
+
+  _mindStart() {
+    if (this._mindState().installed) return { ok: true, download: { state: "done", done_bytes: MIND_BYTES, total_bytes: MIND_BYTES } };
+    if (!this.mindDl || this.mindDl.state !== "running") {
+      this.mindDl = { state: "running", base: this._mindDone(), startedAt: Date.now() };
+    }
+    return { ok: true, download: this._mindState().download };
+  }
+
+  _mindCancel() {
+    if (this._mindState().installed) return { ok: true, download: null };
+    if (!this.mindDl || this.mindDl.state === "running") {
+      this.mindDl = { state: "cancelled", base: this._mindDone(), startedAt: 0 };
+    }
+    return { ok: true, download: this._mindState().download };
+  }
+
   _health() {
     const error = this._engineError();
     return {
       ok: true,
       engine: this._engineMode(),
       engine_ok: !this.offline,
+      online: !this.offline, // ?offline=1 also stands for "no internet" here
       ...(error ? { engine_error: error } : {}),
       model: this.currentModel,
       busy: false,
       version: "3.0.0",
+      mind: this._mindBrief(),
     };
   }
 
@@ -619,6 +707,10 @@ export class MockBackend {
 
     if (route === "/health" && verb === "GET") return clone(this._health());
 
+    if (route === "/api/mind" && verb === "GET") return this._mindState();
+    if (route === "/api/mind/download" && verb === "POST") return this._mindStart();
+    if (route === "/api/mind/download/cancel" && verb === "POST") return this._mindCancel();
+
     if (route === "/api/bootstrap" && verb === "GET") {
       return {
         health: clone(this._health()),
@@ -647,6 +739,11 @@ export class MockBackend {
       return { ok: true, readiness: { model: this.currentModel, phase: "ready", detail: "", context_length: null } };
     }
 
+    if (route === "/api/models/select" && verb === "POST" && body?.id === "none" && this._mindState().usable) {
+      this.currentModel = "none";
+      this.settings.model = "none";
+      return { ok: true, current: "none" };
+    }
     if (route === "/api/models/select" && verb === "POST") {
       const model = this.models.find((entry) => entry.id === body?.id);
       if (!model) throw new MockApiError(400, "unknown_model", "That model isn't available.");
@@ -832,6 +929,12 @@ export class MockBackend {
       }
       return { ok: true, settings: clone(this.settings) };
     }
+
+    // Safe copy is not part of the demo: every chat reads as having no copy open.
+    if (route === "/api/safecopy/status" && verb === "GET") {
+      return { ok: true, active: false, real: null, work: null, changed_files: 0, disk_bytes: 0, left_out: [], applied: false, can_undo: false };
+    }
+    if (route.startsWith("/api/safecopy/")) fail(404, "not_found", "Safe copy is not available in the demo.");
 
     if (route === "/api/workspace" && verb === "GET") {
       return { ok: true, root: this.settings.workspace, files: clone(this.workspaceFiles) };
@@ -1021,9 +1124,19 @@ export class MockBackend {
       context: this._context(conversation),
     });
 
+    // Who writes the reply: Kiwi Mind when usable; a message that says "helper" also shows the helper.
+    const mind = this._mindState();
+    if (mind.usable) {
+      send("brain", { brain: "kiwimind", skill: "chat", hard: false });
+      if (mind.helper && /\bhelper\b/i.test(turn.message)) {
+        send("brain", { brain: "helper", name: mind.helper.name, skill: null, hard: true });
+      }
+    }
+
     const wantsTool = /\b(search|web|save|file|command|shell|run|notes|news|script)\b/i.test(turn.message);
     try {
-      if (wantsTool) await this._toolFlow({ turn, send, wait, signal });
+      if (/\bcomponents?\b/i.test(turn.message)) await this._componentFlow({ turn, send, wait });
+      else if (wantsTool) await this._toolFlow({ turn, send, wait, signal });
       else await this._answerFlow({ turn, send, wait, signal });
     } catch (error) {
       if (!turn.aborted) throw error;
@@ -1104,6 +1217,35 @@ Ask me to *find something online*, *edit a file* or *run a command*. I ask befor
       this.memories.unshift(memory);
       send("memory", { added: 1, updated: 0, removed: 0 });
     }
+  }
+
+  // A reply that looks through the component library (mock data only).
+  async _componentFlow({ turn, send, wait }) {
+    const conversation = turn.conversation;
+    send("status", { phase: "tool", label: "Using a tool" });
+    await wait(300);
+    const callId = `call_mock_${++turn.toolCallSeq}`;
+    const args = { action: "search", query: "web page starter" };
+    send("tool_call", { id: callId, name: "component", args, risk: "write", requires_approval: false });
+    await wait(700);
+    const preview = "mock/web-page — a starter for one static page\nmock/api-json — a small JSON API with tests";
+    send("tool_result", { id: callId, name: "component", ok: true, duration_ms: 690, preview });
+    this._addMessage(conversation, {
+      role: "assistant",
+      content: "",
+      model: turn.model,
+      tool_calls: [{ id: callId, type: "function", function: { name: "component", arguments: JSON.stringify(args) } }],
+    });
+    this._addMessage(conversation, {
+      role: "tool",
+      content: preview,
+      tool_call_id: callId,
+      tool_name: "component",
+      meta: { ok: true, duration_ms: 690 },
+    });
+    const answer = "The component library has a starter for a single web page. Start from `mock/web-page`.";
+    await this._streamText(turn, send, wait, "delta", answer, { size: 6, delay: 22 });
+    this._addMessage(conversation, { role: "assistant", content: answer, model: turn.model });
   }
 
   async _toolFlow({ turn, send, wait, signal }) {

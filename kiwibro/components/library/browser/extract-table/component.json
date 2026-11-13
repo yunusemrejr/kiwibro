@@ -1,0 +1,19 @@
+{
+  "name": "browser/extract-table",
+  "kind": "recipe",
+  "title": "Table to CSV",
+  "summary": "Pull a table or list from a web page into a CSV file and check the rows.",
+  "when": "Use when the user wants the rows of a web table or list as a spreadsheet they can open.",
+  "blanks": {},
+  "steps": [
+    "Call browser with action open, the url and selector table so the result is the table as Markdown, not the whole page.",
+    "If the selector returns nothing, call browse_page on the url and find the table or list in the readable text.",
+    "Keep every column the page shows and write the header line first, in the same order as the page.",
+    "Call write_file with a path ending in .csv and content that has one header line and one line per row, commas quoted.",
+    "Call analyze_table with only the path to read the row count, the column names and the cells that are empty.",
+    "Compare that row count with the number of rows you counted on the page and call fetch_page to recheck any gap.",
+    "If the page needs a login or blocks reading, say so plainly and save the part you read, marked as partial.",
+    "Report the file path, the row count and the columns, and call open_path when the user wants to see the file."
+  ],
+  "next": "The final answer must give the CSV file path, the number of data rows written and the column names, noting any partial read."
+}

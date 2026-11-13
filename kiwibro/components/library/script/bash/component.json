@@ -1,0 +1,18 @@
+{
+  "name": "script/bash",
+  "kind": "kit",
+  "title": "Bash script skeleton",
+  "summary": "Bash script with strict mode, usage text, argument parsing, a cleanup trap and logging.",
+  "when": "Use when the task is a shell script someone runs from a terminal.",
+  "blanks": {
+    "name": {
+      "about": "Script name: file name, prog name in the help text and log lines.",
+      "default": "task"
+    },
+    "purpose": {
+      "about": "One line saying what the script does; it heads the help text.",
+      "default": "Run one task and report what it did"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, replace the work loop marked with a comment in {{name}}.sh, then run ./{{name}}.sh --help and ./{{name}}.sh on a real file."
+}

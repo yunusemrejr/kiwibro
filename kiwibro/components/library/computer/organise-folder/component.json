@@ -1,0 +1,19 @@
+{
+  "name": "computer/organise-folder",
+  "kind": "recipe",
+  "title": "Sort a folder",
+  "summary": "Sort a messy folder into dated or typed subfolders: list, plan, make folders, move; nothing is deleted.",
+  "when": "Use when a downloads or documents folder is a flat mess and the user wants it sorted into subfolders.",
+  "blanks": {},
+  "steps": [
+    "Call list_files on the folder and write down every file name, size and date before moving anything.",
+    "Group the files by type or by year and month and write the planned folder name next to each file.",
+    "Call file_manage action mkdir once for each folder in the plan, using a flat name such as 2026-11 or invoices.",
+    "Call file_manage action move with path and destination for each file, keeping its original name.",
+    "If the destination name is taken, call file_manage action move to a name with a date suffix instead of replacing anything.",
+    "Call list_files on the folder again and compare the total with the first listing so no file went missing.",
+    "Leave any file that fits no group where it is, and say which files those are at the end.",
+    "Report the folders made, the files moved and the files left alone; nothing on disk changed beyond the moves."
+  ],
+  "next": "The final answer must list the folders created, how many files went into each and which files were left where they were."
+}

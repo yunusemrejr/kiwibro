@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- KIWIBRO: set the app name and description -->
+  <title>{{app_name}}</title>
+  <meta name="description" content="{{app_name}} — installs from the browser and works offline.">
+  <meta name="theme-color" content="#0b7a5c">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="wordmark" href="./">{{app_name}}</a>
+      <p id="connection" class="connection" role="status">Online</p>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <section class="hero">
+      <h1>{{app_name}}</h1>
+      <p class="lede">Install it from the browser and keep using it without a connection.</p>
+      <button id="install" type="button" hidden>Install app</button>
+    </section>
+
+    <section class="notes">
+      <h2>Saved notes</h2>
+      <form id="note-form" novalidate>
+        <label for="note">New note</label>
+        <div class="field-row">
+          <input id="note" name="note" type="text" maxlength="120" autocomplete="off" aria-describedby="note-error">
+          <button type="submit">Add</button>
+        </div>
+        <p id="note-error" class="error" role="alert" hidden></p>
+      </form>
+      <ul id="notes" class="items"></ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>{{app_name}}</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

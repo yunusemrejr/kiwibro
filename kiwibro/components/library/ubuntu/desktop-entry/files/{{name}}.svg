@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- KIWIBRO: replace this placeholder with the program's own mark, one shape that reads at 48 px -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#39566b"/>
+  <rect x="32" y="36" width="64" height="56" rx="8" fill="none" stroke="#f2f5f7" stroke-width="6"/>
+  <path d="M32 56h64" stroke="#f2f5f7" stroke-width="6"/>
+</svg>

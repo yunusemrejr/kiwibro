@@ -16,15 +16,19 @@
 
 ---
 
-Kiwibro runs open models on your own computer and gives them what a small model lacks:
-a steady character, a memory, a notebook, tools that work even when the model fumbles
-the call, and a second, tiny model that reads every reply and steps in when it goes
-wrong. It runs the models itself with [llama.cpp](https://github.com/ggml-org/llama.cpp);
-no other app is needed.
+Kiwibro thinks with a small model stack of its own, Kiwi Mind, and gives it what a small
+model lacks: a steady character, a memory, a notebook, tools that work even when the model
+fumbles the call, and a second, tiny model that reads every reply and steps in when it goes
+wrong. Any other open model you add becomes a helper for the heavy answers, run by Kiwibro
+itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is needed.
 
-- **Any model, same Kiwibro.** Download a model from Hugging Face inside the app, or use
-  the ones LM Studio already downloaded. Swap mid-chat; memories, notes and transcripts
-  stay.
+- **Kiwi Mind.** Kiwibro's own model: under 500 MB, 4-bit, on the CPU in WebAssembly. Seven
+  skills (chat, web, code, terminal, computer, tools, write) are swapped in by a control
+  head that reads each message; you never pick or load anything.
+- **Helper models.** Download a model from Hugging Face inside the app, or use the ones LM
+  Studio already downloaded. Kiwi Mind stays in charge of tools and steps and hands a
+  heavy answer to the helper. Swap or drop the helper mid-chat; memories, notes and
+  transcripts stay.
 - **Kiwi Sense.** A 5.5 MB reading model (WebAssembly) reads each message before the model
   does and watches each reply as it streams.
   A model that claims to be another assistant, says it cannot search when it can, or
@@ -35,9 +39,16 @@ no other app is needed.
 - **Long chats stay sharp.** Older turns are summarised, the exact words of an earlier
   exchange come back when you ask about it, and the model never re-reads what it has
   already read.
-- **Tools that survive small models.** 46 tools; broken or misspelled calls are repaired,
+- **Tools that survive small models.** 47 tools; broken or misspelled calls are repaired,
   calls written as plain text are recovered, and a follow-up search like "how old is he?"
   is completed with the name it points at.
+- **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
+  changes only after you have read what changed and the git command that undoes it. It
+  never deletes: deletions come as commands for you to run.
+- **Components.** 38 ready parts, from a web page to a GTK app for Ubuntu, that any model
+  can search and build on instead of starting from a blank page.
+- **Works without internet.** Kiwi Mind, your files, notes and memory need no connection.
+  When it drops, Kiwibro says so and carries on with what is on the computer.
 - **Light.** One Python process of under 80 MB. The model leaves memory after 30 idle
   minutes. On a laptop with integrated graphics the model runs on the GPU.
 - **Local.** SQLite on disk, loopback server, no telemetry, no accounts.
@@ -60,16 +71,19 @@ cd kiwibro
 ./scripts/run.sh        # installs Flask, requests and beautifulsoup4 into a local .venv
 ```
 
-Open **<http://127.0.0.1:8777>**. On first start Kiwibro shows two steps:
+Open **<http://127.0.0.1:8777>**. On first start *Models* offers:
 
-1. **Install engine.** One click in *Models* downloads the official llama.cpp build for
-   your machine (Vulkan when a GPU is there, otherwise CPU), checks it against the
-   sha256 GitHub publishes, and keeps it in Kiwibro's own folder. Kiwibro never
-   downloads or runs a program you did not ask for. A `llama-server` already on the
-   machine (on `PATH`, or the builds LM Studio installed) is used without this step.
-2. **Get a model.** Search Hugging Face in *Models*, open a repository and pick a file.
-   Each file shows whether it fits your memory. Models LM Studio downloaded appear on
-   their own.
+1. **Get Kiwi Mind.** One click downloads Kiwibro's own model from Hugging Face and
+   checks every file against its sha256. That is all a chat needs.
+2. **Add a helper model (optional).** A bigger local model that writes the heavy answers.
+   *Install engine* downloads the official llama.cpp build for your machine (Vulkan when a
+   GPU is there, otherwise CPU), checks it against the sha256 GitHub publishes, and keeps
+   it in Kiwibro's own folder; a `llama-server` already on the machine (on `PATH`, or the
+   builds LM Studio installed) is used without this step. Then search Hugging Face in
+   *Models*, open a repository and pick a file. Each file shows whether it fits your
+   memory. Models LM Studio downloaded appear on their own.
+
+Kiwibro never downloads or runs a program you did not ask for.
 
 To install it as a desktop app with its icon and launcher (no root needed):
 
@@ -88,6 +102,7 @@ never switched to. The server runs in its own systemd user scope as a process na
 
 - Linux (developed on Ubuntu; any GTK/GNOME desktop works)
 - Python 3.10+
+- Node.js 18.14 or newer, which runs Kiwi Mind's WebAssembly engine
 - Chrome or Chromium for the app window, or any modern browser
 - Optional: `pip install wasmtime` lets the server run Kiwi Sense as WebAssembly (the
   browser always does). Without it an identical pure-Python reader runs.
@@ -98,17 +113,34 @@ never switched to. The server runs in its own systemd user scope as a process na
 |---|---|
 | New chat | `Ctrl/⌘ + N` |
 | Find a chat | `Ctrl/⌘ + K` |
-| Change model | The model pill in the header |
+| Choose a helper model | The model pill in the header |
 | Notes, Memory, Models, How it works | The sidebar |
 | Settings and permissions | The sliders button or `Ctrl/⌘ + ,` |
 | Send / newline | `Enter` / `Shift + Enter` |
 | Stop a reply | The square stop button |
 | Close a panel | `Esc` |
 
+### Kiwi Mind
+
+Kiwi Mind is the model Kiwibro thinks with. It is Qwen3-0.6B trained on the 4-bit grid it
+is stored in, split in two: 16 shared layers read the conversation once, and the 12 above
+them carry one of seven skills. A control head reads each new message and picks the skill,
+so nothing is chosen or loaded by hand. All open chats share one copy of the weights.
+
+| | |
+|---|---|
+| On disk | under 500 MB, fetched once from [Hugging Face](https://huggingface.co/yunusemrejr/kiwimind) |
+| In memory | about 1 GB, freed when the window is closed |
+| Speed on a Ryzen 5 7530U, CPU only | reads 160 tok/s, writes 32 to 38 tok/s |
+
+When the control head marks a request as heavy (a long report, a tricky algorithm) and a
+helper model is selected, Kiwi Mind still decides the tool steps and the helper writes the
+answer. With no helper, Kiwi Mind answers everything itself.
+
 ### Models
 
-*Models* shows what is on this computer, how much disk each model takes and whether it
-fits in memory.
+*Models* shows Kiwi Mind first, then the helper models on this computer: how much disk
+each takes and whether it fits in memory.
 
 | Where a model lives | What Kiwibro can do |
 |---|---|
@@ -191,6 +223,11 @@ meaning. A paste longer than the window is stored as a document the model reads 
 pages. The start of the prompt never changes between turns, so the engine keeps what it
 has already read and each new turn only costs the new words.
 
+Every step of a chat also stays stored in full. A short index of what was asked, which
+files changed, which commands ran and which pages were read stays in view after older
+turns are summarised, and the model can read any step again word for word
+(`recall("step 14")`).
+
 ### Adapters
 
 A LoRA adapter (`.gguf`) placed in `~/.local/share/kiwibro/adapters` is loaded with the
@@ -210,6 +247,18 @@ Ask / Deny choice per tool.
 
 Files the agent reads and writes live in `~/Kiwibro` by default. "Work on
 ~/Desktop/my-app" switches that chat to the folder.
+
+### Safe copy
+
+*Work in a safe copy* takes a folder and gives Kiwibro a copy of it to work in. Inside a
+safe copy it has only its own browser, a sandboxed terminal without network, and the copy:
+no path outside it can be read or written, whatever the permission settings say.
+
+Every step is recorded in git. *Review changes* shows what changed and where, and the git
+command that puts the old files back; Kiwibro runs that command on a scratch copy first,
+so the undo is proven before you apply anything. *Apply* then writes the new and changed
+files into your folder. Nothing is ever deleted or renamed there: files deleted in the
+copy are listed as `rm` commands for you to run.
 
 ## Features
 

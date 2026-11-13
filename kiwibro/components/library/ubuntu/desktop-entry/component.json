@@ -1,0 +1,18 @@
+{
+  "name": "ubuntu/desktop-entry",
+  "kind": "kit",
+  "title": "App launcher (.desktop)",
+  "summary": "Launcher (.desktop file), icon and an install script for any program.",
+  "when": "Use when a program already runs from the terminal and the user wants an icon in the GNOME app grid.",
+  "blanks": {
+    "name": {
+      "about": "Name under the icon, and the file name of the .desktop file and the icon.",
+      "default": "my-app"
+    },
+    "command": {
+      "about": "Program the launcher starts, with arguments; absolute path if it is not on PATH.",
+      "default": "/usr/bin/my-app"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, set name, command and the icon to the user's program, then run ./install.sh and look for the icon in the app grid."
+}

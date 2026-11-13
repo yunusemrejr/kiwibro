@@ -1,0 +1,18 @@
+{
+  "name": "script/backup",
+  "kind": "kit",
+  "title": "Verified dated backup",
+  "summary": "Dated tar backup of a folder with a verification step; lists old backups instead of removing them.",
+  "when": "Use when the user wants a dated copy of a folder kept elsewhere without any risk of losing files.",
+  "blanks": {
+    "source": {
+      "about": "Folder that gets backed up; may use $HOME.",
+      "default": "$HOME/Documents"
+    },
+    "target": {
+      "about": "Folder that holds the archives; may use $HOME. It must exist already.",
+      "default": "$HOME/Backups"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, set source and target to the user's folders, then run ./backup.sh and show the archive path it prints."
+}

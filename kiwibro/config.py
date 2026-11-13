@@ -76,6 +76,7 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "recall": "auto",
     "remember": "auto",
     "note": "auto",
+    "component": "ask",
 }
 
 # File changes per turn before safety.decide escalates each further one a level

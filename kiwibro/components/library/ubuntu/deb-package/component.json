@@ -1,0 +1,18 @@
+{
+  "name": "ubuntu/deb-package",
+  "kind": "kit",
+  "title": ".deb package build",
+  "summary": "Build script and control files that package a program as a .deb.",
+  "when": "Use when the program has to be installable on other Ubuntu machines with apt.",
+  "blanks": {
+    "name": {
+      "about": "Package name, lower case, no spaces.",
+      "default": "my-tool"
+    },
+    "version": {
+      "about": "Package version in Debian form, digits and dots.",
+      "default": "1.0.0"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, copy the user's program into payload/ (replacing the stub), then run ./build.sh and report the .deb path it prints."
+}

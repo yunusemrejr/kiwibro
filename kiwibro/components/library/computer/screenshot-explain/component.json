@@ -1,0 +1,18 @@
+{
+  "name": "computer/screenshot-explain",
+  "kind": "recipe",
+  "title": "Explain the screen",
+  "summary": "Take a screenshot, describe what is on screen and answer a question about it.",
+  "when": "Use when the user asks what is on their screen or what an error window says.",
+  "blanks": {},
+  "steps": [
+    "Call screenshot with a clear filename such as screenshots/screen-2026-11-13.png and keep the returned path.",
+    "Call describe_image with that path and the user's question, so the answer targets the question and not the whole scene.",
+    "Call delegate with capability vision and image_path when the screen needs a second, longer reading.",
+    "Call screenshot again if a dialog covers the question or the first image is blurry, then ask describe_image once more.",
+    "Read the exact window titles and error text from the answer and check they match what describe_image reported.",
+    "If the screen is locked, blank or unreadable, say so plainly and ask for the window to be brought forward.",
+    "Answer with what is on screen, the exact text found and the next step; never guess text the image does not show."
+  ],
+  "next": "The final answer must describe what the screen shows, quote the exact text found and give the next step for the user."
+}

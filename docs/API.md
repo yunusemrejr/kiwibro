@@ -16,13 +16,18 @@ port). No auth. `Cache-Control: no-store` on API responses.
 ```json
 {"ok": true, "version": "3.0.0", "started_at": 1761000000, "pid": 4242, "busy": false,
  "code_version": "a8a52b7b0cad72fd", "ui_version": "3f0c9e2a71d4b6e8", "update_pending": false,
- "engine_ok": true, "engine": "local", "model": "qwen3.8-2b"}
+ "engine_ok": true, "engine": "local", "online": true, "model": "qwen3.8-2b",
+ "mind": {"usable": true, "running": false, "pid": null}}
 ```
 `engine` is `local` (Kiwibro starts and stops llama.cpp servers itself) or `attached`
 (`KIWIBRO_SERVER_URL` is set, see Settings). `engine_ok: false` adds `engine_error` with the
 reason, for example when no llama.cpp build is installed in local mode. `/health` also carries
 the runtime fields of `/api/version` below; `started_at` is when the current server image
-started (Unix seconds, renewed by a self-update).
+started (Unix seconds, renewed by a self-update). `online` is whether the internet is
+reachable right now: a TCP probe to public addresses, remembered for a short while
+(`kiwibro/connectivity.py`; `KIWIBRO_OFFLINE=1` or `0` in the environment forces the answer).
+`mind` is Kiwi Mind's state: `usable`, `running` and `pid`; a build without Kiwi Mind
+answers `{"usable": false, "running": false, "pid": null}`.
 
 ### `GET /api/version`
 Cheap poll (no model call): which code this process serves.
@@ -153,6 +158,46 @@ Body `{"id": "qwen3.8-2b"}`. Persists the model in settings; does **not** touch
 conversations or memories. Response `{"ok": true, "current": "...", "readiness": {...}}`
 (the load + warm-up runs in the background). `400 unknown_model` if the id is not in the
 model list (checked only while the engine answers). Selection applies to new turns in any chat.
+`{"id": "none"}` selects no helper model: Kiwi Mind answers alone. It is accepted only while
+Kiwi Mind is usable (`GET /api/mind`); otherwise `none` is an unknown id.
+
+---
+
+## Kiwi Mind
+
+Kiwibro's own model (`kiwibro/mind/`): a pack downloaded once and a host process that
+serves it. Everything here answers `404 not_found` in a build without Kiwi Mind.
+
+### `GET /api/mind`
+What Kiwi Mind is and whether it can be used. The answer has no `ok` field.
+```json
+{"usable": true, "installed": true, "version": "...", "bytes": 486110000,
+ "node": "/usr/bin/node", "running": true, "pid": 4242, "rss_bytes": 512000000,
+ "skills": ["chat", "web", "code", "terminal", "computer", "tools", "write"], "helper": {"id": "qwen3.8-2b", "name": "qwen3.8-2b"},
+ "reason": "", "download": null}
+```
+`usable` is true when `reason` is empty, that is when the pack is installed, every file
+matches its checksum and a new enough Node.js was found. `installed` only says a manifest is
+there; `version` and `bytes` come from it (`null` and `0` without one). `node` is the Node.js
+binary the host runs on (`null` when none was found). `running`, `pid` and `rss_bytes` are the
+host process (`rss_bytes` `null` when it is not running). `skills` lists the skill names the
+pack carries. `helper` is the model that answers hard cases, `{id, name}`, or `null`.
+`download` is `null` or the download state below.
+
+### `POST /api/mind/download`
+Starts the pack download into `<data>/mind/`, or resumes one that was interrupted.
+`{"ok": true, "download": {"state": "running", "done_bytes": 120000000,
+"total_bytes": 486110000}}`. A download already running is returned as it is.
+
+Download state: `{"state", "done_bytes", "total_bytes"}` plus `error` when there is one.
+`state` is `running`, `done`, `cancelled` or `error`. Each file is written as `<name>.part`
+and continues from it after a dropped connection; it takes its final name only when its size
+and SHA-256 match the manifest.
+
+### `POST /api/mind/download/cancel`
+`{"ok": true, "download": {...}}`; `ok` is false when no download is running. The download
+stops at its next block and its state becomes `cancelled`; the partial files are kept for the
+next attempt.
 
 ---
 
@@ -364,6 +409,7 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 |---|---|---|
 | `meta` | `{conversation_id, user_message_id, model, title, context:{used,budget,percent}}` | first |
 | `status` | `{phase, label}`; `phase` is `thinking`, `seeing`, `web`, `reading`, `writing`, `running` or `tool` | optional, for activity line |
+| `brain` | `{brain: "kiwimind"\|"helper", skill, hard, name?}` | which brain writes this reply: Kiwi Mind with the skill it chose (`skill`) and whether the turn was judged hard (`hard`), or the helper model that answers (`name`) |
 | `delta` | `{text}` | streaming assistant text |
 | `reasoning` | `{text}` | streaming reasoning fragment |
 | `rewrite` | `{text, reasoning}` | the model wrote reasoning as plain text ending in `</think>`, or a reply was corrected: replace the reply text so far with `text` and show `reasoning` as reasoning |
@@ -378,6 +424,11 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `title` | `{id, title}` | auto-title updated |
 | `done` | `{message_id, aborted, model, usage:{prompt_tokens,completion_tokens,total_tokens}\|null, stats, inference:{ttft_ms, tokens_per_s, prompt_tokens_est, reused_tokens_est, reuse_percent, thinking, steered?, acted_instead?, adapters_turned_down?}\|null, plan?}` | end (`plan`: the final step statuses, when the turn had a plan) |
 | `error` | `{message, code, recoverable}` | end/failure |
+
+`brain` comes before the first text of the reply. `skill` is the skill Kiwi Mind chose for the
+turn (`chat` when it has no better answer; `null` or `""` when the helper model leads it), and
+`hard` is whether the turn was judged hard, so a helper model may answer. A turn can emit more
+than one `brain` event, for example when a hard turn passes to the helper.
 
 `done.inference` holds the timing and reuse of the turn's last model request:
 `ttft_ms` (time to first token), `tokens_per_s`, the estimated prompt size and how much of it
@@ -514,6 +565,125 @@ their output.
 
 ### `POST /api/terminals/<session_id>/kill`
 Stops one session: `{"ok": true, "terminal": {...}}`; `404 not_found` for an unknown session.
+
+---
+
+## Safe copy
+
+A chat can open a safe copy of a folder: the agent then works in a copy kept in Kiwibro's data
+folder (`<data>/safecopy/<session id>`), so no tool touches the real folder until the user
+applies a reviewed proof. While a session is open the chat's file and command tools work in
+the copy, commands run in the sandbox without network, and tools that act on the whole
+computer (`open_path`, `clipboard`, `screenshot`, `remote`, `notify`, `system_info`,
+`workspace`, `terminal_session`, `delegate` and third-party tools) are refused. Sessions are
+opened, read and closed with the routes below; a chat remembers its own session, which is not
+a field of the conversation API.
+
+### `POST /api/safecopy/start`
+Body `{"conversation_id": "c_...", "folder": "/home/you/project"}`. Copies the folder and binds
+the session to the chat. A chat that already has a session gets it back unchanged, with
+`"started": false`.
+```json
+{"ok": true, "started": true, "active": true, "real": "/home/you/project",
+ "work": "/home/you/.local/share/kiwibro/safecopy/sc-1a2b3c4d5e6f/work", "changed_files": 0,
+ "disk_bytes": 1048576, "left_out": [], "applied": false, "can_undo": false}
+```
+The fields are those of `GET /api/safecopy/status`.
+`400 bad_request` without a conversation id or a folder; `400 not_a_folder` when the path is
+not a folder; `400 refused_folder` for the filesystem root, the home folder itself or
+Kiwibro's data folder; `404 not_found` for an unknown chat.
+
+### `GET /api/safecopy/status?conversation_id=c_...`
+Where the copy is and what waits.
+```json
+{"ok": true, "active": true, "real": "/home/you/project",
+ "work": "/home/you/.local/share/kiwibro/safecopy/sc-1a2b3c4d5e6f/work", "changed_files": 2,
+ "disk_bytes": 1048576, "left_out": [{"path": "big.bin", "reason": "..."}],
+ "applied": true, "can_undo": true}
+```
+`real` is the folder that was copied, `work` the copy the tools work in. `changed_files` counts
+the files that differ from the copy's first state and `disk_bytes` is the copy's disk use.
+`left_out` lists what the copy could not hold, each entry `{path, reason}`. `applied` says
+something was written to the real folder in this session and `can_undo` whether the last apply
+can still be undone. A chat without a session answers `active: false` with `real` and `work`
+`null`, `0` for the numbers, `false` for `applied` and `can_undo`, and an empty `left_out`.
+`400 bad_request` without `conversation_id`.
+
+### `GET /api/safecopy/proof?conversation_id=c_...`
+What the copy changed, for the page that asks the user to approve it.
+```json
+{"ok": true, "proof": {
+  "changes": [{"path": "notes.txt", "kind": "modified", "added_lines": 1, "removed_lines": 1,
+               "binary": false}],
+  "totals": {"files": 1, "added": 0, "modified": 1, "deleted": 0, "added_lines": 1, "removed_lines": 1},
+  "diff": "diff --git a/notes.txt b/notes.txt\n...",
+  "conflicts": [],
+  "left_out": [{"path": "big.bin", "reason": "..."}],
+  "removals": [{"path": "old.txt", "command": "rm -- /home/you/project/old.txt"}],
+  "before_commit": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+  "revert": {"command": "...", "paths": ["notes.txt"],
+             "added": [{"path": "new.txt", "command": "rm -- /home/you/project/new.txt"}],
+             "verified": true, "files_checked": 1, "real_is_clean_git": false},
+  "fingerprint": "..."}}
+```
+`changes` lists every path that differs from the copy's first state, sorted by path; `kind` is
+`added`, `modified` or `deleted`. `totals` adds those counts up with the line counts. `diff` is
+the unified diff of the change (empty when there is none). `conflicts` lists paths the user
+changed after the copy was made; `apply` refuses while it is not empty. `left_out` lists
+changes that are never written, each `{path, reason}`. `removals` lists the files deleted in
+the copy, each with the command the user may run: Kiwibro never deletes in the real folder.
+`before_commit` names the saved state of the overwritten files. `revert` is the undo the proof
+was rehearsed with: `command` (a shell command that brings the overwritten files back),
+`paths` (those files), `added` (the files the apply creates, each with its remove command),
+`verified` (the undo was rehearsed on a copy), `files_checked`, `real_is_clean_git` (the real
+folder is a git tree with nothing pending) and, when that is true and files are overwritten,
+`git_restore`. `fingerprint` names this exact proof.
+
+`400 bad_request` without `conversation_id`; `404 not_found` when the chat has no session;
+`400 git` when the copy has no record of its first state; `400 revert_unproven` when the undo
+did not bring the old files back, so no proof is made.
+
+### `POST /api/safecopy/apply`
+Body `{"conversation_id": "c_...", "fingerprint": "<proof.fingerprint>"}`. Writes the added and
+modified files of that proof into the real folder, never follows a link out of it, and adds an
+assistant message to the chat with the undo command and the removals to run.
+```json
+{"ok": true, "applied": {"written": ["notes.txt"], "removals": [{"path": "old.txt", "command": "..."}],
+ "revert": {...}, "before_commit": "...", "applied_commit": "...",
+ "left_out": [{"path": "...", "reason": "..."}]}}
+```
+`409 stale` when the copy changed after the proof was made or the fingerprint is missing:
+nothing is written and the proof must be read again. `409 conflict` when a file in the real
+folder changed after the copy was made or got in the way while writing: nothing is written.
+`409 partial` when the write failed halfway: the files named in the message were written and
+`undo` puts them back. `400 nothing_to_apply` when the proof has nothing to write.
+`400 bad_request` without a conversation id; `404 not_found` when the chat has no session;
+`400 git` or `400 revert_unproven` as for the proof.
+
+### `POST /api/safecopy/undo`
+Body `{"conversation_id": "c_..."}`. Puts the files the last apply overwrote back and adds a
+chat message about what stayed. Files that apply added are kept in the real folder and come
+back as commands for the user to run.
+```json
+{"ok": true, "undo": {"restored": ["notes.txt"],
+ "kept": [{"path": "new.txt", "command": "rm -- /home/you/project/new.txt"}], "before_commit": "..."}}
+```
+`404 not_found` when the chat has no session or nothing was applied in it; `409 conflict` when
+a written file changed after the apply, so nothing is undone; `400 revert_unproven` when a file
+did not come back; `400 bad_request` without a conversation id.
+
+### `POST /api/safecopy/end`
+Body `{"conversation_id": "c_...", "discard": false}`. Detaches the chat from its session and
+gives it back the workspace it had before; `discard: true` also removes the copy's folder from
+disk. `discard` must be a boolean.
+```json
+{"ok": true, "active": false, "discarded": true}
+```
+`400 bad_request` without a conversation id or when `discard` is not a boolean; `404 not_found`
+when the chat has no session.
+
+These routes answer a safe copy failure with the general error body and the status of its code:
+`not_found` 404, `stale`, `conflict` and `partial` 409, every other code 400.
 
 ---
 

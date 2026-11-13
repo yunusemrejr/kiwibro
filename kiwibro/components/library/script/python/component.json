@@ -1,0 +1,18 @@
+{
+  "name": "script/python",
+  "kind": "kit",
+  "title": "Python script skeleton",
+  "summary": "Single-file Python script: argparse, pathlib, logging and a main guard.",
+  "when": "Use when the task is a Python script that stays in one file and needs no package.",
+  "blanks": {
+    "name": {
+      "about": "Script name: file name, prog name in the help text and the logger name.",
+      "default": "tool"
+    },
+    "purpose": {
+      "about": "One line saying what the script does; it heads the help text.",
+      "default": "Count lines in the files given"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, replace the function marked with a comment in {{name}}.py, then run python3 {{name}}.py --help and python3 {{name}}.py on a real file."
+}

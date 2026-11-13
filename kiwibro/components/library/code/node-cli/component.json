@@ -1,0 +1,14 @@
+{
+  "name": "code/node-cli",
+  "kind": "kit",
+  "title": "Node.js command-line tool",
+  "summary": "Node.js command-line tool without dependencies: argument parsing and node:test tests.",
+  "when": "Use when the user wants a small Node.js terminal tool that must run with no npm packages installed.",
+  "blanks": {
+    "name": {
+      "about": "Command name, used for the package name, the bin file and the messages the tool prints.",
+      "default": "bigfiles"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, run node --test to confirm the tests pass, then run the tool on a real folder."
+}

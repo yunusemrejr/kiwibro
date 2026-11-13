@@ -16,16 +16,21 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, compute, config, delegate, directives, guard, guidance, inference, grounding, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
-    sessions, shape, steer, terms, toolcall, tools, weather, workspaces,
+    adapters, autofacts, checkpoints, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
+    sessions, shape, steer, terms, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
     estimate_tokens,
 )
 from .db import Database
-from .llm import ADAPTER_TASK, ADAPTERS_OFF, ChatResult, ContextLimitError, LLMError, LLMClient, TurnAborted
+from .llm import (
+    ADAPTER_TASK, ADAPTERS_OFF, ChatResult, ContextLimitError, LLMError, LLMClient, bind_turn,
+    TurnAborted,
+)
 from .memory import MemoryEngine
+from .mind import KIWIMIND
+from .mind.conductor import manual_text
 from . import notes as notes_module
 from .notes import Notebook
 from .sandbox import LIST_MAX_DEPTH, SandboxError, Workspace
@@ -33,6 +38,14 @@ from .search import SearchEngine
 from .tools import ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
+
+
+def _keep(record: Callable[..., Any], *args: Any) -> None:
+    """Write to the session ledger. The ledger helps long conversations; it must never stop a turn."""
+    try:
+        record(*args)
+    except Exception:  # noqa: BLE001 - any failure here is only a lost ledger line
+        log.exception("session ledger entry was not written")
 
 NOTES_HEADER = "Notes the user kept that may bear on this message (use the note tool for the full text):"
 
@@ -555,6 +568,7 @@ class AgentManager:
                 log.exception("turn crashed for %s", turn.conversation_id)
                 self._finish_error(turn, "internal", "Something went wrong while generating the reply.")
         finally:
+            safemode.commit_turn(self.db, turn)
             self._cleanup(turn)
 
     def _cleanup(self, turn: Turn) -> None:
@@ -581,10 +595,13 @@ class AgentManager:
         conversation = self.db.get_conversation(turn.conversation_id)
         if conversation is None:
             raise ConversationNotFound(turn.conversation_id)
-        user_message = self._unanswered_repeat(turn) or self.db.add_message(
+        repeated = self._unanswered_repeat(turn)
+        user_message = repeated or self.db.add_message(
             turn.conversation_id, "user", turn.message,
             meta={"attachments": turn.attachments} if turn.attachments else None,
         )
+        if not repeated:
+            _keep(ledger.record_user, self.db, turn.conversation_id, int(user_message.get("seq") or 0), turn.message)
         turn.user_message_id = user_message["id"]
         # Content-safety state: taint from injected content and secret placeholders
         # carry over between turns of the same conversation.
@@ -624,7 +641,7 @@ class AgentManager:
         # renders ahead of all messages, so any change re-prefills them. Its tokens are
         # reserved in the budget so compaction starts before the window overflows.
         tool_list = self._tool_list(model, settings, model_info)
-        turn.reserve = estimate_tokens(json.dumps(tool_list, ensure_ascii=False)) if tool_list else 0
+        turn.reserve = self._tool_tokens(model, tool_list)
         self._page_long_message(turn, user_message, model)
         turn.plan = self._plan_for(turn, settings)
         turn.questions = plan.questions(turn.message) if turn.plan is None else []
@@ -797,6 +814,7 @@ class AgentManager:
         self._maybe_title(turn)
         self._insert_usage(turn, model)
         self._start_memory_extraction(turn.conversation_id, model)
+        safemode.commit_turn(self.db, turn)  # recorded before "done", so a review right after sees the step
         turn.emit(
             "done",
             {
@@ -868,6 +886,8 @@ class AgentManager:
         prices, who won): Kiwibro runs it before the model writes a word. A model that answers
         first writes from what it remembers, and a streamed reply cannot be taken back, so the
         answer is written from the results instead, whatever the model."""
+        if not connectivity.online():
+            return False
         if turn.facts is None or turn.facts.small_talk or "web_search" not in turn.facts.tools:
             return False
         # A reaction that carries a question of its own is answered as asked: nothing is done again,
@@ -1618,6 +1638,7 @@ class AgentManager:
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
             try:
+                bind_turn(turn.conversation_id, turn.emit)  # Kiwi Mind: this chat's cache slot and status line
                 result = self.llm.stream_chat(
                     model=model,
                     messages=messages,
@@ -1953,6 +1974,8 @@ class AgentManager:
         info = model_info or {}
         if not settings.get("agent_enabled", True) or not info.get("tools", False):
             return None
+        if model == KIWIMIND:  # trained on the whole catalog in one fixed order: the same text for every skill
+            return tools.tool_defs_for("full", settings=settings)
         _ctx, budget, _info = self.context.budget_for(model)
         room = int(budget * TOOLS_SHARE_MAX)
         tool_list = tools.tool_defs_for(settings=settings)
@@ -1961,6 +1984,15 @@ class AgentManager:
         small = tools.tool_defs_for("minimal", settings=settings)
         log.info("model %s: window too small for the full tool set; using the minimal set", model)
         return small if estimate_tokens(json.dumps(small, ensure_ascii=False)) <= room else None
+
+    @staticmethod
+    def _tool_tokens(model: str, tool_list: list[dict[str, Any]] | None) -> int:
+        """What the tool list costs in the window: Kiwi Mind reads one manual line per tool, not the JSON schemas."""
+        if not tool_list:
+            return 0
+        if model == KIWIMIND:
+            return estimate_tokens(manual_text(tool_list))
+        return estimate_tokens(json.dumps(tool_list, ensure_ascii=False))
 
     def _page_long_message(self, turn: Turn, user_message: dict[str, Any], model: str) -> None:
         """A message too long for the model's window goes into the document library; the
@@ -2025,8 +2057,14 @@ class AgentManager:
         several = prompts.SEVERAL_QUESTIONS.format(
             count=len(turn.questions), questions="\n".join(f"{i}. {q}" for i, q in enumerate(turn.questions, 1)),
         ) if turn.questions else ""
+        clock = inference.time_line()
+        if not connectivity.online():
+            clock = f"{clock}\n{connectivity.OFFLINE_LINE}"
+        conversation = self.db.get_conversation(turn.conversation_id) or {}
+        session_so_far = ledger.block(self.db, turn.conversation_id, int(conversation.get("summary_through_seq") or 0))
         blocks = [
-            inference.time_line(), memory_block, self._notes_block(turn), self._earlier_chats_note(turn),
+            clock, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
+            safemode.context_line(self.db, turn.conversation_id),
             _directives_note(self.db, turn.conversation_id), plan_note, several, worked, readings.note(reading),
             guidance_note, learned, turn.reaction.note() if turn.reaction is not None else "",
             self._standing_reminders(turn, settings, memory_block),
@@ -2471,7 +2509,7 @@ class AgentManager:
         for position, (item, result, duration) in enumerate(finished):
             if progress and position == len(finished) - 1:
                 result = replace(result, content=f"{result.content}\n{progress}")
-            self._record_tool_result(turn, item["id"], item["name"], result, duration)
+            self._record_tool_result(turn, item["id"], item["name"], result, duration, item.get("args"))
 
     def _advance_plan(self, turn: Turn, finished: list[tuple[dict[str, Any], ToolResult, int]]) -> str:
         """Tick off the plan steps this round completed; the progress line ('' if none)."""
@@ -2551,7 +2589,10 @@ class AgentManager:
         if pacing:
             return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
         workspace, state = self._workspace(turn.conversation_id), turn.safety
-        route = turn.routes.get(item["id"]) or (
+        safe = safemode.gate(self.db, turn.conversation_id, name)
+        if safe.refusal:  # a safe copy refuses some tools whatever the autonomy setting says
+            return refuse_shown(f"Error: {safe.refusal}", safe.refusal, spec.risk)
+        route = None if safe.active else turn.routes.get(item["id"]) or (
             turn.plan.route(name, item["args"], workspace) if turn.plan is not None else None)
         if route is not None:  # a file or folder the user named outside the workspace
             workspace, item["args"], item["location"] = route.workspace, route.args, route.shown
@@ -2641,20 +2682,27 @@ class AgentManager:
         return ""
 
     def _folder(self, conversation_id: str | None = None) -> str:
-        """The conversation's own folder when it has one, else the Settings workspace."""
+        """The conversation's own folder when it has one, else the Settings workspace.
+
+        A chat with a safe copy open works in the copy's work folder and nowhere else."""
+        copy = safemode.copy_folder(self.db, conversation_id)
+        if copy:
+            return copy
         bound = workspaces.folder_for(self.db, conversation_id)
         return bound or str(self._settings().get("workspace") or config.default_workspace())
 
     def _workspace(self, conversation_id: str | None = None) -> Workspace:
-        return Workspace(self._folder(conversation_id))
+        confined = safemode.workspace_for(self.db, conversation_id)
+        return confined or Workspace(self._folder(conversation_id))
 
     def _library(self) -> library.Library:
         return library.get_library(self.data_dir / "library.db")
 
     def _record_tool_result(
-        self, turn: Turn, call_id: str, name: str, result: ToolResult, duration_ms: int
+        self, turn: Turn, call_id: str, name: str, result: ToolResult, duration_ms: int,
+        arguments: dict[str, Any] | None = None,
     ) -> None:
-        self.db.add_message(
+        stored = self.db.add_message(
             turn.conversation_id,
             "tool",
             tools.shape_content(result.content or "", 8000),
@@ -2662,6 +2710,8 @@ class AgentManager:
             tool_name=name,
             meta={"ok": result.ok, "duration_ms": duration_ms},
         )
+        _keep(ledger.record_tool, self.db, turn.conversation_id, int((stored or {}).get("seq") or 0), name,
+              arguments or {}, result.ok, result.content or "")
         turn.emit(
             "tool_result",
             {

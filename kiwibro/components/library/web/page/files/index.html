@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- KIWIBRO: set the page title and its one-line description -->
+  <title>{{title}}</title>
+  <meta name="description" content="{{description}}">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="wordmark" href="./">{{title}}</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap">
+      <h1>{{title}}</h1>
+      <p class="lede">{{description}}</p>
+      <a class="button" href="#details">See what is inside</a>
+    </section>
+
+    <section id="details" class="section wrap">
+      <h2>What this page gives you</h2>
+      <ul class="plain-list">
+        <li><strong>Phone first.</strong> Readable from 360 px with touch targets that fit a thumb.</li>
+        <li><strong>One stylesheet.</strong> Colors, spacing and type sizes sit in custom properties at the top.</li>
+        <li><strong>No build step.</strong> Edit the files and reload; nothing is compiled or downloaded.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>{{title}}</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "terminal/diagnose",
+  "kind": "recipe",
+  "title": "Diagnose a failure",
+  "summary": "Find why a command or service fails: read the error, check versions, logs and ports, try one fix at a time.",
+  "when": "Use when a command, script or service fails and the user wants the cause, not a guess.",
+  "blanks": {},
+  "steps": [
+    "Call run_command with the failing command exactly as the user gave it and read the exit code and the first error line.",
+    "Call run_command with --version for the tool, and python3 --version or node --version, to confirm the expected version.",
+    "Call run_command with journalctl -u name -n 50, or tail -n 50 on the log, to read what failed and when.",
+    "Call run_command with ss -ltnp or lsof -i :PORT to see whether the port is taken and by which process.",
+    "Call grep_files on the project for the error text to find the line that raises it.",
+    "Change one thing at a time with replace_in_file or apply_patch, then rerun the same command and compare the error.",
+    "Call undo_changes when a change made the error worse, then test the next cause instead of stacking fixes.",
+    "If the cause is not found, report the exact error, what was checked and what is still unknown, with no guess."
+  ],
+  "next": "The final answer must name the cause if it was found, the evidence for it, the fix that was tried, and honestly what is still unknown."
+}

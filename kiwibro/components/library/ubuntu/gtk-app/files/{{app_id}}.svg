@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- KIWIBRO: replace with the app's own mark; one shape that reads at 48 px -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#3f6b4f"/>
+  <rect x="36" y="28" width="56" height="72" rx="6" fill="#f6f4ee"/>
+  <path d="M48 52h32M48 66h32M48 80h20" stroke="#3f6b4f" stroke-width="6" stroke-linecap="round"/>
+</svg>

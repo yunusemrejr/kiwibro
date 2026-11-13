@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-from . import sense
+from . import connectivity, sense
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,12 @@ def _session() -> requests.Session:
 
 class SearchError(Exception):
     """Raised when a page cannot be fetched safely; message is user-facing."""
+
+
+def require_online() -> None:
+    """Fail at once, before any request is tried, when the machine has no internet."""
+    if not connectivity.online():
+        raise SearchError(connectivity.OFFLINE_ERROR)
 
 
 # --- SSRF guard -------------------------------------------------------------
@@ -667,6 +673,7 @@ class SearchEngine:
             cached = self._cache.get(key)
             if cached and time.monotonic() - cached[0] < self._cache_ttl:
                 return [dict(item) for item in cached[1]]
+        require_online()
         results = self._search_providers(query, max_results)
         if results:
             results = self._enrich_snippets(results)
@@ -692,7 +699,9 @@ class SearchEngine:
             cached = self._cache.get(key)
             if cached and time.monotonic() - cached[0] < min(self._cache_ttl, 300.0):
                 return [dict(item) for item in cached[1]]
-        futures = [_POOL.submit(self._run_news, name, feed, query, days) for name, feed in NEWS_PROVIDERS]
+        require_online()
+        failures: list[bool] = []
+        futures = [_POOL.submit(self._run_news, name, feed, query, days, failures) for name, feed in NEWS_PROVIDERS]
         batches = []
         for future in futures:
             try:
@@ -700,6 +709,10 @@ class SearchEngine:
             except Exception:  # a slow feed: the other one may have answered
                 batches.append([])
         results = merge_news(batches, since)
+        if not results and failures and all(failures):
+            connectivity.suspect()
+            if not connectivity.online():
+                raise SearchError(connectivity.OFFLINE_ERROR)
         with self._lock:
             if len(self._cache) >= SEARCH_CACHE_MAX:
                 oldest = min(self._cache, key=lambda item: self._cache[item][0])
@@ -707,7 +720,10 @@ class SearchEngine:
             self._cache[key] = (time.monotonic(), [dict(item) for item in results])
         return [dict(item) for item in results]
 
-    def _run_news(self, name: str, feed: Callable[..., list[dict[str, str]]], query: str, days: int | None) -> list[dict[str, str]]:
+    def _run_news(
+        self, name: str, feed: Callable[..., list[dict[str, str]]], query: str, days: int | None,
+        failures: list[bool] | None = None,
+    ) -> list[dict[str, str]]:
         if self._cooldowns.get(name, 0.0) > time.monotonic():
             return []
         try:
@@ -716,14 +732,21 @@ class SearchEngine:
             if any(marker in str(exc).lower() for marker in _BLOCK_MARKERS):
                 self._cooldowns[name] = time.monotonic() + PROVIDER_COOLDOWN_S
             log.info("news feed %s unavailable: %s", name, exc)
+            if failures is not None:
+                failures.append(isinstance(exc, (requests.ConnectionError, requests.Timeout)))
             return []
         except Exception:  # pragma: no cover - feed format drift is non-fatal
             log.warning("news feed %s failed", name, exc_info=True)
+            if failures is not None:
+                failures.append(False)
             return []
         log.info("news feed %s returned %d items", name, len(results))
         return results  # the feed searched for the query itself; word overlap would drop "A.I." for "AI"
 
-    def _run_provider(self, name: str, provider: Callable[[str, int], list[dict[str, str]]], query: str, limit: int) -> list[dict[str, str]]:
+    def _run_provider(
+        self, name: str, provider: Callable[[str, int], list[dict[str, str]]], query: str, limit: int,
+        failures: list[bool] | None = None,
+    ) -> list[dict[str, str]]:
         try:
             results = provider(query, limit)
         except (SearchError, requests.RequestException) as exc:
@@ -731,9 +754,13 @@ class SearchEngine:
             if any(marker in message for marker in _BLOCK_MARKERS):
                 self._cooldowns[name] = time.monotonic() + PROVIDER_COOLDOWN_S
             log.info("search provider %s unavailable: %s", name, exc)
+            if failures is not None:
+                failures.append(isinstance(exc, (requests.ConnectionError, requests.Timeout)))
             return []
         except Exception:  # pragma: no cover - parser drift is non-fatal
             log.warning("search provider %s failed", name, exc_info=True)
+            if failures is not None:
+                failures.append(False)
             return []
         relevant = filter_relevant(query, results or [], strict=name in STRICT_PROVIDERS)
         log.info("search provider %s returned %d results, %d relevant", name, len(results or []), len(relevant))
@@ -751,6 +778,7 @@ class SearchEngine:
         wanted = min(max_results, 3)
         collected: dict[int, list[dict[str, str]]] = {}
         merged: list[dict[str, str]] = []
+        failures: list[bool] = []
         for tier in sorted(tiers):
             now = time.monotonic()
             futures: dict[Future[list[dict[str, str]]], int] = {}
@@ -758,7 +786,7 @@ class SearchEngine:
                 if self._cooldowns.get(name, 0.0) > now:
                     log.info("search provider %s cooling down after a block", name)
                     continue
-                futures[_POOL.submit(self._run_provider, name, provider, query, max_results)] = index
+                futures[_POOL.submit(self._run_provider, name, provider, query, max_results, failures)] = index
             pending = set(futures)
             while pending:
                 done, pending = wait(pending, timeout=PROVIDER_TIMEOUT + 6, return_when=FIRST_COMPLETED)
@@ -771,6 +799,10 @@ class SearchEngine:
             merged = dedupe_results([item for index in sorted(collected) for item in collected[index]])
             if len(merged) >= wanted:
                 break
+        if not merged and failures and all(failures):
+            connectivity.suspect()
+            if not connectivity.online():
+                raise SearchError(connectivity.OFFLINE_ERROR)
         return best_first(query, merged)[:max_results]
 
     def _enrich_snippets(self, results: list[dict[str, str]], limit: int = 3) -> list[dict[str, str]]:
@@ -899,6 +931,7 @@ class SearchEngine:
         """The weather a question asks about, from forecast data ("" when it asks about no place's weather)."""
         from . import weather  # it sends its requests through this module
 
+        require_online()
         return weather.answer(question)
 
     def fetch_page(self, url: str, max_chars: int = 4000) -> dict[str, Any]:
@@ -908,6 +941,7 @@ class SearchEngine:
             cached = self._fetch_cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < FETCH_CACHE_TTL:
                 return dict(cached[1])
+        require_online()
         page = self._fetch_page_uncached(url, max_chars)
         with self._lock:
             if len(self._fetch_cache) >= FETCH_CACHE_MAX:
@@ -952,6 +986,7 @@ class SearchEngine:
         """
         max_chars = max(200, min(int(max_chars or 4000), 8000))
         max_links = max(1, min(int(max_links or BROWSE_MAX_LINKS), BROWSE_MAX_LINKS))
+        require_online()
         final_url, _content_type, encoding, raw = self._guarded_get(
             url, read_timeout=15, max_bytes=FETCH_MAX_BYTES
         )

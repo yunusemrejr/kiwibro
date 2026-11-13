@@ -1,0 +1,14 @@
+{
+  "name": "web/app-shell",
+  "kind": "kit",
+  "title": "Single-page app shell",
+  "summary": "Single-page app shell in plain JavaScript: views, state, hash routing and a fetch helper.",
+  "when": "Use when the project needs a small interactive browser app that switches views without a framework.",
+  "blanks": {
+    "app_name": {
+      "about": "The app name, shown in the header, the document title and the about view.",
+      "default": "Your app"
+    }
+  },
+  "next": "Write the files, serve the folder with a local HTTP server so ES modules load, then replace the sample text marked KIWIBRO and point the fetch helper at the project's API."
+}

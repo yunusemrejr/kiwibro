@@ -1,0 +1,19 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "description": "Print the largest files under a directory",
+  "type": "module",
+  "bin": {
+    "{{name}}": "./bin/{{name}}.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "files": [
+    "bin",
+    "src"
+  ]
+}

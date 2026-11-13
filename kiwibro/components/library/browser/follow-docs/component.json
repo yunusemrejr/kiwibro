@@ -1,0 +1,19 @@
+{
+  "name": "browser/follow-docs",
+  "kind": "recipe",
+  "title": "Find the exact docs",
+  "summary": "Find the official documentation page for a library or tool, read the exact section and quote the command or API.",
+  "when": "Use when the user needs the exact syntax of a command or API and a guess could be wrong.",
+  "blanks": {},
+  "steps": [
+    "Call web_search with the library name plus official documentation and max_results 5, then ignore blog, forum and video results.",
+    "Call browser action open on the project's own domain, such as docs.python.org or doc.rust-lang.org, not a mirror or tutorial site.",
+    "Use the numbered link list from the browser result and call browser action open on the page whose title names your section.",
+    "Call browser action inspect with the url and a selector for the main content to read the exact paragraph and code block.",
+    "Copy the command or function signature character for character, with its arguments, and note the version the page shows.",
+    "Call run_command with python3 --version or npm --version to check the page's version against the one installed here.",
+    "If the site cannot be reached, say so plainly and quote a local manual page via run_command man or doc_search instead.",
+    "Give the quoted command, the page URL, the section heading and the version it applies to; never paraphrase a signature."
+  ],
+  "next": "The final answer must contain the exact quoted command or signature, the documentation URL, the section and the version it applies to."
+}

@@ -1,5 +1,5 @@
 /**
- * How it works: nine small animated figures, one idea each.
+ * How it works: ten small animated figures, one idea each.
  *
  * Every figure is a pure function of time: draw(t) places its parts for second t of a
  * loop, so the picture can be paused, frozen for reduced motion, or rendered at any
@@ -584,7 +584,84 @@ function adapters(root) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* The nine stops                                                             */
+/* Kiwi Mind: one model, seven skills, an optional helper                     */
+/* -------------------------------------------------------------------------- */
+
+function kiwiMind(root) {
+  const slabs = [67, 91, 115, 139, 163];
+  const skills = ["chat", "web", "terminal", "computer", "tools", "write"];
+  const lowerX = 58;
+  const headX = 187;
+  const upperX = 316;
+  const railY = 122;
+
+  // Left: the 16 shared layers, a stack of thin slabs.
+  const lower = box(root, lowerX, 122, 96, 176, "", "hw-node-tan");
+  for (const y of slabs) root.append(s("rect", { class: "hw-slab", x: lowerX - 34, y, width: 68, height: 14, rx: 4 }));
+  text(root, lowerX, 232, "16 shared", "hw-t-big");
+  text(root, lowerX, 252, "layers", "hw-t-big");
+
+  // The path the message takes, with the control head on it.
+  root.append(s("path", { class: "hw-line", d: `M106 ${railY}H125` }), s("path", { class: "hw-line", d: `M249 ${railY}H268` }));
+  root.append(s("path", { class: "hw-arrow", d: `M262 ${railY - 4}l6 4-6 4` }));
+  const head = box(root, headX, railY, 124, 44, "", "hw-node");
+  text(root, headX, railY + 5, "control head", "hw-t-big");
+
+  // Right: the 12 upper layers, with the code skill slotted in.
+  const upper = box(root, upperX, 122, 96, 176, "", "hw-node-tan");
+  slabs.forEach((y, index) => {
+    if (index === 2) return;
+    root.append(s("rect", { class: "hw-slab", x: upperX - 34, y, width: 68, height: 14, rx: 4 }));
+  });
+  root.append(s("rect", { class: "hw-slot", x: upperX - 34, y: 109, width: 68, height: 26, rx: 6 }));
+  text(root, upperX, 127, "code", "hw-t-big-ink");
+  text(root, upperX, 232, "12 upper", "hw-t-big");
+  text(root, upperX, 252, "layers", "hw-t-big");
+
+  // The six other skills, quieter, beside the upper layers.
+  skills.forEach((name, index) => {
+    const y = 36 + index * 30;
+    const group = s("g", { class: "hw-card" });
+    group.append(s("rect", { x: 380, y, width: 88, height: 22, rx: 6 }));
+    group.append(s("text", { x: 424, y: y + 15, class: "hw-t-big", "text-anchor": "middle" }, name));
+    root.append(group);
+  });
+
+  // The dashed line from the control head to the helper model, with its label on the line.
+  root.append(s("path", { class: "hw-dash", d: `M${headX} ${railY + 22}V226` }));
+  root.append(s("rect", { class: "hw-mask", x: headX - 58, y: 172, width: 116, height: 24 }));
+  text(root, headX, 189, "heavy answers", "hw-t-big-muted");
+  box(root, headX, 242, 124, 34, "", "hw-node");
+  text(root, headX, 247, "helper model", "hw-t-big");
+
+  // A dot carries the message in and out through the three blocks; it hides inside a box.
+  const dot = s("circle", { r: 6, class: "hw-dot" });
+  root.append(dot);
+  const parts = [
+    { x: lowerX, half: 48 },
+    { x: headX, half: 56 },
+    { x: upperX, half: 48 },
+  ];
+
+  return {
+    duration: 6,
+    still: 1.4,
+    draw(t) {
+      // Out to the upper layers and back again, one unbroken loop.
+      const travel = t < 3 ? ease(clamp01(t / 3)) : ease(clamp01((6 - t) / 3));
+      const x = mix(lowerX, upperX, travel);
+      at(dot, x, railY);
+      const inside = parts.map((part) => Math.abs(x - part.x) <= part.half);
+      fade(dot, inside.some(Boolean) ? 0 : 1);
+      on(lower, inside[0]);
+      on(head, inside[1]);
+      on(upper, inside[2]);
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The stops                                                                  */
 /* -------------------------------------------------------------------------- */
 
 // In `lines`, [[word]] marks a term the stop teaches.
@@ -596,6 +673,14 @@ const STOPS = [
       "Your message never reaches the model alone. Kiwibro first adds what it knows (the [[context]]), the model writes, and a small reader called [[Kiwi Sense]] checks the draft. If the model asks for a [[tool]], Kiwibro runs it and the model continues with the result.",
     fact: "The model and your data stay on this computer. Only web lookups go online.",
     build: bigPicture,
+  },
+  {
+    title: "Kiwi Mind",
+    question: "Which model is answering?",
+    lines:
+      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 16 layers read your conversation once. A small [[control head]] looks at what they understood and picks one of seven [[skills]]: chat, web, code, terminal, computer, tools or write. The skill is a thin layer slid into the upper 12 layers, so switching takes a moment, not a reload. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
+    fact: "464 MB on disk, 4 bits per weight, on the CPU in WebAssembly.",
+    build: kiwiMind,
   },
   {
     title: "The model file",
@@ -664,10 +749,21 @@ const STOPS = [
   },
 ];
 
+// Plain definitions of the terms that a stop teaches, shown as a hover title on the term.
+const TERM_NOTES = {
+  "Kiwi Mind": "Kiwibro's own model: Qwen3-0.6B, trained on the 4-bit grid it is stored in.",
+  "control head":
+    "A tiny network, under 1 MB, that reads the model's state after your message and scores the seven skills and whether the request is heavy.",
+  skills: "Seven thin sets of extra weights, 9 MB each, one per kind of work. One is active at a time.",
+  "helper model": "Any other model you downloaded. Optional.",
+};
+
 function withTerms(line) {
-  return line.split(/(\[\[.+?\]\])/).map((part) =>
-    part.startsWith("[[") ? el("b", { class: "how-term", text: part.slice(2, -2) }) : part,
-  );
+  return line.split(/(\[\[.+?\]\])/).map((part) => {
+    if (!part.startsWith("[[")) return part;
+    const word = part.slice(2, -2);
+    return el("b", { class: "how-term", text: word, title: TERM_NOTES[word] });
+  });
 }
 
 /* -------------------------------------------------------------------------- */

@@ -1,0 +1,11 @@
+# KIWIBRO: OnCalendar takes systemd calendar syntax; `systemd-analyze calendar daily` checks one
+[Unit]
+Description=Run {{name}} on a schedule
+
+[Timer]
+OnCalendar={{schedule}}
+Persistent=true
+Unit={{name}}.service
+
+[Install]
+WantedBy=timers.target

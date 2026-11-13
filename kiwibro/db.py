@@ -215,9 +215,33 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """Schema v9: the session ledger — one row per step saying what was asked, which file
+    changed, which command ran and which page was read. Written by code, so a long
+    conversation keeps an exact record of itself after the prompt has moved on."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ledger ("
+        "id TEXT PRIMARY KEY, "
+        "conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, "
+        "seq INTEGER NOT NULL, "
+        "kind TEXT NOT NULL, "
+        "key TEXT NOT NULL DEFAULT '', "
+        "detail TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_conversation ON ledger(conversation_id, kind)")
+
+
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """Schema v10: the safe copy session of a conversation (JSON: session_id, real,
+    previous_workspace). NULL means the chat works in the ordinary workspace."""
+    if not any(row["name"] == "safe_copy" for row in conn.execute("PRAGMA table_info(conversations)")):
+        conn.execute("ALTER TABLE conversations ADD COLUMN safe_copy TEXT")
+
+
 _MIGRATIONS: list[tuple[int, Any]] = [
     (1, _SCHEMA_V1), (2, _migrate_v2), (3, _migrate_v3), (4, _migrate_v4), (5, _migrate_v5),
-    (6, _migrate_v6), (7, _migrate_v7), (8, _migrate_v8),
+    (6, _migrate_v6), (7, _migrate_v7), (8, _migrate_v8), (9, _migrate_v9), (10, _migrate_v10),
 ]
 
 MEMORY_ORIGINS = ("you", "chat", "learned")
@@ -365,6 +389,7 @@ class Database:
             "summary_through_seq": row["summary_through_seq"],
             "extracted_through_seq": row["extracted_through_seq"] if "extracted_through_seq" in keys else 0,
             "workspace": row["workspace"] if "workspace" in keys else None,
+            "safe_copy": row["safe_copy"] if "safe_copy" in keys else None,
             "pinned": bool(row["pinned"]),
             "private": bool(row["private"]) if "private" in keys else False,
             "created_at": row["created_at"],
@@ -417,7 +442,7 @@ class Database:
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
         allowed = {
             "title", "title_auto", "model", "summary", "summary_through_seq",
-            "extracted_through_seq", "pinned", "workspace", "private",
+            "extracted_through_seq", "pinned", "workspace", "private", "safe_copy",
         }
         sets: list[str] = []
         values: list[Any] = []
@@ -467,6 +492,7 @@ class Database:
                 conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
                 conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conversation_id,))
                 conn.execute("DELETE FROM summary_segments WHERE conversation_id = ?", (conversation_id,))
+                conn.execute("DELETE FROM ledger WHERE conversation_id = ?", (conversation_id,))
                 conn.execute(
                     "UPDATE conversations SET summary = '', summary_through_seq = 0, "
                     "extracted_through_seq = 0, updated_at = ? WHERE id = ?",
@@ -903,6 +929,55 @@ class Database:
                 (conversation_id,),
             ).fetchone()
         return int(row["seq"])
+
+    # --- ledger (schema v9) -------------------------------------------------
+
+    @staticmethod
+    def _ledger_entry(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "conversation_id": row["conversation_id"],
+            "seq": row["seq"],
+            "kind": row["kind"],
+            "key": row["key"],
+            "detail": row["detail"],
+            "created_at": row["created_at"],
+        }
+
+    def add_ledger_entry(
+        self, conversation_id: str, seq: int, kind: str, key: str, detail: str = ""
+    ) -> dict[str, Any]:
+        """One ledger row for step ``seq``; the row id is what a later delete works from."""
+        rid = _new_id("led")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO ledger(id, conversation_id, seq, kind, key, detail, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (rid, conversation_id, int(seq), kind, key, detail, config.now_iso()),
+            )
+            row = conn.execute("SELECT * FROM ledger WHERE id = ?", (rid,)).fetchone()
+        return self._ledger_entry(row)
+
+    def list_ledger(
+        self, conversation_id: str, through_seq: int | None = None
+    ) -> list[dict[str, Any]]:
+        """A conversation's ledger rows oldest step first; ``through_seq`` keeps only the
+        steps that have scrolled out of the prompt."""
+        sql = "SELECT * FROM ledger WHERE conversation_id = ?"
+        params: list[Any] = [conversation_id]
+        if through_seq is not None:
+            sql += " AND seq <= ?"
+            params.append(int(through_seq))
+        sql += " ORDER BY seq ASC, rowid ASC"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._ledger_entry(row) for row in rows]
+
+    def delete_ledger(self, conversation_id: str) -> int:
+        with self.connect() as conn:
+            return conn.execute(
+                "DELETE FROM ledger WHERE conversation_id = ?", (conversation_id,)
+            ).rowcount
 
     # --- memories ----------------------------------------------------------
 

@@ -1,0 +1,14 @@
+{
+  "name": "web/pwa",
+  "kind": "kit",
+  "title": "Installable offline app",
+  "summary": "Installable web app that works offline: manifest, service worker and an offline page.",
+  "when": "Use when the project needs a browser app that installs to the home screen and keeps working without a connection.",
+  "blanks": {
+    "app_name": {
+      "about": "The app name, used in the header, document title and web app manifest.",
+      "default": "Your app"
+    }
+  },
+  "next": "Write the files, serve the folder over localhost or HTTPS, then add every new shell file to FILES in sw.js and raise the cache version before shipping."
+}

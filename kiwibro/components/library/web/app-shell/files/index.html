@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- KIWIBRO: set the app name and description -->
+  <title>{{app_name}}</title>
+  <meta name="description" content="{{app_name}} — a small app that keeps its work in this browser.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="wordmark" href="#/items">{{app_name}}</a>
+      <nav aria-label="Main">
+        <a href="#/items" data-nav="items">Items</a>
+        <a href="#/about" data-nav="about">About</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <div id="app"></div>
+  </main>
+
+  <script type="module" src="app.mjs"></script>
+  <noscript>
+    <p class="wrap">This app needs JavaScript to switch views and store items.</p>
+  </noscript>
+</body>
+</html>

@@ -100,6 +100,13 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         retitle_small_talk_chats(db)
     except Exception:  # titles are cosmetic; never block startup
         logging.getLogger(__name__).warning("could not re-title chats", exc_info=True)
+    try:  # copies of folders nobody is attached to any more, so they do not pile up
+        from . import safemode
+
+        safemode.configure(data_dir)
+        safemode.cleanup_at_start(db)
+    except Exception:  # housekeeping must never block startup
+        logging.getLogger(__name__).warning("could not clean up old safe copies", exc_info=True)
 
     defaults = config.default_settings(
         server_url=app.config.get("KIWIBRO_SERVER_URL"),
@@ -170,6 +177,8 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     )
     if not app.config.get("TESTING"):
         presence.start()
+    if not app.config.get("TESTING") and os.environ.get("KIWIMIND_AUTOSTART", "1") != "0":
+        llm.mind().start_background()  # Kiwi Mind is the main brain: have it ready before the first message
     app.extensions["kiwibro_presence"] = presence
 
     app.register_blueprint(bp)

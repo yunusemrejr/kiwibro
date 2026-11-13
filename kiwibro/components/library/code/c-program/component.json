@@ -1,0 +1,14 @@
+{
+  "name": "code/c-program",
+  "kind": "kit",
+  "title": "C program with Makefile",
+  "summary": "C program with a Makefile, a header, warnings on and a test target.",
+  "when": "Use when the user wants a small C command-line program built with make and covered by a test binary.",
+  "blanks": {
+    "name": {
+      "about": "Program name, used for the binary, the source and header files and the messages it prints (lowercase C identifier).",
+      "default": "textstats"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, run make && make test, then run the binary on a real file and extend the header and source for the program's own job."
+}

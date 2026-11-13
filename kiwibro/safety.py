@@ -2207,6 +2207,36 @@ def _file_tool_risk(path: str, root: Path | None, *, verb: str, existing_level: 
     return _risk(existing_level if exists else "low", f"{verb} {'existing' if exists else 'new'} file {path}", "write", writes=1)
 
 
+def _component_risk(args: dict[str, Any], root: Path | None) -> Risk:
+    """A component call: search, list, show and a recipe only read; a kit writes files.
+
+    The write is graded like ``write_file``: a new folder inside the workspace is
+    low, an existing one medium, and a folder outside it goes by where it lands."""
+    from . import components  # lazy: the loader reads the library from disk
+
+    if str(args.get("action") or "") != "use":
+        return SAFE
+    name = str(args.get("name") or "")
+    try:
+        component = components.default_library().get(name)
+    except components.ComponentError:
+        return _risk("low", f"uses the component {name or 'library'}", "read")
+    if component.kind != components.KIT:
+        return SAFE
+    folder = str(args.get("path") or "")
+    ctx = _Ctx(workspace=root, cwd=root, home=Path.home().resolve())
+    scope = _scope(folder, ctx) if folder else _Scope("workspace_root", str(root or ""))
+    place = folder or "the workspace's top level"
+    writes = len(component.file_paths()) or 1
+    if scope.kind not in _IN_WORKSPACE:
+        return _risk(_WRITE_LEVEL[scope.kind], f"writes the files of {name} {_PLACE[scope.kind]} ({folder})",
+                     "write", writes=writes)
+    exists = bool(folder) and os.path.exists(scope.path)
+    level = "medium" if exists else "low"
+    return _risk(level, f"writes the files of {name} into {'existing folder' if exists else 'new folder'} {place}",
+                 "write", writes=writes)
+
+
 def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk: str | None = None) -> Risk:
     """Risk of one (validated) tool call."""
     root = _workspace_root(workspace)
@@ -2242,6 +2272,8 @@ def assess(name: str, args: dict[str, Any], *, workspace: Any = None, spec_risk:
         return _file_tool_risk(str(args.get("path") or ""), root, verb="writes")
     if name in ("replace_in_file", "apply_patch"):
         return _file_tool_risk(str(args.get("path") or ""), root, verb="edits")
+    if name == "component":
+        return _component_risk(args, root)
     if name == "file_manage":
         ctx = _Ctx(workspace=root, cwd=root, home=Path.home().resolve())
         path, action = str(args.get("path") or ""), args.get("action")

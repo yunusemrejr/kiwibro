@@ -1,0 +1,19 @@
+{
+  "name": "computer/find-files",
+  "kind": "recipe",
+  "title": "Find files",
+  "summary": "Find files by name, type, size or age and report them, largest or newest first.",
+  "when": "Use when the user asks where a file is or which files are big, recent or of a type.",
+  "blanks": {},
+  "steps": [
+    "Call workspace action show first so every later path is relative to the folder the user actually means.",
+    "Call glob_files with a pattern such as **/*.pdf and the path of the search folder.",
+    "Call grep_files with the word or regex plus glob when the search is by content rather than by file name.",
+    "Call run_command with find path -size +100M, or ls -lt for recent files, when the search is by size or age.",
+    "Call list_files on the folder when glob finds nothing, to catch hidden names and nested folders.",
+    "Sort the matches by size or date, largest or newest first, and count them so the total matches the list.",
+    "Call remote action run with the same find command when the folder is on another machine, not a guess.",
+    "Report each file with its full path, size and date, and say plainly when nothing matched the search."
+  ],
+  "next": "The final answer must list the matching files with full path, size and date, sorted as asked, and give the total count or say nothing matched."
+}

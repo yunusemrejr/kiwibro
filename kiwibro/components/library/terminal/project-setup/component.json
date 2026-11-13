@@ -1,0 +1,19 @@
+{
+  "name": "terminal/project-setup",
+  "kind": "recipe",
+  "title": "Set up a project",
+  "summary": "Set up a project so it runs: detect the stack, create the environment, install, build, test.",
+  "when": "Use when a freshly cloned or unpacked project has to be made to run on this machine.",
+  "blanks": {},
+  "steps": [
+    "Call list_files and read_files on package.json, pyproject.toml, Cargo.toml or go.mod to identify the stack.",
+    "Call read_file on the README and any Makefile or scripts to learn the commands the project expects.",
+    "Call run_command with python3 --version, node --version and the other tool versions to confirm they exist.",
+    "Call multi_command with the environment and install commands the manifest implies, cwd set to the project, stop_on_error true.",
+    "Call multi_command with the build and test commands, such as npm run build and npm test, and read where it stops.",
+    "Call terminal_session action start for a server the project needs, then action status to read its startup output.",
+    "If install or build fails, read the first real error; when the network is down, say so and use packages already installed.",
+    "Report the commands that worked, the test result and how to start the app, and say plainly what still fails."
+  ],
+  "next": "The final answer must give the setup commands that worked, the test result and the command that starts the app, plus what still fails."
+}

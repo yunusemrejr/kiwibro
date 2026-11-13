@@ -1,0 +1,22 @@
+{
+  "name": "ubuntu/systemd-service",
+  "kind": "kit",
+  "title": "User service and timer",
+  "summary": "User service and timer (systemd --user) that run a program at login or on a schedule.",
+  "when": "Use when something has to run at login or every day or hour without a terminal open.",
+  "blanks": {
+    "name": {
+      "about": "Unit name, used for the .service and .timer file names and by systemctl.",
+      "default": "backup-job"
+    },
+    "command": {
+      "about": "Command the service runs: absolute path and arguments.",
+      "default": "/usr/bin/my-program"
+    },
+    "schedule": {
+      "about": "systemd calendar expression for the timer (daily, hourly, *-*-* 03:30:00).",
+      "default": "daily"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, set command and schedule to what the user needs, run ./install.sh and follow the systemctl lines it prints."
+}

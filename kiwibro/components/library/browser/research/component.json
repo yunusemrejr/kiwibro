@@ -1,0 +1,18 @@
+{
+  "name": "browser/research",
+  "kind": "recipe",
+  "title": "Research from several sources",
+  "summary": "Answer a question from several sources: search with two or three queries, read the best pages, cite numbered sources.",
+  "when": "Use when the answer needs current facts from the web and one search result is not enough.",
+  "blanks": {},
+  "steps": [
+    "Rewrite the question as three short search phrases covering different angles and call multi_search with queries and max_results 6.",
+    "Pick three to five promising URLs from the ranked list, favouring official and dated pages, and call fetch_pages with those urls.",
+    "Re-read the numbered evidence pack and note the exact sentence behind each figure you plan to use, with its source number.",
+    "If two sources give different figures, call fetch_page on the stronger one and check which figure is newer and better sourced.",
+    "Drop any claim that no fetched passage supports, then call note action save with the question and the numbered source list.",
+    "If a fetch fails with a host or timeout error, say the page could not be read and use search snippets only, marked unverified.",
+    "Answer in plain sentences, cite each fact as [1] or [2] in order of first use, and list the URLs at the end."
+  ],
+  "next": "The final answer must state the answer in plain sentences with numbered citations [1], [2] and the URL list below."
+}

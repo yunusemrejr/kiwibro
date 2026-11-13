@@ -1,0 +1,14 @@
+{
+  "name": "web/site",
+  "kind": "kit",
+  "title": "Small static site",
+  "summary": "Small multi-page static site: shared header and footer, home, about and contact pages, one stylesheet.",
+  "when": "Use when the project needs a few linked informational pages that share navigation and one stylesheet.",
+  "blanks": {
+    "site_name": {
+      "about": "The site name, shown in the header, page titles and footer.",
+      "default": "Your site"
+    }
+  },
+  "next": "Write the files, replace the sample text and contact address marked KIWIBRO with the project's own, then click through all three pages at 360 px and desktop width."
+}

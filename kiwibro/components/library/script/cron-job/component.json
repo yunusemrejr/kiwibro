@@ -1,0 +1,18 @@
+{
+  "name": "script/cron-job",
+  "kind": "kit",
+  "title": "Cron job with lock and log",
+  "summary": "Shell job with a lock file, a size-capped log and a crontab line.",
+  "when": "Use when a command has to run every few minutes or once a night through cron.",
+  "blanks": {
+    "name": {
+      "about": "Job name: script file name, log file name and crontab comment.",
+      "default": "nightly-job"
+    },
+    "schedule": {
+      "about": "Crontab schedule fields: minute hour day month weekday.",
+      "default": "0 3 * * *"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, put the real job in the marked function, run it once by hand, then print ./{{name}}.sh --crontab for the user to paste into crontab -e."
+}

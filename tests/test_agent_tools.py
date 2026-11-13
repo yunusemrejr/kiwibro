@@ -53,7 +53,7 @@ def test_tool_profiles():
     # auto = one fixed set: the tool list renders before every message (KV-cache prefix)
     auto = tools.select_tool_names("auto")
     assert auto == [n for n in tools.tool_names() if n in tools.AUTO_TOOLS]
-    assert 12 <= len(auto) <= 22 and "web_research" in auto and "grep_files" in auto
+    assert 12 <= len(auto) <= 23 and "web_research" in auto and "grep_files" in auto
     settings = {"tool_profile": "auto", "autonomy": "supervised", "permissions": {"git": "deny"}}
     line = tools.more_tools_line(settings)
     assert "apply_patch" in line and "git" not in line.split(":", 1)[1].replace(",", " ").split()

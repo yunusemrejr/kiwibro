@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import codebase, config, delegate, desktop, research, safety
+from . import codebase, components, config, delegate, desktop, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LLMClient
@@ -335,6 +335,38 @@ _SPECS: tuple[ToolSpec, ...] = (
         label="Notes",
         summary=lambda args: f"{_NOTE_VERBS.get(str(args.get('action') or ''), 'Notes')}: "
         f"{str(args.get('title') or args.get('content') or '')[:80]}",
+    ),
+    ToolSpec(
+        name="component",
+        description=(
+            "Kiwibro's library of ready-made building blocks: kits (starter files for a web "
+            "page, an API, a desktop app, a script, a package) and recipes (proven step lists for browser, computer and "
+            "terminal jobs). Start from one instead of writing from scratch. search or list to find one, "
+            "show to read it, use to put a kit's files into the workspace or to get a recipe's steps."
+        ),
+        # The same schema the Kiwibro Mind training teacher shows (train.py, COMPONENT_TOOL).
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["search", "list", "show", "use"]},
+                "query": {"type": "string", "description": "search: what you need, in a few words"},
+                "name": {"type": "string", "description": "show/use: the component's name, e.g. web/page"},
+                "path": {
+                    "type": "string",
+                    "description": "use: folder in the workspace for the files (default: its top level)",
+                },
+                "values": {
+                    "type": "object",
+                    "description": "use: values for the kit's blanks, e.g. {\"title\": \"Recipe box\"}",
+                },
+            },
+            "required": ["action"],
+        },
+        risk="write",
+        phase="writing",
+        label="Using a component",
+        summary=lambda args: f"Component {str(args.get('action') or 'list')}: "
+        f"{str(args.get('name') or args.get('query') or '')[:60]}".strip(),
     ),
     # --- coding / codebase --------------------------------------------------------
     ToolSpec(
@@ -673,7 +705,8 @@ _SPECS: tuple[ToolSpec, ...] = (
         name="recall",
         description=(
             "Search long-term memory and earlier conversation for relevant facts. Use "
-            "when the user references something from before that is not in view."
+            "when the user references something from before that is not in view. "
+            "A query like 'step 14' reads that step of this conversation again in full."
         ),
         parameters=_schema(
             {
@@ -951,7 +984,7 @@ _MINIMAL = (
 AUTO_TOOLS = (
     "web_search", "web_research", "fetch_page",
     "read_file", "list_files", "grep_files", "write_file", "replace_in_file",
-    "run_command", "run_python", "study_file", "undo_changes",
+    "run_command", "run_python", "study_file", "undo_changes", "component",
     "remember", "note", "recall", "task_board", "doc_search", "doc_read",
     "describe_image", "delegate", "calculate", "workspace",
 )
@@ -1311,6 +1344,21 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
             "action": str(args.get("action") or "").strip().lower(),
             "title": _opt_str(args, "title"),
             "content": _opt_str(args, "content"),
+        }
+    if name == "component":
+        action = str(args.get("action") or "").strip().lower()
+        if action not in components.ACTIONS:
+            raise ValueError("action must be search, list, show or use")
+        values = args.get("values")
+        if values is not None and not isinstance(values, dict):
+            raise ValueError("values must be an object of blank values")
+        return {
+            "action": action,
+            "query": _opt_str(args, "query"),
+            "name": _opt_str(args, "name"),
+            "path": _opt_str(args, "path"),
+            "values": {str(key): _as_str(value, f"values.{key}", allow_empty=True)
+                       for key, value in (values or {}).items()},
         }
     raise ValueError(f"unknown tool: {name}")
 
@@ -1682,7 +1730,29 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return _execute_remember(args, ctx)
     if name == "note":
         return _execute_note(args, ctx)
+    if name == "component":
+        return _execute_component(args, ctx)
     raise ValueError(f"unknown tool: {name}")
+
+
+def _execute_component(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """The component library: a search, the list, one entry, or a kit's files written out."""
+    action = args["action"]
+    if action == "search":
+        content = components.search(args.get("query") or "")
+    elif action == "list":
+        content = components.catalogue(args.get("query"))
+    elif action == "show":
+        content = components.show(args.get("name") or "")
+    else:
+        content = components.use(
+            args.get("name") or "",
+            args.get("values") or {},
+            workspace=ctx.workspace,
+            path=args.get("path"),
+            conversation_id=ctx.conversation_id,
+        )
+    return ToolResult(ok=True, content=content, preview=_preview(content))
 
 
 def _require_llm(ctx: ToolContext) -> LLMClient:
@@ -1966,6 +2036,9 @@ def _execute_recall(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=True, content=f"Nothing recalled for “{query}”.", preview="Nothing recalled", meta={"count": 0})
     lines = []
     for item in items[:limit]:
+        if isinstance(item, dict) and item.get("line"):
+            lines.append(str(item["line"]))  # a step of this chat: already labelled, and not cut down again here
+            continue
         if isinstance(item, dict):
             source = str(item.get("source") or item.get("kind") or "memory")
             if item.get("chat"):

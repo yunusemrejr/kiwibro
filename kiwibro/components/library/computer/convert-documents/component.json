@@ -1,0 +1,19 @@
+{
+  "name": "computer/convert-documents",
+  "kind": "recipe",
+  "title": "Convert a document",
+  "summary": "Convert documents between formats (Markdown, HTML, DOCX, PDF) and open the result.",
+  "when": "Use when the user wants a document in another format, such as Markdown to PDF or a Word file to text.",
+  "blanks": {},
+  "steps": [
+    "Call list_files or glob_files to find the exact file and confirm its extension before converting anything.",
+    "Call convert_document with path and to, for example md to pdf, and leave output empty so the new file sits beside it.",
+    "Call read_file on text results, or doc_add then doc_read for PDF and Office files, to read the converted content.",
+    "Call run_command with pdfinfo new.pdf or wc -l new.txt to check the page or line count is complete.",
+    "Call convert_document again with an explicit output path when the default name would land on a file you need.",
+    "If a conversion fails, call run_command with pandoc --version or libreoffice --version to see which converter exists.",
+    "If a needed converter is missing, say so plainly, name the package and offer a format the machine does handle.",
+    "Call open_path on the new file when the user wants to see it, and report the path, format and check result."
+  ],
+  "next": "The final answer must give the new file path and format, the check that it is complete, and confirm the original was not changed."
+}

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from . import terms
+from . import connectivity, terms
 from .search import SearchEngine, SearchError, dedupe_results, pick_news, rerank_results
 
 log = logging.getLogger(__name__)
@@ -117,7 +117,12 @@ def multi_search(
     def run(query: str) -> tuple[str, list[dict[str, str]]]:
         try:
             return query, engine.web_search(query, max_results)
-        except (SearchError, requests.RequestException) as exc:
+        except SearchError as exc:
+            if str(exc) == connectivity.OFFLINE_ERROR:
+                raise  # no query will reach anything: the whole call is offline, not this one query
+            log.info("multi_search query failed (%s): %s", query, exc)
+            return query, []
+        except requests.RequestException as exc:
             log.info("multi_search query failed (%s): %s", query, exc)
             return query, []
 
@@ -158,7 +163,11 @@ def fetch_pages(
         try:
             page = engine.fetch_page(url, max_chars)
             return {"ok": True, **page}
-        except (SearchError, requests.RequestException, ValueError) as exc:
+        except SearchError as exc:
+            if str(exc) == connectivity.OFFLINE_ERROR:
+                raise  # no page will reach anything: the whole call is offline, not this one URL
+            return {"ok": False, "url": url, "title": "", "text": "", "error": str(exc)}
+        except (requests.RequestException, ValueError) as exc:
             return {"ok": False, "url": url, "title": "", "text": "", "error": str(exc)}
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(cleaned))) as pool:

@@ -61,6 +61,17 @@ kiwibro/
 │   ├── adapters.py           # task adapters: LoRA files switched per request by task
 │   ├── media.py              # image, audio and video handling, no-model fallbacks
 │   ├── delegate.py           # agent-facing delegation to other installed local models
+│   │   # Kiwi Mind
+│   ├── mind/                 # Kiwi Mind: Kiwibro's own model and what runs it
+│   │   ├── service.py        # Kiwi Mind as the app sees it: usable or not, state, lifecycle
+│   │   ├── pack.py           # the model pack: manifest, checksums, resumable download
+│   │   ├── host.py           # starts and stops the Node process that hosts the engine
+│   │   ├── client.py         # HTTP client of the host: warm, control, generate
+│   │   ├── conductor.py      # picks the skill, hands heavy answers to the helper model
+│   │   ├── render.py         # the chat template the model was trained with, and its parser
+│   │   ├── engine/           # kiwimind.c, the inference engine, and build.sh
+│   │   ├── wasm/             # the engine compiled to WebAssembly (three committed builds)
+│   │   └── host/             # host.mjs: the engine behind a local HTTP port, in Node
 │   │   # Kiwi Sense & steering
 │   ├── sense/                # Kiwi Sense: a small reading model that watches the model
 │   │   ├── __init__.py       # the Sense front door: embed, similarity, probe, repeat, heads
@@ -79,6 +90,7 @@ kiwibro/
 │   ├── terms.py              # key terms: what a message is about, for matching
 │   ├── sessions.py           # continuity across chats: what other conversations covered
 │   ├── directives.py         # standing-instruction ledger and end-of-turn self-check
+│   ├── ledger.py             # session ledger: every step of a chat indexed, read again by number
 │   ├── autofacts.py          # deterministic facts about the user from one message
 │   ├── guidance.py           # situational guidance for this turn, chosen by code
 │   ├── prompts.py            # prompt templates
@@ -91,6 +103,7 @@ kiwibro/
 │   ├── codebase.py           # glob, outlines, atomic multi-edits, file management, git
 │   ├── research.py           # parallel web research: multi-search, batch fetch, evidence
 │   ├── search.py             # web search providers and SSRF-guarded page fetching
+│   ├── connectivity.py       # whether the internet is reachable right now
 │   ├── browser.py            # headless browser and page inspection
 │   ├── desktop.py            # system info, open, clipboard, notify, screenshot
 │   ├── library.py            # on-disk document library (FTS5), output paging
@@ -99,9 +112,13 @@ kiwibro/
 │   ├── tasks.py              # task board for long-running workflows
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
+│   ├── components.py         # the component library: search, show, use
+│   ├── components/library/   # 38 kits and recipes, one folder each (plain data)
 │   │   # safety
 │   ├── safety.py             # risk grading, auto/ask/deny policy, confinement
 │   ├── sandbox.py            # workspace paths, file tools, process runner, terminals
+│   ├── safecopy.py           # safe copy: a git-tracked copy of a folder, proof, apply, undo
+│   ├── safemode.py           # what a conversation may do while it works in a safe copy
 │   ├── guard.py              # content safety: secrets, injections, bad writes
 │   └── checkpoints.py        # automatic file checkpoints and undo
 ├── templates/index.html      # single page shell
@@ -137,7 +154,8 @@ kiwibro/
 │   └── img/                  # kiwi logo SVG, favicon and PNG icons
 │   └── sense/                # sense.bin (data file) and sense.wasm (committed build)
 ├── scripts/                  # run.sh, kiwibro.sh, install.sh, python.sh, desktop entry
-│   └── sense/                # builds the Kiwi Sense data file and the behaviour probe
+│   ├── sense/                # builds the Kiwi Sense data file and the behaviour probe
+│   └── mind/                 # trains Kiwi Mind (train.py), file formats, reference, benchmark
 ├── tests/                    # pytest unit and API tests, fake-server e2e suite (tests/e2e)
 ├── docs/                     # ARCHITECTURE.md, API.md, MEMORY.md, QA.md, screenshots/
 ├── requirements.txt          # Flask, requests, beautifulsoup4
@@ -204,7 +222,10 @@ themselves as Kiwibro's, so even background calls stay on-brand.
 
 ## 4. Engine
 
-Kiwibro runs models with llama.cpp. Every model request goes through one client,
+Every chat runs on Kiwi Mind, Kiwibro's own model (§4b). This section is about the other
+models, the helpers: any GGUF model the user adds.
+
+Kiwibro runs those models with llama.cpp. Every model request goes through one client,
 `llm.LLMClient`, which speaks the OpenAI-compatible routes of llama.cpp's server
 (`/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/props`). The client does not
 know which server answers; it asks `engine_mode()`, which is one of two modes:
@@ -620,6 +641,102 @@ Traits are read over the last `TRAIT_DAYS` (30) days.
 
 ---
 
+## 4b. Kiwi Mind
+
+Kiwi Mind is the model every chat runs on. The user never selects, loads or switches
+anything in it; the model picked in the header is a helper for it.
+
+### The model
+
+- **Trunk.** Qwen3-0.6B (28 layers, width 1024, 151,936 words) trained further with its
+  weights held on the 4-bit grid they are stored in, so the file that ships is the model
+  that was trained and not a rounded copy of it. The embedding table is 8-bit. One file,
+  `kiwimind-trunk.fkm`, 413 MB.
+- **Skills.** Seven sets of extra weights for layers 16 to 27 (LoRA, rank 16): `chat`,
+  `web`, `code`, `terminal`, `computer`, `tools`, `write`. One file each,
+  `skills/<name>.kms`, 8.7 MB. One skill is active in a conversation at a time.
+- **Control head.** `head.kmh`, 0.8 MB: a two-layer network that reads the state entering
+  layer 16 at the last position of the prompt and gives eight scores, one per skill and one
+  for "this request is heavy".
+- **Why the split.** Layers 0 to 15 are the same whatever the skill, so their reading of a
+  conversation is done once and kept. Only layers 16 to 27 depend on the skill.
+- **One manual.** Every conversation is trained and run with the same system text and the
+  whole tool catalog, whichever skill is active: the kept reading stays valid when the
+  skill changes, and the head cannot guess the skill from the tool list.
+
+### The engine (`mind/engine/`, `mind/wasm/`, `mind/host/`)
+
+- **`kiwimind.c`.** The whole inference engine in one C file without dependencies,
+  compiled to WebAssembly by `build.sh` in three builds (SIMD; SIMD with threads; relaxed
+  SIMD with threads). The builds are committed, about 56 KB each.
+- **`host/host.mjs`.** A Node program without packages. It loads the pack, takes the best
+  build the processor supports and serves it on a random port of `127.0.0.1` behind a
+  bearer key: `GET /health`, `POST /tokenize`, `POST /skills`, `POST /warm`, `POST
+  /control` (the head's scores) and `POST /generate` (streamed). It leaves when its stdin
+  closes or on SIGTERM.
+- **Slots.** A conversation has a slot with what the lower layers read and the upper
+  layers' cache. All slots share one copy of the weights and one thread pool, so a second
+  conversation costs about 140 MB at 2,000 tokens and no second model. Requests that arrive
+  together take turns.
+- **Switching skill** recomputes layers 16 to 27 for the tokens already read: about 2 s at
+  500 tokens and 8 s at 2,000 on a Ryzen 5 7530U. The conductor therefore switches only on
+  a clear lead.
+- **Speed** on that processor with 6 threads: reads 160 tokens a second, writes 38 (after
+  500 tokens) to 23 (after 2,000). Ready 0.8 s after start; about 770 MB of memory.
+
+### In the app (`mind/service.py`, `pack.py`, `host.py`, `client.py`, `conductor.py`)
+
+- **Pack.** The files live in `<data>/mind/` and are listed in `manifest.json` with size
+  and SHA-256. `Pack.check()` verifies them (the result is remembered until a file
+  changes). The pack is fetched from `huggingface.co/yunusemrejr/kiwimind`, file by file,
+  resuming a broken download.
+- **Usable.** Kiwi Mind leads when the pack verifies and Node.js 18.14 or newer is found
+  (`find_node`: the PATH, then nvm). Otherwise the selected model answers as before 4b
+  existed and the chat says so once.
+- **Process.** `MindHost` starts the host when the app is ready, or at the first request:
+  four slots, half the processor's threads (2 to 8). It is started with
+  `PR_SET_PDEATHSIG` and holds a stdin pipe, so it cannot outlive Kiwibro, and it is
+  stopped wherever the model servers of §4.4 are stopped.
+- **Leading.** `LLMClient` sends every chat turn to the conductor when Kiwi Mind is
+  usable. The agent gives it the full tool catalog (`tools.tool_defs_for("full")`), and
+  the reply is parsed by `render.parse_reply` into text and tool calls like any other
+  model's.
+- **Choosing the skill.** At the first generation after a user message the conductor asks
+  `/control`. A running conversation changes skill only when the new skill's share beats
+  the current one's by `SWITCH_MARGIN` (0.15); the skill then stays through the tool steps
+  of that turn.
+- **Heavy requests.** When the head marks a request heavy and a helper is selected, the
+  conductor looks at the first pieces Kiwi Mind writes. If they open a tool call, Kiwi
+  Mind carries on: tool decisions never leave it. Otherwise the helper answers the same
+  messages, without tools. A helper that fails hands the answer back to Kiwi Mind.
+- **Images** go to a helper that can see; Kiwi Mind reads text only.
+- **Utility work** (titles, summaries, memory extraction) goes to the helper when one is
+  selected and otherwise to Kiwi Mind without a skill, in a slot of its own.
+- **API.** `GET /api/mind` (usable, installed, version, size, state of the host, the
+  helper, a running download), `POST /api/mind/download`, `POST
+  /api/mind/download/cancel`; `/health` carries `mind`; a turn's stream carries `brain`
+  events naming who writes (`kiwimind` with its skill, or the helper).
+
+### Training (`scripts/mind/`)
+
+`train.py` runs on one GPU in six stages: `gen` (a large open teacher model writes
+conversations with Kiwibro's own tools, one set per skill), `trunk` (quantization-aware
+training of the whole model), `skills` (one LoRA per skill on the frozen trunk), `head`
+(the control head on the trunk's states), `eval` (held-out loss and tool-call checks, with
+and without the skills) and `export` (the pack and its manifest).
+
+Two rules came out of the first runs and are built in. The data set is small, so a second
+pass over it is learned by heart: the trunk reads every conversation once, and both the
+trunk and each skill are kept as they were at their lowest loss on the held-back
+conversations. And a skill trained on what the trunk has already read adds nothing, so 30%
+of the training conversations (`--skill-share`) are kept away from the trunk; each skill
+learns from its own part of them. A skill that never beats the trunk alone is stored as no
+change.
+`formats.py` reads and writes the three file formats, `reference.py` is a plain PyTorch
+reading of the same files to check the engine against, and `bench.mjs` measures the engine.
+
+---
+
 ## 5. Context management
 
 Token estimation (no tokenizer dependency): `estimate_tokens(text)`, roughly
@@ -682,6 +799,25 @@ Automatic compaction (`ContextEngine.prepare`):
 
 The UI receives `event: context {used, budget, percent, compacted}` after context
 work and on `meta`, rendered as a minimal ring/bar near the composer.
+
+### Session ledger (`ledger.py`)
+
+A summary keeps the gist and loses the detail, so a long chat also gets an exact index that
+no model writes.
+
+- **Rows.** Every message is stored word for word (table `messages`). On top of that the
+  agent adds one `ledger` row per step: `record_user` for what was asked, `record_tool` for
+  a file that changed, a command that ran (with its exit code), a page that was read, a note
+  or a task. The row comes from the tool name and its arguments, so it is always exact.
+- **In the prompt.** `block()` lists the steps that the rolling summary has already
+  covered (`summary_through_seq`), grouped as *Asked*, *Files changed*, *Commands*,
+  *Pages* and *Notes and tasks*, each entry with its step numbers, in at most 1,400
+  characters. Over that budget the oldest entries of the longest line go first and the
+  line says how many were dropped. The block only grows at a compaction, so the prompt
+  prefix stays cached between turns.
+- **Reading a step again.** `recall("step 14")` or `recall("steps 14-16")` returns those
+  messages in full (`step_text`, up to 6,000 characters each), labelled *this chat, step
+  14, tool result*; `recall("words to find")` searches the whole chat as before.
 
 ---
 
@@ -768,8 +904,8 @@ Every assistant tool-call message is stored; every tool result is stored as a
 `tool` message (content capped). Reasoning text is stored on assistant messages but
 not re-sent as history.
 
-Tool catalog (OpenAI function schemas): `tools.TOOL_SPECS` holds 46 tools; `tools.AUTO_TOOLS`
-is the set of 22 sent by default. The main entries:
+Tool catalog (OpenAI function schemas): `tools.TOOL_SPECS` holds 47 tools; `tools.AUTO_TOOLS`
+is the set of 23 sent by default (Kiwi Mind always gets all of them, §4b). The main entries:
 
 | tool | args | permission default | notes |
 |---|---|---|---|
@@ -782,6 +918,7 @@ is the set of 22 sent by default. The main entries:
 | `run_command` | `command`, `cwd?` | ask | cwd inside workspace, 60 s timeout, 6 KB output cap, blocklist |
 | `remember` | `content`, `kind?` | auto | writes memory immediately |
 | `note` | `action`, `title?`, `content?` | auto | saves, appends, reads and searches notes |
+| `component` | `action`, `query?`, `name?`, `path?`, `values?` | ask | searches the component library, shows a part, writes a kit into the workspace |
 
 ### Tool layer
 
@@ -1063,6 +1200,88 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
 - **Remote.** `remote.py` uses the system ssh/scp in BatchMode; hosts from
   `~/.ssh/config` or `remote_hosts` are trusted, others need approval; commands are
   graded for a server (`sudo` high, wiping `/` or `~` critical).
+
+### Components (`components.py`, `components/library/`)
+
+Ready parts, so a model builds on proven work instead of a blank page. The library is plain
+data: one folder per component with a `component.json` (name, kind, title, summary, when to
+use it, blanks, next step) and, for a kit, a `files/` tree.
+
+- **Kinds.** A *kit* is a set of starter files whose contents and names may carry
+  `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
+  Kiwibro's own tools.
+- **Areas.** 38 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service), `code/` (Python CLI and package, Node CLI, C program, SQLite store, tests),
+  `script/` (bash, Python, backup, batch rename, cron job, watch and run), `ubuntu/` (GTK
+  app, desktop entry, systemd service, deb package), `terminal/` (diagnose, git review,
+  ports and processes, project setup), `computer/` (find files, free space, organise a
+  folder, convert documents, daily brief, explain a screenshot) and `browser/` (research,
+  compare, extract a table, follow docs, monitor a page).
+- **The tool.** `component(action=search|list|show|use, ...)`. `search` ranks by the words
+  of the name, title, summary and "when" line and returns at most six; `use` fills the
+  blanks and writes a kit into the workspace through the same path checks and checkpoint as
+  `write_file`, so nothing lands outside the workspace and `undo_changes` takes the files
+  back. Each result ends with the component's own `Next:` line, the step the model should
+  take after it.
+- **Adding one.** A new folder with a `component.json` is enough; `tests/test_components.py`
+  checks every component in the library (fields, blanks, that a kit's files fill in and its
+  Python compiles).
+
+### Safe copy (`safecopy.py`, `safemode.py`)
+
+A conversation can work on a copy of a folder instead of the folder. The real folder
+changes only when the user applies a proof they have read.
+
+- **Session.** `safecopy.start(real, root, id)` copies the folder to
+  `<data>/safecopy/<id>/work/` and tracks it in a git repository of its own
+  (`repo.git/`, outside the copy). `/`, the home folder itself and a folder that contains
+  Kiwibro's own data are refused, as is a folder over the limits (20,000 files, 2 GiB,
+  64 MiB a file). A session no chat points at any more is removed at start once it is
+  14 days old.
+- **Confinement.** While a session is on, `safemode.refusal_for` is asked before any
+  approval decision: file tools and `git` are rebased onto the copy; commands run only
+  through `safety.confine` with the copy as the single writable path and no network, and
+  are refused when no sandbox is available; `remote`, `open_path`, `clipboard`,
+  `screenshot`, `notify`, `system_info`, `describe_image`, `workspace`, `terminal_session`,
+  `delegate` and every extension tool are refused. The web tools, memory, notes and
+  `component` keep working. Permission settings cannot widen this.
+- **History.** Every turn that changed the copy ends in a commit (`commit_turn`), so each
+  step of the work can be inspected or taken back inside the copy.
+- **Proof.** `Session.proof()` compares the copy with the real folder as it is now and
+  returns: the files added, changed and deleted with totals, the diff, the files it
+  left out (too large, binary, ignored), conflicts (a file that changed in the real folder
+  since the copy was taken: these block the apply), the commit that records the real
+  folder's state before the apply (`refs/kiwibro/before`), the exact command that restores
+  it, and the `rm` commands for files deleted in the copy. Before the proof is handed out
+  the undo is rehearsed on a scratch copy and compared byte for byte (`verified`). The proof
+  carries a fingerprint.
+- **Apply.** `Session.apply(fingerprint)` refuses a fingerprint that no longer matches
+  (the copy or the real folder moved since the proof). It writes added and changed files
+  only, each through a temporary file and `os.replace`; it never removes or renames
+  anything in the real folder and refuses symlinks and anything under `.git`. A failed
+  write records what was written and raises `partial`, so the undo still covers it.
+- **Undo.** `Session.revert_last()` restores the files from the `before` commit and lists
+  files the apply added; those are kept and handed over as `rm` commands like every other
+  deletion.
+- **Routes.** `POST /api/safecopy/start`, `GET /api/safecopy/status`, `GET
+  /api/safecopy/proof`, `POST /api/safecopy/apply`, `POST /api/safecopy/undo`, `POST
+  /api/safecopy/end`. Apply and undo also leave a message in the chat with the files and
+  the undo command, so the record stays with the conversation.
+
+### Without internet (`connectivity.py`)
+
+- **The check.** `online()` opens a TCP connection to three public addresses at once
+  (no DNS, no HTTP) and is online as soon as one accepts. A good answer is reused for
+  45 s, a bad one for 8 s; a web request that fails at the network level calls
+  `suspect()` so the next look happens at once. `KIWIBRO_OFFLINE=1` or `0` fixes the
+  answer.
+- **What changes.** Web tools return at once with one plain line instead of waiting out
+  their timeouts; the turn's context carries `OFFLINE_LINE`, which tells the model to
+  answer from what it knows and from local files, notes, memory and documents and to say
+  what may be outdated; `/health` reports `online`, and the page shows it.
+- **What does not.** Kiwi Mind, the helper models, Kiwi Sense, files, commands, notes,
+  memory, the document library and components run on this computer and need no
+  connection.
 
 ---
 

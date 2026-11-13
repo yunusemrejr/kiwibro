@@ -1,0 +1,19 @@
+{
+  "name": "terminal/git-review",
+  "kind": "recipe",
+  "title": "Review a repository",
+  "summary": "Review what changed in a repository: status, diff, log, risky files, then a summary.",
+  "when": "Use when the user asks what changed in a repository or wants a check before committing.",
+  "blanks": {},
+  "steps": [
+    "Call git action status with the repository path to see changed, untracked and staged files in one view.",
+    "Call git action diff for the unstaged changes and read every hunk before forming an opinion.",
+    "Call run_command with git diff --stat and git diff -- path when the full diff is too long to read at once.",
+    "Call git action log with limit 10 to see whether the change matches the recent work and its messages.",
+    "Mark risky changes: secrets or keys, dependency lock files, database migrations and edits outside the stated scope.",
+    "Call grep_files with patterns such as password, token and secret over the changed paths to catch a key before committing.",
+    "Call git action compare with the remote to say whether the branch is level, ahead or behind origin.",
+    "Summarise what changed, what looks risky and what to check before committing, in three short parts."
+  ],
+  "next": "The final answer must summarise the changed files, the diff in plain words, the risky spots and whether the branch matches its remote."
+}

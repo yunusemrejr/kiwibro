@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- KIWIBRO: set the form title and description -->
+  <title>{{title}}</title>
+  <meta name="description" content="{{title}} — a short, validated form.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <main id="main" class="wrap">
+    <section class="panel">
+      <h1>{{title}}</h1>
+      <p class="lede">Three fields, checked in the browser before anything leaves the page.</p>
+
+      <form id="contact-form" novalidate>
+        <div class="field">
+          <label for="name">Name</label>
+          <input id="name" name="name" type="text" autocomplete="name" maxlength="80" aria-describedby="name-error">
+          <p class="error" id="name-error" hidden></p>
+        </div>
+
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" maxlength="120" aria-describedby="email-error">
+          <p class="error" id="email-error" hidden></p>
+        </div>
+
+        <div class="field">
+          <label for="message">Message</label>
+          <textarea id="message" name="message" rows="5" maxlength="1000" aria-describedby="message-error"></textarea>
+          <p class="error" id="message-error" hidden></p>
+        </div>
+
+        <button type="submit">Send</button>
+        <p class="success" id="form-status" role="status" hidden></p>
+      </form>
+    </section>
+  </main>
+
+  <script src="form.js"></script>
+</body>
+</html>

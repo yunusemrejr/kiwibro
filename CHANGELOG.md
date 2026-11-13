@@ -6,6 +6,33 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **Kiwi Mind: Kiwibro's own model.** Kiwibro now thinks with a model stack of its own: one
+  4-bit model (Qwen3-0.6B, trained on the grid it is stored in), seven skills it swaps by
+  itself (chat, web, code, terminal, computer, tools, write) and a control head that picks
+  the skill for each message. It runs on the CPU in WebAssembly, starts and stops with
+  Kiwibro and needs about 1 GB of memory. The pack (under 500 MB) is fetched once from Hugging
+  Face (`yunusemrejr/kiwimind`); `scripts/mind/train.py` is the whole training run.
+- **Helper models.** The model picked in the header is now a helper. Kiwi Mind decides which
+  tools to use and answers everyday requests itself; when its control head marks a request
+  as heavy and a helper is selected, the helper writes that answer. *No helper* is a valid
+  choice. Until the pack is there, the selected model answers as before and the chat says so.
+- **Safe copy.** *Work in a safe copy* takes a folder and lets Kiwibro work in a copy of it:
+  its own browser, a sandboxed terminal without network, and nothing outside the copy. Each
+  step is recorded in git. The real folder changes only after *Review changes* has shown
+  what changed, where, and the git command that puts the old files back, which Kiwibro
+  tries out on a scratch copy first. Files deleted in the copy are never deleted for real:
+  the `rm` commands are handed to you.
+- **Components.** A library of 38 ready parts (web pages and apps, Python, Node and Bash
+  starters, a GTK app for Ubuntu, scripts, and recipes for browser and desktop chores) that
+  every model can search and use with the new `component` tool, so its work does not start
+  from a blank page.
+- **Session ledger.** Every step of a conversation stays stored in full. After older turns
+  are summarised, a short index of what was asked, which files changed, which commands ran
+  and which pages were read stays in view, and `recall("step 14")` reads a step again word
+  for word.
+- **Without internet.** Kiwibro notices a lost connection within seconds, tells the model,
+  and web tools fail at once with a plain message instead of timing out. Kiwi Mind, files,
+  notes, memory and documents work as before.
 - **Kiwi Sense helpers.** Five tiny trained deciders read every message before the model,
   in a few milliseconds and the same way for every model: its language, what it wants
   (intent, web, time, topic, whether it says something worth remembering), its time
@@ -22,6 +49,12 @@ All notable changes to Kiwibro are documented here.
   together with the exchange before it; a new topic is marked only when it is plain, so the
   model answers it on its own. Memories that only share a
   word with the message, and facts from hypotheticals or passing moods, stay out.
+
+### Changed
+
+- **Lighter app window.** The window's private Chrome profile is started with a 64 MB cap on
+  its page cache and without Chrome's own on-device model downloads, which had grown the
+  profile past 200 MB.
 
 ### Fixed
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+# KIWIBRO: replace this stub with the program you are packaging, or copy a whole tree into payload/
+set -eu
+echo "{{name}} {{version}}"

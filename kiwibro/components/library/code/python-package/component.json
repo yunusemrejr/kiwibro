@@ -1,0 +1,14 @@
+{
+  "name": "code/python-package",
+  "kind": "kit",
+  "title": "Python package with pytest",
+  "summary": "Python package: pyproject.toml, src layout and pytest tests.",
+  "when": "Use when the user is starting a reusable Python library that needs packaging and a test suite.",
+  "blanks": {
+    "name": {
+      "about": "Package name, used as the import name, the distribution name and the src/ folder name (lowercase, underscores).",
+      "default": "textkit"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q from the project root and confirm the tests pass."
+}

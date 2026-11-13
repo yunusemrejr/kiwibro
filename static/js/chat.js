@@ -79,6 +79,7 @@ const ASSISTANT_PHRASE = {
   remote: "work on a remote server",
   workspace: "switch the working folder",
   undo_changes: "undo its recent file changes",
+  component: "use a ready-made component",
 };
 
 function caretSpan() {
@@ -980,9 +981,14 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       const chip = el("span", { class: "chip chip-memory" }, [icon("bookmark"), el("span", { text: label })]);
       appendChip(turn, chip);
     },
+    // Who wrote the reply (the stream's brain event, see app.js brainLine). The last one wins.
+    setBrain(text) {
+      ensureTurn().brain = text || "";
+    },
     finishDone({ aborted = false, steered = [], acted = "" } = {}) {
       if (current && steered.length) appendChip(current, senseChip(steered));
       if (current && ACTED[acted]) appendChip(current, actedChip(acted));
+      if (current?.brain) current.flow.append(el("div", { class: "msg-brain", text: current.brain }));
       finishTurn({ aborted });
     },
     prepareRetry() {

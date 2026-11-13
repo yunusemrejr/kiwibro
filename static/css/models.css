@@ -488,3 +488,38 @@
     padding-left: 8px;
   }
 }
+
+/* ---------- Kiwi Mind (built into Kiwibro) ------------------------------- */
+/* The first thing a new user touches: its buttons and progress are 40 px high. */
+.mdl-facts {
+  margin-bottom: 12px;
+}
+
+.mdl-facts .mdl-meta {
+  font-size: 12.5px;
+}
+
+.mdl-skills {
+  margin: 0 0 14px;
+}
+
+.mdl-mind-actions {
+  align-items: center;
+}
+
+.mdl-mind-actions .btn,
+.mdl-mind .btn {
+  height: 40px;
+  padding: 0 16px;
+}
+
+.mdl-mind .mdl-progress-top {
+  min-height: 40px;
+}
+
+.mdl-mind-size {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}

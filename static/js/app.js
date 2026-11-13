@@ -10,6 +10,7 @@ import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet } from "./sheets.js";
 import { conversationMarkdown, exportFilename } from "./export.js";
 import { createModelsView } from "./models.js";
+import { createSafeCopy } from "./safecopy.js";
 import { createNotesView } from "./notes.js";
 import { createHowView } from "./how.js";
 import {
@@ -39,6 +40,7 @@ const els = {
   modelPill: $("#model-pill"),
   modelDot: $("#model-dot"),
   modelPillName: $("#model-pill-name"),
+  offlineNote: $("#offline-note"),
   memoryBtn: $("#memory-btn"),
   memoryBadge: $("#memory-badge"),
   settingsBtn: $("#settings-btn"),
@@ -108,6 +110,8 @@ const state = {
   settings: null,
   models: [],
   currentModel: null,
+  mind: null, // GET /api/mind: { usable, installed, helper, ... } or null until loaded
+  online: true, // health.online: false when the computer has no internet
   conversations: [],
   convFilter: "",
   convMatches: new Map(), // chat id -> snippet of a message that matches the filter
@@ -135,6 +139,7 @@ let healthCheckAt = 0;
 let memoryRefreshTimer = 0;
 let memorySheet = null;
 let settingsSheet = null;
+let safeCopy = null;
 let modelsView = null;
 let notesView = null;
 let howView = null;
@@ -197,6 +202,7 @@ function applyBootstrap(data) {
 // "local": Kiwibro runs models itself (the default). "attached": a llama.cpp-compatible
 // server at settings.server_url answers instead.
 function applyEngineHealth(health) {
+  state.online = health?.online !== false;
   state.engineOk = Boolean(health?.engine_ok);
   state.engineMode = health?.engine === "attached" ? "attached" : "local";
   state.engineError = health?.engine_error || null;
@@ -209,6 +215,7 @@ async function boot() {
     state.booted = true;
     applyBootstrap(data);
     renderAll();
+    refreshMind();
     watchReadiness(); // bootstrap queued a load + warm-up of the selected model
     await restoreConversation();
     restoreReloadDraft();
@@ -295,6 +302,10 @@ function renderHome() {
 
 function renderHeaderModel() {
   inferenceUI.applySettings(state.settings);
+  // Kiwi Mind answers every chat when usable; the selected helper (if any) only writes heavy answers.
+  const mind = state.mind?.usable ? state.mind : null;
+  const helper = mind?.helper?.id ? mind.helper : null;
+  const helperPart = helper ? modelLabel(helper.id) : "";
   let name = "Kiwibro";
   let tone = "idle";
   let title = "Switch model";
@@ -303,11 +314,26 @@ function renderHeaderModel() {
     name = "Offline";
     tone = "warn";
     title = "Kiwibro server is unreachable";
-  } else if (!state.engineOk) {
+  } else if (!state.engineOk && !mind) {
     const attached = state.engineMode === "attached";
     name = attached ? "Server offline" : "No engine";
     tone = "warn";
     title = attached ? "The model server isn't reachable" : "Kiwibro needs its engine";
+  } else if (mind) {
+    name = "Kiwi Mind";
+    tone = "loaded";
+    title = "Kiwi Mind runs the chat";
+    if (helper && !state.engineOk) {
+      tone = "warn";
+      title = state.engineMode === "attached" ? "The model server isn't reachable" : "Kiwibro needs its engine";
+    } else if (helper) {
+      title = `Kiwi Mind runs the chat. ${helperPart} writes heavy answers.`;
+      const ready = state.readiness;
+      if (ready && ready.model === helper.id && READINESS_BUSY.has(ready.phase)) {
+        tone = "preparing";
+        title = `${ready.detail || "Getting ready"} — ${helper.id}`;
+      }
+    }
   } else if (!state.models.length) {
     name = "No models";
     tone = "amber";
@@ -324,17 +350,41 @@ function renderHeaderModel() {
     }
   }
 
-  els.modelPillName.textContent = name;
+  if (helper) {
+    els.modelPillName.replaceChildren(
+      el("span", { class: "model-pill-main", text: name }),
+      el("span", { class: "model-pill-helper", text: `+ ${helperPart}` }),
+    );
+  } else {
+    els.modelPillName.textContent = name;
+  }
+  els.modelPillName.classList.toggle("is-split", Boolean(helper));
   els.modelDot.dataset.tone = tone;
   els.modelPill.title = title;
+  els.offlineNote.hidden = state.unreachable || state.online !== false;
   els.sidebarModelName.textContent = state.unreachable
     ? "Offline"
-    : !state.engineOk
-      ? state.engineMode === "attached" ? "Server off" : "Engine off"
-      : modelLabel(state.currentModel) || "No models";
+    : mind
+      ? (helper ? `Kiwi Mind + ${helperPart}` : "Kiwi Mind")
+      : !state.engineOk
+        ? state.engineMode === "attached" ? "Server off" : "Engine off"
+        : modelLabel(state.currentModel) || "No models";
   els.sidebarDot.dataset.tone = tone;
   els.placeModelsCount.textContent = state.models.length ? String(state.models.length) : "";
   renderHome();
+}
+
+/* The model the user picked: the helper while Kiwi Mind runs, otherwise the current model. */
+function currentChoice() {
+  if (state.mind?.usable) return state.mind.helper?.id || "none";
+  return state.currentModel;
+}
+
+// Who wrote a reply, from the stream's `brain` event (server: mind/conductor.py).
+function brainLine(data) {
+  if (data?.brain === "kiwimind") return data.skill ? `Kiwi Mind · ${data.skill}` : "Kiwi Mind";
+  if (data?.brain === "helper" && state.mind?.usable && data.name) return `${data.name} · helper`;
+  return "";
 }
 
 /* "empero-ai/qwen3.8-2b" reads as "qwen3.8-2b": the publisher is in the tooltip. */
@@ -352,7 +402,52 @@ function modelPlainLine(model) {
 
 function buildModelMenu(menu) {
   clear(menu);
-  menu.append(el("div", { class: "menu-label", text: "Model" }));
+  const usable = Boolean(state.mind?.usable);
+  const choice = currentChoice();
+
+  if (state.mind && state.mind.installed === false) {
+    const get = el("button", { class: "menu-item menu-get", type: "button", role: "menuitem" }, [
+      icon("cube"),
+      el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: "Get Kiwi Mind" })]),
+    ]);
+    get.addEventListener("click", () => {
+      closePopover({ restoreFocus: false });
+      modelsView?.open();
+    });
+    menu.append(get, el("div", { class: "menu-sep" }));
+  }
+
+  if (usable) {
+    menu.append(el("div", { class: "menu-label", text: "Helper model" }));
+    menu.append(el("div", { class: "menu-note", text: "Kiwi Mind runs the chat. A helper writes the heavy answers." }));
+    const noneSelected = !choice || choice === "none";
+    const none = el(
+      "button",
+      {
+        class: `menu-item${noneSelected ? " is-selected" : ""}`,
+        type: "button",
+        role: "menuitemradio",
+        "aria-checked": String(noneSelected),
+        "data-model-id": "none",
+      },
+      [
+        el("span", { class: "status-dot", "data-tone": "idle" }),
+        el("span", { class: "menu-item-body" }, [
+          el("span", { class: "menu-item-name", text: "No helper" }),
+          el("span", { class: "menu-item-meta", text: "Kiwi Mind answers everything" }),
+        ]),
+        icon("check", "menu-item-check"),
+      ],
+    );
+    none.addEventListener("click", async () => {
+      closePopover({ restoreFocus: false });
+      const ok = await selectModel("none");
+      if (ok) focusComposerSoon();
+    });
+    menu.append(none, el("div", { class: "menu-sep" }));
+  } else {
+    menu.append(el("div", { class: "menu-label", text: "Model" }));
+  }
 
   if (!state.engineOk) {
     const attached = state.engineMode === "attached";
@@ -372,11 +467,11 @@ function buildModelMenu(menu) {
     );
   } else {
     const ordered = [...state.models].sort((a, b) =>
-      (b.id === state.currentModel) - (a.id === state.currentModel)
+      (b.id === choice) - (a.id === choice)
       || (b.state === "loaded") - (a.state === "loaded")
       || modelLabel(a.id).localeCompare(modelLabel(b.id)));
     for (const model of ordered) {
-      const selected = model.id === state.currentModel;
+      const selected = model.id === choice;
       const row = el(
         "button",
         {
@@ -422,6 +517,20 @@ function buildModelMenu(menu) {
   menu.addEventListener("keydown", moveMenuFocus);
 }
 
+// Rebuilds an open menu with fresh data and keeps the keyboard focus on the same row.
+function rebuildModelMenu(menu) {
+  const active = menu.contains(document.activeElement) ? document.activeElement : null;
+  const key = active ? menuRowKey(active) : "";
+  buildModelMenu(menu);
+  if (!active) return;
+  const rows = $$(".menu-item", menu);
+  (rows.find((row) => menuRowKey(row) === key) || rows[0])?.focus({ preventScroll: true });
+}
+
+function menuRowKey(row) {
+  return row.dataset.modelId || (row.classList.contains("menu-manage") ? "manage" : "get");
+}
+
 function moveMenuFocus(event) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const items = $$(".menu-item", event.currentTarget).filter((item) => !item.disabled);
@@ -450,7 +559,7 @@ function toggleModelPopover() {
   const menu = el("div", { class: "menu", role: "menu", "aria-label": "Model" });
   buildModelMenu(menu);
   refreshModels({ quiet: true }).then((ok) => {
-    if (ok && menu.isConnected && !menu.contains(document.activeElement)) buildModelMenu(menu);
+    if (ok && menu.isConnected) rebuildModelMenu(menu);
   });
   els.modelPill.setAttribute("aria-expanded", "true");
   openPopover({
@@ -496,7 +605,7 @@ async function pollReadiness() {
 
 async function selectModel(id) {
   if (!id) return true;
-  if (id === state.currentModel) {
+  if (id === currentChoice()) {
     renderHeaderModel();
     return true;
   }
@@ -506,9 +615,14 @@ async function selectModel(id) {
     if (state.settings) state.settings.model = state.currentModel;
     applyReadiness(result.readiness);
     watchReadiness();
-    renderHeaderModel();
-    toast(`Using ${modelLabel(state.currentModel)}`, { iconName: "cube" });
-    announce(`Model switched to ${state.currentModel}`);
+    await refreshMind();
+    if (id === "none") {
+      toast("No helper: Kiwi Mind answers everything", { iconName: "cube" });
+      announce("Helper model cleared; Kiwi Mind answers everything");
+    } else {
+      toast(`Using ${modelLabel(state.currentModel)}`, { iconName: "cube" });
+      announce(`Model switched to ${state.currentModel}`);
+    }
     return true;
   } catch (error) {
     toast(error?.message || "Couldn't switch model", { tone: "error", iconName: "alert" });
@@ -516,13 +630,24 @@ async function selectModel(id) {
   }
 }
 
+// Kiwi Mind's state (GET /api/mind): whether it answers every chat, and the helper picked.
+async function refreshMind() {
+  try {
+    state.mind = await api.mind();
+  } catch {
+    state.mind = null;
+  }
+  renderHeaderModel();
+}
+
 async function refreshModels({ quiet = false } = {}) {
   try {
-    const data = await api.models();
+    const [data, mind] = await Promise.all([api.models(), api.mind().catch(() => null)]);
     state.models = Array.isArray(data.models) ? data.models : [];
     state.currentModel = data.current || state.currentModel;
     state.engineOk = Boolean(data.engine_ok);
     state.engineError = data.engine_error || null;
+    state.mind = mind;
     renderHeaderModel();
     updateComposerState();
     return true;
@@ -886,6 +1011,7 @@ async function openConversation(id, { silent = false } = {}) {
     renderSidebar();
     updateComposerState();
     setStreamingUI(backgroundStreams.has(id));
+    safeCopy?.refresh();
     watchReadiness(); // opening a chat prefills its history on the server
     closeDrawer();
     if (!silent) focusComposerSoon();
@@ -905,6 +1031,18 @@ async function openConversation(id, { silent = false } = {}) {
   }
 }
 
+// Re-reads the open chat's messages, for the note a safe copy apply or undo adds to the chat.
+async function reloadCurrentChat() {
+  const id = state.conversationId;
+  if (!id) return;
+  try {
+    const data = await api.conversation(id);
+    if (state.conversationId === id) chatView.renderConversation(data.messages, data.conversation);
+  } catch {
+    /* the next time the chat opens it shows the note */
+  }
+}
+
 // The chat's last message never got a reply (the app quit, or the reply failed before any
 // text): offer Retry. The server reuses that message instead of storing it a second time.
 function offerRetryIfUnanswered(id, data) {
@@ -919,6 +1057,7 @@ function offerRetryIfUnanswered(id, data) {
 
 function showEmptyState() {
   state.conversationId = null;
+  safeCopy?.refresh();
   state.conversation = null;
   renderPrivateToggle();
   chatView.reset();
@@ -934,6 +1073,7 @@ function newChat() {
   state.conversationId = null;
   state.conversation = null;
   state.privateNext = false;
+  safeCopy?.refresh();
   renderPrivateToggle();
   localStorage.removeItem(STORAGE.conversation);
   chatView.reset();
@@ -1182,6 +1322,9 @@ function handleStreamEvent(event, data, activeStream) {
       updateContext(data);
       if (data.compacted) chatView.addContextChip();
       break;
+    case "brain":
+      chatView.setBrain(brainLine(data));
+      break;
     case "steering":
       chatView.addSteeringChip?.(data.text || "");
       break;
@@ -1210,6 +1353,7 @@ function handleStreamEvent(event, data, activeStream) {
       });
       inferenceUI.onDone(data);
       scheduleConversationRefresh();
+      safeCopy?.refresh();
       break;
     case "error":
       chatView.showError(data.message || "Something went wrong. Try again.", { retry: true });
@@ -1628,6 +1772,18 @@ async function maybeCheckHealth() {
   }
 }
 
+// The header's "Offline" note follows /health (online: false when this computer has no internet).
+async function refreshOnlineNote() {
+  if (!state.booted || state.unreachable || document.hidden) return;
+  try {
+    const health = await api.health();
+    state.online = health?.online !== false;
+    renderHeaderModel();
+  } catch {
+    /* the next check retries */
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Event wiring                                                               */
 /* -------------------------------------------------------------------------- */
@@ -1647,10 +1803,17 @@ function initSheets() {
     },
   });
 
+  safeCopy = createSafeCopy({
+    api,
+    getConversationId: () => state.conversationId,
+    openChat: (id) => openConversation(id, { silent: true }),
+    reloadChat: reloadCurrentChat,
+  });
   settingsSheet = createSettingsSheet({
     dialog: els.settingsSheet,
     api,
     isMock: IS_MOCK,
+    safeCopy,
     actions: {
       selectModel,
       patchSettings: patchSettingsAndSync,
@@ -1800,6 +1963,9 @@ function initChrome() {
     if (state.drawerOpen && !isMobile()) closeDrawer();
   });
   window.addEventListener("focus", maybeCheckHealth);
+  window.addEventListener("online", refreshOnlineNote);
+  window.addEventListener("offline", refreshOnlineNote);
+  window.setInterval(refreshOnlineNote, 30_000);
   window.addEventListener("pagehide", () => {
     if (IS_MOCK) return;
     fetch("/api/window/closing", { method: "POST", cache: "no-store", keepalive: true }).catch(() => {});

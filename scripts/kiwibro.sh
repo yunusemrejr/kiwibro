@@ -163,8 +163,12 @@ close_window() {
 }
 
 open_window() {
+  # The last two keep the window's private profile small: a 64 MB page cache at most, and none of
+  # the on-device models Chrome would otherwise download into it.
   local flags=(--app="$URL" --class=Kiwibro --name=Kiwibro --user-data-dir="$PROFILE"
-    --window-size=1280,860 --no-first-run --no-default-browser-check)
+    --window-size=1280,860 --no-first-run --no-default-browser-check
+    --disk-cache-size=67108864
+    --disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching)
   for bin in google-chrome google-chrome-stable chromium chromium-browser; do
     if command -v "$bin" >/dev/null 2>&1; then
       exec "$bin" "${flags[@]}" >/dev/null 2>&1

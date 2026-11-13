@@ -1,0 +1,19 @@
+{
+  "name": "browser/monitor-page",
+  "kind": "recipe",
+  "title": "Watch a page for changes",
+  "summary": "Check a page for a change (price, version, status) and report the difference from last time, kept in a note.",
+  "when": "Use when the user asks whether a price, version or status on a page has changed since last time.",
+  "blanks": {},
+  "steps": [
+    "Call note action search with the page name or URL to find the note holding the last reading.",
+    "Call browser action open on the url and copy only the value being watched, such as price, version or status.",
+    "Call note action read on that note and put the old value and today's value side by side with their dates.",
+    "Use calculate for the difference, such as the percent change, so the report gives a number and not an impression.",
+    "Call note action append to add today's date, the new value and the change, so the next run has a baseline.",
+    "If no earlier note exists, call note action save with today's value and say plainly that this is the first reading.",
+    "Check that the value comes from the page body itself, not from a search snippet, before reporting any change.",
+    "If the page cannot be reached, say so plainly; otherwise report the old value, the new value, the date and the change."
+  ],
+  "next": "The final answer must give the old and new value with their dates and the size of the change, or say plainly that this is the first reading."
+}

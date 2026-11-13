@@ -410,6 +410,7 @@ const TOOL_META = {
   recall: { label: "Recall", icon: "bookmark" },
   remember: { label: "Remember", icon: "bookmark" },
   note: { label: "Notes", icon: "note" },
+  component: { label: "Component", icon: "cube" },
   calculate: { label: "Calculate", icon: "tool" },
   analyze_table: { label: "Analyze table", icon: "database" },
   doc_search: { label: "Search documents", icon: "search" },
@@ -438,8 +439,10 @@ export function toolSummary(name, args) {
     case "recall":
     case "grep_files":
       return args.query || args.pattern || "";
+    case "component":
+      return args.name || args.query || args.action || "";
     case "note":
-      return args.title || (typeof args.content === "string" ? args.content.split("\n")[0].slice(0, 80) : "") || args.action || "";
+      return args.title ||(typeof args.content === "string" ? args.content.split("\n")[0].slice(0, 80) : "") || args.action || "";
     case "multi_search":
       return Array.isArray(args.queries) ? args.queries.join(" · ") : "";
     case "fetch_pages":

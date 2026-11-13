@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About — {{site_name}}</title>
+  <meta name="description" content="About {{site_name}}.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="wordmark" href="index.html">{{site_name}}</a>
+      <nav aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="about.html" aria-current="page">About</a></li>
+          <li><a href="contact.html">Contact</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <section class="hero">
+      <h1>About {{site_name}}</h1>
+      <!-- KIWIBRO: replace this paragraph with the real background -->
+      <p class="lede">A few sentences about {{site_name}}: what it does, who it is for and how it started.</p>
+    </section>
+
+    <section class="section prose">
+      <h2>How it works</h2>
+      <p>The main idea, in plain words.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <p>{{site_name}}</p>
+      <p><a href="contact.html">Contact</a></p>
+    </div>
+  </footer>
+</body>
+</html>

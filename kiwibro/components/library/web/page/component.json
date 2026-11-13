@@ -1,0 +1,18 @@
+{
+  "name": "web/page",
+  "kind": "kit",
+  "title": "Responsive page",
+  "summary": "One responsive page: semantic HTML, phone-first CSS with design tokens, no framework.",
+  "when": "Use when the project needs a single public page such as a landing, info or documentation page.",
+  "blanks": {
+    "title": {
+      "about": "The page title, shown in the browser tab, the header and the main heading.",
+      "default": "Project page"
+    },
+    "description": {
+      "about": "One sentence that describes the page; used as the meta description and the line under the heading.",
+      "default": "A small, fast page that stays readable on phones and desktops."
+    }
+  },
+  "next": "Write the files, replace the text marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width to check the layout."
+}

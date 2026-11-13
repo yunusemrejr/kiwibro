@@ -1,0 +1,14 @@
+{
+  "name": "script/batch-rename",
+  "kind": "kit",
+  "title": "Batch rename with preview",
+  "summary": "Batch rename with a preview: dry run by default, applied with a flag.",
+  "when": "Use when many files need a new naming pattern and the user wants to see the result before anything moves.",
+  "blanks": {
+    "pattern": {
+      "about": "New name built from {stem}, {ext} and {n} (running number, zero padded).",
+      "default": "{n}-{stem}{ext}"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run ./batch-rename.sh on a few sample files and only use --apply once the user has seen the preview."
+}

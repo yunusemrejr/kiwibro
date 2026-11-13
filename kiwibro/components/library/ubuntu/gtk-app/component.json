@@ -1,0 +1,18 @@
+{
+  "name": "ubuntu/gtk-app",
+  "kind": "kit",
+  "title": "GTK 4 app window",
+  "summary": "Native Ubuntu app in Python with GTK 4 and libadwaita: window, header bar, actions and a desktop entry.",
+  "when": "Use when the user wants a real desktop window on Ubuntu, opened from the app grid, not a page in a browser.",
+  "blanks": {
+    "app_name": {
+      "about": "Name shown in the window title and under the icon.",
+      "default": "Notes"
+    },
+    "app_id": {
+      "about": "Reverse-DNS application id; also the .desktop and icon file names and the folder under ~/.local/share.",
+      "default": "org.example.Notes"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run python3 main.py and replace the places marked with a comment with the user's own screen and data."
+}

@@ -1,0 +1,14 @@
+{
+  "name": "code/tests-python",
+  "kind": "kit",
+  "title": "pytest tests for an existing module",
+  "summary": "pytest starter for an existing module: fixtures, parametrised cases and tmp_path use.",
+  "when": "Use when the user already has a Python module or script and wants a pytest suite around it.",
+  "blanks": {
+    "module": {
+      "about": "Import name of the module under test, without .py (lowercase identifier).",
+      "default": "calculator"
+    }
+  },
+  "next": "Write every file under files/ into the user's project next to the module, rename the imports and cases to match its real functions, then run python3 -m pytest -q."
+}

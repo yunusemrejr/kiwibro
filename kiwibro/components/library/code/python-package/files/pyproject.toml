@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# KIWIBRO: package metadata the user sees when they install it
+name = "{{name}}"
+version = "0.1.0"
+description = "Slug helpers for titles and file names"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

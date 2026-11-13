@@ -41,3 +41,24 @@ def no_search_providers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(research, "read_results", lambda engine, query, results, **_kwargs: results)
     monkeypatch.setattr(research, "THIN_RESULTS", 0)  # nor searches a second time for a thin first answer
+
+
+@pytest.fixture(autouse=True)
+def online_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test probes the network for connectivity: the switch says online unless a test says otherwise.
+
+    Tests that simulate dead providers then fail exactly as before, and a probe never opens a
+    real connection during a test."""
+    from kiwibro import connectivity
+
+    monkeypatch.setenv(connectivity.ENV_SWITCH, "0")
+    connectivity._reset()
+
+
+@pytest.fixture
+def offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The machine has no internet for this test (the switch, so nothing is probed)."""
+    from kiwibro import connectivity
+
+    monkeypatch.setenv(connectivity.ENV_SWITCH, "1")
+    connectivity._reset()

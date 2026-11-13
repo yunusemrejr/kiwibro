@@ -1,0 +1,14 @@
+{
+  "name": "web/form",
+  "kind": "kit",
+  "title": "Accessible form",
+  "summary": "Accessible form with client-side validation and clear error states.",
+  "when": "Use when the project needs a small contact or sign-up form with validation before anything is sent.",
+  "blanks": {
+    "title": {
+      "about": "The form heading, the document title and the submit button label context.",
+      "default": "Send a message"
+    }
+  },
+  "next": "Write the files, replace the sample labels and messages marked KIWIBRO with the project's own, then connect the valid branch in form.js to the project's endpoint."
+}

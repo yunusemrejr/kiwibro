@@ -1,0 +1,19 @@
+{
+  "name": "computer/daily-brief",
+  "kind": "recipe",
+  "title": "Daily brief",
+  "summary": "Collect notes, open tasks and saved facts into one short summary for the day.",
+  "when": "Use when the user asks what is on today, what is pending, or for a summary of their work.",
+  "blanks": {},
+  "steps": [
+    "Call task_board action summary to get open, in-progress and blocked tasks with their priorities.",
+    "Call note action search with the words of the day, and note action read for notes the user named.",
+    "Call recall with two or three queries such as deadlines and decisions to bring back saved facts.",
+    "Call list_files on the workspace or glob_files for files changed in the last day when work in progress matters.",
+    "Call system_info for the local date and time so the brief names the right day, not an assumed one.",
+    "Order the brief by what is due soonest, then blocked items, then the rest, and keep it under ten lines.",
+    "Check every task and note quoted is still open, drop finished items and say plainly when the board is empty.",
+    "If a task or note tool fails, say what could not be read and build the brief from what is available, inventing nothing."
+  ],
+  "next": "The final answer must be a short dated brief with the tasks due soonest first, the relevant notes and saved facts, and nothing invented."
+}

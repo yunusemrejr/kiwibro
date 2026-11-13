@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import autofacts, config, inference, prompts, sense, terms
+from . import autofacts, config, inference, ledger, prompts, sense, terms
 from .context import estimate_tokens
 from .db import Database
 from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
@@ -50,6 +50,11 @@ SINGLE_FACT_TERMS = 4  # more key words than this: a fact that bundles several (
 _ABOUT_ASSISTANT_RE = re.compile(r"^(?:kiwibro|the assistant|assistant|you are|you're|this ai)\b", re.IGNORECASE)
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+# An exact excerpt from this chat may run long: it is the evidence, not a memory line.
+RECALL_EXCERPT_CHARS = 900
+# "step 14", "step14", "#14", "steps 14-16": a request for steps, not a search for words.
+_STEP_QUERY_RE = re.compile(r"^\s*(?:steps?|#)\s*(\d+)(?:\s*(?:-|–|—|to)\s*(\d+))?\s*$", re.IGNORECASE)
+MAX_STEPS_ASKED = 5
 
 
 def worth_extracting(window: list[dict[str, Any]]) -> bool:
@@ -78,6 +83,18 @@ def normalize(text: str) -> str:
 
 def _tokens(normalized: str) -> set[str]:
     return set(_WORD_RE.findall(normalized or ""))
+
+
+def asked_steps(query: str) -> list[int]:
+    """The steps a "step 14", "step14", "#14" or "steps 14-16" query names (at most five)."""
+    match = _STEP_QUERY_RE.match(str(query or ""))
+    if not match:
+        return []
+    first = int(match.group(1))
+    last = int(match.group(2)) if match.group(2) else first
+    if last < first:
+        first, last = last, first
+    return list(range(first, min(last, first + MAX_STEPS_ASKED - 1) + 1))
 
 
 def jaccard(a: str, b: str) -> float:
@@ -659,12 +676,19 @@ class MemoryEngine:
     ) -> list[dict[str, Any]]:
         """Unified recall for tools/UI: durable memories + conversation episodes.
 
-        Returns ranked items shaped ``{"source": "memory"|"episode", ...}``.
-        Episodes come from ``Database.search_messages`` when available
-        (schema v2); on older databases only memories are returned. This is
-        the single recall engine — prompt injection and the ``recall`` tool
-        both call it so behaviour cannot drift apart.
+        Returns ranked items shaped ``{"source": "memory"|"episode", ...}``; an
+        excerpt from the current chat is labelled with its step and author
+        (``"this chat, step 14, tool result"``) and carries the ready line in
+        ``line``. A "step 14" query reads that step back in full through the
+        ledger instead of searching. Episodes come from
+        ``Database.search_messages`` when available (schema v2); on older
+        databases only memories are returned. This is the single recall
+        engine — prompt injection and the ``recall`` tool both call it so
+        behaviour cannot drift apart.
         """
+        steps = asked_steps(query)
+        if steps and conversation_id:
+            return self._steps(conversation_id, steps)
         items: list[dict[str, Any]] = []
         memories = self._rank(self._search_pool(query, per_query_limit=max(limit * 4, 32)), query)
         for memory in memories:
@@ -714,7 +738,14 @@ class MemoryEngine:
                     "created_at": message.get("created_at"),
                 }
                 other = message.get("conversation_id")
-                if conversation_id and other and other != conversation_id:
+                if conversation_id and other == conversation_id:
+                    # An excerpt from this chat names its step, so the model can ask for that
+                    # step again in full; it may run longer than an ordinary recall line.
+                    label = ledger.step_label(int(message.get("seq") or 0), message.get("role"))
+                    item["source"] = label
+                    item["content"] = item["content"][:RECALL_EXCERPT_CHARS]
+                    item["line"] = f"- [{label}] {item['content']}"
+                elif conversation_id and other and other != conversation_id:
                     if other not in titles:
                         titles[other] = (self.db.get_conversation(other) or {}).get("title") or "another chat"
                     item["chat"] = titles[other]
@@ -722,13 +753,45 @@ class MemoryEngine:
         # Durable facts lead, but reserve up to half the slots for exact
         # episode wording when episodes exist; backfill from either side.
         mem_items = [item for item in items if item["source"] == "memory"]
-        ep_items = [item for item in items if item["source"] == "episode"]
+        ep_items = [item for item in items if item["source"] != "memory"]
         ep_reserve = min(len(ep_items), limit // 2) if ep_items else 0
         mem_taken = mem_items[: limit - ep_reserve]
         merged = list(mem_taken)
         merged.extend(ep_items[: limit - len(merged)])
         merged.extend(mem_items[len(mem_taken):][: limit - len(merged)])
         return merged[:limit]
+
+    def _steps(self, conversation_id: str, steps: list[int]) -> list[dict[str, Any]]:
+        """The steps a "step N" query names, read back in full as recall lines."""
+        items: list[dict[str, Any]] = []
+        for step in steps:
+            message = next(iter(self.db.list_messages_range(conversation_id, step, step)), None)
+            line = ledger.step_text(self.db, conversation_id, step)
+            if message is None or line is None:
+                return [self._missing_step(conversation_id, step)]
+            items.append({
+                "source": ledger.step_label(step, message.get("role")),
+                "id": message["id"],
+                "conversation_id": conversation_id,
+                "seq": step,
+                "role": message.get("role"),
+                "content": message.get("content") or "",
+                "line": line,
+                "created_at": message.get("created_at"),
+            })
+        return items
+
+    def _missing_step(self, conversation_id: str, step: int) -> dict[str, Any]:
+        total = self.db.last_message_seq(conversation_id)
+        text = f"No step {step} in this conversation (it has {total} step{'' if total == 1 else 's'})."
+        return {
+            "source": "this chat",
+            "conversation_id": conversation_id,
+            "seq": step,
+            "role": None,
+            "content": text,
+            "line": text,
+        }
 
     # --- user-facing operations -------------------------------------------
 

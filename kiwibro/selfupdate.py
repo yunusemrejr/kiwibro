@@ -36,7 +36,7 @@ _ROOT_FILES = ("app.py", "requirements.txt")
 _TREES = ("kiwibro", "templates", "static")
 _UI_TREES = ("templates", "static")  # what an open page has loaded
 _SUFFIXES = {
-    ".py", ".html", ".js", ".mjs", ".css", ".json", ".svg", ".png", ".ico", ".woff2", ".txt",
+    ".py", ".html", ".js", ".mjs", ".wasm", ".css", ".json", ".svg", ".png", ".ico", ".woff2", ".txt",
 }
 
 
@@ -87,8 +87,9 @@ def preflight(root: Path, python: str | None = None, timeout: float = 90.0) -> t
     code = (
         "import pathlib, sys\n"
         "root = pathlib.Path(sys.argv[1]); sys.path.insert(0, str(root))\n"
+        "library = root / 'kiwibro' / 'components' / 'library'  # kit templates: not Python until filled in\n"
         "for path in [root / 'app.py', *sorted((root / 'kiwibro').rglob('*.py'))]:\n"
-        "    if path.is_file() and '__pycache__' not in path.parts:\n"
+        "    if path.is_file() and '__pycache__' not in path.parts and library not in path.parents:\n"
         "        compile(path.read_bytes(), str(path), 'exec')\n"
         "import kiwibro, kiwibro.api, kiwibro.agent, kiwibro.selfupdate\n"
     )

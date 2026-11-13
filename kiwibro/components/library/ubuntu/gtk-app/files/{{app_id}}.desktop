@@ -1,0 +1,10 @@
+[Desktop Entry]
+# KIWIBRO: Name, Comment and Categories are what the app grid shows; install.sh rewrites Exec.
+Type=Application
+Name={{app_name}}
+Comment=Write and keep short notes
+Exec=python3 main.py
+Icon={{app_id}}
+Terminal=false
+Categories=Utility;
+StartupNotify=true

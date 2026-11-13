@@ -7,6 +7,7 @@ import {
   icon,
   clear,
   openSheet,
+  closeSheet,
   debounce,
   toast,
   toolLabel,
@@ -61,6 +62,7 @@ const PERMISSION_ORDER = [
   "remote",
   "workspace",
   "undo_changes",
+  "component",
 ];
 
 const TOOL_PROFILES = [
@@ -454,7 +456,7 @@ export function createMemorySheet({ dialog, api, onChange, onOpenConversation })
 /* Settings                                                                   */
 /* ========================================================================== */
 
-export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
+export function createSettingsSheet({ dialog, api, actions, isMock = false, safeCopy = null }) {
   const body = dialog.querySelector("#settings-body");
   const versionEl = dialog.querySelector("#settings-version");
   const footerUrlEl = dialog.querySelector("#settings-engine");
@@ -836,6 +838,7 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false }) {
       }
     });
     input.addEventListener("blur", save);
+    if (safeCopy) section.append(safeCopy.starter({ folder: workspace, onStarted: () => closeSheet(dialog) }));
     return section;
   }
 

@@ -15,12 +15,14 @@ import uuid
 
 from bs4 import BeautifulSoup, Tag
 
+from . import connectivity
 from .search import (
     FETCH_MAX_BYTES,
     SearchEngine,
     SearchError,
     assert_public_host,
     normalize_url,
+    require_online,
 )
 
 log = logging.getLogger(__name__)
@@ -320,6 +322,7 @@ def inspect_page(
         raise SearchError("Only http(s) URLs can be fetched.")
     if not parts.hostname:
         raise SearchError("URL has no host.")
+    require_online()
     assert_public_host(parts.hostname)
 
     mode_used = mode
@@ -633,6 +636,10 @@ def _exec_browser_inspect(args: dict[str, Any], ctx: Any) -> Any:
             )
         else:
             return tool_result(ok=False, content=f"Unknown browser action: '{action}'")
+    except SearchError as exc:
+        if str(exc) == connectivity.OFFLINE_ERROR:
+            raise  # the tool layer reports it as the whole failure, not as one more broken action
+        return tool_result(ok=False, content=f"Browser action failed: {exc}")
     except Exception as exc:
         return tool_result(ok=False, content=f"Browser action failed: {exc}")
 

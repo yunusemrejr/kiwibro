@@ -3614,3 +3614,271 @@ button.chip:hover {
   color: var(--text-2);
   text-decoration-color: currentColor;
 }
+
+/* ---------- Safe copy ----------------------------------------------------- */
+.safecopy-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  padding: 9px 10px 9px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.safecopy-text {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.safecopy-folder {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.safecopy-where {
+  margin: -6px 0 10px;
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-apply-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.safecopy-count {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.safecopy-count[data-changed="true"] {
+  color: var(--green-soft);
+}
+
+.safecopy-actions,
+.safecopy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.safecopy-strip .btn,
+.safecopy-start .btn,
+.safecopy-foot .btn,
+.safecopy-end .btn,
+.safecopy-undo {
+  height: 40px;
+}
+
+.safecopy-foot {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.safecopy-apply {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: 40px;
+  padding: 0 14px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.safecopy-summary {
+  margin: 0 0 10px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(233, 84, 32, 0.35);
+  border-radius: 10px;
+  background: var(--orange-dim);
+  color: var(--orange-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-h {
+  margin: 22px 0 4px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.safecopy-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-files {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+.safecopy-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.safecopy-path {
+  flex: 1 1 180px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-kind {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.safecopy-lines {
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.safecopy-diff {
+  margin-top: 12px;
+}
+
+.safecopy-diff > summary {
+  height: 40px;
+  list-style: none;
+}
+
+.safecopy-diff > summary::-webkit-details-marker {
+  display: none;
+}
+
+.safecopy-code {
+  margin: 8px 0 0;
+}
+
+.safecopy-cmd code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.safecopy-code .code-copy {
+  height: 40px;
+  padding: 0 12px;
+}
+
+.safecopy-diff pre {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.safecopy-loading {
+  display: flex;
+  justify-content: center;
+  padding: 28px 0;
+}
+
+.safecopy-start {
+  margin-top: 12px;
+}
+
+.safecopy-start-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.safecopy-start-form .path-field {
+  height: 40px;
+}
+
+.safecopy-end .confirm-text {
+  font-size: 13px;
+}
+
+.safecopy-end .confirm-actions {
+  flex-wrap: wrap;
+}
+
+/* ---------- Kiwi Mind: helper part of the pill, offline note, who answered -- */
+/* The helper part (" + qwen3.8-2b") is the only part of the pill that gives way when narrow. */
+.model-pill-name.is-split {
+  display: flex;
+  min-width: 0;
+}
+
+.model-pill-main {
+  flex: none;
+  white-space: nowrap;
+}
+
+.model-pill-helper {
+  min-width: 0;
+  margin-left: 0.4em;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.header-center {
+  align-items: center;
+  gap: 8px;
+}
+
+.header-offline {
+  flex: none;
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.menu-note {
+  padding: 0 10px 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.menu-get {
+  min-height: 52px; /* the height of a model row with its second line */
+}
+
+.msg-brain {
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}

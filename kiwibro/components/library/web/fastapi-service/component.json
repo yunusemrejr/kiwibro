@@ -1,0 +1,18 @@
+{
+  "name": "web/fastapi-service",
+  "kind": "kit",
+  "title": "FastAPI service",
+  "summary": "FastAPI service with typed models, a health route and tests.",
+  "when": "Use when the project needs a typed JSON API with automatic request validation and OpenAPI docs.",
+  "blanks": {
+    "name": {
+      "about": "The service name, used as the FastAPI title and in the health response.",
+      "default": "Example service"
+    },
+    "resource": {
+      "about": "The collection name, used for the SQLite table and the route paths (a valid identifier, plural).",
+      "default": "items"
+    }
+  },
+  "next": "Write the files, install requirements.txt in a virtual environment, run pytest with pytest and httpx present, then replace the sample fields and resource name with the project's own data."
+}

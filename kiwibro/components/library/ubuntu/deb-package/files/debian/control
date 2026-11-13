@@ -1,0 +1,9 @@
+Package: {{name}}
+Version: {{version}}
+Architecture: all
+Maintainer: Your Name <you@example.com>
+Section: utils
+Priority: optional
+Installed-Size: 0
+Description: {{name}} in one line
+ A longer paragraph about what the package does, indented by one space.

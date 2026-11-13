@@ -24,6 +24,11 @@ const TASK_TEXT = {
   research: "Research", "*": "Every message",
 };
 const STRENGTH_TEXT = { full: "Full strength", half: "Half strength", off: "Switched off" };
+// Kiwi Mind's size on disk (the real pack), used until the download reports its total.
+const MIND_BYTES = 486110000;
+const MIND_SENTENCE = "Kiwibro's own model. It runs every chat and picks its skill by itself.";
+const MIND_HELPERS = "Optional. A helper writes the answers Kiwi Mind marks as heavy.";
+const NO_HELPER = "none";
 
 /* ---------- Formatting ---------------------------------------------------- */
 
@@ -57,6 +62,10 @@ function formatEta(seconds) {
     minutes = 0;
   }
   return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+}
+
+function mindMB(bytes) {
+  return formatBytes(bytes);
 }
 
 function countOf(count, word) {
@@ -134,6 +143,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
     rows: new Map(), // model id -> row, for the inline delete confirm
     confirmId: "",
     expandToken: null, // identifies the repository whose file list is open
+    mind: null, // Kiwi Mind's state; null when this build has no Kiwi Mind
   };
   let mode = ""; // "local" or "attached", as last built
   let hub = null; // { input, results }, rebuilt on every open
@@ -186,8 +196,8 @@ export function createModelsView({ dialog, api, getState, actions }) {
   async function start(session) {
     showLoading();
     try {
-      const library = await api.library();
-      if (session === state.session) applyLibrary(library);
+      const [library, mind] = await loadPage();
+      if (session === state.session) applyLibrary(library, mind);
     } catch (error) {
       if (session === state.session) showLoadError(error);
     }
@@ -195,11 +205,27 @@ export function createModelsView({ dialog, api, getState, actions }) {
 
   async function reload() {
     const session = state.session;
-    const library = await api.library();
-    if (session === state.session) applyLibrary(library);
+    const [library, mind] = await loadPage();
+    if (session === state.session) applyLibrary(library, mind);
   }
 
-  function applyLibrary(library) {
+  /** The library and Kiwi Mind's state together. */
+  function loadPage() {
+    return Promise.all([api.library(), loadMind()]);
+  }
+
+  /** A build without Kiwi Mind answers 404, and then its section stays hidden. */
+  async function loadMind() {
+    try {
+      return await api.mind();
+    } catch (error) {
+      if (error?.status === 404) return null;
+      throw error;
+    }
+  }
+
+  function applyLibrary(library, mind) {
+    state.mind = mind;
     state.library = library;
     state.jobs = library.downloads || [];
     state.installer = library.installer || null;
@@ -242,10 +268,11 @@ export function createModelsView({ dialog, api, getState, actions }) {
       hub: block("hub"),
       adapters: block("adapters"),
       engine: block("engine"),
+      mind: block("mind"),
     };
     state.slots = slots;
     slots.hub.replaceChildren(hubSection());
-    body.replaceChildren(slots.setup, slots.library, slots.downloads, slots.hub, slots.adapters, slots.engine);
+    body.replaceChildren(slots.mind, slots.setup, slots.library, slots.downloads, slots.hub, slots.adapters, slots.engine);
     runSearch("");
   }
 
@@ -254,6 +281,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
   }
 
   function renderAll() {
+    renderMind();
     renderSetup();
     renderLibrary();
     renderJobs();
@@ -338,6 +366,138 @@ export function createModelsView({ dialog, api, getState, actions }) {
     Promise.resolve(actions.modelsChanged?.()).catch(() => {});
   }
 
+  /* ---------- Kiwi Mind -------------------------------------------------- */
+
+  function mindUsable() {
+    return Boolean(state.mind?.usable);
+  }
+
+  function mindRunning() {
+    return state.mind?.download?.state === "running";
+  }
+
+  function mindTotal(download) {
+    return Number(download?.total_bytes) || MIND_BYTES;
+  }
+
+  /** The state that changes what the page shows. A change rebuilds the blocks; progress moves in place. */
+  function mindShape(mind) {
+    if (!mind) return "none";
+    return `${mind.usable}|${mind.installed}|${mind.reason}|${mind.download?.state || ""}`;
+  }
+
+  function setMind(mind) {
+    const before = mindShape(state.mind);
+    state.mind = mind;
+    if (state.slots && mindShape(mind) !== before) {
+      renderMind();
+      renderSetup();
+      renderLibrary();
+    } else {
+      for (const node of body.querySelectorAll(".mdl-mind")) updateMindProgress(node, mind?.download);
+    }
+    ensurePolling();
+  }
+
+  async function pollMind(session) {
+    const mind = await loadMind();
+    if (session === state.session) setMind(mind);
+  }
+
+  function renderMind() {
+    if (!state.slots) return;
+    state.slots.mind.replaceChildren(...(state.mind ? [mindSection(state.mind)] : []));
+  }
+
+  function mindSection(mind) {
+    const children = [
+      el("div", { class: "panel-title", text: "Kiwi Mind" }),
+      el("p", { class: "mdl-text", text: MIND_SENTENCE }),
+    ];
+    if (mind.usable) {
+      children.push(mindFacts(mind));
+    } else if (!mind.installed) {
+      children.push(...mindInstallNodes(mind));
+    } else {
+      children.push(notice(mind.reason));
+      if (/Node\.js/.test(mind.reason || "")) {
+        children.push(el("p", { class: "mdl-text", text: "Install Node.js 18.14 or newer, then open this page again." }));
+      }
+      if (/damaged|incomplete/i.test(mind.reason || "")) {
+        children.push(el("div", { class: "mdl-actions mdl-mind-actions" }, [
+          actionButton("Download again", "btn btn-primary", startMindDownload),
+        ]));
+      }
+    }
+    return el("section", { class: "panel-section mdl-kiwimind" }, children);
+  }
+
+  function mindFacts(mind) {
+    const memory = mind.running ? `${formatBytes(mind.rss_bytes)} in memory` : "Starts with your next message";
+    return el("div", { class: "mdl-facts" }, [
+      el("div", { class: "mdl-meta", text: `Version ${mind.version} · ${mindMB(mind.bytes)} on disk · ${memory}` }),
+      el("p", { class: "mdl-text mdl-skills", text: `Skills: ${mind.skills.join(", ")}` }),
+    ]);
+  }
+
+  /** Not installed: the download button, the download in progress, or the error with a retry. */
+  function mindInstallNodes(mind) {
+    const download = mind.download;
+    if (download?.state === "running") return [mindProgress(download)];
+    const label = { error: "Try again", cancelled: "Continue download" }[download?.state] || "Get Kiwi Mind";
+    const size = [];
+    if (download?.state === "cancelled") {
+      size.push(el("span", { class: "mdl-mind-size", text: mindPartText(download) }));
+    } else if (download?.state !== "error") {
+      size.push(el("span", { class: "mdl-mind-size", text: mindMB(mindTotal(download)) }));
+    }
+    const nodes = [];
+    if (download?.state === "error") nodes.push(notice(download.error || "The download did not finish."));
+    nodes.push(el("div", { class: "mdl-actions mdl-mind-actions" }, [
+      actionButton(label, "btn btn-primary", startMindDownload),
+      ...size,
+    ]));
+    return nodes;
+  }
+
+  function mindPartText(download) {
+    return `${Math.round((Number(download.done_bytes) || 0) / MIB)} of ${mindMB(mindTotal(download))}`;
+  }
+
+  function mindProgress(download) {
+    const node = el("div", { class: "mdl-progress mdl-mind" }, [
+      el("div", { class: "mdl-progress-top" }, [
+        el("span", { class: "mdl-progress-label" }),
+        actionButton("Cancel", "btn btn-ghost", cancelMindDownload),
+      ]),
+      el("div", { class: "bar" }, [el("span")]),
+    ]);
+    updateMindProgress(node, download);
+    return node;
+  }
+
+  function updateMindProgress(node, download) {
+    if (download?.state !== "running") return;
+    const total = mindTotal(download);
+    const done = Number(download.done_bytes) || 0;
+    node.querySelector(".mdl-progress-label").textContent = mindPartText(download);
+    node.querySelector(".bar > span").style.width = `${Math.min(100, (done / total) * 100)}%`;
+  }
+
+  async function startMindDownload(button) {
+    await attempt(button, async () => {
+      const result = await api.mindDownload();
+      setMind({ ...state.mind, download: result.download });
+    });
+  }
+
+  async function cancelMindDownload(button) {
+    await attempt(button, async () => {
+      const result = await api.mindCancel();
+      setMind({ ...state.mind, download: result.download });
+    });
+  }
+
   /* ---------- Engine setup (A) and engine (E) ----------------------------- */
 
   function renderSetup() {
@@ -348,7 +508,13 @@ export function createModelsView({ dialog, api, getState, actions }) {
 
   function setupSection() {
     const installer = state.installer || {};
-    const children = [el("div", { class: "panel-title", text: "Kiwibro needs its engine" })];
+    const children = [];
+    if (state.mind && !state.mind.installed) {
+      // First run: Kiwi Mind's own step is the section above; the optional helper steps follow.
+      children.push(el("div", { class: "panel-title", text: "Add a helper model (optional)" }));
+    } else {
+      children.push(el("div", { class: "panel-title", text: "Kiwibro needs its engine" }));
+    }
     if (installer.supported === false) {
       children.push(
         notice(
@@ -468,7 +634,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
       renderSetup();
       renderEngine();
     } else {
-      for (const node of body.querySelectorAll(".mdl-progress")) updateProgress(node, installer);
+      for (const node of body.querySelectorAll(".mdl-progress:not(.mdl-mind)")) updateProgress(node, installer);
     }
     ensurePolling();
   }
@@ -485,9 +651,12 @@ export function createModelsView({ dialog, api, getState, actions }) {
     state.rows = new Map();
     state.confirmId = "";
 
+    const helpers = mindUsable();
+    const rows = sortModels(models).map(modelRow);
+    if (helpers) rows.unshift(noHelperRow());
     const children = [
       el("div", { class: "panel-title" }, [
-        "On this computer",
+        helpers ? "Helper models" : "On this computer",
         el("small", { text: `${countOf(models.length, "model")} · ${formatBytes(total)}` }),
         anyLoaded
           ? actionButton("Unload all", "text-btn mdl-title-end", unloadAll, {
@@ -496,9 +665,10 @@ export function createModelsView({ dialog, api, getState, actions }) {
             })
           : null,
       ]),
+      helpers ? el("p", { class: "mdl-text", text: MIND_HELPERS }) : null,
       storageBlock(library),
-      models.length
-        ? el("div", { class: "mdl-list" }, sortModels(models).map(modelRow))
+      rows.length
+        ? el("div", { class: "mdl-list" }, rows)
         : panelEmpty(library.runtime ? "No models yet. Pick one below." : "No models yet."),
     ];
     state.slots.library.replaceChildren(el("section", { class: "panel-section" }, children));
@@ -582,7 +752,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
     const streaming = isStreaming();
     const nodes = [];
     if (model.id === currentModel()) {
-      nodes.push(el("span", { class: "mdl-inuse" }, [icon("check"), "In use"]));
+      nodes.push(el("span", { class: "mdl-inuse" }, [icon("check"), mindUsable() ? "Helper" : "In use"]));
     } else {
       if (model.loaded) nodes.push(el("span", { class: "mdl-muted", text: "Loaded" }));
       nodes.push(
@@ -602,6 +772,32 @@ export function createModelsView({ dialog, api, getState, actions }) {
       );
     }
     return nodes;
+  }
+
+  /** The first row under Helper models: Kiwi Mind alone answers. */
+  function noHelperRow() {
+    const current = !currentModel() || currentModel() === NO_HELPER;
+    const streaming = isStreaming();
+    const end = current
+      ? el("span", { class: "mdl-inuse" }, [icon("check"), "In use"])
+      : actionButton("Use", "btn btn-ghost", (button) => useNoHelper(button), {
+          disabled: streaming,
+          title: streaming ? WAIT_FOR_REPLY : undefined,
+        });
+    return el("div", { class: "mdl-row", dataset: { model: NO_HELPER } }, [
+      el("div", { class: "mdl-main" }, [
+        el("div", { class: "mdl-name", text: "No helper" }),
+        el("div", { class: "mdl-meta", text: "Kiwi Mind answers everything" }),
+      ]),
+      el("div", { class: "mdl-end" }, [end]),
+    ]);
+  }
+
+  async function useNoHelper(button) {
+    await attempt(button, async () => {
+      await actions.selectModel(NO_HELPER);
+      await reload();
+    });
   }
 
   function askDelete(model) {
@@ -1059,7 +1255,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
 
   function wantsPolling() {
     if (!dialog.open || !state.library) return false;
-    return state.jobs.some((job) => ACTIVE_JOB.includes(job.state)) || isBusy(state.installer);
+    return state.jobs.some((job) => ACTIVE_JOB.includes(job.state)) || isBusy(state.installer) || mindRunning();
   }
 
   function ensurePolling() {
@@ -1099,6 +1295,7 @@ export function createModelsView({ dialog, api, getState, actions }) {
       } else {
         setJobs(result.jobs || []);
       }
+      if (mindRunning()) await pollMind(session);
     } catch {
       // A failed poll is simply tried again on the next tick.
     } finally {

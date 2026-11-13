@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -23,6 +24,7 @@ import requests
 from . import capabilities as caps
 from . import config
 from .inference import NO_THINKING
+from .mind import KIWIMIND
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +38,11 @@ _CORE_PAYLOAD_KEYS = frozenset({"model", "messages", "stream", "tools"})
 # Keys in ``extra`` that steer the task adapters of one request and are never sent to the server.
 ADAPTERS_OFF = "_adapters_off"  # run without task adapters
 ADAPTER_TASK = "_adapter_task"  # the task the adapters follow (else read from the messages)
+# Keys in ``extra`` that tell Kiwi Mind which conversation a call belongs to and where to report which brain answers.
 _ADAPTER_KEYS = frozenset({ADAPTERS_OFF, ADAPTER_TASK})
+_NO_TURN: tuple[str | None, Callable[[str, dict[str, Any]], None] | None] = (None, None)
+_TURN: ContextVar[tuple[str | None, Callable[[str, dict[str, Any]], None] | None]] = ContextVar(
+    "kiwibro_turn", default=_NO_TURN)
 _CONTEXT_MARKERS = ("context", "n_ctx", "token", "too long", "too many", "exceeds")
 _TOOL_MARKERS = ("tool",)
 NO_MODELS = "No models yet. Open Models to download one, or drop a GGUF file into Kiwibro's models folder."
@@ -84,6 +90,20 @@ class Completion:
     text: str = ""
     usage: dict[str, int] | None = None
     finish_reason: str | None = None
+
+
+def bind_turn(conversation_id: str | None, events: Callable[[str, dict[str, Any]], None] | None = None) -> None:
+    """Name the conversation (and where its status events go) for the next ``stream_chat`` or ``prefill`` on this
+    thread. Kiwi Mind keeps one cache slot per conversation. It travels beside the request options, never in
+    them, so no model server ever sees it."""
+    _TURN.set((conversation_id, events))
+
+
+def _take_turn() -> tuple[str | None, Callable[[str, dict[str, Any]], None] | None]:
+    """What ``bind_turn`` named, once: a call that was not bound gets nothing, never the turn before."""
+    bound = _TURN.get()
+    _TURN.set(_NO_TURN)
+    return bound
 
 
 def _int(value: Any) -> int | None:
@@ -279,6 +299,8 @@ class LLMClient:
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
         self._props: dict[str, dict[str, Any]] = {}  # attached server: /props per model id
+        self._mind: Any = None  # mind.service.Mind, created on first use
+        self._mind_lock = threading.Lock()
 
     # --- engine switch -----------------------------------------------------
 
@@ -301,6 +323,29 @@ class LLMClient:
 
                 self._direct = DirectEngine(self._settings, self._data_dir)
             return self._direct
+
+    def mind(self) -> Any:
+        """Kiwi Mind, Kiwibro's own model stack (created lazily; nothing starts until it is used)."""
+        with self._mind_lock:
+            if self._mind is None:
+                from .mind.service import Mind
+
+                self._mind = Mind(self._data_dir, helper=self.helper, helper_stream=self.stream_chat)
+            return self._mind
+
+    def helper(self) -> dict[str, Any] | None:
+        """The model the user selected, which supports Kiwi Mind and never leads (None when none is chosen)."""
+        chosen = str(self._settings().get("model") or "").strip()
+        if not chosen or chosen == "none" or chosen == KIWIMIND:
+            return None
+        try:
+            models = self.list_models()
+        except LLMError:
+            return None
+        by_id = {m["id"]: m for m in models}
+        if chosen in by_id:
+            return by_id[chosen]
+        return by_id.get(self.direct_engine().canonical(chosen)) if self.direct_on() else None
 
     def has_adapters(self, model: str) -> bool:
         """Whether ``model`` is running with task adapters loaded."""
@@ -338,12 +383,10 @@ class LLMClient:
         """Stop the llama.cpp servers nobody has used for ``min_idle_s``; how many stopped."""
         with self._direct_lock:
             engine = self._direct
-        if engine is None:
-            return 0
-        stopped = engine.stop_idle(min_idle_s)
+        stopped = engine.stop_idle(min_idle_s) if engine is not None else 0
         if stopped:
             self.clear_cache()
-        return stopped
+        return stopped + (self._mind.stop_idle(min_idle_s) if self._mind is not None else 0)
 
     @contextmanager
     def _serving(self, model: str) -> Iterator[str]:
@@ -428,19 +471,30 @@ class LLMClient:
         return models[0]["id"] if models else None
 
     def resolve_model(self, requested: str | None = None) -> str:
+        if self.mind().usable():  # Kiwi Mind always leads; the selected model is its helper
+            return KIWIMIND
         ok, models, error = self.models_status()
         if not ok:
             if self.direct_on():
                 raise LLMError("no_engine", error or NO_MODELS)
             raise LLMError("connection", self._connection_message(self.server_url()))
         if not models:
-            raise LLMError("no_model", NO_MODELS if self.direct_on() else NO_MODELS_ATTACHED)
+            raise LLMError("no_model", self._no_model_message())
         model = self.pick_model(models, requested)
         if not model:  # pragma: no cover - guarded by models check
             raise LLMError("no_model", error or NO_MODELS)
         return model
 
+    def _no_model_message(self) -> str:
+        if not self.direct_on():
+            return NO_MODELS_ATTACHED
+        mind = self.mind()
+        return f"{mind.reason()} {NO_MODELS}" if mind.enabled and "not installed" in mind.reason() else NO_MODELS
+
     def model_info(self, model_id: str) -> dict[str, Any] | None:
+        if model_id == KIWIMIND:
+            mind = self.mind()
+            return mind.model_info() if mind.usable() else None
         try:
             models = self.list_models()
         except LLMError:
@@ -513,6 +567,14 @@ class LLMClient:
         extra: Mapping[str, Any] | None = None,
         on_rewrite: Callable[[str, str], None] | None = None,
     ) -> ChatResult:
+        conversation, events = _take_turn()
+        if model == KIWIMIND:
+            return self.mind().conductor.stream(
+                messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens, on_delta=on_delta,
+                abort=abort, conversation=conversation, events=events,
+            )
+        if events is not None:
+            self._announce_helper(model, events)
         use_tools = bool(tools)
         base = url = ""  # set by _serving below, before attempt() runs
 
@@ -596,6 +658,15 @@ class LLMClient:
                 result.tools_disabled = True
                 return result
 
+    def _announce_helper(self, model: str, events: Callable[[str, dict[str, Any]], None]) -> None:
+        """A model that is not Kiwi Mind leads this turn: say so, and say why once."""
+        info = self.model_info(model) or {}
+        name = str(info.get("name") or model)
+        notice = self.mind().notice(name)
+        if notice:
+            events("status", {"phase": "thinking", "label": notice})
+        events("brain", {"brain": "helper", "name": name, "skill": None, "hard": False})
+
     def prefill(
         self,
         *,
@@ -610,6 +681,10 @@ class LLMClient:
         The server sends nothing while it prefills, so an abort flag checked per stream
         line would wait minutes; a watcher shuts the socket down instead, which ends
         the request mid-prefill."""
+        conversation, _events = _take_turn()
+        if model == KIWIMIND:
+            self.mind().conductor.warm(messages, tools, conversation)
+            return
         with self._serving(model) as base:
             payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
             finished = threading.Event()
@@ -772,6 +847,13 @@ class LLMClient:
         extra: Mapping[str, Any] | None = None,
         abort: threading.Event | None = None,
     ) -> Completion:
+        if self.mind().usable() and model in ("", KIWIMIND):
+            # Utility work goes to the selected helper when there is one, else to Kiwi Mind itself.
+            helper = self.helper()
+            if helper is None:
+                return self.mind().conductor.complete(messages, max_tokens=max_tokens, temperature=temperature,
+                                                      abort=abort)
+            model = helper["id"]
         if extra is None:
             # Non-streaming calls are utility work (summaries, memory, titles, helpers):
             # they never think. Reasoning tokens cost as much as answer tokens on a

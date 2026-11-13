@@ -1,0 +1,14 @@
+{
+  "name": "code/python-cli",
+  "kind": "kit",
+  "title": "Python command-line tool",
+  "summary": "Command-line tool in Python: argparse subcommands, logging, exit codes and tests.",
+  "when": "Use when the user wants a terminal tool in Python with more than one subcommand and a real exit code.",
+  "blanks": {
+    "name": {
+      "about": "Command and package name, used for the console script, the src/ folder and the prog name in help text (lowercase, underscores).",
+      "default": "textcli"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q and try the tool on a real file from the project root."
+}

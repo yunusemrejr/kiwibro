@@ -87,6 +87,7 @@
           <span class="model-pill-name" id="model-pill-name">Loading…</span>
           <svg class="icon chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
         </button>
+        <span class="header-offline" id="offline-note" hidden title="No internet. Kiwibro works from this computer.">Offline</span>
       </div>
       <div class="header-right">
         <button class="icon-btn" id="memory-btn" type="button" aria-label="Memory" title="Memory">
@@ -244,6 +245,16 @@
               <span class="dock-hint-text" id="dock-hint-text"></span>
               <button class="text-btn" id="dock-retry" type="button">Retry</button>
             </div>
+            <div class="safecopy-strip" id="safecopy-strip" hidden>
+              <div class="safecopy-text">
+                <span class="safecopy-folder" id="safecopy-folder"></span>
+                <span class="safecopy-count" id="safecopy-count"></span>
+              </div>
+              <div class="safecopy-actions">
+                <button class="btn btn-ghost" id="safecopy-review" type="button">Review changes</button>
+                <button class="btn btn-ghost" id="safecopy-end" type="button">End</button>
+              </div>
+            </div>
             <form class="composer" id="composer">
               <label class="sr-only" for="composer-input">Message Kiwibro</label>
               <textarea class="composer-input" id="composer-input" rows="1" maxlength="400000" placeholder="Ask Kiwibro…" autocomplete="off" spellcheck="true"></textarea>
@@ -379,6 +390,22 @@
       </button>
     </div>
     <div class="sheet-body" id="how-body"></div>
+  </dialog>
+
+  <dialog class="sheet sheet-wide" id="safecopy-sheet" aria-labelledby="safecopy-title">
+    <div class="sheet-head">
+      <div class="sheet-heading">
+        <h2 class="sheet-title" id="safecopy-title">Review changes</h2>
+      </div>
+      <button class="icon-btn sheet-close" type="button" aria-label="Close review" data-close-sheet>
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-scroll" id="safecopy-body"></div>
+    <div class="sheet-foot safecopy-foot">
+      <button class="btn btn-primary safecopy-apply" id="safecopy-apply" type="button" hidden>Apply</button>
+      <button class="btn btn-ghost" type="button" data-close-sheet>Close</button>
+    </div>
   </dialog>
 
   <noscript>

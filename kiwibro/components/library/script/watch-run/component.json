@@ -1,0 +1,14 @@
+{
+  "name": "script/watch-run",
+  "kind": "kit",
+  "title": "Re-run on file change",
+  "summary": "Run a command again whenever files change (inotifywait, with a polling fallback).",
+  "when": "Use while developing: the command runs again on every save instead of by hand.",
+  "blanks": {
+    "command": {
+      "about": "Command line to run on each change; split on spaces, so no shell quoting inside it.",
+      "default": "make"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, set the command at the top of the script, then run ./watch-run.sh on the folder to watch and save a file in it."
+}

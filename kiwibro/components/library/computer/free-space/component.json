@@ -1,0 +1,19 @@
+{
+  "name": "computer/free-space",
+  "kind": "recipe",
+  "title": "What takes disk space",
+  "summary": "See what takes disk space and hand the user the commands that would free it.",
+  "when": "Use when the disk is full or the user asks what is taking space and how to get it back.",
+  "blanks": {},
+  "steps": [
+    "Call system_info and read its disk total, free space and workspace size to see how much space is at stake.",
+    "Call run_command with du -h --max-depth=1 ~, piped through sort -h, to find the biggest folders under home.",
+    "Call run_command with du -sh ~/.cache/* | sort -h to see which caches have grown largest.",
+    "Call multi_command with journalctl --disk-usage, docker system df and snap list --all to measure service leftovers.",
+    "Call run_command with df -h and check the free figure agrees with the free space system_info reported.",
+    "Write down each large item with its size, what it holds and whether the user still needs it.",
+    "If a folder cannot be read or a tool is missing, say so plainly and report the totals you could measure.",
+    "Give the user the exact commands that free the space in a code block, each with a one-line note; do not run them."
+  ],
+  "next": "The final answer must show the biggest space users with sizes, how much free space exists, and the exact commands the user can run to free it."
+}
