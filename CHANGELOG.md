@@ -39,7 +39,9 @@ All notable changes to Kiwibro are documented here.
   JSON, TOML, shell, JavaScript; nothing is run). If it does not parse, the model is told
   the line and the reason so it can repair the file, and a file that is still broken at the
   end is named under the reply by Kiwibro itself. A tool call that arrives damaged is not
-  run: the model is asked to make it again.
+  run: the model is asked to make it again. And when a reply talks about a file you named in a
+  step where no tool ran ("Done, I removed notes.txt"), Kiwibro adds its own line: "Checked by
+  Kiwibro: nothing was read, changed or removed in this step."
 - **How it works, under the hood.** Each of the ten stops now names what is behind it, in
   two columns, model layer and app layer: quantization-aware training, LoRA skill
   swapping, the control head (the gating idea of a mixture of experts), the KV cache and

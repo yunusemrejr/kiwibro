@@ -271,6 +271,7 @@ PLACEHOLDER = (
 NO_CONNECTION_LINE = (
     "No internet connection, so I could not look this up. What follows is from memory and may be out of date."
 )
+NOTHING_DONE = "Checked by Kiwibro: nothing was read, changed or removed in this step."
 NOT_FOUND = "I looked, but what I found does not answer this clearly, so I won't guess."
 STORIES_AS_FOUND = "I could not sum these up reliably, so here are the stories as the sources report them."
 AS_FOUND = "Here is what I found:"

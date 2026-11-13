@@ -199,3 +199,32 @@ def test_a_repeated_offline_search_gets_the_offline_error_not_a_pacing_refusal(e
     chat_events(env, "Search the web: what is the latest stable Python version?")
     results = [m["content"] for m in _messages(env, "tool")]
     assert results and all(result == f"Error: {connectivity.OFFLINE_ERROR}" for result in results[:2])
+
+
+# --- a reply about a file, in a turn where nothing ran ----------------------------------------
+
+
+def test_a_claim_about_a_named_file_with_no_tool_run_gets_kiwibros_own_line(env: Env) -> None:
+    (env.workspace / "notes.txt").write_text("keep me\n")
+    env.fake.stream_script = [ChatResult(content="Done. I removed `notes.txt` from your workspace.", usage=USAGE)]
+    events, _raw = chat_events(env, "Delete notes.txt")
+    assert _final_text(events).endswith(prompts.NOTHING_DONE)
+    assert _messages(env, "assistant")[-1]["content"] == prompts.NOTHING_DONE
+    assert (env.workspace / "notes.txt").read_text() == "keep me\n"
+
+
+def test_a_reply_that_names_no_file_of_the_message_is_left_alone(env: Env) -> None:
+    (env.workspace / "notes.txt").write_text("keep me\n")
+    env.fake.stream_script = [ChatResult(content="You could start with notes.txt, or with a new file.", usage=USAGE)]
+    events, _raw = chat_events(env, "What should I work on next?")
+    assert prompts.NOTHING_DONE not in _final_text(events)
+
+
+def test_a_turn_that_ran_a_tool_gets_no_such_line(env: Env) -> None:
+    (env.workspace / "notes.txt").write_text("keep me\n")
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": "notes.txt"}, "call_1"),
+        ChatResult(content="notes.txt holds one line: keep me.", usage=USAGE),
+    ]
+    events, _raw = chat_events(env, "What is in notes.txt?")
+    assert prompts.NOTHING_DONE not in _final_text(events)

@@ -149,6 +149,27 @@ _TITLE_BLACKLIST = (
 )
 
 
+_PATH_LIKE = re.compile(r"[\w~+./-]+")
+
+
+def _files_named(text: str, root: Path) -> set[str]:
+    """The files and folders under ``root`` that ``text`` names by a path with a dot or a slash in it
+    (``notes.txt``, ``src/app.py``). A bare word is not a file name, and nothing outside ``root`` counts."""
+    base = root.resolve()
+    found: set[str] = set()
+    for token in _PATH_LIKE.findall(text or "")[:400]:
+        name = token.removeprefix("./").rstrip("./")
+        if not name or name.startswith("/") or ("." not in name and "/" not in name) or ".." in name.split("/"):
+            continue
+        try:
+            target = (base / name).resolve()
+            if target != base and target.is_relative_to(base) and target.exists():
+                found.add(str(target.relative_to(base)))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 def derive_title(message: str) -> str:
     """Deterministic, fast conversation title from the first user message."""
     text = " ".join((message or "").split()).strip()
@@ -812,6 +833,7 @@ class AgentManager:
             self._answer_anyway(turn, model, prepared, tool_list, text_mode)
         self._show_bulletin(turn, model)
         self._report_broken_files(turn, model)
+        self._report_nothing_done(turn, model)
 
         # Final answer phase. Title is deterministic-first so `done` stays fast; memory
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
@@ -1470,6 +1492,27 @@ class AgentManager:
         turn.last_message_id = message["id"]
         turn.reply_text += "\n" + text
         turn.emit("delta", {"text": "\n\n" + text})
+
+    def _report_nothing_done(self, turn: Turn, model: str) -> None:
+        """A reply about a file the user named, in a turn where nothing ran: Kiwibro says in its own words that
+        nothing was read, changed or removed. A small model writes "Done, I removed it" without calling a tool."""
+        if turn.abort.is_set() or turn.tool_calls_made or turn.tools_ok or turn.routes or not turn.reply_text.strip():
+            return
+        try:
+            root = self._workspace(turn.conversation_id).root
+            named = _files_named(turn.message, root) & _files_named(turn.reply_text, root)
+        except Exception:  # a check must never break a turn
+            log.warning("turn %s: could not check what the reply names", turn.conversation_id, exc_info=True)
+            return
+        if not named:
+            return
+        turn.inference["nothing_done"] = sorted(named)
+        message = self.db.add_message(
+            turn.conversation_id, "assistant", prompts.NOTHING_DONE, model=model, meta={"checked_by_kiwibro": True},
+        )
+        turn.last_message_id = message["id"]
+        turn.reply_text += "\n" + prompts.NOTHING_DONE
+        turn.emit("delta", {"text": "\n\n" + prompts.NOTHING_DONE})
 
     def _act_instead(self, turn: Turn, result: ChatResult) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,

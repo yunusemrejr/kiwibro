@@ -708,7 +708,9 @@ anything in it; the model picked in the header is a helper for it.
   problem goes into the tool result and, if it is still there at the end, under the reply
   (`_report_broken_files`). A reply written while the web could not be reached starts with
   `prompts.NO_CONNECTION_LINE`, and markers with no source behind them are removed
-  (`_honest_reply`, `grounding.without_unsourced_markers`). The prompt keeps the layout
+  (`_honest_reply`, `grounding.without_unsourced_markers`). A reply that names a file of
+  the user's message in a turn where no tool ran gets `prompts.NOTHING_DONE` under it
+  (`_report_nothing_done`). The prompt keeps the layout
   the skills were trained on (`render.split_notes`, the clock line, the order of the first
   blocks); tests pin it against `scripts/mind/train.py`.
 - **Choosing the skill.** At the first generation after a user message the conductor asks
