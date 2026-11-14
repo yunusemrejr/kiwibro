@@ -398,6 +398,7 @@ const TOOL_META = {
   run_python: { label: "Run Python", icon: "terminal" },
   run_javascript: { label: "Run JavaScript", icon: "terminal" },
   system_info: { label: "System info", icon: "info" },
+  disk_usage: { label: "Disk usage", icon: "database" },
   open_path: { label: "Open", icon: "external" },
   clipboard: { label: "Clipboard", icon: "copy" },
   notify: { label: "Notify", icon: "message" },

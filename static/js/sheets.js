@@ -41,6 +41,7 @@ const PERMISSION_ORDER = [
   "run_python",
   "run_javascript",
   "system_info",
+  "disk_usage",
   "open_path",
   "clipboard",
   "notify",

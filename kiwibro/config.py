@@ -61,6 +61,7 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "multi_command": "ask",
     "terminal_session": "ask",
     "system_info": "auto",
+    "disk_usage": "auto",
     "open_path": "ask",
     "clipboard": "ask",
     "notify": "auto",

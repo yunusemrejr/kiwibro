@@ -940,7 +940,7 @@ evidence packs with `[n]` citations, URL dedupe + term-overlap rerank, fetch cac
 `kiwibro/codebase.py` (`glob_files`, `file_outline`, atomic `apply_patch` with diff,
 `file_manage`, `multi_command` pipelines, read-only `git`, sandboxed
 `run_python`/`run_javascript` snippets in `.kiwibro-sandbox/` scratch dirs),
-`kiwibro/desktop.py` (`system_info`, `open_path`, `clipboard`, `notify`,
+`kiwibro/desktop.py` (`system_info`, `disk_usage`, `open_path`, `clipboard`, `notify`,
 `screenshot` — all degrade with a plain message when the desktop binary is absent),
 `kiwibro/delegate.py` + `kiwibro/routing.py` (capability registry over the engine's model
 records; `model_info`, `delegate`, `describe_image` and map-reduce `study_file` keep the main
@@ -1254,7 +1254,7 @@ changes only when the user applies a proof they have read.
   approval decision: file tools and `git` are rebased onto the copy; commands run only
   through `safety.confine` with the copy as the single writable path and no network, and
   are refused when no sandbox is available; `remote`, `open_path`, `clipboard`,
-  `screenshot`, `notify`, `system_info`, `describe_image`, `workspace`, `terminal_session`,
+  `screenshot`, `notify`, `system_info`, `disk_usage`, `describe_image`, `workspace`, `terminal_session`,
   `delegate` and every extension tool are refused. The web tools, memory, notes and
   `component` keep working. Permission settings cannot widen this.
 - **History.** Every turn that changed the copy ends in a commit (`commit_turn`), so each

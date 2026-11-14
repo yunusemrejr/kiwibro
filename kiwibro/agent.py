@@ -57,6 +57,10 @@ USER_MESSAGE_SHARE = 0.4
 # Reply cap while a planned document is still unwritten (thinking + the whole file in one call).
 WRITE_ROUND_MAX_TOKENS = 6144
 WRITTEN_NOTE_MIN_CHARS = 40  # a reply shorter than this is a remark, not the note that was asked for
+LATE_NOTE_PASSES = 2  # times a turn that is over answers the steering notes that arrived after its last reply
+LATE_NOTE_ROUNDS = 3  # generations one such answer may take (tool calls included)
+HELPER_AFTER_FAILED_REPAIRS = 2  # failed repairs of Kiwi Mind's replies in one turn before the helper leads
+LOOK_TOOLS = ("system_info", "disk_usage", "list_files", "git")  # read-only looks at the user's own computer
 
 
 class BusyError(Exception):
@@ -395,6 +399,14 @@ class Turn:
     web_offline: int = 0  # web calls that ran and failed because there is no connection
     web_failed: int = 0  # web calls that ran and failed for another reason
     said_offline: bool = False  # a reply of this turn already starts with the no-connection line
+    lead: str | None = None  # the helper model that writes this turn from here on, because Kiwi Mind was stuck
+    lead_name: str = ""
+    lead_said: bool = False  # the user has been told that the helper took over
+    lead_lost: bool = False  # the helper could not answer: Kiwi Mind finishes the turn
+    repairs_failed: int = 0  # corrected attempts at Kiwi Mind's replies that came back wrong again
+    prompt_changed: bool = False  # earlier replies were set aside: the history is cut again before the next request
+    repeats_set_aside: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # (message id, its meta) of replies hidden from this turn's new attempt
+    steering_open: bool = True  # a steering note can still be queued; false once the turn has read its last one
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -501,13 +513,18 @@ class AgentManager:
         if turn is None:
             return False
         with turn.steering_lock:
+            if not turn.steering_open:  # the turn has read its last note: say so rather than lose this one
+                return False
             turn.steering_notes.append(note[:4000])
         return True
 
-    def _drain_steering(self, turn: Turn) -> None:
-        """Persist queued steering notes as user messages the model will see."""
+    def _drain_steering(self, turn: Turn, *, last: bool = False) -> list[str]:
+        """Persist queued steering notes as user messages the model will see. ``last``: when none is
+        waiting, no more are accepted, so a note is never queued after the turn stopped reading."""
         with turn.steering_lock:
             notes, turn.steering_notes = turn.steering_notes, []
+            if last and not notes:
+                turn.steering_open = False
         for note in notes:
             self.db.add_message(
                 turn.conversation_id,
@@ -515,6 +532,7 @@ class AgentManager:
                 f"[Steering note from the user, sent while you were working] {note}",
             )
             turn.emit("steering", {"text": note})
+        return notes
 
     def is_busy(self, conversation_id: str) -> bool:
         with self._locks_guard:
@@ -594,8 +612,19 @@ class AgentManager:
                 log.exception("turn crashed for %s", turn.conversation_id)
                 self._finish_error(turn, "internal", "Something went wrong while generating the reply.")
         finally:
+            self._show_repeats_again(turn)
             safemode.commit_turn(self.db, turn)
             self._cleanup(turn)
+
+    def _show_repeats_again(self, turn: Turn) -> None:
+        """The answers left out of this turn's new attempt were fine answers to their own questions: the next
+        turn sees them again."""
+        put_back, turn.repeats_set_aside = turn.repeats_set_aside, []
+        for message_id, meta in put_back:
+            try:
+                self.db.update_message(message_id, meta=meta)
+            except Exception:  # the chat may be gone; nothing to put back
+                log.warning("turn %s: could not show an earlier answer again", turn.conversation_id, exc_info=True)
 
     def _cleanup(self, turn: Turn) -> None:
         with self._approvals_guard:
@@ -650,6 +679,12 @@ class AgentManager:
             return
         turn.reading = self._read_message(turn, settings)
         turn.reaction = self._read_reaction(turn, settings)
+        if turn.reaction is not None and not turn.reaction.asks:
+            # The answer the user turned down is cut out of the history before it is built, and when a helper
+            # model is chosen, it writes the new one: Kiwi Mind wrote the answer that was turned down.
+            self._set_aside_rejected(turn)
+            if self._helper_leads(turn, "the user turned the last answer down"):
+                model = turn.model
 
         model_info = self.llm.model_info(model)
         if turn.attachments:
@@ -710,7 +745,10 @@ class AgentManager:
         max_rounds = max(config.TOOL_ROUNDS_RANGE[0], min(max_rounds, config.TOOL_ROUNDS_RANGE[1]))
 
         looked = self._look_first(turn, settings)
-        if self._search_first(turn, settings) or looked:
+        # A question the computer answers is never also a web search: "today" in a question about the
+        # user's own disk is no reason to search the web.
+        searched = False if looked else self._search_first(turn, settings)
+        if searched or looked:
             self._raise_if_aborted(turn)
             if turn.reply_text.strip():  # answered from the results alone
                 max_rounds = 0
@@ -724,6 +762,9 @@ class AgentManager:
             self._raise_if_aborted(turn)
             if round_index > 0:
                 self._drain_steering(turn)
+            if model != turn.model or turn.prompt_changed:  # a helper took over, or replies were set aside
+                model, system_prompt, tool_list, text_mode, prepared = self._state_for(turn)
+            elif round_index > 0:
                 # Append only the new assistant/tool messages; extend() falls
                 # back to a full prepare if the compaction trigger is crossed.
                 prepared = self.context.extend(
@@ -775,7 +816,7 @@ class AgentManager:
                     result.content,
                     reasoning=result.reasoning,
                     tool_calls=result.tool_calls or None,
-                    model=model,
+                    model=turn.model,
                     tokens=(result.usage or {}).get("completion_tokens"),
                 )
                 turn.last_message_id = assistant_message["id"]
@@ -829,6 +870,8 @@ class AgentManager:
                 turn.emit("delta", {"text": "\n\n" + note})
                 break
 
+        if model != turn.model or turn.prompt_changed:
+            model, system_prompt, tool_list, text_mode, prepared = self._state_for(turn)
         if not turn.reply_text.strip():
             self._answer_anyway(turn, model, prepared, tool_list, text_mode)
         self._show_bulletin(turn, model)
@@ -839,7 +882,13 @@ class AgentManager:
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
         # the UI refreshes its memory count from /api/bootstrap or /api/memories later).
         self._raise_if_aborted(turn)
-        self._drain_steering(turn)
+        self._show_repeats_again(turn)  # before "done": the next message may follow at once
+        late = self._drain_steering(turn, last=True)
+        for _ in range(LATE_NOTE_PASSES):  # notes that arrived after the last reply had read the chat
+            if not late:
+                break
+            self._answer_late_notes(turn, settings)
+            late = self._drain_steering(turn, last=True)
         self._maybe_title(turn)
         self._insert_usage(turn, model)
         self._start_memory_extraction(turn.conversation_id, model)
@@ -940,8 +989,7 @@ class AgentManager:
         if not query:
             return False
         if redo is not None:
-            turn.redoing = True
-            self._set_aside_rejected(turn)
+            turn.redoing = True  # the rejected answer was already set aside when the reaction was read
         return self._run_search_first(turn, settings, query)
 
     def _redo_on_web(self, turn: Turn, reaction: Any) -> bool:
@@ -1023,7 +1071,7 @@ class AgentManager:
                        if m.get("role") == "user" and m.get("id") != turn.user_message_id]
             before = str(earlier[-1].get("content") or "") if earlier else ""
             # Not only the tools listed for the model: every read-only look the user has not switched off.
-            allowed = frozenset(name for name in ("system_info", "list_files", "git")
+            allowed = frozenset(name for name in LOOK_TOOLS
                                 if name in tools.TOOL_SPECS and tools.permission_mode(settings, name) != "deny")
             looks = lookfirst.calls(turn.message, self._workspace(turn.conversation_id).root, allowed, before)
         except Exception:  # a convenience; never break a turn
@@ -1069,8 +1117,12 @@ class AgentManager:
         if query and readings.needs_no_search(reading) and not plan.told_to_search(turn.message):
             log.info("turn %s: the helpers see no need for the web; no search first", turn.conversation_id)
             query = ""
+        elif query and not plan.told_to_search(turn.message) and self._about_the_machine(turn):
+            log.info("turn %s: a follow-up to a look at this computer; no search first", turn.conversation_id)
+            query = ""
         elif (not query and readings.wants_search(reading) and not readings.follows_up(reading)
-              and not readings.is_feedback(reading) and not readings.names_a_file_or_link(turn.message)):
+              and not readings.is_feedback(reading) and not readings.names_a_file_or_link(turn.message)
+              and not self._about_the_machine(turn)):
             query = plan.query_of(turn.message)  # live data or an explicit ask the word rules missed
         query = research.with_time_words(query, turn.message) if query else ""
         if not query and research.asks_for_news(turn.message):  # "summarize today's ai news"
@@ -1078,6 +1130,19 @@ class AgentManager:
         if not query:
             query = self._follow_up_search(turn, reading)
         return query
+
+    def _about_the_machine(self, turn: Turn) -> bool:
+        """A short follow-up to an answer that came from a look at this computer ("and today?") is about the
+        same computer. Nothing in it names the web (an explicit ask for a search or for news is read before
+        this), so the helpers' guess that "today" means live data does not start a search."""
+        if len(turn.message.split()) > lookfirst.FOLLOW_WORDS:
+            return False
+        earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=14) if m.get("id") != turn.user_message_id]
+        users = [i for i, m in enumerate(earlier) if m.get("role") == "user"]
+        answered = earlier[users[-1]:] if users else []  # the message before this one and what answered it
+        called = {str(((call or {}).get("function") or {}).get("name") or "")
+                  for m in answered if m.get("role") == "assistant" for call in m.get("tool_calls") or []}
+        return bool(called) and called <= set(LOOK_TOOLS)
 
     def _follow_up_search(self, turn: Turn, reading: Any) -> str:
         """"And who came second?" after an answer that came from a search: the same subject is
@@ -1202,24 +1267,38 @@ class AgentManager:
         try:
             earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=24)
                        if m.get("id") != turn.user_message_id and m.get("role") in ("user", "assistant")]
-            asked = ""
+            asked, repeated = "", []
             for message in earlier:
                 if message.get("role") == "user":
                     asked = " ".join(str(message.get("content") or "").split())
                 elif bare(str(message.get("content") or "")) == text and asked and bare(asked) != bare(turn.message):
-                    break
-            else:
+                    repeated.append((asked, message))
+            if not repeated:
                 return result
+            asked = repeated[0][0]
             log.info("turn %s: the reply repeats an answer to an earlier question; asking again", turn.conversation_id)
             turn.inference["repeated_answer"] = True
             self._record_usage(turn, result, prepared)
             turn.partial_text = ""
             turn.emit("rewrite", {"text": "", "reasoning": ""})
+            # The new attempt is not shown what it repeats, and when a helper is chosen it writes it.
+            for _asked, message in repeated:
+                meta = message.get("meta") or {}
+                turn.repeats_set_aside.append((message["id"], meta))
+                self.db.update_message(message["id"], meta={**meta, "repeated": True})
+            turn.prompt_changed = True
+            self._helper_leads(turn, "Kiwi Mind repeated an earlier answer")
             retry = self._stream_with_recovery(
                 turn, model, prepared, None, round_index, text_mode=text_mode,
                 nudge=prompts.SAID_BEFORE.format(earlier=asked[:200], message=turn.message.strip()[:300]))
             if retry.content.strip() and not retry.tool_calls and bare(retry.content) != text:
                 return retry
+            # The same again, or nothing: Kiwibro says so itself rather than show the copy or an empty reply.
+            self._repair_failed(turn)
+            turn.inference["said_by_kiwibro"] = "repeat"
+            result.content, result.tool_calls = prompts.REPEATED_ANSWER, []
+            turn.partial_text = result.content
+            turn.emit("rewrite", {"text": result.content, "reasoning": ""})
         except (TurnAborted, LLMError):
             raise
         except Exception:  # a check must never break a reply
@@ -1251,6 +1330,7 @@ class AgentManager:
             if retry.content.strip() and not retry.tool_calls and recall.said(retry.content, found):
                 return retry
             turn.inference["from_memory"] = "said by Kiwibro"
+            self._repair_failed(turn)
             retry.content, retry.tool_calls = recall.told(found), []
             turn.partial_text = retry.content
             turn.emit("rewrite", {"text": retry.content, "reasoning": ""})
@@ -1314,6 +1394,7 @@ class AgentManager:
                 if not findings and not blanks and not self._hollow(result.content, draft):
                     turn.inference["grounding"]["fixed"] = True
                     return result
+                self._repair_failed(turn)
             cleaned = result.content
             if blanks:
                 # the lines with a placeholder go, and with them a line that only announced one
@@ -1606,7 +1687,7 @@ class AgentManager:
         if "web_search" not in turn.facts.tools or plan.WEB_TOOLS.intersection(turn.tools_ok):
             return None
         query, borrowed = plan.search_request(turn.message)
-        if not query:
+        if not query or (not plan.told_to_search(turn.message) and self._about_the_machine(turn)):
             return None
         more = turn.plan is not None and any(step.kind != "web" for step in turn.plan.remaining())
         nudge = prompts.SEARCHED_FOR_YOU.format(
@@ -1697,6 +1778,46 @@ class AgentManager:
             log.warning("review prompt failed", exc_info=True)
             return ""
 
+    def _helper_leads(self, turn: Turn, why: str) -> bool:
+        """Kiwi Mind is stuck: the model the user selected writes everything left of this turn, tool calls
+        included, as it did before Kiwi Mind existed. The next turn starts on Kiwi Mind again. False when
+        no helper is chosen, or it already leads or could not start."""
+        if turn.model != KIWIMIND or turn.lead_lost:
+            return False
+        helper = self.llm.helper()
+        if helper is None:
+            return False
+        turn.lead, turn.lead_name = str(helper["id"]), str(helper.get("name") or helper["id"])
+        turn.model = turn.lead
+        turn.inference["helper_led"] = why
+        log.info("turn %s: %s takes over (%s)", turn.conversation_id, turn.lead_name, why)
+        return True
+
+    def _repair_failed(self, turn: Turn) -> None:
+        """A corrected attempt at a reply came out wrong again. The second one in a turn hands it to the helper."""
+        turn.repairs_failed += 1
+        if turn.repairs_failed >= HELPER_AFTER_FAILED_REPAIRS:
+            self._helper_leads(turn, "Kiwi Mind's replies failed their repair twice")
+
+    def _state_for(self, turn: Turn) -> tuple[str, str, list[dict[str, Any]] | None, bool, PreparedContext]:
+        """What the model that writes the turn now (turn.model) is given: its message 0 and tools, the protocol
+        it speaks, and the chat cut to its window. For a model that took over or gave back mid-turn, and
+        after replies were set aside."""
+        settings, model = self._settings(), str(turn.model)
+        info = self.llm.model_info(model)
+        system_prompt = self._system_prompt(
+            {**settings, "workspace": self._folder(turn.conversation_id)}, model=model, model_info=info
+        )
+        tool_list = self._tool_list(model, settings, info)
+        turn.system_prompt, turn.reserve, turn.prompt_changed = system_prompt, self._tool_tokens(model, tool_list), False
+        prepared = self.context.prepare(
+            turn.conversation_id, model, system_prompt, turn_context=turn.turn_context, reserve_tokens=turn.reserve
+        )
+        turn.page_limit = library.page_limit(prepared.budget)
+        self._emit_context(turn, prepared)
+        text_mode = bool(settings.get("agent_enabled", True)) and not (info or {}).get("tools", False)
+        return model, system_prompt, tool_list, text_mode, prepared
+
     def _stream_with_recovery(
         self,
         turn: Turn,
@@ -1710,6 +1831,13 @@ class AgentManager:
         cool: bool = False,
     ) -> ChatResult:
         settings = self._settings()
+        if model != turn.model or turn.prompt_changed:  # who writes the turn changed since the caller read its state
+            model, _prompt, tools_now, text_mode, prepared = self._state_for(turn)
+            tool_list = tools_now if tool_list is not None else None  # a caller that forbade tools still does
+        if turn.lead and model == turn.lead and not turn.lead_said:
+            turn.lead_said = True
+            turn.emit("status", {"phase": "thinking", "label": f"{turn.lead_name} is taking over."})
+            turn.emit("brain", {"brain": "helper", "name": turn.lead_name, "lead": True})
         temperature = float(settings.get("temperature", config.DEFAULT_TEMPERATURE))
         if cool:  # a corrected attempt: less chance, same prompt prefix
             temperature = min(temperature, steer.RETRY_TEMPERATURE)
@@ -1772,7 +1900,8 @@ class AgentManager:
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
             try:
-                bind_turn(turn.conversation_id, turn.emit)  # Kiwi Mind: this chat's cache slot and status line
+                # Kiwi Mind: this chat's cache slot and status line. A leading helper was announced above, once.
+                bind_turn(turn.conversation_id, None if model == turn.lead else turn.emit)
                 result = self.llm.stream_chat(
                     model=model,
                     messages=messages,
@@ -1847,6 +1976,16 @@ class AgentManager:
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
                 turn.partial_reasoning = ""
+            except LLMError as exc:
+                if turn.lead is None or model != turn.lead or turn.partial_text or turn.partial_reasoning:
+                    raise
+                # The helper could not start, or failed before showing anything: Kiwi Mind finishes the turn.
+                log.info("turn %s: %s could not answer (%s); Kiwi Mind answers", turn.conversation_id, turn.lead_name, exc.message)
+                turn.emit("status", {"phase": "thinking", "label": f"{turn.lead_name} could not answer. Kiwi Mind is answering."})
+                turn.lead, turn.model, turn.lead_lost = None, KIWIMIND, True
+                return self._stream_with_recovery(
+                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=nudge, cool=cool
+                )
 
     @staticmethod
     def _max_tokens(turn: Turn, prepared: PreparedContext, settings: dict[str, Any]) -> int:
@@ -2408,7 +2547,9 @@ class AgentManager:
                 if again is None or again.kind != verdict.kind:
                     return retry
                 result, verdict = retry, again
+                self._repair_failed(turn)
             else:  # the new attempt came back empty: keep the one before, repaired below
+                self._repair_failed(turn)
                 turn.partial_text = result.content
                 turn.emit("rewrite", {"text": result.content, "reasoning": ""})
         cleaned = steer.repair(result.content, verdict, facts)
@@ -2463,6 +2604,41 @@ class AgentManager:
         message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta=meta)
         turn.last_message_id = message["id"]
         turn.reply_text = text
+
+    def _answer_late_notes(self, turn: Turn, settings: dict[str, Any]) -> None:
+        """A steering note reached the turn after its last generation had read the chat. It is answered here, as
+        the next turn would be, in the same reply: the note is the newest message and the tools stay on."""
+        model, _prompt, tool_list, text_mode, prepared = self._state_for(turn)
+        said = False
+        for round_index in range(1, LATE_NOTE_ROUNDS + 1):
+            self._raise_if_aborted(turn)
+            turn.emit("status", {"phase": "thinking", "label": "Answering your note"})
+            turn.partial_text = turn.partial_reasoning = ""
+            if turn.reply_text.strip():
+                turn.emit("delta", {"text": "\n\n"})  # a new reply, not a continuation of the last
+            result = self._stream_with_recovery(turn, model, prepared, tool_list, round_index, text_mode=text_mode)
+            self._record_usage(turn, result, prepared)
+            if result.content or result.reasoning or result.tool_calls:
+                message = self.db.add_message(
+                    turn.conversation_id, "assistant", result.content, reasoning=result.reasoning,
+                    tool_calls=result.tool_calls or None, model=turn.model,
+                    tokens=(result.usage or {}).get("completion_tokens"),
+                )
+                turn.last_message_id = message["id"]
+            turn.partial_text = turn.partial_reasoning = ""
+            said = said or bool(result.content.strip())
+            turn.reply_text += "\n" + result.content
+            if not result.tool_calls:
+                break
+            self._handle_tool_calls(turn, result.tool_calls, settings)
+            prepared = self.context.extend(
+                prepared, turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
+            )
+        if not said:  # never leave a note without a reply
+            message = self.db.add_message(turn.conversation_id, "assistant", prompts.NO_ANSWER, model=turn.model,
+                                          meta={"fallback": True})
+            turn.last_message_id = message["id"]
+            turn.emit("delta", {"text": "\n\n" + prompts.NO_ANSWER})
 
     def _earlier_chats_note(self, turn: Turn) -> str:
         """Other recent chats, only when the message refers back to one (sessions.py)."""
@@ -2617,7 +2793,9 @@ class AgentManager:
                     added = str(item["args"].get("content") or "").strip() if item["args"].get("action") == "append" else ""
                     turn.done_note = (f"{result.content.rstrip('.')}: {added}." if added and len(added) <= 200
                                       else result.content)
-                if item["name"] in ("system_info", "list_files", "git") and isinstance(result.meta, dict):
+                if item["name"] == "disk_usage":  # its result is text only: lookfirst reads the figures from it
+                    turn.looked["disk_usage"] = {"output": result.content}
+                elif item["name"] in LOOK_TOOLS and isinstance(result.meta, dict):
                     turn.looked[item["name"]] = {**result.meta, "shown": item["location"] or "",
                                                  "depth": LIST_MAX_DEPTH}
                 if item["name"] not in ("note", "memory") and (result.meta or {}).get("count") != 0:  # found something

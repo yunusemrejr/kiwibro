@@ -109,6 +109,7 @@ const DEFAULT_PERMISSIONS = {
   run_python: "ask",
   run_javascript: "ask",
   system_info: "auto",
+  disk_usage: "auto",
   open_path: "ask",
   clipboard: "ask",
   notify: "auto",

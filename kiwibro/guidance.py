@@ -42,7 +42,8 @@ SNIPPETS: dict[str, str] = {
     ),
     "desktop": (
         "Desktop: open_path shows a file or URL, clipboard reads or sets text, notify signals completion, "
-        "screenshot captures the screen, system_info describes this machine."
+        "screenshot captures the screen, system_info describes this machine, disk_usage shows "
+        "what fills a folder."
     ),
     "memory": (
         "Memory: facts the user states are saved automatically. Call remember only to correct one "

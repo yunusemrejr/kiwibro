@@ -599,6 +599,32 @@ _SPECS: tuple[ToolSpec, ...] = (
         parallel=True,
     ),
     ToolSpec(
+        name="disk_usage",
+        description=(
+            "Show what takes up disk space: the largest folders and files under a folder, and "
+            "optionally only what was written recently. Read-only."
+        ),
+        parameters=_schema(
+            {
+                "path": _str("Folder to measure. Default: the home folder."),
+                "changed": {
+                    "type": "string",
+                    "enum": ["today", "week", "month"],
+                    "description": (
+                        "Only count files written since then, to see what filled the disk recently."
+                    ),
+                },
+                "top": _int("How many entries to list. Default 10.", 1, 50),
+            },
+        ),
+        risk="read",
+        phase="tool",
+        label="Measuring disk space",
+        summary=lambda args: f"Disk usage of {args.get('path') or '~'}",
+        category="desktop",
+        parallel=True,
+    ),
+    ToolSpec(
         name="open_path",
         description=(
             "Open a workspace file/folder or an http(s) URL in the user's desktop "
@@ -1229,6 +1255,15 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
         return validated
     if name == "system_info":
         return {}
+    if name == "disk_usage":
+        changed = args.get("changed")
+        if changed is not None and changed not in ("today", "week", "month"):
+            raise ValueError("changed must be today, week or month")
+        return {
+            "path": _opt_str(args, "path"),
+            "changed": changed,
+            "top": _as_int(args.get("top"), "top", 10, 1, 50),
+        }
     if name == "open_path":
         return {"target": _as_str(args.get("target"), "target")[:2000]}
     if name == "clipboard":
@@ -1622,6 +1657,9 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             f"{key}: {value}" for key, value in info.items() if key != "tools"
         ) + "\navailable: " + ", ".join(name_ for name_, ok in info["tools"].items() if ok)
         return ToolResult(ok=True, content=content, preview=_preview(content), meta=info)
+    if name == "disk_usage":
+        content = desktop.disk_usage(args["path"], args["changed"], args["top"])
+        return ToolResult(ok=True, content=content, preview=_preview(content))
     if name == "open_path":
         opened = desktop.open_path(ctx.workspace, args["target"])
         message = f"Opened {opened['opened']}."

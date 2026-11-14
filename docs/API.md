@@ -574,7 +574,7 @@ A chat can open a safe copy of a folder: the agent then works in a copy kept in 
 folder (`<data>/safecopy/<session id>`), so no tool touches the real folder until the user
 applies a reviewed proof. While a session is open the chat's file and command tools work in
 the copy, commands run in the sandbox without network, and tools that act on the whole
-computer (`open_path`, `clipboard`, `screenshot`, `remote`, `notify`, `system_info`,
+computer (`open_path`, `clipboard`, `screenshot`, `remote`, `notify`, `system_info`, `disk_usage`,
 `workspace`, `terminal_session`, `delegate` and third-party tools) are refused. Sessions are
 opened, read and closed with the routes below; a chat remembers its own session, which is not
 a field of the conversation API.

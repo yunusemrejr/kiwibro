@@ -47,6 +47,7 @@ REFUSED: dict[str, str] = {
     "screenshot": "Screenshots show the whole desktop, so they are not available in a safe copy.",
     "notify": "Notifications are outside the safe copy, so they are not available here.",
     "system_info": "It reports on the whole computer, so it is not available in a safe copy.",
+    "disk_usage": "It measures the whole computer, so it is not available in a safe copy.",
     "describe_image": "Desktop tools are not available in a safe copy.",
     "workspace": "The workspace cannot change while a safe copy is open.",
     "terminal_session": "Background terminals do not run inside the safe copy, so they are not available.",

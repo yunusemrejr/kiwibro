@@ -1,8 +1,8 @@
 """What Kiwibro looks at on the computer before the model writes a word.
 
-"How many files are on my desktop", "how much free disk space do I have": a small model
-answers these from nothing, with made-up counts or a template. The answer is one read-only
-call away, so Kiwibro makes that call first and the model writes from the result.
+"How many files are on my desktop", "how much free disk space do I have", "what is eating my
+disk": a small model answers these from nothing, with made-up counts or a template. The answer
+is one read-only call away, so Kiwibro makes that call first and the model writes from the result.
 Only read-only tools are used, and every call still passes the safety policy.
 """
 
@@ -35,6 +35,57 @@ _ASKS = re.compile(
     r"\b(?:how\s+many|what|which|list|show|find|is\s+there|are\s+there|do\s+i\s+have|biggest|largest|smallest|"
     r"newest|oldest|latest|count)\b", re.I)
 _POINTER = re.compile(r"\b(?:which\s+(?:one|ones|file|folder)|of\s+(?:them|those|these)|them|those|the\s+(?:biggest|largest|smallest|newest|oldest))\b", re.I)
+
+# "what's eating my disk", "why is my disk full", "which folders are the biggest", "what used up the
+# space this week": the question is what fills the disk, which only a measure of the folders answers.
+# Free space alone ("how much space is left") is system_info's.
+_EATS = (r"(?:ea(?:t|ts|ting|ten)|ate|tak(?:e|es|ing|en)|took|us(?:e|es|ing|ed)|fill(?:s|ed|ing)?|hogg?(?:s|ed|ing)?|"
+         r"clogg?(?:s|ed|ing)?|consum(?:e|es|ed|ing)|gobbl(?:e|es|ed|ing)|occup(?:y|ies|ied|ying)|swallow(?:s|ed|ing)?)")
+# "space" alone is also the sky's: it counts as the disk's when it is "the space", "my space" or the computer's
+_STORE = (r"(?:disk|drive|ssd|hdd|storage|(?:the|my|our)\s+space|"
+          rf"(?:most\s+)?space\s+(?:on|in|of)\s+(?:my|the|this|our)\s+(?:computer|pc|laptop|machine|notebook|system|device|home|{_PLACES}))")
+_SPACE_EATEN = re.compile(
+    rf"\b(?:what|which|who|whats|what's)\b[^?.!]{{0,40}}?\b{_EATS}\b(?:\s+up)?[^?.!]{{0,40}}?\b{_STORE}\b", re.I)
+_DISK_FULL = re.compile(
+    rf"\bwhy\b[^?.!]{{0,40}}?\b{_STORE}\b[^?.!]{{0,30}}?\b(?:full|filling|filled|low|tight|gone)\b|"
+    r"\bwhy\b[^?.!]{0,30}?\b(?:out\s+of|low\s+on|short\s+on|running\s+out\s+of)\s+(?:disk|storage|space)\b", re.I)
+_SPACE_WENT = re.compile(
+    rf"\bwhere\b[^?.!]{{0,30}}?\b{_STORE}\b[^?.!]{{0,20}}?\b(?:go|gone|went|disappear\w*|vanish\w*)\b", re.I)
+_BIGGEST_FOLDERS = re.compile(
+    r"\b(?:biggest|largest|heaviest|fattest)\s+(?:folders?|directories|dirs?|space\s+hogs?)\b|"
+    r"\b(?:folders?|directories|dirs?)\b[^?.!]{0,30}?\b(?:biggest|largest|heaviest|most\s+space)\b|"
+    r"\bspace\s+hogs?\b", re.I)
+_FULL_AND_ASKING = re.compile(
+    r"\b(?:disk|drive|storage|ssd)\b\W+(?:\w+\W+){0,3}?(?:full|filling\s+up|running\s+out)\b", re.I)
+_ELSEWHERE = re.compile(  # a measure of the home folder says nothing about these
+    r"\b(?:this|the|my|our)\s+(?:repo|repository|project|workspace|codebase|container|database|db|vm|image|"
+    r"notes?|chat|memory|memories|models?|library)\b|\bnode_modules\b|\bdocker\b", re.I)
+_TODAY = re.compile(r"\btoday\b|\bthis\s+morning\b|\bsince\s+(?:midnight|this\s+morning)\b", re.I)
+_THIS_WEEK = re.compile(
+    r"\b(?:this|the\s+(?:past|last))\s+week\b|\blast\s+(?:few\s+|\d+\s+)?days\b|\bpast\s+(?:few\s+|\d+\s+)?days\b|"
+    r"\bthese\s+days\b|\brecently\b|\blately\b|\byesterday\b", re.I)
+_THIS_MONTH = re.compile(r"\b(?:this|the\s+(?:past|last))\s+month\b|\blast\s+30\s+days\b", re.I)
+_ASKS_ABOUT_DISK = re.compile(r"\?|\b(?:what|which|why|where|who|how|find|show|tell|list|check|help)\b", re.I)
+_SPACE_QUESTIONS = (_SPACE_EATEN, _DISK_FULL, _SPACE_WENT, _BIGGEST_FOLDERS)
+_FILES = re.compile(r"\bfiles?\b", re.I)
+_FOLDERS = re.compile(r"\b(?:folders?|directories|dirs?)\b", re.I)
+
+
+def asks_what_fills_the_disk(message: str) -> bool:
+    """The message wants to know what takes up the space on the user's own disk."""
+    text = (message or "").replace("’", "'")
+    if _ELSEWHERE.search(text):
+        return False
+    return any(pattern.search(text) for pattern in _SPACE_QUESTIONS) or bool(
+        _FULL_AND_ASKING.search(text) and _ASKS_ABOUT_DISK.search(text))
+
+
+def _changed(message: str) -> str | None:
+    """How far back a question about the disk looks: what was written then, not everything."""
+    for window, pattern in (("today", _TODAY), ("week", _THIS_WEEK), ("month", _THIS_MONTH)):
+        if pattern.search(message):
+            return window
+    return None
 
 
 @dataclass(frozen=True)
@@ -105,6 +156,12 @@ def calls(message: str, workspace_root: Path, tools: frozenset[str], before: str
     compare = repo(message, workspace_root) if "git" in tools else None
     if compare is not None:
         return [compare]
+    if "disk_usage" in tools and asks_what_fills_the_disk(message):
+        target = place(message, workspace_root)  # "what takes the space in my downloads" measures that folder
+        if not (target is not None and _FILES.search(message) and not _FOLDERS.search(message)):  # "which file takes the most space on my desktop" is the folder listing's
+            window = _changed(message)
+            args: dict[str, Any] = {**({"path": str(target.path)} if target is not None else {}), **({"changed": window} if window else {})}
+            return [Look("disk_usage", args, shown=target.shown if target is not None else "")]
     if "system_info" in tools and machine(message):
         looks.append(Look("system_info", {}))
     if "list_files" in tools:
@@ -221,12 +278,58 @@ def _repo_answer(message: str, found: dict[str, Any]) -> str:
     return " ".join(said) + ("\n\n" + "\n".join(more) if more else "")
 
 
+# disk_usage's result is text: "~: 120 GiB in 25 entries[ changed since 14 Nov 00:00]", "Disk: 3 GiB free of 7 GiB",
+# then one "   45 GiB   38%  Downloads/" row per entry and, for a time window, the largest files written in it.
+_DISK_HEAD = re.compile(r"^(.+?): (\S+ \S+) in (\d+) entr(?:y|ies)(?: changed since (.+))?$")
+_DISK_ROW = re.compile(r"^\s*(\S+ \S+)\s+(<1%|\d+%)\s+(\S.*)$")
+_DISK_FILE = re.compile(r"^\s*(\S+ \S+)\s+((?:\d{2} \w{3} )?\d{2}:\d{2})\s+(\S.*)$")
+_DISK_FREE = re.compile(r"^Disk: (\S+ \S+) free of (\S+ \S+)$")
+_DISK_UNLISTED = re.compile(r"^\((\d+) more not listed")
+_DISK_WORDS = frozenset("folder folders directory directories biggest largest heaviest most space disk drive storage hogs "
+                        "full filling filled eating taking using used up go gone went where why did".split())
+
+
+def _entries(count: int) -> str:
+    return "1 entry" if count == 1 else f"{count} entries"
+
+
+def _disk_answer(found: dict[str, Any]) -> str:
+    """What fills a folder, in disk_usage's own figures and its own order (largest first); "" when its text
+    is not in the form it always has."""
+    lines = str(found.get("output") or "").splitlines()
+    head = _DISK_HEAD.match(lines[0]) if lines else None
+    if head is None:
+        return ""
+    shown, total, count, since = head.groups()
+    where = "your home folder" if shown == "~" else shown
+    rows = [f"- {m.group(3)}: {m.group(1)} ({m.group(2)})" for m in map(_DISK_ROW.match, lines[1:]) if m]
+    files = [f"- {m.group(3)}: {m.group(1)}, {m.group(2)}" for m in map(_DISK_FILE.match, lines[1:]) if m]
+    if not rows:
+        return f"Nothing in {where} was written since {since}." if since else f"{where[0].upper()}{where[1:]} is empty."
+    said = [f"Since {since}, {total} was written in {where}. Largest first:" if since
+            else f"{where[0].upper()}{where[1:]} holds {total} in {_entries(int(count))}, largest first:"]
+    said += rows
+    unlisted = next((int(m.group(1)) for m in map(_DISK_UNLISTED.match, lines) if m), 0)
+    if unlisted:
+        said.append(f"{unlisted} more {'entry is' if unlisted == 1 else 'entries are'} smaller and not listed.")
+    if files:
+        said += ["", f"Largest files written since {since}:", *files]
+    free = next((m for m in map(_DISK_FREE.match, lines) if m), None)
+    if free:
+        said += ["", f"{free.group(1)} is free of {free.group(2)} on this disk."]
+    said += [line for line in lines if line.endswith("could not be read") or line.startswith("The walk was cut short")]
+    return "\n".join(said)
+
+
 def answer(message: str, looked: dict[str, dict[str, Any]]) -> str:
     """The answer to a question the looks answer outright, in the results' own figures; "" when
     the question wants more than that (a list, an opinion, a kind of file) and the model writes it."""
     text = (message or "").replace("’", "'")
     if "git" in looked:
         return _repo_answer(text, looked["git"])
+    if "disk_usage" in looked:  # the question is only what the look measured: nothing to do, delete or compare
+        return _disk_answer(looked["disk_usage"]) if _only(
+            text, (*_SPACE_QUESTIONS, _FULL_AND_ASKING, _TODAY, _THIS_WEEK, _THIS_MONTH, _PLACE), _DISK_WORDS) else ""
     asks_machine, asks_folder = "system_info" in looked, "list_files" in looked
     patterns = (*((_PART, _THIS_MACHINE) if asks_machine else ()), *((_PLACE, _HOW_MANY, _BIGGEST, _NEWEST) if asks_folder else ()))
     known = (_ABOUT_PARTS if asks_machine else frozenset()) | (_ABOUT_FILES if asks_folder else frozenset())

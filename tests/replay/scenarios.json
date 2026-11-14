@@ -33,5 +33,13 @@
    "whats the weather in izmir"]},
  {"name": "repo", "messages": [
    "on github i changed the readme and in my local copy in ./demo-app i changed some files too, are they at the same commit?",
-   "is my repo in ./demo-app up to date with origin?"]}
+   "is my repo in ./demo-app up to date with origin?"]},
+ {"name": "space", "messages": [
+   "how much free space is left on my disk",
+   "what is taking the space today",
+   "no, i meant everything in my home folder, not only today",
+   "use your computer tools to measure it",
+   "?",
+   {"model": "bartowski/spark-x2.6-4b"},
+   "try again"]}
 ]

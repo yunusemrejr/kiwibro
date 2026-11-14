@@ -45,7 +45,7 @@ LARGE_DELETE_FILES = 25
 
 # Outputs Kiwibro generates itself; never scored for injection.
 TRUSTED_OUTPUT = frozenset(
-    {"calculate", "list_files", "glob_files", "system_info", "model_info", "task_board", "remember",
+    {"calculate", "list_files", "glob_files", "system_info", "disk_usage", "model_info", "task_board", "remember",
      "notify", "undo_changes", "doc_list", "doc_add", "file_outline"}
 )
 # Read tools whose content comes from outside the user's own files.

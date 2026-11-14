@@ -58,6 +58,7 @@ const ASSISTANT_PHRASE = {
   run_python: "run a Python snippet",
   run_javascript: "run a JavaScript snippet",
   system_info: "check this computer",
+  disk_usage: "measure disk space",
   open_path: "open something on your desktop",
   clipboard: "use your clipboard",
   notify: "show a notification",

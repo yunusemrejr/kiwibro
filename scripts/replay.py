@@ -14,6 +14,11 @@ data folder: always point it at a test instance with its own.
 
 The "repo" scenario asks about a checkout named demo-app in the test workspace: clone any
 repository there first (git clone <address> /tmp/replay-ws/demo-app).
+
+An item in "messages" is a message to send, or {"model": "<id>"}: from that point on, the scenario runs
+with that model selected (POST /api/models/select, which is the helper model when Kiwi Mind is in use)
+and asked for in each request. The model selected before the scenario is put back when it ends, so one
+scenario cannot change the next. The "space" scenario uses it to retry a turned-down answer on a helper.
 """
 
 import json
@@ -39,7 +44,7 @@ for note in requests.get(f"{base}/api/notes", timeout=30).json().get("notes", []
 requests.patch(f"{base}/api/settings", json={"sense_enabled": not helpers_off}, timeout=30)
 
 
-def chat(conversation_id, message):
+def chat(conversation_id, message, model):
     body = {"conversation_id": conversation_id, "message": message, "model": model}
     started = time.time()
     turn = {"user": message, "text": "", "tools": [], "events": []}
@@ -94,15 +99,25 @@ for scenario in scenarios:
         continue
     conversation_id = None
     record = {"name": scenario["name"], "turns": []}
+    chosen_before = requests.get(f"{base}/api/settings", timeout=30).json()["settings"].get("model")
+    asked_model = model
     for message in scenario["messages"]:
+        if isinstance(message, dict):  # {"model": id}: the rest of the scenario runs with that model selected
+            asked_model = message["model"]
+            requests.post(f"{base}/api/models/select", json={"id": asked_model}, timeout=600).raise_for_status()
+            record["turns"].append({"model": asked_model})
+            print(f"[{scenario['name']}] model {asked_model}", flush=True)
+            continue
         try:
-            conversation_id, turn = chat(conversation_id, message)
+            conversation_id, turn = chat(conversation_id, message, asked_model)
         except Exception as exc:  # keep going: one failed turn must not lose the run
             turn = {"user": message, "error": repr(exc)}
         record["turns"].append(turn)
         print(f"[{scenario['name']}] {message[:60]!r} -> {len(turn.get('text', ''))} chars, "
               f"{[t['name'] for t in turn.get('tools', [])]} {turn.get('seconds')}s", flush=True)
         json.dump(results + [record], open(out_file, "w"), ensure_ascii=False, indent=1)
+    if asked_model != model:
+        requests.patch(f"{base}/api/settings", json={"model": chosen_before}, timeout=30).raise_for_status()
     record["conversation_id"] = conversation_id
     results.append(record)
     json.dump(results, open(out_file, "w"), ensure_ascii=False, indent=1)

@@ -455,7 +455,8 @@ staged in the shared index when that commit ran. Content is exactly as validated
   (atomic multi-edit), `file_manage` (mkdir/move/copy/delete),
   `git` (read-only status/diff/log/show), `multi_command`
   (sequential pipeline with stop-on-error).
-- **Computer/browser use:** `system_info`, `open_path` (xdg-open a
+- **Computer/browser use:** `system_info`, `disk_usage` (largest
+  folders and files under a path), `open_path` (xdg-open a
   workspace path or URL), `clipboard`, `notify`, `screenshot` — all
   degrade gracefully when the desktop binary is missing.
 - **Agent loop:** parallel execution of independent (auto/read) tool
