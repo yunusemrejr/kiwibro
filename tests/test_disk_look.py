@@ -106,6 +106,26 @@ def measured(env: Env, monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     return calls
 
 
+@pytest.mark.parametrize(("before", "message", "args"), [
+    ("how much free disk space do i have", "what is using space right now", {}),
+    ("how full is my drive", "whats hogging all the room this week", {"changed": "week"}),
+    ("", "check the disk usage and tell me what was written today", {"changed": "today"}),
+    ("", "show storage use", {}),
+])
+def test_after_talk_about_the_disk_space_alone_means_the_disk(before: str, message: str, args: dict):
+    assert [(look.name, look.args) for look in lookfirst.calls(message, ROOT, TOOLS, before)] == [("disk_usage", args)]
+
+
+@pytest.mark.parametrize(("before", "message"), [
+    ("", "what is using space right now"),  # nothing said that it is about the disk
+    ("how much free disk space do i have", "who is flying to space today"),
+    ("how much free disk space do i have", "what is taking place today"),
+    ("", "what does disk usage mean"),
+])
+def test_space_with_no_disk_in_sight_gets_no_disk_look(before: str, message: str):
+    assert all(look.name != "disk_usage" for look in lookfirst.calls(message, ROOT, TOOLS, before))
+
+
 def tools_called(env: Env, conversation_id: str) -> list[str]:
     return [call["function"]["name"] for m in env.svc.db.list_messages(conversation_id)
             for call in m.get("tool_calls") or []]

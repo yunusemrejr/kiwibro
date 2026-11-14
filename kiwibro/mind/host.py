@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .pack import HEAD, TOKENIZER, TRUNK, Pack
+from .pack import HEAD, TOKENIZER, TRUNK, UNITS, Pack
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +171,10 @@ class MindHost:
             args += ["--head", str(self.pack.path(HEAD))]
         for name in manifest.get("skills") or []:
             args += ["--skill", f"{name}={self.pack.path(f'skills/{name}.kms')}"]
+        if UNITS in (manifest.get("files") or {}) and (self.pack.dir / UNITS).exists():  # not a stray file
+            args += ["--units", str(self.pack.path(UNITS))]
+        if manifest.get("scoped") is True:  # every turn trained under its own skill: a change of skill keeps the cache
+            args += ["--scoped", "1"]
         key = secrets.token_urlsafe(24)
         env = {**os.environ, "KIWIMIND_KEY": key}
         log_file = self._open_log()

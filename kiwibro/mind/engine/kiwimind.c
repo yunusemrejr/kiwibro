@@ -1054,12 +1054,20 @@ static void skill_release(km_skill *s) {
   __builtin_memset(s, 0, sizeof(*s));
 }
 
-/* A loaded skill is replaced or removed: no slot may keep using it or keep an upper cache computed under it. When
-   it is removed, slots that selected it fall back to no skill. */
+/* Scoped skills: a position keeps the upper layers of the skill that was selected when it was evaluated. Selecting
+   another skill then costs nothing, and every turn of a conversation can run under its own skill (the system turn
+   under none). Only for packs whose skills were trained that way. Off, one skill holds for the whole upper cache. */
+static int scoped_skills = 0;
+KM_API(km_scope) void km_scope(int on) { scoped_skills = on != 0; }
+KM_API(km_scoped) int km_scoped(void) { return scoped_skills; }
+
+/* A loaded skill is replaced or removed: no slot may keep using it or keep an upper cache computed under it (with
+   scoped skills any cache may hold positions of it). When it is removed, slots that selected it fall back to no
+   skill. */
 static void forget_skill(int skill, int removed) {
   for (int id = 0; id < KM_MAX_SLOTS; id++) {
     km_slot *s = &M.slots[id];
-    if (s->upper_skill == skill) { s->n_upper = 0; s->logits_ok = 0; }
+    if (scoped_skills || s->upper_skill == skill) { s->n_upper = 0; s->logits_ok = 0; }
     if (removed && s->active == skill) s->active = -1;
   }
   skill_release(&M.skills[skill]);
@@ -1431,10 +1439,10 @@ KM_API(km_eval_lower) int km_eval_lower(const int32_t *tokens, int n) {
    `max` positions in this call (in pieces of at most KM_CHUNK). Returns how many
    positions still miss their upper part (0 = done: the logits of the last position are in km_logits()), or a
    negative code. If the skill differs from the one the upper cache was built under, the cache is dropped first and
-   rebuilt from the stored states. */
+   rebuilt from the stored states; with scoped skills it is kept and only the waiting positions use the new skill. */
 KM_API(km_eval_upper_n) int km_eval_upper_n(int max) {
   if (!M.ready || !S->used) return -1;
-  if (S->n_upper > 0 && S->upper_skill != S->active) {
+  if (!scoped_skills && S->n_upper > 0 && S->upper_skill != S->active) {
     S->n_upper = 0;
     S->logits_ok = 0;
   }

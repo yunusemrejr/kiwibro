@@ -72,11 +72,12 @@ def conductor(client: FakeClient, helper: dict[str, Any] | None = None, helper_s
 
 def ask(cond: Conductor, text: str = "hi", *, slot: str = "c1", events: list | None = None, on_delta: Any = None,
         abort: Any = None, extra_messages: list | None = None, tools: Any = None, temperature: float = 0.6,
-        max_tokens: int = 400) -> ChatResult:
+        max_tokens: int = 400, open_call: bool = False) -> ChatResult:
     messages = [{"role": "system", "content": "s"}, {"role": "user", "content": text}, *(extra_messages or [])]
     log = events if events is not None else []
     return cond.stream(messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens,
-                       on_delta=on_delta, abort=abort, conversation=slot, events=lambda n, d: log.append((n, d)))
+                       on_delta=on_delta, abort=abort, conversation=slot, events=lambda n, d: log.append((n, d)),
+                       open_call=open_call)
 
 
 # ---------------------------------------------------------------------------------- skill choice rules
@@ -478,6 +479,28 @@ def test_download_installs_a_checked_pack_and_resumes(tmp_path: Path, monkeypatc
         assert state["state"] == "done" and state["done_bytes"] == state["total_bytes"] > 0
         assert any(r and r.startswith("bytes=") for r in hub.ranges)  # it asked for the rest, not everything
         assert Pack(target).check().ok
+    finally:
+        hub.close()
+
+
+def test_download_replaces_a_file_of_the_right_size_and_other_content(tmp_path: Path) -> None:
+    files = pack_files(tmp_path)
+    hub = FakeHub(files)
+    try:
+        mind = tmp_path / "app" / "mind"
+        mind.mkdir(parents=True)
+        stale = bytearray(files["head.kmh"])
+        stale[10] ^= 1  # a retrained pack: same size, other content
+        (mind / "head.kmh").write_bytes(bytes(stale))
+        (mind / "tokenizer.json").write_bytes(files["tokenizer.json"])
+        kept = (mind / "tokenizer.json").stat().st_mtime_ns
+        pack = Pack(tmp_path / "app", base_url=hub.url)
+        pack.start_download()
+        state = wait_download(pack)
+        assert state["state"] == "done" and state["done_bytes"] == state["total_bytes"]
+        assert (mind / "head.kmh").read_bytes() == files["head.kmh"]
+        assert (mind / "tokenizer.json").stat().st_mtime_ns == kept  # the same content is not fetched again
+        assert Pack(tmp_path / "app").check().ok
     finally:
         hub.close()
 

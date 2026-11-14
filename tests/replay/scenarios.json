@@ -41,5 +41,8 @@
    "use your computer tools to measure it",
    "?",
    {"model": "bartowski/spark-x2.6-4b"},
-   "try again"]}
+   "try again"]},
+  {"name": "verse", "messages": [
+   "hello",
+   "write me a four line poem about rain"]}
 ]

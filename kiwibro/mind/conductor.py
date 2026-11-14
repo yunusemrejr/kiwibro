@@ -110,6 +110,24 @@ class _Conversation:
     skill: str = ""
     hard: bool = False
     users: int = -1  # user messages seen when the skill was last chosen
+    act: float | None = None  # the action unit's reading for the reply to come: how likely it is a tool call
+    tool: str = ""  # and the tool it expects
+    read: bool = True  # the reading was used, or belongs to an earlier turn
+
+
+def from_kiwibro(message: dict[str, Any]) -> bool:
+    """A user-role message Kiwibro wrote itself in the middle of a turn (what it says about results, a correction)."""
+    return isinstance(message.get("content"), str) and message["content"].startswith("[Kiwibro")
+
+
+def unit_reading(units: Any) -> tuple[float | None, str]:
+    """(how likely the next reply is a tool call, the tool the unit expects) from the host's raw outputs."""
+    names, logits = list((units or {}).get("names") or []), list((units or {}).get("logits") or [])
+    if "act" not in names or len(logits) != len(names):
+        return None, ""
+    act = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, float(logits[names.index("act")])))))
+    tools = [(float(logits[i]), name[5:]) for i, name in enumerate(names) if name.startswith("tool:")]
+    return act, max(tools)[1] if tools else ""
 
 
 @dataclass
@@ -119,6 +137,9 @@ class Settings:
     ctx: Callable[[], int]
     helper: Callable[[], dict[str, Any] | None]
     helper_stream: HelperStream
+    # From which reading of the action unit on a reply is opened as a tool call (None: never). The pack sets it,
+    # and only when its own held-back cases showed that this puts right more replies than it breaks.
+    act_mark: Callable[[], float | None] = lambda: None
 
 
 class Conductor:
@@ -134,8 +155,10 @@ class Conductor:
     def stream(
         self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, temperature: float,
         max_tokens: int, on_delta: Callable[[str], None] | None, abort: threading.Event | None,
-        conversation: str | None, events: Events | None,
+        conversation: str | None, events: Events | None, open_call: bool = False,
     ) -> ChatResult:
+        """``open_call``: the reply is opened as a tool call whatever the action unit says (the agent asks for it
+        after a reply that promised a step or said it cannot, where the model would promise again)."""
         emit: Events = events or (lambda _name, _data: None)
         helper = self.cfg.helper()
         if helper is not None and has_images(messages) and helper.get("vision"):
@@ -146,10 +169,17 @@ class Conductor:
         cap = self._room(prompt, max_tokens)
         try:
             skill, hard = self._choose(slot, messages, prompt)
-            emit("brain", {"brain": "kiwimind", "skill": skill, "hard": hard})
+            act, tool = self.reading(slot)
+            emit("brain", {"brain": "kiwimind", "skill": skill, "hard": hard,
+                           **({"act": round(act, 3), "tool": tool} if act is not None else {})})
+            # The unit is sure that a tool call comes: the reply is opened as one, so the model names the tool
+            # and its arguments and cannot talk about the step, ask whether it should, or say it cannot.
+            mark = self.cfg.act_mark()
+            sure = act is not None and mark is not None and act >= mark
+            opened = CALL_TAG + "\n" if tools and (open_call or sure) else ""
             return self._generate(
                 prompt, slot, skill, hard, temperature, cap, on_delta, abort, emit,
-                helper=helper if hard else None, messages=messages,
+                helper=helper if hard and not opened else None, messages=messages, opened=opened,
             )
         except MindRequestError as exc:
             raise _mapped(exc) from exc
@@ -171,7 +201,7 @@ class Conductor:
     def _choose(self, slot: str, messages: list[dict[str, Any]], prompt: str) -> tuple[str, bool]:
         """The skill for this generation. The head is asked once per user message; the tool steps that follow
         keep the answer. A running conversation changes skill only for a clear gain."""
-        users = sum(1 for m in messages if m.get("role") == "user")
+        users = sum(1 for m in messages if m.get("role") == "user" and not from_kiwibro(m))
         with self._lock:
             state = self._conversations.setdefault(slot, _Conversation())
             if state.skill and state.users == users:
@@ -192,10 +222,24 @@ class Conductor:
         else:
             probs = dict(zip((name for name, _ in scored), softmax([score for _, score in scored])))
             top = max(probs, key=lambda name: probs[name])
-            chosen = current if current in probs and probs[top] - probs[current] < SWITCH_MARGIN else top
+            # with scoped skills a change costs nothing (earlier turns keep what they computed): the head decides
+            margin = 0.0 if control.get("scoped") else SWITCH_MARGIN
+            chosen = current if current in probs and probs[top] - probs[current] < margin else top
         with self._lock:
             state.skill, state.hard, state.users = chosen, hard, users
+            state.act, state.tool = unit_reading(control.get("units"))
+            state.read = False
         return chosen, hard
+
+    def reading(self, slot: str) -> tuple[float | None, str]:
+        """The action unit's reading for the first reply of the conversation's current turn. Later replies of the
+        turn (after tool results) were not read, so it only holds for the first."""
+        with self._lock:
+            state = self._conversations.get(slot)
+            fresh = state is not None and not state.read
+            if state is not None:
+                state.read = True
+            return (state.act, state.tool) if fresh and state is not None else (None, "")
 
     def _body(self, prompt: str, slot: str, skill: str, temperature: float, max_tokens: int) -> dict[str, Any]:
         return {
@@ -220,9 +264,12 @@ class Conductor:
     def _generate(
         self, prompt: str, slot: str, skill: str, hard: bool, temperature: float, cap: int,
         on_delta: Callable[[str], None] | None, abort: threading.Event | None, emit: Events, *,
-        helper: dict[str, Any] | None, messages: list[dict[str, Any]],
+        helper: dict[str, Any] | None, messages: list[dict[str, Any]], opened: str = "",
     ) -> ChatResult:
         hold = Holdback()
+        if opened:  # the reply starts with this text: the model continues it
+            prompt += opened
+            hold.feed(opened)
         pending = ""  # shown only once we know the helper is not taking over
         peeking = helper is not None
         seen = 0
@@ -263,7 +310,7 @@ class Conductor:
         tail = pending + hold.finish() if peeking else hold.finish()
         if tail and on_delta:
             on_delta(tail)
-        trace({"slot": slot, "skill": skill, "hard": hard, "prompt": prompt, "reply": hold.text,
+        trace({"slot": slot, "skill": skill, "hard": hard, "opened": bool(opened), "prompt": prompt, "reply": hold.text,
                "finish": done.get("finish"), "usage": done.get("usage"), "timings": done.get("timings")})
         return self._result(hold.text, done)
 

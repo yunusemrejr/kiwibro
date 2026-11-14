@@ -1829,6 +1829,7 @@ class AgentManager:
         text_mode: bool = False,
         nudge: str | None = None,
         cool: bool = False,
+        open_call: bool = False,
     ) -> ChatResult:
         settings = self._settings()
         if model != turn.model or turn.prompt_changed:  # who writes the turn changed since the caller read its state
@@ -1913,6 +1914,7 @@ class AgentManager:
                     on_rewrite=self._rewrite_callback(turn),
                     abort=turn.abort,
                     extra=request_extra or None,
+                    open_call=open_call,
                 )
                 turn.timer.finish()
                 self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
@@ -1936,6 +1938,9 @@ class AgentManager:
                 if not trial:  # the same request without its adapter comes first, uncorrected
                     self._judge_adapters(turn, spoiled=False)
                     correction = prompts.STEER_NOTE.format(note=redirect.verdict.note)
+                    # Told that it has the tool, a small model often says again that it cannot.
+                    open_call = open_call or (redirect.verdict.call and model == KIWIMIND
+                                              and tool_list is not None and not text_mode)
                 turn.partial_text = ""
                 turn.emit("rewrite", {"text": "", "reasoning": ""})
                 turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
@@ -2536,9 +2541,14 @@ class AgentManager:
             turn.partial_text = ""
             turn.emit("rewrite", {"text": "", "reasoning": ""})
             turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
+            # A small model told it promised, or that it has the tool, often does the same again: the corrected
+            # attempt starts as the call itself.
+            open_call = (not trial and verdict.call and turn.model == KIWIMIND and tool_list is not None
+                         and not text_mode)
             retry = self._stream_with_recovery(
                 turn, model, prepared, tool_list, round_index, text_mode=text_mode,
                 nudge=None if trial else prompts.STEER_NOTE.format(note=verdict.note), cool=not trial,
+                open_call=open_call,
             )
             if retry.tool_calls or retry.content.strip():
                 again = steer.review(retry.content, facts, final=not retry.tool_calls) if retry.content.strip() else None

@@ -117,9 +117,11 @@ class FakeLLM:
         abort: Any = None,
         extra: Any = None,
         on_rewrite: Any = None,
+        open_call: bool = False,
     ) -> ChatResult:
         self.stream_calls.append(
-            {"model": model, "messages": messages, "tools": tools, "abort": abort, "extra": extra}
+            {"model": model, "messages": messages, "tools": tools, "abort": abort, "extra": extra,
+             "open_call": open_call}
         )
         item = self.stream_script.pop(0) if self.stream_script else ChatResult(
             content="Hello from the fake model.",

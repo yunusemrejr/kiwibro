@@ -686,17 +686,18 @@ const STOPS = [
     title: "Kiwi Mind",
     question: "Which model is answering?",
     lines:
-      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 16 layers read your conversation once. A small [[control head]] looks at what they understood and picks one of seven [[skills]]: chat, web, code, terminal, computer, tools or write. The skill is a thin layer slid into the upper 12 layers, so switching takes a moment, not a reload. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
+      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 16 layers read your conversation once. A small [[control head]] looks at what they understood and picks one of seven [[skills]]: chat, web, code, terminal, computer, tools or write. The skill is a thin layer slid into the upper 12 layers, and every turn keeps the one it was answered with, so a change of subject costs nothing. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
     fact: "464 MB on disk, 4 bits per weight, on the CPU in WebAssembly.",
     tech: {
       model: [
         ["Quantization-aware training (QAT)", "The model was trained on the 4-bit grid it is stored in, so the file holds exactly what was trained."],
-        ["LoRA skill swapping", "Each skill is a low-rank adapter of rank 16 on layers 16 to 27. Swapping one recomputes those 12 layers only."],
+        ["LoRA skill per turn", "Each skill is a low-rank adapter of rank 16 on layers 16 to 27. Every turn runs under its own skill and the opening instructions under none, so a change of skill recomputes nothing."],
         ["Control head", "A two-layer network reads the state entering layer 16 and scores the seven skills plus \"heavy\". It is the gating idea of a mixture of experts (MoE), with the adapters as the experts and one chosen per message."],
+        ["Action unit", "A second two-layer network reads the same state and says how likely the reply is a tool call, and which tool. The host computes it from numbers it already has."],
       ],
       app: [
         ["WebAssembly with SIMD and threads", "The engine is C compiled to WebAssembly and run by Node.js on 2 to 8 threads."],
-        ["Conductor", "Changes skill only when another one clearly leads, and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
+        ["Conductor", "Picks the skill for every message and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
       ],
     },
     build: kiwiMind,

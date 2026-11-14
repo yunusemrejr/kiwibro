@@ -654,10 +654,15 @@ anything in it; the model picked in the header is a helper for it.
   `kiwimind-trunk.fkm`, 413 MB.
 - **Skills.** Seven sets of extra weights for layers 16 to 27 (LoRA, rank 16): `chat`,
   `web`, `code`, `terminal`, `computer`, `tools`, `write`. One file each,
-  `skills/<name>.kms`, 8.7 MB. One skill is active in a conversation at a time.
+  `skills/<name>.kms`, 8.7 MB. Every turn of a conversation runs under its own skill;
+  the system text at the top runs under none.
 - **Control head.** `head.kmh`, 0.8 MB: a two-layer network that reads the state entering
   layer 16 at the last position of the prompt and gives eight scores, one per skill and one
   for "this request is heavy".
+- **Action unit.** `units.kmh`, 0.8 MB: a second two-layer network on the same state. It says
+  how likely the reply to come is a tool call and which tool it expects. The manifest names
+  the reading (`open_at`) from which Kiwibro opens a reply as a tool call, and names one only
+  when the pack's held-back cases came out better that way.
 - **Why the split.** Layers 0 to 15 are the same whatever the skill, so their reading of a
   conversation is done once and kept. Only layers 16 to 27 depend on the skill.
 - **One manual.** Every conversation is trained and run with the same system text and the
@@ -672,15 +677,17 @@ anything in it; the model picked in the header is a helper for it.
 - **`host/host.mjs`.** A Node program without packages. It loads the pack, takes the best
   build the processor supports and serves it on a random port of `127.0.0.1` behind a
   bearer key: `GET /health`, `POST /tokenize`, `POST /skills`, `POST /warm`, `POST
-  /control` (the head's scores) and `POST /generate` (streamed). It leaves when its stdin
+  /control` (the head's scores and the action unit's) and `POST /generate` (streamed). It leaves when its stdin
   closes or on SIGTERM.
 - **Slots.** A conversation has a slot with what the lower layers read and the upper
   layers' cache. All slots share one copy of the weights and one thread pool, so a second
   conversation costs about 140 MB at 2,000 tokens and no second model. Requests that arrive
   together take turns.
-- **Switching skill** recomputes layers 16 to 27 for the tokens already read: about 2 s at
-  500 tokens and 8 s at 2,000 on a Ryzen 5 7530U. The conductor therefore switches only on
-  a clear lead.
+- **Switching skill** costs nothing with a pack trained for it (`"scoped": true` in the
+  manifest, 2.0 and later): earlier turns keep what was computed under their own skill, and
+  only the new tokens run under the new one. With an older pack a switch recomputes layers
+  16 to 27 for the tokens already read (about 2 s at 500 tokens and 8 s at 2,000 on a Ryzen
+  5 7530U), so there the conductor switches only on a clear lead.
 - **Speed** on that processor with 6 threads: reads 160 tokens a second, writes 38 (after
   500 tokens) to 23 (after 2,000). Ready 0.8 s after start; about 770 MB of memory.
 
@@ -714,9 +721,15 @@ anything in it; the model picked in the header is a helper for it.
   the skills were trained on (`render.split_notes`, the clock line, the order of the first
   blocks); tests pin it against `scripts/mind/train.py`.
 - **Choosing the skill.** At the first generation after a user message the conductor asks
-  `/control`. A running conversation changes skill only when the new skill's share beats
-  the current one's by `SWITCH_MARGIN` (0.15); the skill then stays through the tool steps
-  of that turn.
+  `/control` and takes the head's first choice. The skill then stays through the tool steps
+  of that turn, and a note Kiwibro adds in between does not count as a new message. With a
+  pack from before 2.0 a running conversation changes skill only when the new skill's share
+  beats the current one's by `SWITCH_MARGIN` (0.15).
+- **Opening a tool call.** `/control` also carries the action unit's reading. When it
+  reaches the pack's `open_at`, the reply is started with `<tool_call>`, so the model names
+  the tool and its arguments instead of talking about the step. The 2.0 pack names no
+  `open_at`: on its held-back cases opening changed nothing. The corrected attempt after a
+  reply that only announced a step, or said it had no tool, is always opened this way.
 - **Heavy requests.** When the head marks a request heavy and a helper is selected, the
   conductor looks at the first pieces Kiwi Mind writes. If they open a tool call, Kiwi
   Mind carries on: tool decisions never leave it. Otherwise the helper answers the same
@@ -731,11 +744,26 @@ anything in it; the model picked in the header is a helper for it.
 
 ### Training (`scripts/mind/`)
 
-`train.py` runs on one GPU in six stages: `gen` (a large open teacher model writes
-conversations with Kiwibro's own tools, one set per skill), `trunk` (quantization-aware
-training of the whole model), `skills` (one LoRA per skill on the frozen trunk), `head`
-(the control head on the trunk's states), `eval` (held-out loss and tool-call checks, with
-and without the skills) and `export` (the pack and its manifest).
+`train.py` runs on one GPU in seven stages:
+
+- `gen`: a large open teacher model writes conversations with Kiwibro's own tools. Four
+  kinds: one request, a session of several turns that may change subject, a bad first reply
+  that the user turns down and Kiwibro puts right, and real first messages from open data
+  sets (OpenAssistant oasst2, Dolly, MASSIVE). Every turn carries the note Kiwibro really
+  adds to it, so the model learns to use the note and not to repeat it.
+- `trunk`: quantization-aware training of the whole model. Tokens that decide what happens
+  count more in the loss: the first tokens of a reply three times, a tool call one and a
+  half times.
+- `skills`: all seven LoRA skills in one run on the frozen trunk. Each position runs under
+  the skill of its own turn, as in the engine, and a token is learned only where its turn's
+  skill produced it. The B side of each LoRA learns four times as fast as the A side.
+- `head`: the control head and the action unit on the trunk's states.
+- `eval`: held-out loss and tool-call checks with and without the skills, for first turns,
+  later turns and replies after a turned-down one, and whether opening sure replies as tool
+  calls helps.
+- `export`: the pack and its manifest.
+- `parity`: held-back prompts with the token the trained model picks next;
+  `scripts/mind/parity.py` runs the pack's engine on them, a session turn by turn.
 
 Two rules came out of the first runs and are built in. The data set is small, so a second
 pass over it is learned by heart: the trunk reads every conversation once, and both the

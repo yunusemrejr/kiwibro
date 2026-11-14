@@ -17,7 +17,9 @@ const PREFILL_PIECE = 64;
 const DECODE_TURN = 4;
 const MAX_BODY = 8 << 20;
 const USAGE = 'usage: node host.mjs --model <trunk.fkm> --tokenizer <tokenizer.json> [--skill name=<file.kms> ...] ' +
-  '[--head <file.kmh>] [--threads N] [--ctx 4096] [--slots 3] [--port 0]   (secret in env KIWIMIND_KEY)';
+  '[--head <file.kmh>] [--units <file.kmh>] [--scoped 0|1] [--threads N] [--ctx 4096] [--slots 3] [--port 0]   (secret in env KIWIMIND_KEY)\n' +
+  '  --units <file.kmh>   the action unit: /control also says how likely the reply is a tool call, and which tool\n' +
+  '  --scoped 1           a change of skill keeps the cache; the system turn runs under no skill (for packs trained so)';
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -26,8 +28,47 @@ const bad = message => new HttpError(400, message);
 
 // ------------------------------------------------------------------ command line
 
+// A small reader in the head's file format (two layers over the normed state), computed here beside the engine.
+function readUnit(bytes) {
+  const { names, outputs } = parseHeadHeader(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const inDim = view.getUint32(12, true), hidden = view.getUint32(16, true);
+  if (names.length !== outputs) throw new Error(`unit file: ${names.length} names for ${outputs} outputs`);
+  const eps = view.getFloat32(24, true);
+  let at = 64; // the header's size
+  const take = count => {
+    if (at + 4 * count > bytes.byteLength) throw new Error('unit file is truncated');
+    const part = new Float32Array(count);
+    for (let i = 0; i < count; i++) part[i] = view.getFloat32(at + 4 * i, true);
+    at += 4 * count;
+    return part;
+  };
+  const w1 = take(hidden * inDim), b1 = take(hidden), w2 = take(outputs * hidden), b2 = take(outputs);
+  return {
+    names, inDim,
+    read(state) {
+      let square = 0;
+      for (let i = 0; i < inDim; i++) square += state[i] * state[i];
+      const scale = 1 / Math.sqrt(square / inDim + eps);
+      const mid = new Float32Array(hidden);
+      for (let j = 0; j < hidden; j++) {
+        let sum = 0;
+        for (let i = 0, row = j * inDim; i < inDim; i++) sum += w1[row + i] * state[i];
+        mid[j] = Math.max(0, sum * scale + b1[j]);
+      }
+      const out = new Array(outputs);
+      for (let k = 0; k < outputs; k++) {
+        let sum = b2[k];
+        for (let j = 0, row = k * hidden; j < hidden; j++) sum += w2[row + j] * mid[j];
+        out[k] = sum;
+      }
+      return out;
+    },
+  };
+}
+
 function parseArgs(argv) {
-  const opts = { skills: [], threads: defaultThreads(), ctx: 4096, slots: 3, port: 0 };
+  const opts = { skills: [], threads: defaultThreads(), ctx: 4096, slots: 3, port: 0, scoped: false, units: null };
   const intOption = (name, value, min, max) => {
     const n = Number(value);
     if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
@@ -40,6 +81,8 @@ function parseArgs(argv) {
       case '--model': opts.model = value; break;
       case '--tokenizer': opts.tokenizer = value; break;
       case '--head': opts.head = value; break;
+      case '--units': opts.units = value; break;
+      case '--scoped': opts.scoped = intOption(flag, value, 0, 1) === 1; break;
       case '--skill': {
         const at = value.indexOf('=');
         if (at < 1 || at === value.length - 1) throw new Error('--skill needs name=<file.kms>');
@@ -171,6 +214,18 @@ async function main(opts) {
     engine.loadHead(bytes);
   }
   for (const s of opts.skills) loadSkill(s.name, s.path);
+  // The action unit reads the same state as the head: will the reply be a tool call, and of which tool.
+  const units = opts.units ? readUnit(fs.readFileSync(opts.units)) : null;
+  if (units && units.inDim !== engine.dim) throw new Error(`the unit reads ${units.inDim} values per state, the trunk's state has ${engine.dim}`);
+  // Scoped skills: the system turn runs under no skill and every later position under the skill chosen when it was
+  // read, so a change of skill keeps the cache. The pack says whether its skills were trained for this.
+  const scoped = opts.scoped;
+  if (scoped) engine.scope(true);
+  const imEnd = tokenizer.tokenToId('<|im_end|>');
+  const systemEnd = tokens => {
+    const at = imEnd === undefined ? -1 : tokens.indexOf(imEnd);
+    return at < 0 ? 0 : Math.min(tokens.length, at + 2); // the closing token and the line break after it
+  };
 
   // ---- conversations
   const contexts = new Map(); // key -> { key, id, tokens, upperSkill, job, queue, used }
@@ -287,7 +342,9 @@ async function main(opts) {
     if (!head) return null;
     engine.slotUse(ctx.id);
     const out = engine.control();
-    return out && { names: head, logits: Array.from(out) };
+    if (!out) return null;
+    const state = units ? engine.stateAt(engine.nPast - 1) : null;
+    return { names: head, logits: Array.from(out), units: state ? { names: units.names, logits: units.read(state) } : null };
   };
 
   // "auto": the loaded skill the head likes best; outputs of the head that name no loaded skill are ignored.
@@ -299,20 +356,24 @@ async function main(opts) {
     return best;
   };
 
-  // Upper layers for everything that still lacks them. Positions that were built under another skill are redone
-  // first and counted as switch time.
-  function* upperLayers(job, ctx, skill) {
+  // Upper layers for everything that still lacks them, up to position upTo. Without scoped skills, positions that
+  // were built under another skill are redone first and counted as switch time. With them nothing is redone: the
+  // system turn runs under no skill, what follows under the skill given here.
+  function* upperLayers(job, ctx, skill, tokens, upTo = Infinity) {
     const index = skill === null ? -1 : skills.get(skill);
     if (index === undefined) throw new HttpError(409, `skill "${skill}" was unloaded`);
     engine.slotUse(ctx.id);
-    engine.selectSkill(index);
-    const redo = engine.nUpper > 0 && ctx.upperSkill !== index ? engine.nUpper : 0;
+    const shared = scoped ? systemEnd(tokens) : 0;
+    const redo = !scoped && engine.nUpper > 0 && ctx.upperSkill !== index ? engine.nUpper : 0;
     let at = redo ? 0 : engine.nUpper;
     for (;;) {
       if (job.aborted) return false;
       engine.slotUse(ctx.id);
+      engine.selectSkill(at < shared ? -1 : index);
+      const room = at < shared ? shared - at : (at < redo ? redo - at : upTo - at);
+      if (room <= 0) return true;
       const t0 = now();
-      const left = engine.evalUpper(Math.min(PREFILL_PIECE, at < redo ? redo - at : PREFILL_PIECE));
+      const left = engine.evalUpper(Math.min(PREFILL_PIECE, room));
       const dt = now() - t0;
       if (at < redo) job.timings.switch_ms += dt; else job.timings.upper_ms += dt;
       ctx.upperSkill = index;
@@ -402,7 +463,7 @@ async function main(opts) {
       if (job.aborted) return;
       const control = readControl(ctx);
       const skill = resolveSkill(spec, control);
-      const ready = yield* upperLayers(job, ctx, skill);
+      const ready = yield* upperLayers(job, ctx, skill, tokens);
       if (!ready) return;
 
       engine.slotUse(ctx.id);
@@ -483,11 +544,12 @@ async function main(opts) {
       const control = readControl(ctx);
       const usage = { prompt_tokens: tokens.length, cached_tokens: cached, completion_tokens: 0 };
       if (kind === 'control') {
-        send(res, 200, { names: control?.names ?? head, logits: control?.logits ?? null, usage });
+        send(res, 200, { names: control?.names ?? head, logits: control?.logits ?? null, units: control?.units ?? null, scoped, usage });
         return;
       }
       const skill = resolveSkill(spec, control);
-      if (!(yield* upperLayers(job, ctx, skill))) return;
+      // warming with scoped skills: only the part every skill shares; the turns wait for the skill of their reply
+      if (!(yield* upperLayers(job, ctx, skill, tokens, scoped && spec === 'none' ? systemEnd(tokens) : Infinity))) return;
       send(res, 200, { skill, usage, timings: finishTimings(job, tokens.length - cached) });
     };
     return job;

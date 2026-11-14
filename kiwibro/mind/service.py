@@ -36,7 +36,7 @@ class Mind:
         self.pack.on_installed = self.host.stop
         self.client = MindClient(self.host)
         self.helper = helper
-        self.conductor = Conductor(self.client, Settings(self.ctx, helper, helper_stream))
+        self.conductor = Conductor(self.client, Settings(self.ctx, helper, helper_stream, self.open_at))
         self._node_memo: tuple[float, str | None, str] | None = None
         self._notified = False
         self._lock = threading.Lock()
@@ -46,6 +46,12 @@ class Mind:
 
     def ctx(self) -> int:
         return int((self.pack.manifest() or {}).get("ctx") or DEFAULT_CTX)
+
+    def open_at(self) -> float | None:
+        """From which reading of the pack's action unit on a reply is opened as a tool call. A pack names the
+        mark only when its own held-back cases came out better that way; packs before 2.0 have no unit."""
+        mark = (self.pack.manifest() or {}).get("open_at")
+        return float(mark) if isinstance(mark, (int, float)) and not isinstance(mark, bool) and 0.5 <= mark <= 1 else None
 
     def node(self) -> tuple[str | None, str]:
         if self.host._node:

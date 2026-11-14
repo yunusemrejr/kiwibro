@@ -121,6 +121,21 @@ _NO_MEMORY = re.compile(
     re.IGNORECASE,
 )
 _BEFORE_NOW = re.compile(r"\b(?:already|earlier|previously|last time)\b", re.IGNORECASE)
+# "I'll check the disk and report back": a step announced in so many words, whatever the probe makes of it.
+# Only verbs of looking something up or fetching it count: "I'll try my best", "let me know" and "I will
+# remember that" name no step a tool takes, and "let me check: it holds 3 files" already gave the result.
+# An offer is not a promise.
+_WILL_DO = re.compile(
+    r"\b(?:I['’]ll|I\s+will|I['’]m\s+going\s+to|I\s+am\s+going\s+to|let\s+me)\s+"
+    r"(?:(?:now|just|quickly|go\s+ahead\s+and)\s+)*"
+    r"(?:re-?)?(?:run|check|look|read|open|search|scan|measure|list|find|fetch|call|inspect|verify|compare|"
+    r"examine|analy[sz]e|save|download|"
+    r"try\s+(?:again|once\s+more|it|that|this|another|a\s+different|a\s+new|\w+ing))\b"
+    r"(?![^:]*:\s+\S)",
+    re.IGNORECASE,
+)
+_OFFER = re.compile(r"\bif\s+you\b|would\s+you\s+like|do\s+you\s+want|want\s+me\s+to|\blet\s+me\s+know\b",
+                    re.IGNORECASE)
 # A list under a line such as "What I can't do:" denies an ability in every item, without
 # repeating the "I can't". Each item is read with those words put back.
 _CANNOT_LEAD = re.compile(r"\b(?:can(?:['’]|no)t|can not|unable to|not able to|limitations?)\b", re.IGNORECASE)
@@ -158,6 +173,7 @@ class Verdict:
     sentence: str = ""
     score: float = 1.0
     rewrite: str = ""  # the sentence put right by code; when set, no new attempt is needed
+    call: bool = False  # what puts it right is a tool call: the next attempt can start as one
 
 
 class Redirect(Exception):
@@ -368,7 +384,7 @@ def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> V
                         else "Call the tool now instead of saying you cannot.")
                 return Verdict(
                     DENIAL, f"That is not true here: you can do it with your `{usable[0]}` tool. {todo}",
-                    sentence, score,
+                    sentence, score, call=not listed,
                 )
     if facts.memory_on and _MEMORY_WORDS.search(sentence):
         return Verdict(DENIAL, _HAS_MEMORY, sentence, score)
@@ -382,6 +398,8 @@ def _denial(reader: Any, sentence: str, facts: Facts, listed: bool = False) -> V
 
 
 ECHO_MIN_CHARS = 25  # a shorter line can match the note by chance
+ECHO_RUN = 40  # this many characters in a row of a standing reminder: the line reads it out
+_FIRST_PERSON = re.compile(r"\bi\b", re.IGNORECASE)
 _LINE_MARKS = re.compile(r"^[\s#>*+\-•–\d.)\[\]]+|[\s*_\]]+$")
 _NOTE_HEADINGS = ("guidance for this turn", "kiwibro context for this turn")
 
@@ -398,9 +416,23 @@ def _echoed(reply: str, facts: Facts) -> list[str]:
     echoed = []
     for line in reply.splitlines():
         bare = _bare(line)
-        if bare and (bare in noted or bare.startswith(_NOTE_HEADINGS)):
+        if bare and (bare in noted or bare.startswith(_NOTE_HEADINGS) or _reads_out_a_reminder(bare, noted)):
             echoed.append(line)
     return echoed
+
+
+def _reads_out_a_reminder(bare: str, noted: set[str]) -> bool:
+    """Told "Say something is saved ... only after its tool call succeeded", a small model writes "The answer
+    is saved ... only after its tool call succeeded": the reminder in other opening words. A line that speaks
+    as "I" is an answer about itself, not an instruction read out."""
+    if len(bare) < ECHO_RUN or _FIRST_PERSON.search(bare):
+        return False
+    every = {OTHER_IDENTITY: 1, DENIAL: 1, UNBACKED_CLAIM: 1, META_LEAK: 1}
+    for reminder in map(_bare, reminders(every, Facts(tools=frozenset({"any"})))):
+        if reminder in noted and any(reminder[start:start + ECHO_RUN] in bare
+                                     for start in range(len(reminder) - ECHO_RUN + 1)):
+            return True
+    return False
 
 
 def _echo(reply: str, facts: Facts) -> Verdict | None:
@@ -557,12 +589,15 @@ def review(reply: str, facts: Facts, *, final: bool = True) -> Verdict | None:
                     "Do not claim it: tell the user how they can do it themselves.")
         return Verdict(UNBACKED_CLAIM, note, sentence, score)
     if parts and facts.tools:
-        label, score = _probe(reader, parts[-1])
-        if label == "action_promise" and score >= threshold:
+        # "I'll run the check now. Let me know if you need more.": the step is announced before the closing offer.
+        last = next((sentence for sentence in reversed(parts[-3:]) if not _OFFER.search(sentence)), parts[-1])
+        label, score = _probe(reader, last)
+        announced = (label == "action_promise" and score >= threshold) or _WILL_DO.search(last) is not None
+        if announced and not _OFFER.search(last):  # "if you want, I'll ..." leaves the choice to the user
             return Verdict(
                 UNKEPT_PROMISE,
                 "You said what you would do next but did not do it. Do it now with a tool call, then answer.",
-                parts[-1], score,
+                last, score, call=True,
             )
     return _wrong_result(reply, facts) or _unheard(reply, facts) or _off_topic(reader, reply, facts)
 

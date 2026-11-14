@@ -125,7 +125,10 @@ never switched to. The server runs in its own systemd user scope as a process na
 Kiwi Mind is the model Kiwibro thinks with. It is Qwen3-0.6B trained on the 4-bit grid it
 is stored in, split in two: 16 shared layers read the conversation once, and the 12 above
 them carry one of seven skills. A control head reads each new message and picks the skill,
-so nothing is chosen or loaded by hand. All open chats share one copy of the weights.
+so nothing is chosen or loaded by hand, and every turn keeps the skill it was answered
+with: a change of subject recomputes nothing. A second small network reads the same state
+and tells whether the reply to come should be a tool call. All open chats share one copy
+of the weights.
 
 | | |
 |---|---|

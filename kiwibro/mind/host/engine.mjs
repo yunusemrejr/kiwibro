@@ -199,6 +199,15 @@ export class MindEngine {
     if (rc) fail(HEAD_ERRORS, rc, 'head');
   }
 
+  // Scoped skills: positions keep the upper layers of the skill they were evaluated under, so a change of skill
+  // costs nothing (see km_scope in the engine). For packs trained that way.
+  scope(on) { this.e.km_scope(on ? 1 : 0); }
+  // The state the shared layers hand to the skills at a position (a copy), or null outside what was evaluated.
+  stateAt(pos) {
+    const at = this.e.km_state_at(pos);
+    return at ? new Float32Array(this.memory, at, this.e.km_dim()).slice() : null;
+  }
+
   get split() { return this.e.km_split(); }
   get nPast() { return this.e.km_n_past(); }
   get nUpper() { return this.e.km_n_upper(); }

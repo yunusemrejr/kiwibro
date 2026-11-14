@@ -566,12 +566,13 @@ class LLMClient:
         abort: threading.Event | None = None,
         extra: Mapping[str, Any] | None = None,
         on_rewrite: Callable[[str, str], None] | None = None,
+        open_call: bool = False,
     ) -> ChatResult:
         conversation, events = _take_turn()
-        if model == KIWIMIND:
+        if model == KIWIMIND:  # open_call is Kiwi Mind's: other models ignore it
             return self.mind().conductor.stream(
                 messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens, on_delta=on_delta,
-                abort=abort, conversation=conversation, events=events,
+                abort=abort, conversation=conversation, events=events, open_call=open_call,
             )
         if events is not None:
             self._announce_helper(model, events)

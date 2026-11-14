@@ -8,6 +8,7 @@ from test_backend import Env, chat_events, tool_call_result
 from kiwibro import prompts, steer
 from kiwibro.db import Database
 from kiwibro.llm import ChatResult
+from kiwibro.mind import KIWIMIND
 
 WEB = frozenset({"web_search", "fetch_page"})
 FILES = frozenset({"write_file", "read_file"})
@@ -51,7 +52,7 @@ def test_taking_the_users_identity_is_caught():
 def test_denying_a_tool_it_has_is_caught_only_when_the_tool_exists():
     reply = "I'm sorry, but I can't browse the internet."
     verdict = steer.review(reply, steer.Facts(question="what's the weather in Izmir right now?", tools=WEB))
-    assert verdict.kind == steer.DENIAL and "`web_search`" in verdict.note
+    assert verdict.kind == steer.DENIAL and "`web_search`" in verdict.note and verdict.call
     assert kind(reply, steer.Facts(question="what's the weather in Izmir right now?", memory_on=False)) is None
     assert kind(reply, steer.Facts(question="open example.com", tools=WEB, tools_ran=1, memory_on=False)) is None
 
@@ -71,6 +72,7 @@ def test_a_list_of_things_it_cannot_do_is_read_item_by_item():
     facts = steer.Facts(question="who are you and what can you do?", tools=WEB, memory_on=False)
     verdict = steer.review(CANNOT_LIST, facts)
     assert verdict.kind == steer.DENIAL and "`web_search`" in verdict.note and "leave it out" in verdict.note
+    assert not verdict.call  # the list is written again, no tool is called
     assert kind(CANNOT_LIST, steer.Facts(question="who are you and what can you do?", memory_on=False)) is None
     repaired = steer.repair(CANNOT_LIST, verdict, facts)
     assert "external websites" not in repaired and "- Taste food" in repaired and "- Search the web" in repaired
@@ -112,6 +114,51 @@ def test_announcing_a_step_without_taking_it_is_caught_at_the_end_only():
     assert kind("Let me search the web for that.", facts) == steer.UNKEPT_PROMISE
     assert kind("Let me search the web for that.", facts, final=False) is None  # it did call the tool
     assert kind("Let me search the web for that.", steer.Facts(question="what is the newest Linux kernel?")) is None
+
+
+@pytest.mark.parametrize("reply", [
+    "I'll check the disk and report the free space.",
+    "Let me re-run the scan with a different view.",
+    "I will look at the folder now.",
+    "I'm going to run the tests again.",
+    "Sure. I'll just quickly go ahead and open the log.",
+    "Okay, let me try again.",
+    "Let me check the disk usage:",
+    "I'll re-run the scan to see what changed since 00:00, and report the totals.",
+    "I'll run a quick check of the folder now. Let me know if you need anything else.",
+    "I'll re-check the folder and see what changed, and report what was done.",
+])
+def test_a_step_announced_in_so_many_words_is_caught_whatever_the_probe_says(reply: str):
+    facts = steer.Facts(question="how full is my disk?", tools=FILES)
+    assert kind(reply, facts) == steer.UNKEPT_PROMISE
+    assert kind(reply, facts, final=False) is None
+    assert kind(reply, steer.Facts(question="how full is my disk?")) is None
+
+
+@pytest.mark.parametrize("reply", [
+    "Let me know if you want more detail.",
+    "If you want, I'll check the logs.",
+    "I will remember that.",
+    "I'll check the disk. It has 120 GB free, which is 40 percent of it.",
+    "I'll try my best to help.",
+    "Let me show you an example.",
+    "Let me check: the folder holds three files.",
+    "The folder holds three files. Let me know if you want more detail.",
+])
+def test_a_step_that_is_an_offer_or_already_answered_is_not_a_promise(reply: str):
+    assert kind(reply, steer.Facts(question="how full is my disk?", tools=FILES)) != steer.UNKEPT_PROMISE
+
+
+def test_a_reminder_read_out_in_other_opening_words_is_caught():
+    reminder = steer.reminders({steer.UNKEPT_PROMISE: 1}, steer.Facts())[0]
+    facts = steer.Facts(question="write me a four line poem about rain", note=f"Guidance:\n- {reminder}")
+    read_out = ("Here is a short poem:\n\nThe answer is saved, created, or done only after its tool call succeeded. "
+                "When a step is needed, call the tool in the same reply.")
+    assert kind(read_out, facts) == steer.META_LEAK
+    assert kind("Rain taps the window, soft and slow, and the street lamps hum below.", facts) is None
+    web = steer.Facts(question="what can you do?", tools=WEB, memory_on=False,
+                      note="- " + steer.reminders({steer.DENIAL: 1}, steer.Facts(tools=WEB))[0])
+    assert kind("I can search the web, read and write files and run code.", web) != steer.META_LEAK
 
 
 def test_describing_the_request_instead_of_answering_is_caught():
@@ -349,6 +396,65 @@ def test_an_empty_turn_never_ends_empty(env: Env, silent_again: bool):
     assert env.fake.stream_calls[-1]["messages"][-1]["content"] == prompts.ANSWER_NOW
     assert _stored_reply(env) == (prompts.NO_ANSWER if silent_again else "Paris.")
     assert _events_of(events, "done")[0]["message_id"] != _events_of(events, "meta")[0]["user_message_id"]
+
+
+# ---- a corrected attempt after a promise or a denial opens as a tool call (Kiwi Mind only) ----
+
+PROMISE = "I'll search the web and report the capital."
+CANNOT_BROWSE = "I'm sorry, but I can't browse the internet."
+ANSWER = "Canberra is the capital of Australia."
+CAPITAL_QUESTION = "what is the capital of Australia?"
+
+
+@pytest.fixture
+def kiwi_mind(env: Env, monkeypatch) -> Env:
+    """Kiwi Mind writes the turn."""
+    monkeypatch.setattr(type(env.svc.llm.mind()), "usable", lambda self: True)
+    return env
+
+
+def _open_calls(env: Env) -> list[bool]:
+    return [call["open_call"] for call in env.fake.stream_calls]
+
+
+def test_the_attempt_after_a_promise_opens_as_a_call(kiwi_mind: Env):
+    kiwi_mind.fake.stream_script = [ChatResult(content=PROMISE), ChatResult(content=ANSWER)]
+    chat_events(kiwi_mind, CAPITAL_QUESTION)
+    assert [call["model"] for call in kiwi_mind.fake.stream_calls] == [KIWIMIND, KIWIMIND]
+    assert _open_calls(kiwi_mind) == [False, True]
+    assert kiwi_mind.fake.stream_calls[1]["tools"]
+
+
+def test_a_list_rewritten_without_a_denial_does_not_open_as_a_call(kiwi_mind: Env):
+    kiwi_mind.fake.stream_script = [ChatResult(content=CANNOT_LIST), ChatResult(content=ANSWER)]
+    events, _raw = chat_events(kiwi_mind, "who are you and what can you do?")
+    assert _events_of(events, "done")[0]["inference"]["steered"] == [steer.DENIAL]
+    assert not any(_open_calls(kiwi_mind))
+
+
+def test_the_attempt_after_denying_a_tool_it_has_opens_as_a_call(kiwi_mind: Env):
+    kiwi_mind.fake.stream_script = [ChatResult(content=CANNOT_BROWSE), ChatResult(content=ANSWER)]
+    events, _raw = chat_events(kiwi_mind, CAPITAL_QUESTION)
+    assert _events_of(events, "done")[0]["inference"]["steered"] == [steer.DENIAL]
+    assert _open_calls(kiwi_mind) == [False, True]
+
+
+def test_a_promise_in_a_turn_of_another_model_does_not_open_the_attempt_as_a_call(env: Env):
+    env.fake.stream_script = [ChatResult(content=PROMISE), ChatResult(content=ANSWER)]
+    chat_events(env, CAPITAL_QUESTION)
+    assert [call["model"] for call in env.fake.stream_calls] == ["fake-1", "fake-1"]
+    assert _open_calls(env) == [False, False]
+
+
+def test_another_kind_of_correction_does_not_open_the_attempt_as_a_call(kiwi_mind: Env):
+    kiwi_mind.fake.stream_script = [
+        ChatResult(content="I've saved the file to your workspace."),
+        tool_call_result("write_file", {"path": "notes.txt", "content": "milk, eggs"}),
+        ChatResult(content="Saved your list to notes.txt."),
+    ]
+    events, _raw = chat_events(kiwi_mind, "save my shopping list (milk, eggs) to notes.txt")
+    assert steer.UNBACKED_CLAIM in _events_of(events, "done")[0]["inference"]["steered"]
+    assert len(kiwi_mind.fake.stream_calls) >= 2 and not any(_open_calls(kiwi_mind))
 
 
 # ---- task adapters under test ----

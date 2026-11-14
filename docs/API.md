@@ -409,7 +409,7 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 |---|---|---|
 | `meta` | `{conversation_id, user_message_id, model, title, context:{used,budget,percent}}` | first |
 | `status` | `{phase, label}`; `phase` is `thinking`, `seeing`, `web`, `reading`, `writing`, `running` or `tool` | optional, for activity line |
-| `brain` | `{brain: "kiwimind"\|"helper", skill, hard, name?}` | which brain writes this reply: Kiwi Mind with the skill it chose (`skill`) and whether the turn was judged hard (`hard`), or the helper model that answers (`name`) |
+| `brain` | `{brain: "kiwimind"\|"helper", skill, hard, act?, tool?, name?, lead?}` | which brain writes this reply: Kiwi Mind with the skill it chose (`skill`) and whether the turn was judged hard (`hard`), or the helper model that answers (`name`) |
 | `delta` | `{text}` | streaming assistant text |
 | `reasoning` | `{text}` | streaming reasoning fragment |
 | `rewrite` | `{text, reasoning}` | the model wrote reasoning as plain text ending in `</think>`, or a reply was corrected: replace the reply text so far with `text` and show `reasoning` as reasoning |
@@ -427,8 +427,11 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 
 `brain` comes before the first text of the reply. `skill` is the skill Kiwi Mind chose for the
 turn (`chat` when it has no better answer; `null` or `""` when the helper model leads it), and
-`hard` is whether the turn was judged hard, so a helper model may answer. A turn can emit more
-than one `brain` event, for example when a hard turn passes to the helper.
+`hard` is whether the turn was judged hard, so a helper model may answer. With a pack that has an
+action unit, the first reply to a message also carries `act`, how sure the unit is (0 to 1) that
+the reply should be a tool call, and `tool`, the tool it expects. `lead` is true when the helper
+writes the rest of a turn Kiwi Mind could not finish. A turn can emit more than one `brain` event,
+for example when a hard turn passes to the helper.
 
 `done.inference` holds the timing and reuse of the turn's last model request:
 `ttft_ms` (time to first token), `tokens_per_s`, the estimated prompt size and how much of it

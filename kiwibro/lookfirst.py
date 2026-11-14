@@ -55,6 +55,12 @@ _BIGGEST_FOLDERS = re.compile(
     r"\b(?:biggest|largest|heaviest|fattest)\s+(?:folders?|directories|dirs?|space\s+hogs?)\b|"
     r"\b(?:folders?|directories|dirs?)\b[^?.!]{0,30}?\b(?:biggest|largest|heaviest|most\s+space)\b|"
     r"\bspace\s+hogs?\b", re.I)
+# "disk usage" names what the measure gives; after talk about the disk a bare "space" is the disk's too
+_DISK_USAGE = re.compile(r"\b(?:disk|drive|ssd|hdd|storage)\s+us(?:age|e)\b", re.I)
+_BARE_SPACE_EATEN = re.compile(
+    rf"\b(?:what|which|who|whats|what's)\b[^?.!]{{0,40}}?\b{_EATS}\b(?:\s+up)?[^?.!]{{0,40}}?\b(?:space|room)\b", re.I)
+_DISK_TALK = re.compile(r"\b(?:disk|drive|ssd|hdd|storage)\b", re.I)
+_MEANING = re.compile(r"\b(?:means?|meaning|stands?\s+for|defin(?:e|ition))\b", re.I)  # a question about the words
 _FULL_AND_ASKING = re.compile(
     r"\b(?:disk|drive|storage|ssd)\b\W+(?:\w+\W+){0,3}?(?:full|filling\s+up|running\s+out)\b", re.I)
 _ELSEWHERE = re.compile(  # a measure of the home folder says nothing about these
@@ -66,16 +72,19 @@ _THIS_WEEK = re.compile(
     r"\bthese\s+days\b|\brecently\b|\blately\b|\byesterday\b", re.I)
 _THIS_MONTH = re.compile(r"\b(?:this|the\s+(?:past|last))\s+month\b|\blast\s+30\s+days\b", re.I)
 _ASKS_ABOUT_DISK = re.compile(r"\?|\b(?:what|which|why|where|who|how|find|show|tell|list|check|help)\b", re.I)
-_SPACE_QUESTIONS = (_SPACE_EATEN, _DISK_FULL, _SPACE_WENT, _BIGGEST_FOLDERS)
+_SPACE_QUESTIONS = (_SPACE_EATEN, _DISK_FULL, _SPACE_WENT, _BIGGEST_FOLDERS, _DISK_USAGE)
 _FILES = re.compile(r"\bfiles?\b", re.I)
 _FOLDERS = re.compile(r"\b(?:folders?|directories|dirs?)\b", re.I)
 
 
-def asks_what_fills_the_disk(message: str) -> bool:
-    """The message wants to know what takes up the space on the user's own disk."""
+def asks_what_fills_the_disk(message: str, before: str = "") -> bool:
+    """The message wants to know what takes up the space on the user's own disk. ``before`` is the user's
+    previous message: when that one was about the disk, "what is taking space" needs no "the" or "my"."""
     text = (message or "").replace("’", "'")
-    if _ELSEWHERE.search(text):
+    if _ELSEWHERE.search(text) or _MEANING.search(text):
         return False
+    if _DISK_TALK.search(before or "") and _BARE_SPACE_EATEN.search(text):
+        return True
     return any(pattern.search(text) for pattern in _SPACE_QUESTIONS) or bool(
         _FULL_AND_ASKING.search(text) and _ASKS_ABOUT_DISK.search(text))
 
@@ -156,7 +165,7 @@ def calls(message: str, workspace_root: Path, tools: frozenset[str], before: str
     compare = repo(message, workspace_root) if "git" in tools else None
     if compare is not None:
         return [compare]
-    if "disk_usage" in tools and asks_what_fills_the_disk(message):
+    if "disk_usage" in tools and asks_what_fills_the_disk(message, before):
         target = place(message, workspace_root)  # "what takes the space in my downloads" measures that folder
         if not (target is not None and _FILES.search(message) and not _FOLDERS.search(message)):  # "which file takes the most space on my desktop" is the folder listing's
             window = _changed(message)

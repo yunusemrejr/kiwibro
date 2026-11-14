@@ -16,6 +16,26 @@ All notable changes to Kiwibro are documented here.
   tools to use and answers everyday requests itself; when its control head marks a request
   as heavy and a helper is selected, the helper writes that answer. *No helper* is a valid
   choice. Until the pack is there, the selected model answers as before and the chat says so.
+- **Kiwi Mind 2.0: a skill per turn, an action unit, sessions in the training.** Every turn
+  of a conversation now runs under its own skill and keeps what was computed, so a change of
+  subject no longer recomputes the upper layers (2 to 6 seconds before). A second small
+  network, the action unit, reads the same state as the control head and tells whether the
+  reply to come should be a tool call. The model was trained again on new conversations:
+  sessions of several turns, bad replies put right and real first messages from open data
+  sets, each with the notes Kiwibro really adds to a turn. Packs from before 2.0 keep working.
+- **Measuring what fills the disk.** A new read-only tool, `disk_usage`, measures the folders
+  and the files written today, this week or this month. A question about what takes up the
+  space is answered from that measurement first, also as a short follow-up to a question
+  about the disk, and is no longer sent to a web search.
+- **A stuck Kiwi Mind hands the turn to the helper.** When you turn an answer down, or two
+  corrected attempts fail, the helper model you selected writes the rest of the turn, tools
+  included. The answer you turned down is set aside so that it is not copied again.
+- **An announced step is taken.** A reply that ends with "I'll check..." and no tool call
+  gets a corrected attempt, and Kiwi Mind's corrected attempt starts as a tool call.
+- **Notes sent while Kiwibro works** are answered in the same turn.
+- **Checks.** `scripts/mind/parity.py` runs a pack's engine against the model it was exported
+  from. `scripts/replay.py` selects the run's model for real, can attach a helper in the
+  middle of a scenario and records who wrote each reply.
 - **Safe copy.** *Work in a safe copy* takes a folder and lets Kiwibro work in a copy of it:
   its own browser, a sandboxed terminal without network, and nothing outside the copy. Each
   step is recorded in git. The real folder changes only after *Review changes* has shown

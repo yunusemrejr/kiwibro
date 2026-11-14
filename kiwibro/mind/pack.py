@@ -25,6 +25,7 @@ HF_URL = "https://huggingface.co"
 MANIFEST = "manifest.json"
 TRUNK = "kiwimind-trunk.fkm"
 HEAD = "head.kmh"
+UNITS = "units.kmh"  # the action unit; packs before 2.0 have none
 TOKENIZER = "tokenizer.json"
 CHECK_CACHE = ".verified.json"
 CHUNK = 1 << 20
@@ -259,9 +260,14 @@ class _Download:
             target = pack.path(name)
             size, digest = int(info["bytes"]), str(info["sha256"])
             if target.exists() and target.stat().st_size == size:
-                with self.lock:
-                    self.done += size
-                continue
+                try:  # a retrained pack has files of the same size and other content
+                    same = _sha256(target, self.stop) == digest
+                except PackError as exc:
+                    raise _Cancelled from exc
+                if same:
+                    with self.lock:
+                        self.done += size
+                    continue
             self._fetch(name, size, digest)
 
     def _fetch(self, name: str, size: int | None, digest: str | None, *, count: bool = True) -> None:

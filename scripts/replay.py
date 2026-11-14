@@ -15,6 +15,9 @@ data folder: always point it at a test instance with its own.
 The "repo" scenario asks about a checkout named demo-app in the test workspace: clone any
 repository there first (git clone <address> /tmp/replay-ws/demo-app).
 
+<model> is selected for the whole run and the earlier selection is put back at the end. With Kiwi Mind in
+use it is the helper model; "none" runs Kiwi Mind alone.
+
 An item in "messages" is a message to send, or {"model": "<id>"}: from that point on, the scenario runs
 with that model selected (POST /api/models/select, which is the helper model when Kiwi Mind is in use)
 and asked for in each request. The model selected before the scenario is put back when it ends, so one
@@ -42,6 +45,12 @@ requests.delete(f"{base}/api/memories", timeout=30)
 for note in requests.get(f"{base}/api/notes", timeout=30).json().get("notes", []):
     requests.delete(f"{base}/api/notes/{note['id']}", timeout=30)
 requests.patch(f"{base}/api/settings", json={"sense_enabled": not helpers_off}, timeout=30)
+# The model named on the command line is selected for the run: naming it in a request selects nothing, and
+# with Kiwi Mind in use the selected model is the helper ("none": Kiwi Mind alone).
+selected_before = requests.get(f"{base}/api/settings", timeout=30).json()["settings"].get("model")
+selection = requests.post(f"{base}/api/models/select", json={"id": model}, timeout=600)
+if not selection.ok:
+    print(f"could not select {model}: {selection.status_code} {selection.text[:200]}", flush=True)
 
 
 def chat(conversation_id, message, model):
@@ -83,6 +92,8 @@ def chat(conversation_id, message, model):
                     turn["memory"] = data
                 elif event == "plan":
                     turn["plan"] = data.get("steps")
+                elif event == "brain":  # who writes: Kiwi Mind with its skill, or the helper
+                    turn.setdefault("brains", []).append(data)
                 elif event == "done":
                     turn["inference"] = data.get("inference")
                     turn["stats"] = data.get("stats")
@@ -128,5 +139,5 @@ try:
               ensure_ascii=False, indent=1)
 except Exception as exc:
     print("could not read memories/notes", exc)
-requests.patch(f"{base}/api/settings", json={"sense_enabled": True}, timeout=30)
+requests.patch(f"{base}/api/settings", json={"sense_enabled": True, "model": selected_before}, timeout=30)
 print("done")
