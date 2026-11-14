@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
@@ -32,6 +34,19 @@ CALL_TAG = "<tool_call>"
 
 Events = Callable[[str, dict[str, Any]], None]
 HelperStream = Callable[..., ChatResult]
+
+
+def trace(record: dict[str, Any]) -> None:
+    """A development aid: with KIWIBRO_MIND_TRACE naming a file, every generation is appended to it as one
+    JSON line (the exact prompt, the reply and the host's timings), so a replay can be read afterwards."""
+    path = os.environ.get("KIWIBRO_MIND_TRACE")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"time": round(time.time(), 3), **record}, ensure_ascii=False) + "\n")
+    except OSError:
+        log.warning("could not write the Kiwi Mind trace to %s", path, exc_info=True)
 
 
 def softmax(values: list[float]) -> list[float]:
@@ -248,6 +263,8 @@ class Conductor:
         tail = pending + hold.finish() if peeking else hold.finish()
         if tail and on_delta:
             on_delta(tail)
+        trace({"slot": slot, "skill": skill, "hard": hard, "prompt": prompt, "reply": hold.text,
+               "finish": done.get("finish"), "usage": done.get("usage"), "timings": done.get("timings")})
         return self._result(hold.text, done)
 
     def _result(self, text: str, done: dict[str, Any]) -> ChatResult:
