@@ -6,6 +6,7 @@
 import { attachmentChips } from "./attachments.js";
 import { renderMarkdown } from "./markdown.js";
 import { enhanceRendered, handleRichClick } from "./richblocks.js";
+import { detailBlock, usesWorkspace } from "./showfiles.js";
 import {
   el,
   icon,
@@ -351,6 +352,9 @@ function buildApprovalCard(approval, resolve) {
   };
 }
 
+// The folder and file buttons (showfiles.js); set by createChatView.
+let showFiles = null;
+
 function createToolRow(entry) {
   const name = entry.name || "tool";
   const args = entry.args;
@@ -370,22 +374,10 @@ function createToolRow(entry) {
 
   const renderDetail = () => {
     detail.replaceChildren();
-    if (args != null) {
-      detail.append(
-        el("div", {}, [
-          el("div", { class: "detail-label", text: "Arguments" }),
-          el("pre", { text: prettyArgs(args) }),
-        ]),
-      );
-    }
-    if (result) {
-      detail.append(
-        el("div", {}, [
-          el("div", { class: "detail-label", text: "Result" }),
-          el("pre", { class: "tool-result-text", text: truncate(result.preview, 4000) }),
-        ]),
-      );
-    }
+    const where = showFiles?.toolHeader(name, args, result);
+    if (where) detail.append(where);
+    if (args != null) detail.append(detailBlock("Arguments", prettyArgs(args)));
+    if (result) detail.append(detailBlock("Result", truncate(result.preview, 4000), "tool-result-text"));
   };
 
   row.addEventListener("click", () => {
@@ -425,12 +417,14 @@ function createToolRow(entry) {
   return api;
 }
 
-export function createChatView({ root, transcript, resolveApproval, onRetry, onScrollState }) {
+export function createChatView({ root, transcript, resolveApproval, onRetry, onScrollState, files = null }) {
+  showFiles = files;
   const empty = root.querySelector(".empty");
   let current = null;
   let pendingApprovals = new Map();
   let lastRender = 0;
   let pinned = true;
+  let lastUserAt = 0;
 
   function refreshEmpty() {
     const hasMessages = root.querySelector(".msg, .conversation-summary");
@@ -454,6 +448,11 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     window.requestAnimationFrame(() => {
       if (pinned) transcript.scrollTop = transcript.scrollHeight;
     });
+  }
+
+  function enhance(node) {
+    enhanceRendered(node);
+    showFiles?.fileBlocks(node);
   }
 
   function finishReasoning(turn) {
@@ -480,7 +479,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     }
     if (!turn.segment) return;
     renderSegment(turn, false);
-    enhanceRendered(turn.segment.element);
+    enhance(turn.segment.element);
   }
 
   function closeSegment(turn) {
@@ -550,6 +549,8 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       segment: null,
       texts: [],
       tools: new Map(),
+      calls: [],
+      startedAt: lastUserAt || Date.now(),
       chips: null,
       error: null,
       raf: 0,
@@ -591,6 +592,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       );
     }
     current = null;
+    showFiles?.showTurn(turn.flow, turn.calls, turn.startedAt / 1000 - 3, scrollIfPinned);
     scrollIfPinned();
   }
 
@@ -632,6 +634,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     if (empty) empty.hidden = true;
     root.classList.remove("is-empty");
     current = null;
+    lastUserAt = Date.now();
     const bubble = el("div", { class: "bubble", text });
     root.append(el("div", { class: "msg msg-user" }, [bubble, attachmentChips(attachments)]));
     pinned = true;
@@ -676,6 +679,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
   function reset() {
     if (current?.raf) window.clearTimeout(current.raf);
     current = null;
+    showFiles?.reset();
     pendingApprovals.clear();
     for (const node of Array.from(root.children)) {
       if (node !== empty) node.remove();
@@ -721,8 +725,21 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (message.role === "tool" && message.tool_call_id) results.set(message.tool_call_id, message);
     }
 
+    // The tool calls of one turn (from a user message to the next), to show the files they made.
+    let turn = null;
+    const startTurn = (message) => {
+      const since = Date.parse(message.created_at) / 1000;
+      turn = { calls: [], since: Number.isFinite(since) ? since - 3 : Date.now() / 1000, flow: null };
+    };
+    const endTurn = () => {
+      if (turn?.flow && turn.calls.length) showFiles?.showTurn(turn.flow, turn.calls, turn.since, scrollIfPinned);
+      turn = null;
+    };
+
     for (const message of list) {
       if (message.role === "user") {
+        endTurn();
+        startTurn(message);
         root.append(
           el("div", { class: "msg msg-user" }, [
             el("div", { class: "bubble", text: message.content || "" }),
@@ -732,6 +749,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         continue;
       }
       if (message.role !== "assistant") continue;
+      if (!turn) startTurn(message);
 
       const flow = el("div", { class: "assistant-flow" });
       const article = el("article", { class: "msg msg-assistant" }, [flow]);
@@ -755,7 +773,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (message.content) {
         const md = el("div", { class: "md" });
         md.innerHTML = renderMarkdown(message.content);
-        enhanceRendered(md);
+        enhance(md);
         flow.append(md);
       }
 
@@ -774,6 +792,8 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
           if (!call) continue;
           const toolEntry = createToolRow(call);
           const result = results.get(call.id);
+          turn.calls.push({ id: call.id, name: call.name, args: call.args, ok: result ? result.meta?.ok !== false : false, text: result?.content || "" });
+          if (usesWorkspace(call.name, call.args)) showFiles?.used();
           if (result) {
             toolEntry.addResult({
               ok: result.meta?.ok !== false,
@@ -790,8 +810,10 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
 
       if (article.querySelector(".md, .tool, .reasoning")) {
         root.append(article);
+        turn.flow = flow;
       }
     }
+    endTurn();
     if (!root.querySelector(".msg")) {
       refreshEmpty();
       return;
@@ -911,12 +933,17 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       const list = el("div", { class: "tool-list" }, [entry.node]);
       turn.flow.append(list);
       if (data.id) turn.tools.set(data.id, entry);
+      const name = data.name || data.tool || "tool";
+      turn.calls.push({ id: data.id || "", name, args: data.args });
+      if (usesWorkspace(name, data.args)) showFiles?.used();
       scrollIfPinned();
     },
     addToolResult(data) {
       if (!current) return;
       const entry = current.tools.get(data.id);
       if (entry) entry.addResult(data);
+      const call = current.calls.find((item) => item.id === data.id);
+      if (call) Object.assign(call, { ok: data.ok !== false, text: data.preview || "" });
       current.activity.hidden = true;
       scrollIfPinned();
     },

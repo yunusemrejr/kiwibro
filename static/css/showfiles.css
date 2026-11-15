@@ -1,0 +1,319 @@
+/* Where Kiwibro works, and what it made: the folder badge (dock and tool cards), file buttons,
+   and the previews of a turn's files. Loaded after app.css; uses its tokens. */
+
+.workdir {
+  display: flex;
+  min-width: 0;
+  margin: 6px 0 -8px;
+  padding: 0 6px;
+}
+
+.workdir[hidden],
+.shown[hidden],
+.tool-where[hidden],
+.dock-inner:has(.safecopy-strip:not([hidden])) .workdir {
+  display: none;
+}
+
+.where {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.where > .icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--faint);
+}
+
+.where-dir {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  margin-right: -6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.where-name {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  color: var(--text-2);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.where-branch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  max-width: 34%;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  color: var(--faint);
+}
+
+.where-branch .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.where-branch span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-where {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: stretch;
+  min-width: 0;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.file-bar > .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--faint);
+}
+
+.file-bar-path,
+.shown-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.file-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--dur), color var(--dur);
+}
+
+.file-btn .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.file-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+}
+
+.file-btn.is-copied {
+  color: var(--green);
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.detail-head .detail-label {
+  margin: 0;
+}
+
+.detail-head .file-btn {
+  width: 26px;
+  height: 26px;
+  margin-right: -4px;
+}
+
+.code-lang.is-file {
+  color: var(--muted);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.code-head .file-actions {
+  margin-right: 4px;
+}
+
+.shown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.shown-card,
+.shown-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-code);
+}
+
+.shown-head,
+.shown-row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px 3px 12px;
+}
+
+.shown-head {
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.shown-head > .icon,
+.shown-row-main > .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--faint);
+}
+
+.shown-card .rich-preview {
+  padding: 10px;
+}
+
+.shown-card .rich-frame {
+  height: min(360px, 60vh);
+}
+
+.shown-card .rich-frame.is-expanded {
+  height: min(720px, 82vh);
+}
+
+.rich-media {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.rich-media .rich-bar {
+  align-self: stretch;
+}
+
+.rich-photo {
+  padding: 0;
+  background: transparent;
+}
+
+.rich-image.is-expanded {
+  max-height: 82vh;
+}
+
+.rich-video,
+.rich-audio {
+  display: block;
+  width: 100%;
+}
+
+.rich-video {
+  max-height: 420px;
+  border-radius: 6px;
+  background: #000;
+}
+
+.rich-note.is-problem {
+  color: var(--orange-soft);
+}
+
+.shown-row + .shown-row {
+  border-top: 1px solid var(--line);
+}
+
+.shown-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+
+button.shown-row-main {
+  cursor: pointer;
+}
+
+.shown-size {
+  flex: none;
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shown-row .rich-preview {
+  padding: 0 10px 10px;
+}
+
+/* Phones and touch screens: every button is at least 40 px. */
+@media (max-width: 560px), (pointer: coarse) {
+  .file-btn,
+  .detail-head .file-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .code-copy,
+  .code-tab,
+  .rich-expand,
+  .rich-run {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .shown-row-main {
+    min-height: 40px;
+  }
+
+  .detail-head .file-btn {
+    margin: -7px -8px -7px 0;
+  }
+}

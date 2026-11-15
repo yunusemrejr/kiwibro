@@ -5,6 +5,7 @@
 
 import { api, IS_MOCK, consumeSSE, chatError } from "./api.js";
 import { createChatView } from "./chat.js";
+import { createShowFiles } from "./showfiles.js";
 import { createAttachments } from "./attachments.js";
 import { createInferenceUI } from "./inference.js";
 import { createMemorySheet, createSettingsSheet } from "./sheets.js";
@@ -140,6 +141,7 @@ let memoryRefreshTimer = 0;
 let memorySheet = null;
 let settingsSheet = null;
 let safeCopy = null;
+const showFiles = createShowFiles({ api, getConversationId: () => state.conversationId });
 let modelsView = null;
 let notesView = null;
 let howView = null;
@@ -152,6 +154,7 @@ const chatView = createChatView({
   root: els.chat,
   transcript: els.transcript,
   resolveApproval: (approvalId, decision) => api.resolveApproval(approvalId, decision),
+  files: showFiles,
   onRetry: () => retryLastSend(),
   onScrollState: (pinned) => {
     const hasContent = !els.chat.classList.contains("is-empty");
@@ -1012,6 +1015,7 @@ async function openConversation(id, { silent = false } = {}) {
     updateComposerState();
     setStreamingUI(backgroundStreams.has(id));
     safeCopy?.refresh();
+    showFiles.refresh();
     watchReadiness(); // opening a chat prefills its history on the server
     closeDrawer();
     if (!silent) focusComposerSoon();
@@ -1058,6 +1062,7 @@ function offerRetryIfUnanswered(id, data) {
 function showEmptyState() {
   state.conversationId = null;
   safeCopy?.refresh();
+  showFiles.refresh();
   state.conversation = null;
   renderPrivateToggle();
   chatView.reset();
@@ -1074,6 +1079,7 @@ function newChat() {
   state.conversation = null;
   state.privateNext = false;
   safeCopy?.refresh();
+  showFiles.refresh();
   renderPrivateToggle();
   localStorage.removeItem(STORAGE.conversation);
   chatView.reset();
@@ -1354,6 +1360,7 @@ function handleStreamEvent(event, data, activeStream) {
       inferenceUI.onDone(data);
       scheduleConversationRefresh();
       safeCopy?.refresh();
+      showFiles.refresh();
       break;
     case "error":
       chatView.showError(data.message || "Something went wrong. Try again.", { retry: true });

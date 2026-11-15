@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from urllib.parse import quote
+
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 
-from . import config, connectivity, media, routing, safemode, safecopy
+from . import config, connectivity, desktop, media, preview, routing, safemode, safecopy, safety
 from .agent import BusyError, ConversationNotFound
 from .llm import LLMError
 from .sandbox import SandboxError, Workspace
@@ -909,6 +911,101 @@ def workspace_files() -> Response:
     except SandboxError as exc:
         raise ApiError("workspace_error", str(exc), 400) from None
     return jsonify({"ok": True, "root": str(Path(root).expanduser().resolve()), "files": files})
+
+
+# --- what Kiwibro made: folder badge, previews, open -------------------------
+
+
+def _chat_workspace(svc: Any, raw_id: Any) -> tuple[str | None, Workspace]:
+    """The chat and the folder it works in (a new chat has no id yet and uses the Settings folder)."""
+    chat_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else None
+    if chat_id and (not preview.CHAT_ID.match(chat_id) or svc.db.get_conversation(chat_id) is None):
+        raise ApiError("not_found", "Conversation not found.", 404)
+    return chat_id, svc.agent._workspace(chat_id)
+
+
+def _path_list(data: dict[str, Any], key: str) -> list[str]:
+    items = data.get(key, [])
+    if not isinstance(items, list) or len(items) > 200 or not all(isinstance(i, str) and len(i) <= 500 for i in items):
+        raise ApiError("bad_request", f"{key} must be a list of at most 200 short paths", 400)
+    return items
+
+
+@bp.get("/api/workspace/info")
+def workspace_info() -> Response:
+    """The folder a chat works in, for the badge: `~/path`, git branch, and the real folder of a safe copy."""
+    svc = services()
+    chat_id, workspace = _chat_workspace(svc, request.args.get("conversation_id"))
+    info = preview.folder_badge(workspace.root)
+    copy = safemode.status(svc.db, chat_id) if chat_id else {"active": False}
+    info["safe_copy"] = {"real": config.display_path(copy["real"])} if copy["active"] else None
+    return jsonify({"ok": True, **info})
+
+
+@bp.post("/api/workspace/files")
+def workspace_visual_files() -> Response:
+    """Which of the files a turn wrote or named can be shown in the chat, with the address to show them from."""
+    svc = services()
+    data = _json_body()
+    chat_id, workspace = _chat_workspace(svc, data.get("conversation_id"))
+    if chat_id is None:
+        raise ApiError("bad_request", "conversation_id is required.", 400)
+    since = data.get("since", 0)
+    if not isinstance(since, (int, float)) or isinstance(since, bool):
+        raise ApiError("bad_request", "since must be a number", 400)
+    files = preview.shown_files(workspace, _path_list(data, "written"), _path_list(data, "named"), float(since))
+    for item in files:
+        item.pop("mtime")
+        item["url"] = f"/api/preview/{chat_id}/{quote(item['path'])}"
+    present = {raw: rel for raw in _path_list(data, "check") if (rel := preview.present(workspace, raw))}
+    return jsonify({"ok": True, "files": files, "present": present})
+
+
+@bp.get("/api/preview/<chat_id>/<path:rel>")
+def preview_file(chat_id: str, rel: str) -> Response:
+    """One workspace file for a sandboxed preview: contained, a known type, and told what it may load."""
+    svc = services()
+    chat_id, workspace = _chat_workspace(svc, chat_id)
+    info = preview.entry(workspace, rel)
+    if info is None:
+        raise ApiError("not_found", "That file cannot be shown.", 404)
+    content_type = preview.TYPES[Path(info["abs"]).suffix.lower()][0]
+    if info["kind"] == "html" and info["size"] <= preview.PAGE_MAX_BYTES:
+        response = Response(preview.page_bytes(Path(info["abs"])), content_type=content_type)
+    else:
+        response = send_file(info["abs"], mimetype=content_type.split(";")[0], conditional=True)
+    response.headers["Content-Security-Policy"] = preview.policy(f"{request.host_url}api/preview/{chat_id}/", info["kind"])
+    if request.headers.get("Origin") == "null":  # a sandboxed page of this chat reading its own files
+        response.headers["Access-Control-Allow-Origin"] = "null"
+        response.headers.add("Vary", "Origin")
+    return response
+
+
+@bp.post("/api/workspace/open")
+def workspace_open() -> Response:
+    """Open a workspace file, or the folder holding it, on the desktop: the open_path tool's rules."""
+    svc = services()
+    data = _json_body()
+    chat_id, workspace = _chat_workspace(svc, data.get("conversation_id"))
+    action, raw = data.get("action"), data.get("path")
+    if action not in ("open", "reveal") or not isinstance(raw, str) or not raw.strip():
+        raise ApiError("bad_request", "action (open or reveal) and path are required.", 400)
+    refusal = safemode.gate(svc.db, chat_id, "open_path").refusal  # a safe copy never reaches the desktop
+    if refusal:
+        raise ApiError("not_allowed", refusal, 403)
+    try:
+        target = workspace.resolve(raw, must_exist=True)
+        target = target.parent if action == "reveal" else target
+        # A click is the user's own request, which is what an "ask" setting waits for;
+        # a disabled tool and anything that could run as a program still stop here.
+        decision = safety.decide(svc.settings_provider(), "open_path", {"target": str(target)},
+                                 workspace=workspace, turn_state={}, risk="exec")
+        if decision.mode == "deny" or decision.level in ("high", "critical"):
+            raise ApiError("not_allowed", decision.denial_text(), 403)
+        opened = desktop.open_path(workspace, str(target))
+    except (SandboxError, desktop.DesktopError) as exc:
+        raise ApiError("open_failed", str(exc), 400) from None
+    return jsonify({"ok": True, "opened": config.display_path(opened["opened"])})
 
 
 # --- safe copy --------------------------------------------------------------

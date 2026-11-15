@@ -249,6 +249,9 @@ export const api = {
   settings: () => request("/api/settings"),
   patchSettings: (patch) => request("/api/settings", { method: "PATCH", body: patch }),
   workspace: () => request("/api/workspace"),
+  workspaceInfo: (conversationId) => request(`/api/workspace/info${query({ conversation_id: conversationId })}`),
+  workspaceFiles: (body) => request("/api/workspace/files", { method: "POST", body }),
+  workspaceOpen: (body) => request("/api/workspace/open", { method: "POST", body }),
 
   createConversation: () => request("/api/conversations", { method: "POST", body: {} }),
   safeCopyStatus: (conversationId) => request(`/api/safecopy/status${query({ conversation_id: conversationId })}`),

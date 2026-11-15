@@ -200,6 +200,11 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             # Revalidate every load (cheap 304s on loopback): without this, the browser's
             # heuristic cache can keep serving old JS/CSS after an update.
             response.headers["Cache-Control"] = "no-cache"
+        if request.path == "/":
+            # A previewed page runs scripts in a sandboxed frame; a frame may only ever show
+            # files from the chat's preview route, so a page cannot send itself (and what it
+            # read) to another address by navigating. Frames built from srcdoc are exempt.
+            response.headers.setdefault("Content-Security-Policy", f"frame-src {request.host_url}api/preview/")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         return response
 
