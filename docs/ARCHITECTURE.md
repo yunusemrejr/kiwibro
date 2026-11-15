@@ -179,7 +179,10 @@ Data lives **outside** the repo, in `~/.local/share/kiwibro` (override `KIWIBRO_
 - `adapters/`: task adapters Kiwibro keeps, and `adapter_health.json`.
 - `checkpoints/`: file snapshots for undo. `library.db`: the document library.
 
-The workspace is `~/Kiwibro` (override in settings). Logs: `kiwibro.log` in the data folder.
+A new chat works in its own temporary folder, `<system temp>/kiwibro-<login>/chat-<8 characters of
+its id>` (setting `workspace_mode`: `temp`, the default, or `folder`). The Settings workspace,
+`~/Kiwibro` unless changed, is for chats made before that and for `folder` mode. Logs:
+`kiwibro.log` in the data folder.
 
 ---
 
@@ -1261,8 +1264,9 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   copies, so it is not continued and the model gets no `LOOP` mark. Nothing degenerate
   is stored.
 - **Paths.** Every file-tool path is resolved and must stay inside the workspace;
-  a conversation can bind its own folder (`workspaces.py`, schema v3), and the
-  model may switch folders on its own only to a folder the user's message names.
+  a conversation is bound to its own folder (`workspaces.py`, schema v3): a temporary one when
+  it is made, or one the user picked; a temporary folder the system cleared is made again,
+  empty. The model may switch folders on its own only to a folder the user's message names.
 - **Remote.** `remote.py` uses the system ssh/scp in BatchMode; hosts from
   `~/.ssh/config` or `remote_hosts` are trusted, others need approval; commands are
   graded for a server (`sudo` high, wiping `/` or `~` critical).
@@ -1340,8 +1344,8 @@ for when the web is away or has nothing.
   styles also from four public libraries (jsDelivr, unpkg, cdnjs, esm.sh), nothing else.
   The app page allows frames from the preview route only, so a previewed page cannot send
   itself to another address.
-- **Folder badge.** `GET /api/workspace/info` gives the folder as `~/…` and its git
-  branch. In a safe copy it reads "Safe copy of" and the folder's name.
+- **Folder badge.** `GET /api/workspace/info` gives the folder as `~/…`, its git
+  branch and whether it is a temporary folder. In a safe copy it reads "Safe copy of" and the folder's name.
 - **Buttons.** Open and Show in folder go through `POST /api/workspace/open`, which applies
   the `open_path` rules (`safety.decide` and the safe-copy gate). Copy path and Open in new
   tab need no server.
@@ -1442,7 +1446,7 @@ Default settings (`config.default_settings`): model `null` (auto = the loaded ch
 the first chat model), server_url `""` (from `KIWIBRO_SERVER_URL`, attached mode only),
 direct_runtime `""`, direct_models_dir `""`, direct_threads `0` (every physical core),
 direct_gpu `auto`, agent_enabled `true`, memory_enabled `true`, sense_enabled `true`,
-max_output_tokens `2048`, temperature `0.6`, workspace `~/Kiwibro`, user_name `""`,
+max_output_tokens `2048`, temperature `0.6`, workspace `~/Kiwibro`, workspace_mode `temp`, user_name `""`,
 tool_profile `auto`, reasoning `auto`, autonomy `smart`, sandbox `auto`, remote_hosts `[]`,
 max_tool_rounds `16`, and the permissions table above. The Settings API returns the merged values.
 

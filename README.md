@@ -252,8 +252,11 @@ questions for that kind of step in that chat; a step that can destroy data (a re
 `git reset --hard`, a forced push) is asked about every time. *Manual* shows an Auto /
 Ask / Deny choice per tool.
 
-Files the agent reads and writes live in `~/Kiwibro` by default. "Work on
-~/Desktop/my-app" switches that chat to the folder.
+Every new chat works in a temporary folder of its own, so its files stay apart. The
+system clears temporary folders when the computer restarts, so move what you want to
+keep. "Work on ~/Desktop/my-app" switches that chat to the folder. Chats made before
+this existed keep working in the Settings folder (`~/Kiwibro` by default), and a
+Settings choice can make every new chat use that folder too.
 
 ### Safe copy
 

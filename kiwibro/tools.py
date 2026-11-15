@@ -42,6 +42,7 @@ class ToolContext:
     deep: bool = False  # a search Kiwibro runs itself: the best pages are opened and their passages attached
     shown_before: str = ""  # an answer the user turned down: a new search lists what was not in it first
     must_mention: tuple[str, ...] = ()  # the subject of the request being done again: results stay on it
+    settings: dict[str, Any] | None = None  # the app's settings when the tool ran (the workspace tool reads the folder mode)
 
 
 @dataclass

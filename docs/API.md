@@ -333,8 +333,11 @@ markdown marks removed. `q` shorter than 2 characters returns `"matches": []`. C
 not searched here: the sidebar filter matches them itself.
 
 ### `POST /api/conversations`
-Body `{"title": "...", "model": "...", "private": false}` (all optional; `title` is at most
-200 characters and defaults to `New chat`; `private` must be a boolean, else `400`). Answers
+Body `{"title": "...", "model": "...", "private": false, "workspace": "~/Desktop/app"}` (all
+optional; `title` is at most 200 characters and defaults to `New chat`; `private` must be a
+boolean, else `400`; `workspace` is a folder the chat starts in, an absolute or `~/` path the
+`workspace` tool would accept, else `400` and no chat is made; without it the chat gets its own
+temporary folder, see `workspace_mode`). Answers
 `201` with the new conversation (fields as in `GET /api/conversations/<id>`) and an empty
 `messages` list.
 
@@ -455,7 +458,8 @@ server aborts the turn (partial text is saved).
 ### `POST /api/attachments`
 `multipart/form-data` with one field `file` (≤ 25 MB). Stores it as
 `<workspace>/attachments/<YYYY-MM-DD>/<8 hex characters>-<safe name>` so every tool can reach
-it. `200 {"ok": true, "attachment": {"path", "name", "kind": "image|audio|video|svg|other", "size"}}`
+it. The optional form field `conversation_id` stores it in that chat's folder (`404` for an
+unknown chat); without it, in the workspace setting's folder. `200 {"ok": true, "attachment": {"path", "name", "kind": "image|audio|video|svg|other", "size"}}`
 (`path` is relative to the workspace); `400 bad_attachment` for empty or oversized files;
 `500 storage` when the file cannot be written.
 
@@ -697,7 +701,7 @@ These routes answer a safe copy failure with the general error body and the stat
 {"ok": true, "settings": {
   "model": null, "server_url": "", "agent_enabled": true,
   "memory_enabled": true, "sense_enabled": true, "max_output_tokens": 2048, "temperature": 0.6,
-  "workspace": "/home/you/Kiwibro", "user_name": "",
+  "workspace": "/home/you/Kiwibro", "workspace_mode": "temp", "user_name": "",
   "tool_profile": "auto", "reasoning": "auto", "max_tool_rounds": 16,
   "autonomy": "smart", "sandbox": "auto", "remote_hosts": [],
   "direct_runtime": "", "direct_models_dir": "", "direct_threads": 0, "direct_gpu": "auto",
@@ -714,6 +718,7 @@ tool_profile in {auto, full, minimal, coding, research, desktop}, reasoning in
 {auto, on, off}, autonomy in {supervised, smart, autonomous}, sandbox in {auto,
 strict, off}, remote_hosts a list of ≤32 ssh aliases or `user@host`, max_tool_rounds
 1–32, workspace must be an absolute path that can be created inside `$HOME` (no root paths),
+workspace_mode in {temp, folder},
 user_name ≤ 80 characters, `model` a string or null, agent_enabled / memory_enabled /
 sense_enabled booleans, permissions modes in {auto, ask, deny} for any known tool (built-in
 or extension), direct_runtime `""` or an absolute path to an executable `llama-server`,
@@ -722,14 +727,40 @@ physical core), direct_gpu in {auto, off}. Any other key, `server_url` included,
 Changing direct_runtime, direct_models_dir, direct_threads or direct_gpu stops the running
 llama.cpp servers (the next request starts one with the new values). Returns merged
 settings. Changing workspace does not move files; a conversation bound to its own
-folder (`conversation.workspace`, set by the `workspace` tool) keeps using that folder.
+folder (`conversation.workspace`) keeps using that folder. `workspace_mode` `temp` (the default)
+gives every new conversation its own temporary folder; `folder` leaves new ones on the
+workspace setting. An app started with `KIWIBRO_WORKSPACE` always reports `folder`.
 
 Per-tool `permissions` apply in Manual mode (`autonomy: supervised`) only; `smart` and
 `autonomous` use each tool's default and the risk policy decides each call.
 
 ### `GET /api/workspace`
 `{"ok": true, "root": "/home/you/Kiwibro", "files": [{"path":"notes.md","type":"file","size":123,"modified":"..."}]}`
-(depth 2, ≤200 entries, no dotfiles or dot-folders). Used by the settings sheet only.
+(depth 2, ≤200 entries, no dotfiles or dot-folders). With `?conversation_id=` it lists that
+chat's folder instead of the workspace setting's.
+
+### `GET /api/workspace/info?conversation_id=`
+`{"ok": true, "path": "~/Desktop/app", "abs": "/home/you/Desktop/app", "name": "app", "branch": "main",
+"safe_copy": null, "temp": false}`: the folder a chat works in. `temp` is `true` when it lies in
+Kiwibro's temporary folder (`<system temp>/kiwibro-<login>`).
+
+### `POST /api/workspace/set`
+Body `{"conversation_id": "c_...", "path": "~/Desktop/app"}` picks the chat's folder, or
+`{"conversation_id": "c_...", "temp": true}` sends it back to its own temporary folder (made
+again, empty, if it is gone). Answers like `GET /api/workspace/info`. `400 bad_request` for a
+missing, relative, forbidden (same places as the `workspace` tool) or non-existing folder or a body
+with both or neither of `path` and `temp`; `404 not_found` for an unknown chat; `403 not_allowed`
+while a safe copy is open; `409 busy` while a reply is being generated in that chat.
+
+### `GET /api/workspace/folders?path=`
+The folders inside `path` (an absolute or `~/` path, default the home folder), for a folder picker:
+`{"ok": true, "path": "/home/you/Desktop", "parent": "/home/you", "allowed": true,
+"folders": [{"name": "app", "path": "/home/you/Desktop/app", "allowed": true}], "truncated": false}`.
+Folders only, no hidden ones, sorted by name ignoring case, at most 200 (`truncated` says there
+were more). `allowed` says whether a chat may work there. `parent` is `null` at the top of what may
+be listed. Only the home folder and Kiwibro's temporary folder are listed (`403 not_allowed`
+otherwise); a link that leads out of them is left out. `400 bad_request` for a relative path or a
+folder that is not there.
 
 ---
 
