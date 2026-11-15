@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import logging
 import os
 import re
@@ -75,6 +76,35 @@ _SHELL = shutil.which("bash") or "/bin/sh"
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def command_path() -> str:
+    """PATH for the commands model calls run: the one Kiwibro inherited, plus the per-user tool
+    folders. Started from a desktop launcher, the app never reads the shell's profile, so tools
+    installed per user (Node.js under nvm, cargo, go, pnpm) would otherwise look uninstalled."""
+    return _command_path(Path.home(), os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
+
+
+@functools.lru_cache(maxsize=2)
+def _command_path(home: Path, inherited: str) -> str:
+    from .mind.host import node_candidates  # here: the mind package pulls in the whole model stack
+
+    parts = [part for part in inherited.split(os.pathsep) if part]
+    if not parts:
+        parts = ["/usr/local/bin", "/usr/bin", "/bin"]
+    nodes = node_candidates()
+    extra = [home / ".local/bin", home / "bin"]
+    if nodes:
+        extra.append(Path(nodes[0]).parent)  # the newest nvm Node, when there is one
+    extra += [
+        home / ".cargo/bin", home / "go/bin", home / ".bun/bin", home / ".deno/bin",
+        home / ".local/share/pnpm", Path("/snap/bin"),
+    ]
+    for directory in extra:
+        shown = str(directory)
+        if shown not in parts and directory.is_dir():
+            parts.append(shown)
+    return os.pathsep.join(parts)
+
+
 def command_env(root: Path, workdir: Path, env_vars: dict[str, str] | None = None, **extra: str) -> dict[str, str]:
     """Minimal environment for workspace commands.
 
@@ -85,7 +115,7 @@ def command_env(root: Path, workdir: Path, env_vars: dict[str, str] | None = Non
     real_home = Path.home()
     gitconfig = real_home / ".gitconfig"
     env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PATH": command_path(),
         "HOME": str(real_home if safety.is_unconfined() else safety.tool_home()),
         **({"GIT_CONFIG_GLOBAL": str(gitconfig)} if gitconfig.is_file() else {}),
         "PWD": str(workdir),

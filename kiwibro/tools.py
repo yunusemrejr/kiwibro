@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import codebase, components, config, delegate, desktop, knowledge, research, safety
+from . import codebase, components, config, delegate, desktop, knowledge, prompts, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LLMClient
@@ -23,6 +24,10 @@ from .sandbox import TERMINALS, SandboxError, Workspace
 from .search import SearchEngine, SearchError
 
 log = logging.getLogger(__name__)
+
+# "bash: line 1: node: command not found" and "/bin/sh: 1: node: command not found": the last
+# words before the message name the program that is missing.
+_NOT_FOUND = re.compile(r"([^\s:]+): command not found")
 
 
 @dataclass
@@ -1611,8 +1616,17 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         content = f"{outline['path']} ({outline['total_lines']} lines)\n{body}"
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"path": outline["path"]})
     if name == "write_file":
+        # A whole-file write that keeps less than half of an existing file is usually a model
+        # replacing the page with a stub; it still writes, and the note says how to undo it.
+        try:
+            target = ctx.workspace.resolve(args["path"])
+            old_bytes = target.stat().st_size if target.is_file() else 0
+        except (SandboxError, OSError):  # the write itself reports a path it cannot use
+            old_bytes = 0
         written = ctx.workspace.write_file(args["path"], args["content"])
         message = f"Wrote {written['bytes']} bytes to {written['path']}."
+        if old_bytes >= 200 and written["bytes"] < old_bytes / 2:
+            message += "\n" + prompts.SHRUNK_OVERWRITE.format(old=old_bytes, new=written["bytes"])
         return ToolResult(ok=True, content=message, preview=message, meta=written)
     if name == "replace_in_file":
         replaced = ctx.workspace.replace_in_file(args["path"], args["old"], args["new"])
@@ -1645,6 +1659,9 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name == "run_command":
         result = ctx.workspace.run_command(args["command"], args.get("cwd"))
         content = f"$ {args['command']}\nexit code: {result['exit_code']}\ncwd: {result['cwd']}\n\n{result['output']}"
+        missing = _NOT_FOUND.search(result["output"]) if result["exit_code"] == 127 else None
+        if missing:  # so a model that cannot install it stops spending rounds on the same command
+            content += "\n" + prompts.PROGRAM_NOT_INSTALLED.format(program=missing.group(1))
         return ToolResult(ok=not result["timed_out"] and result["exit_code"] == 0, content=content,
                           preview=_preview(result["output"]),
                           meta={"exit_code": result["exit_code"], "duration_ms": result["duration_ms"]})

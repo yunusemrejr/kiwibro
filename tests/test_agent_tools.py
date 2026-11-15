@@ -385,3 +385,41 @@ def test_a_follow_up_search_reaches_the_web_naming_its_subject(env, monkeypatch)
     assert len(asked) == 1 and asked[0].startswith("how old is he") and "Christopher Nolan" in asked[0]
     tool_message = [m for m in env.svc.db.list_messages(conversation_id) if m["role"] == "tool"][-1]
     assert "[Kiwibro fixed this call: searched for" in tool_message["content"]
+
+
+# --- a command that is not installed, and a whole-file write that shrinks the file -----------
+
+
+def _tool_ctx(workspace: Workspace) -> ToolContext:
+    return ToolContext(workspace=workspace, memory=None, search=None, conversation_id="c1")  # type: ignore[arg-type]
+
+
+def test_a_missing_program_is_named_in_the_result_and_not_run_again(ws: Workspace):
+    result = tools.execute_tool(
+        "run_command", tools.validate_args("run_command", {"command": "kiwibro-not-a-program --version"}), _tool_ctx(ws)
+    )
+    assert result.ok is False and "exit code: 127" in result.content
+    assert 'Kiwibro: "kiwibro-not-a-program" is not installed on this computer' in result.content
+    assert "Do not run it again." in result.content
+
+
+def test_an_ordinary_failing_command_carries_no_installed_note(ws: Workspace):
+    result = tools.execute_tool("run_command", tools.validate_args("run_command", {"command": "ls nope.txt"}), _tool_ctx(ws))
+    assert result.ok is False and "exit code: 127" not in result.content
+    assert "is not installed on this computer" not in result.content
+
+
+def test_a_write_that_keeps_less_than_half_of_a_file_says_so(ws: Workspace):
+    long_page = ("<h1>Kiwi</h1>\n" + "<p>a paragraph of the page</p>\n" * 16)
+    (ws.root / "kiwi.html").write_text(long_page, encoding="utf-8")
+    result = tools.execute_tool("write_file", tools.validate_args("write_file", {"path": "kiwi.html", "content": "<h1>Kiwi</h1>\n"}), _tool_ctx(ws))
+    assert result.ok and (ws.root / "kiwi.html").read_text() == "<h1>Kiwi</h1>\n"  # the write still happens
+    assert f"this replaced the whole file ({len(long_page)} bytes before, 14 now)" in result.content
+    assert "call undo_changes and use replace_in_file instead" in result.content
+
+
+def test_a_write_of_a_small_file_and_a_new_file_carry_no_note(ws: Workspace):
+    (ws.root / "note.txt").write_text("short\n", encoding="utf-8")
+    shrunk = tools.execute_tool("write_file", tools.validate_args("write_file", {"path": "note.txt", "content": "s\n"}), _tool_ctx(ws))
+    made = tools.execute_tool("write_file", tools.validate_args("write_file", {"path": "new.txt", "content": "x\n"}), _tool_ctx(ws))
+    assert "replaced the whole file" not in shrunk.content and "replaced the whole file" not in made.content

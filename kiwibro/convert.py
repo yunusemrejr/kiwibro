@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .extensions import ExtensionTool, schema, tool_result
+from .sandbox import command_path
 
 PANDOC_TIMEOUT_S = 90
 PDFTOTEXT_TIMEOUT_S = 90
@@ -83,7 +84,9 @@ def _soffice() -> str | None:
 
 
 def _env() -> dict[str, str]:
-    return {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
+    env = {key: os.environ[key] for key in ("HOME",) if key in os.environ}
+    env["PATH"] = command_path()  # the converters may call tools in per-user folders, as commands do
+    return env
 
 
 def _dot(ext: str) -> str:

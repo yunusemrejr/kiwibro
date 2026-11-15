@@ -370,6 +370,7 @@ class Turn:
     facts: steer.Facts | None = None  # what is true this turn; replies are checked against it
     steer_left: int = 1  # corrections Kiwi Sense may still ask for in this turn
     tools_ok: list[str] = field(default_factory=list)  # tools that ran and succeeded this turn
+    changed_files: list[str] = field(default_factory=list)  # files a write call changed this turn, in order
     interim: list[tuple[str, str]] = field(default_factory=list)  # (message id, text) written beside tool calls
     acted_instead: str = ""  # the tool Kiwibro called for a model that was asked to and did not
     bulletin: str = ""  # the news Kiwibro found, shown under the model's answer as its sources
@@ -862,8 +863,13 @@ class AgentManager:
                 break
             if round_index == max_rounds - 1:
                 note = "I reached the tool-use limit for this turn, so I stopped here."
+                if turn.changed_files:  # what the stopped turn still got done, before it asks to go on
+                    listed = turn.changed_files[:6]
+                    more = len(turn.changed_files) - len(listed)
+                    note += f" Changed so far: {', '.join(listed)}" + (f" and {more} more" if more else "") + "."
                 left = turn.plan.summary_line(turn.reply_text) if turn.plan is not None else ""
                 note = f"{note} {left}" if left else note
+                note += ' Say "go on" and I will continue from here.'
                 note_message = self.db.add_message(
                     turn.conversation_id, "assistant", note, model=model, meta={"truncated": True}
                 )
@@ -1544,6 +1550,25 @@ class AgentManager:
         wanted = turn.web_tried > 0 or (turn.reading is not None and readings.wants_search(turn.reading))
         every_call = turn.web_offline > 0 and turn.web_failed == 0
         return wanted and (not connectivity.online() or every_call)
+
+    def _note_changed(self, turn: Turn, item: dict[str, Any]) -> None:
+        """Remember a file a successful write call changed, once, in the order it was changed: the
+        step-limit message lists them, so a turn stopped by the tool budget says what it did do."""
+        workspace = item["workspace"] or self._workspace(turn.conversation_id)
+        if item["name"] == "component":  # a kit writes several files into one folder
+            if item["args"].get("action") != "use":
+                return
+            try:
+                target = workspace.resolve(item["args"].get("path") or ".")
+            except SandboxError:
+                return
+        else:
+            target = plan.written_path(item["name"], item["args"], workspace)
+        if target is None:
+            return
+        shown = item["location"] or workspace.public(target)
+        if shown not in turn.changed_files:
+            turn.changed_files.append(shown)
 
     def _check_written(self, turn: Turn, item: dict[str, Any], result: ToolResult) -> ToolResult:
         """After a file was written: does it parse? A file that does not gets one plain line in the tool result,
@@ -2876,8 +2901,10 @@ class AgentManager:
                         turn.web_offline += 1
                     else:
                         turn.web_failed += 1
-            if result.ok and item["name"] in plan.WRITE_TOOLS and item["name"] != "convert_document":
-                result = self._check_written(turn, item, result)
+            if result.ok and (item["name"] in plan.WRITE_TOOLS or item["name"] == "component"):
+                self._note_changed(turn, item)
+                if item["name"] in plan.WRITE_TOOLS and item["name"] != "convert_document":
+                    result = self._check_written(turn, item, result)
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
@@ -2963,8 +2990,18 @@ class AgentManager:
             return refuse(prompts.TOOLS_PAUSED, "Tools paused after repeated failures")
         spec = tools.TOOL_SPECS.get(name)
         if rescued.damaged and spec is not None and not cut_off:  # a guess is never written, run or searched for
-            message = toolcall.correction(spec, prompts.DAMAGED_CALL.format(reason=rescued.damaged))
-            return refuse_shown(message, message.splitlines()[0], "read")
+            # A read is the exception: stray characters after complete arguments only cost a look,
+            # so it runs once it validates. Refusing every damaged call cost one failed chat three
+            # identical read_file calls, and three of its sixteen tool rounds.
+            intact_read = spec.risk == "read"
+            if intact_read:
+                try:
+                    tools.validate_args(name, rescued.args)
+                except ValueError:
+                    intact_read = False
+            if not intact_read:
+                message = toolcall.correction(spec, prompts.DAMAGED_CALL.format(reason=rescued.damaged))
+                return refuse_shown(message, message.splitlines()[0], "read")
         try:
             if rescued.error or spec is None:
                 raise ValueError(rescued.error or f"unknown tool: {name}")

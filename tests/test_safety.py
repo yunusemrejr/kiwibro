@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 import kiwibro
-from kiwibro import safety
-from kiwibro.sandbox import Workspace, command_env
+from kiwibro import sandbox, safety
+from kiwibro.sandbox import Workspace, _command_path, command_env
 
 
 @pytest.fixture()
@@ -338,6 +338,26 @@ def test_command_env_drops_injection_variables(ws: Path) -> None:
     assert env["PATH"] != "/evil" and env["HOME"] == str(safety.tool_home())
     with safety.applied(safety.Decision("ask", "high"), approved_by_user=True):
         assert command_env(ws, ws)["HOME"] == str(Path.home())  # approved high-risk: real credentials
+
+
+def test_command_path_adds_the_user_tool_folders_that_exist_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    node = home / ".nvm" / "versions" / "node" / "v24.0.0" / "bin" / "node"
+    node.parent.mkdir(parents=True)
+    node.touch()
+    monkeypatch.setattr("kiwibro.mind.host.node_candidates", lambda: [str(node)])
+    parts = _command_path(home, f"/usr/bin:{home / '.local' / 'bin'}").split(":")
+    assert parts[0] == "/usr/bin"  # the inherited PATH comes first, and keeps its order
+    assert parts.count(str(home / ".local" / "bin")) == 1  # already there: not added twice
+    assert parts.count(str(node.parent)) == 1  # the newest Node on the PATH, for npx and npm
+    assert str(home / "bin") not in parts  # it does not exist on this machine
+
+
+def test_command_env_carries_that_path(ws: Path) -> None:
+    assert command_env(ws, ws)["PATH"] == sandbox.command_path()
 
 
 # --- confinement (real bubblewrap; skipped where unavailable) -----------------

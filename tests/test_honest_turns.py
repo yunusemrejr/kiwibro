@@ -228,3 +228,54 @@ def test_a_turn_that_ran_a_tool_gets_no_such_line(env: Env) -> None:
     ]
     events, _raw = chat_events(env, "What is in notes.txt?")
     assert prompts.NOTHING_DONE not in _final_text(events)
+
+
+# --- a damaged call whose arguments are complete ----------------------------------------------
+
+
+def test_a_damaged_read_with_complete_arguments_runs(env: Env) -> None:
+    (env.workspace / "kiwi.html").write_text("<h1>Kiwi</h1>\n", encoding="utf-8")
+    damaged = '<tool_call>\n{"name": "read_file", "arguments": {"path": "kiwi.html"}} "}}\n</tool_call>'
+    env.fake.stream_script = [ChatResult(content=damaged, usage=USAGE), ChatResult(content="It holds a heading.")]
+    chat_events(env, "What is in kiwi.html?")
+    results = [m["content"] for m in _messages(env, "tool")]
+    assert results and "<h1>Kiwi</h1>" in results[0]  # read, not refused
+    assert not any("damaged" in content for content in results)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param('{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n"}} "}}', id="write"),
+        pytest.param('{"name": "web_search", "arguments": {"query": "kiwi fruit"}} "}}', id="web"),
+        pytest.param('{"name": "read_file", "arguments": {}} "}}', id="read-without-its-argument"),
+    ],
+)
+def test_a_damaged_call_of_any_other_kind_is_still_refused(env: Env, body: str) -> None:
+    env.fake.stream_script = [ChatResult(content=f"<tool_call>\n{body}\n</tool_call>", usage=USAGE),
+                              ChatResult(content="I could not do that.")]
+    chat_events(env, "Please do it")
+    results = [m["content"] for m in _messages(env, "tool")]
+    assert results[0].startswith("Error: this call was damaged")
+    assert not (env.workspace / "a.py").exists()
+
+
+def test_the_step_limit_note_lists_the_files_changed_so_far(env: Env) -> None:
+    env.settings_patch({"max_tool_rounds": 1})
+    env.fake.stream_script = [
+        tool_call_result("write_file", {"path": "a.html", "content": "<h1>Kiwi</h1>\n"}, "call_1"),
+    ]
+    chat_events(env, "Build the page as a.html")
+    note = next(m["content"] for m in _messages(env, "assistant") if m["meta"].get("truncated"))
+    assert note.startswith("I reached the tool-use limit for this turn, so I stopped here.")
+    assert "Changed so far: a.html." in note
+    assert note.endswith('Say "go on" and I will continue from here.')
+
+
+def test_the_step_limit_note_lists_six_files_and_counts_the_rest(env: Env) -> None:
+    env.settings_patch({"max_tool_rounds": 1})
+    calls = [tool_call_result("write_file", {"path": f"p{i}.html", "content": "x\n"}, f"call_{i}") for i in range(8)]
+    env.fake.stream_script = [ChatResult(tool_calls=sum((c.tool_calls for c in calls), []), usage=USAGE)]
+    chat_events(env, "Write eight small pages")
+    note = next(m["content"] for m in _messages(env, "assistant") if m["meta"].get("truncated"))
+    assert "Changed so far: p0.html, p1.html, p2.html, p3.html, p4.html, p5.html and 2 more." in note

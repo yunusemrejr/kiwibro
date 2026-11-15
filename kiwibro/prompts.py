@@ -73,6 +73,15 @@ DAMAGED_CALL = (
     "this call was damaged ({reason}), so it did not run and nothing was changed. Make the call again, with the "
     "arguments as valid JSON."
 )
+PROGRAM_NOT_INSTALLED = (
+    "[Kiwibro: \"{program}\" is not installed on this computer, so this command cannot run. Do not run it again. "
+    "Carry on without it if the task allows (a web page needs no build step: once the file is written it is shown "
+    "in the chat), otherwise tell the user what has to be installed.]"
+)
+SHRUNK_OVERWRITE = (
+    "[Kiwibro: this replaced the whole file ({old} bytes before, {new} now). If you meant to change one part, call "
+    "undo_changes and use replace_in_file instead.]"
+)
 SEARCHED_FOR_YOU = (
     "[Kiwibro: the user asked for a web search and you replied without one, so Kiwibro ran it: the results "
     "are above. {then}]"
