@@ -82,6 +82,7 @@ class ChatResult:
     usage: dict[str, int] | None = None
     tools_disabled: bool = False
     leaked_reasoning: bool = False  # the model "thought" in plain content (moved to reasoning)
+    text_calls: bool = False  # tool_calls were read out of the content (toolcall.extract_calls)
     timings: dict[str, float] | None = None  # llama.cpp's own counts (direct engine): see _timings
 
 

@@ -91,7 +91,8 @@ def test_a_chat_started_by_its_first_message_works_in_its_temp_folder(temp_env: 
     folder = Path(chat["workspace"])
     assert workspaces.in_temp_root(folder) and (folder / "hello.txt").read_text() == "hi"
     assert not (temp_env.workspace / "hello.txt").exists()
-    assert str(folder) in temp_env.fake.stream_calls[0]["messages"][0]["content"]  # message 0 names it
+    message_zero = temp_env.fake.stream_calls[0]["messages"][0]["content"]  # says it is temporary, without the path
+    assert "temporary folder that belongs to this chat" in message_zero and str(folder) not in message_zero
     files = temp_env.client.get("/api/workspace", query_string={"conversation_id": chat["id"]}).get_json()
     assert files["root"] == str(folder) and "hello.txt" in str(files["files"])
     shown = temp_env.client.post("/api/workspace/files", json={"conversation_id": chat["id"], "check": ["hello.txt"]})

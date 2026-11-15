@@ -50,6 +50,14 @@ def test_a_damaged_call_never_writes_and_the_model_is_told_to_make_it_again(env:
     assert (env.workspace / "a.py").read_text() == "def f(x):\n    return x\n"  # only the repeated, whole call wrote
 
 
+def test_a_whole_call_runs_even_when_the_reply_ran_on_to_the_length_limit(env: Env) -> None:
+    whole = '<tool_call>\n{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n"}}\n</tool_call>'
+    repeated = ChatResult(content=whole + "\n" + whole + "\n\n\n", usage=USAGE, finish_reason="length")
+    env.fake.stream_script = [repeated, ChatResult(content="Saved a.py.")]
+    chat_events(env, "Save x = 1 as a.py")
+    assert (env.workspace / "a.py").read_text() == "x = 1\n"
+
+
 def test_a_call_with_closers_in_its_string_writes_the_clean_file(env: Env) -> None:
     leaked = '<tool_call>\n{"name": "write_file", "arguments": {"path": "a.py", "content": "x = 1\\n}}\n</tool_call>'
     env.fake.stream_script = [ChatResult(content=leaked, usage=USAGE), ChatResult(content="Saved a.py.")]

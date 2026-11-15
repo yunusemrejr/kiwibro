@@ -63,6 +63,15 @@ RESEARCH_STEPS = (
 RESEARCH_NEXT = ("The final answer must state the answer in plain sentences with numbered citations [1], [2] and the "
                  "URL list below.")
 LIST_HINT = 'To use one: component(action="use", name="<name>", path="<folder>", values={...})'
+# A kit is usually a handful of small starter files. A whole engine in one page is the
+# exception: a three.js scene that draws itself from plain lines cannot be split without
+# stopping being one file. The kits listed here answer to the wide ceiling instead, and
+# nothing else in the library may join the list without a test of its own.
+BIG_KITS = {"web/scene-3d"}
+LINES = 200
+BYTES = 16 * 1024
+BIG_LINES = 1400
+BIG_BYTES = 80 * 1024
 
 
 def manifest(path: Path) -> dict:
@@ -111,7 +120,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 69
+    assert len(MANIFESTS) == 70
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):
@@ -143,6 +152,13 @@ def test_library_matches_the_reference_catalog(train):
         assert library[name].kind == (components.KIT if wanted else "recipe"), name
 
 
+def test_the_library_loads_the_3d_scene_kit():
+    scene = components.Library(LIBRARY).get("web/scene-3d")
+    assert scene.kind == components.KIT
+    assert list(scene.blanks) == ["title", "scene", "sky", "ground"]
+    assert scene.file_paths() == ["index.html"]
+
+
 def test_kit_placeholders_are_declared_blanks():
     for path in MANIFESTS:
         data = manifest(path)
@@ -164,6 +180,7 @@ def test_kit_files_survive_their_defaults(tmp_path: Path):
         defaults = {key: blank["default"] for key, blank in data["blanks"].items()}
         source_root = path.parent / "files"
         out = tmp_path / data["name"].replace("/", "-")
+        max_lines, max_bytes = (BIG_LINES, BIG_BYTES) if data["name"] in BIG_KITS else (LINES, BYTES)
         for relative in kit_files(source_root):
             source = source_root / relative
             name = HOLDER.sub(lambda match: defaults[match.group(1)], relative)
@@ -182,10 +199,10 @@ def test_kit_files_survive_their_defaults(tmp_path: Path):
             elif target.suffix in (".js", ".mjs") and node:
                 done = subprocess.run([node, "--check", str(target)], capture_output=True, text=True)
                 assert done.returncode == 0, f"{target}: {done.stderr}"
-            assert len(text.splitlines()) <= 200, f"{target} is over 200 lines"
+            assert len(text.splitlines()) <= max_lines, f"{target} is over {max_lines} lines"
         size = sum(item.stat().st_size for item in path.parent.rglob("*")
                    if item.is_file() and "__pycache__" not in item.parts)
-        assert size <= 16 * 1024, f"{path.parent} is {size} bytes"
+        assert size <= max_bytes, f"{path.parent} is {size} bytes"
 
 
 def test_library_stays_small():
@@ -270,7 +287,9 @@ def test_show_prints_a_kit(tiny: components.Library):
         'heading.; description (default "A small, fast page that stays readable on phones and desktops."): One '
         "sentence that describes the page; used as the meta description and the line under the heading.",
         "Files: index.html, README.md, styles.css",
-        f"Next: {PAGE_NEXT}",
+        'Nothing is written yet. To write these files: component(action="use", name="web/page", '
+        'path="<folder>", values={"title": "...", "description": "..."})',
+        f"After that: {PAGE_NEXT}",
     ])
     assert components.show("web/page", tiny) == expected
 
@@ -361,10 +380,11 @@ def test_an_unknown_component_names_its_closest():
         'there is no component named "web/pag". Closest: web/page, web/pwa. component(action="list") shows all.')
 
 
-def test_an_unknown_blank_lists_the_real_ones(tmp_path: Path):
-    with pytest.raises(components.ComponentError) as caught:
-        components.use("web/page", {"colour": "red"}, workspace=Workspace(tmp_path / "ws"))
-    assert str(caught.value) == 'web/page has no blank named "colour". Its blanks: title, description.'
+def test_an_unknown_blank_is_left_out_and_named(tmp_path: Path):
+    ws = Workspace(tmp_path / "ws")
+    text = components.use("web/page", {"title": "Recipe box", "colour": "red"}, workspace=ws)
+    assert "Recipe box" in (ws.root / "index.html").read_text(encoding="utf-8")
+    assert 'Left out: "colour" (web/page has no such blank; its blanks: title, description).' in text.splitlines()
 
 
 def test_a_missing_word_says_what_is_missing(tmp_path: Path):
@@ -425,8 +445,12 @@ def test_the_tool_validates_its_arguments():
     assert tools.validate_args("component", {"action": "use", "name": "web/page", "values": {"title": "Box"}}) == {
         "action": "use", "query": None, "name": "web/page", "path": None, "values": {"title": "Box"},
     }
+    # a list of lines or a number where a string belongs is what small models send: it is taken as text
+    loose = tools.validate_args("component", {"action": "use", "name": "web/page",
+                                              "values": {"title": 3, "description": ["one", "two"]}})
+    assert loose["values"] == {"title": "3", "description": "one\ntwo"}
     for bad in ({"action": "browse"}, {"action": "use", "values": ["title"]},
-                {"action": "use", "values": {"title": 3}}):
+                {"action": "use", "values": {"title": {"text": "Box"}}}):
         with pytest.raises(ValueError):
             tools.validate_args("component", bad)
 
@@ -532,6 +556,90 @@ def test_an_ordinary_message_gets_no_component(message: str):
     assert components.suggest(message) is None
 
 
+SCENE_ON = [
+    "make a 3d scene of a fox walking to a campfire",
+    "create a single html file with three js code in it, an animation of a robot walking to a tower",
+    "build me a 3D simulation where a car drives to a house",
+    "can you make a webgl page with a rocket",
+    "I want a threejs animation of a bird flying to a tree",
+    "generate a 3d animation of a penguin on snow",
+    "make a 3d fox that walks to a tree",
+    "create a three.js scene with a house and a tree",
+]
+SCENE_OFF = [
+    "what is three js?", "explain how 3d printing works", "make a landing page for my bakery",
+    "write a python script that sorts a list", "make a flowchart of the login process",
+    "search the web for 3d printers", "make a comparison table of 3d printers",
+    "write a guide to 3d printing at home",
+]
+
+
+@pytest.mark.parametrize("message", SCENE_ON)
+def test_a_message_about_a_3d_scene_calls_for_the_scene_kit(message: str):
+    found = components.suggest(message)
+    assert found is not None and found.name == "web/scene-3d"
+
+
+@pytest.mark.parametrize("message", SCENE_OFF)
+def test_a_message_that_only_looks_like_a_3d_scene_calls_for_nothing_of_it(message: str):
+    found = components.suggest(message)
+    assert found is None or found.name != "web/scene-3d"
+
+
+def test_an_unless_phrase_skips_the_kit_that_says_it(tmp_path: Path):
+    """The real kit lists "3d printer" under unless; without that key the same message would pick it."""
+    message = "make a 3d printer stand for my desk"
+    assert components.suggest(message) is None
+    root = tmp_path / "library"
+    shutil.copytree(LIBRARY, root)
+    path = root / "web/scene-3d/component.json"
+    data = manifest(path)
+    assert data["unless"], "the shipped kit needs an unless list for this test to mean anything"
+    del data["unless"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    found = components.suggest(message, components.Library(root))
+    assert found is not None and found.name == "web/scene-3d"
+
+
+def test_a_manifest_without_unless_is_unchanged(tmp_path: Path):
+    root = tmp_path / "library"
+    shutil.copytree(LIBRARY / "web/page", root / "web/page")
+    assert manifest(root / "web/page/component.json").get("unless") is None
+    page = components.Library(root).get("web/page")
+    assert page.unless == ()
+    assert components.suggest("build a landing page", components.Library(root)).name == "web/page"
+
+
+def test_the_scene_kit_fills_its_blanks_into_one_page(tmp_path: Path):
+    ws = Workspace(tmp_path / "ws")
+    text = components.use(
+        "web/scene-3d", {"title": "Fox at night", "scene": "sky night\nfox walks to campfire"},
+        workspace=ws, path="scene",
+    )
+    assert text.splitlines()[0] == "Used web/scene-3d in scene: 1 file written"
+    page = (ws.root / "scene" / "index.html").read_text(encoding="utf-8")
+    assert "<title>Fox at night</title>" in page
+    block = page.split('<script type="text/plain" id="scene">')[1].split("</script>")[0]
+    assert "sky night" in block and "fox walks to campfire" in block
+    assert "{{" not in page and "</html>" in page.strip()[-20:]
+
+
+def test_the_scene_kit_without_values_writes_its_default_scene(tmp_path: Path):
+    ws = Workspace(tmp_path / "ws")
+    components.use("web/scene-3d", workspace=ws)
+    page = (ws.root / "index.html").read_text(encoding="utf-8")
+    assert "dog walks to house" in page
+
+
+def test_the_scene_kit_advice_explains_its_blanks():
+    scene = components.Library(LIBRARY).get("web/scene-3d")
+    about = components.advice(scene)
+    assert "What each value is:" in about
+    assert f'- scene: {scene.blanks["scene"]["about"]}' in about
+    assert f'- title: {scene.blanks["title"]["about"]}' in about
+    assert "dog walks to house" in about, "the scene blank is the hard one: its about line shows an example"
+
+
 def test_two_components_that_fit_equally_name_none(tmp_path: Path):
     root = tmp_path / "library"
     for name in ("code/fix-bug", "code/refactor"):
@@ -548,6 +656,17 @@ def test_the_advice_names_the_call_for_a_kit_and_the_steps_for_a_recipe():
     kit = components.advice(library.get("web/page"))
     assert kit.startswith(components.SUGGEST_HEADER)
     assert 'component(action="use", name="web/page", path="<folder>", values={"title": "...", "description": "..."})' in kit
+    assert kit == "\n".join([
+        components.SUGGEST_HEADER,
+        "A ready kit fits this request: web/page - One responsive page: semantic HTML, phone-first CSS with "
+        "design tokens, no framework.",
+        'If the user wants it made, start with component(action="use", name="web/page", path="<folder>", '
+        'values={"title": "...", "description": "..."}) and adapt the files it writes; do not write them from scratch.',
+        "What each value is:",
+        "- title: The page title, shown in the browser tab, the header and the main heading.",
+        "- description: One sentence that describes the page; used as the meta description and the line under the "
+        "heading.",
+    ])
     recipe = components.advice(library.get("browser/research"))
     assert [f"{number}. {step}" for number, step in enumerate(RESEARCH_STEPS, 1)] == recipe.splitlines()[2:-1]
     assert recipe.splitlines()[-1] == f"Then: {RESEARCH_NEXT}"

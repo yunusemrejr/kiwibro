@@ -361,6 +361,7 @@ class Turn:
     plan: plan.TurnPlan | None = None  # the request's steps, when it has several or names a place
     reply_text: str = ""  # everything the model said this turn (the plan checks answers against it)
     truncated_calls: bool = False  # this round's tool calls were cut off by max_tokens
+    text_calls: bool = False  # this round's tool calls were read out of the reply's text
     searches: list[tuple[frozenset[str], str]] = field(default_factory=list)  # (terms, query) this turn
     search_rounds: int = 0  # rounds that ran a web search
     plan_done_at: int | None = None  # search_rounds when every planned tool step was done
@@ -848,6 +849,7 @@ class AgentManager:
                 continue
             turn.tool_rounds = round_index + 1
             turn.truncated_calls = result.finish_reason == "length"
+            turn.text_calls = result.text_calls
             self._handle_tool_calls(turn, result.tool_calls, settings)
             self._raise_if_aborted(turn)
             if (turn.done_note and turn.acted_instead == "note" and turn.plan is None
@@ -2091,6 +2093,7 @@ class AgentManager:
         if not result.tool_calls and settings.get("agent_enabled", True):
             calls, cleaned = toolcall.extract_calls(result.content, tools.TOOL_SPECS)
             if calls:
+                result.text_calls = True
                 log.info("turn %s: recovered %s tool call(s) written as text", turn.conversation_id, len(calls))
                 result.tool_calls, result.content = calls, cleaned
         written = result.content
@@ -2263,7 +2266,7 @@ class AgentManager:
         settings = self._settings()
         model_info = self.llm.model_info(model)
         system_prompt = self._system_prompt(
-            {**settings, "workspace": self._folder(conversation_id)}, model=model, model_info=model_info
+            {**settings, "workspace": self._prompt_folder(conversation_id)}, model=model, model_info=model_info
         )
         summary, history = "", []
         if conversation_id:
@@ -2752,7 +2755,10 @@ class AgentManager:
         user_block = prompts.USER_BLOCK.format(name=name) if name else ""
         model_block = prompts.MODEL_BLOCK.format(model=model) if model else ""
         workspace = str(settings.get("workspace") or "").strip()
-        workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=config.display_path(workspace)) if workspace else ""
+        if workspace and workspaces.in_temp_root(workspace):
+            workspace_block = prompts.WORKSPACE_TEMP_BLOCK  # no path: the same text in every temporary chat
+        else:
+            workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=config.display_path(workspace)) if workspace else ""
         if not settings.get("agent_enabled", True):
             tools_block = prompts.TOOLS_DISABLED_BLOCK
         elif model_info is not None and not model_info.get("tools"):
@@ -3012,7 +3018,11 @@ class AgentManager:
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
             return refuse_shown(message, message.splitlines()[0], "read")
-        if cut_off and spec.risk in ("write", "exec"):  # repaired JSON would save a truncated file
+        # Repaired JSON would save a truncated file. A call read out of the reply's text whose JSON closed
+        # by itself is whole: the model wrote it and then ran on to the length limit, and refusing it cost
+        # a chat its one right call. A call from the engine may have been closed by the engine, so it stays refused.
+        whole = turn.text_calls and not rescued.damaged
+        if cut_off and not whole and spec.risk in ("write", "exec"):
             return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
         pacing = self._pacing_refusal(turn, name, item["args"])
         if pacing:
@@ -3119,6 +3129,13 @@ class AgentManager:
             return copy
         bound = workspaces.folder_for(self.db, conversation_id)
         return bound or str(self._settings().get("workspace") or config.default_workspace())
+
+    def _prompt_folder(self, conversation_id: str | None = None) -> str:
+        """The folder message 0 is written for. A chat that does not exist yet gets a temporary folder
+        of its own once it starts (temp mode), so what is prefilled ahead of it is that chat's message 0."""
+        if conversation_id is None and workspaces.mode(self._settings()) == "temp":
+            return str(workspaces.temp_root() / "chat")
+        return self._folder(conversation_id)
 
     def _workspace(self, conversation_id: str | None = None) -> Workspace:
         confined = safemode.workspace_for(self.db, conversation_id)

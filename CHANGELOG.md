@@ -26,6 +26,15 @@ All notable changes to Kiwibro are documented here.
   hard limit of 200 MB. Code looks a question's subject up before the model answers and when
   a web search finds nothing. A strong match is handed to the model; anything less adds
   nothing. No new tool, and it works without the internet.
+- **Ready parts: a 3D scene kit (`web/scene-3d`).** One call writes a finished three.js page
+  from plain lines such as "kiwi walks to tree": 67 things (animals, people, vehicles, trees,
+  buildings, shapes), walking, running, flying, driving, following and orbiting, four skies
+  and seven grounds. The page needs no build and no server and shows itself in the chat; a
+  later change is one edited line. A word the kit does not know is shown as a labelled box
+  and named on the page. A part can now list `unless` phrases, so "3D printer" calls for nothing.
+- **How it works: "Training data" and "Training" stops.** Where Kiwi Mind's 4,698 lessons came
+  from, and how the base model was trained in three stages, each with a figure and the
+  numbers behind it.
 - **Flowchart kit.** `ui/flowchart`: the model fills in steps and links, and plain
   JavaScript lays the chart out in layers and draws it as SVG, with decisions and loops.
   "Draw" now calls for a kit the way "make" does.
@@ -147,6 +156,17 @@ All notable changes to Kiwibro are documented here.
 
 ### Fixed
 
+- **Hard tasks that stopped halfway.** Commands now find programs installed per user (Node
+  under nvm, `~/.local/bin`, cargo, go, bun, deno, pnpm), and a missing program is named once
+  instead of being retried. A tool call that was written whole is run even when the reply
+  then ran on to its length limit; before, the one right call of a turn could be refused. A
+  read with stray characters after its arguments runs. A whole-file write that shrinks a file
+  to a stub is flagged. A turn that reaches the tool limit says what it changed and how to go on.
+- **Ready parts forgive small slips.** A value the kit has no blank for is left out and named
+  instead of refusing the kit; a list of lines or a number is taken as text; looking at a kit
+  says that nothing is written yet and gives the call that writes it.
+- **Starting a chat stays fast with temporary folders.** The instructions no longer carry the
+  chat's own folder path, so a new chat reuses what the model has already read.
 - **"Search for…" searches before anything is written.** A message that asks for a search,
   or for news, is searched by Kiwibro before the model writes a word, and the model is
   told to answer only from the results. Small models used to answer first from memory

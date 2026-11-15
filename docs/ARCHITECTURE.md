@@ -113,7 +113,7 @@ kiwibro/
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
 │   ├── components.py         # the component library: search, show, use
-│   ├── components/library/   # 69 kits and recipes, one folder each (plain data)
+│   ├── components/library/   # 70 kits and recipes, one folder each (plain data)
 │   ├── knowledge.py          # the knowledge base: a read-only reference, searched by code
 │   ├── knowledge/base/       # 24 topic files of short entries (plain Markdown)
 │   │   # safety
@@ -141,7 +141,7 @@ kiwibro/
 │   │   ├── attachments.js    # composer attachments: pick, paste, drop, upload
 │   │   ├── chat.js           # transcript: messages, streaming, tool activity, approvals
 │   │   ├── export.js         # chat export as Markdown (pure functions)
-│   │   ├── how.js            # How it works: thirteen small animated figures
+│   │   ├── how.js            # How it works: fifteen small animated figures
 │   │   ├── inference.js      # thinking control, reply speed, context window size
 │   │   ├── markdown.js       # escape-first Markdown renderer for chat replies
 │   │   ├── mathml.js         # LaTeX maths to MathML, without dependencies
@@ -1280,8 +1280,8 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 69 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
-  service), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
+- **Areas.** 70 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service, 3D scene), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
   gallery, and a UI review recipe), `code/` (Python CLI and package, Node CLI and server, C
   program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
   fix a bug, add a feature, refactor, review, explain a project and repair failing tests),
@@ -1292,7 +1292,9 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
   organise a folder, convert documents, daily brief, explain a screenshot) and `browser/`
   (research, compare, extract a table, follow docs, monitor a page, read a page, news,
   price check, find a download).
-- **Chosen by code.** Each manifest lists `match` phrases. `components.suggest(message)`
+- **Chosen by code.** Each manifest lists `match` phrases and, for the parts whose call is
+  easy to say by accident, `unless` phrases that rule it out (a "3d printer" message is no
+  call for a 3D scene). Both are judged the same way. `components.suggest(message)`
   looks for them in the user's message (words in order, at most two words apart; a kit
   only when the message asks for something to be made) and the agent puts the result in
   the turn note: for a kit the exact `component(action="use", ...)` call, for a recipe its
@@ -1488,7 +1490,7 @@ Design language:
   - Models sheet (`models.js`): the models on this computer with their source, fit and size,
     the engine (the llama.cpp build in use, the installed builds, *Install engine*), and the
     Hugging Face search and downloads;
-  - How it works (`how.js`): eight small animated figures, one per idea of the design, one of
+  - How it works (`how.js`): fifteen small animated figures, one per idea of the design, one of
     which runs Kiwi Sense in the browser;
   - settings sheet (`sheets.js`): llama.cpp runtime (empty = the engine Kiwibro installed or
     found), Models folder (an extra folder; Kiwibro's own and LM Studio's read-only folder are

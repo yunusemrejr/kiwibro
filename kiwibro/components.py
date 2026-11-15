@@ -63,6 +63,7 @@ class Component:
     steps: tuple[str, ...]
     folder: Path
     match: tuple[str, ...] = ()  # phrases in a user's message that call for this component
+    unless: tuple[str, ...] = ()  # phrases that rule it out: "3d printer" is not "3d scene"
 
     @property
     def area(self) -> str:
@@ -124,6 +125,7 @@ class Library:
                     steps=tuple(str(step) for step in data.get("steps") or ()),
                     folder=path.parent,
                     match=tuple(str(phrase) for phrase in data.get("match") or ()),
+                    unless=tuple(str(phrase) for phrase in data.get("unless") or ()),
                 )
             )
         return sorted(components, key=lambda component: component.name)
@@ -252,8 +254,10 @@ def _says(message: list[str], phrase: list[str]) -> int:
 def suggest(message: str, library: Library | None = None) -> Component | None:
     """The one component a message calls for, or None when none or several fit equally.
 
-    Each component lists the phrases that call for it (``match`` in its manifest). The
-    longest phrase found wins, then the number of phrases found, then the one said first
+    Each component lists the phrases that call for it (``match`` in its manifest) and, for
+    the ones whose call is easy to say by accident, the phrases that rule it out (``unless``:
+    a "3d printer" message is not a call for a 3D scene kit). Both are judged the same way.
+    The longest phrase found wins, then the number of phrases found, then the one said first
     ("a web page with a contact form" is a page). A tie names nothing, because a wrong
     recipe in the turn note costs more than a missing one."""
     text = (message or "").strip()
@@ -264,6 +268,8 @@ def suggest(message: str, library: Library | None = None) -> Component | None:
     ranked = []
     for component in (library or default_library()).all():
         if component.kind == KIT and not makes:
+            continue
+        if any(_says(said, _sequence(phrase)) >= 0 for phrase in component.unless):
             continue
         hits = [(len(phrase), _says(said, phrase)) for phrase in map(_sequence, component.match)]
         hits = [(length, at) for length, at in hits if at >= 0]
@@ -281,12 +287,17 @@ def advice(component: Component) -> str:
     """What the turn note says about a suggested component: a kit's call, or a recipe's steps."""
     if component.kind == KIT:
         values = ", ".join(f'"{key}": "..."' for key in component.blanks)
-        return (
+        call = (
             f"{SUGGEST_HEADER}\n"
             f"A ready kit fits this request: {component.name} - {component.summary}\n"
             f'If the user wants it made, start with component(action="use", name="{component.name}", '
             f'path="<folder>", values={{{values}}}) and adapt the files it writes; do not write them from scratch.'
         )
+        described = [f"- {key}: {blank['about']}" for key, blank in component.blanks.items() if blank.get("about")]
+        if not described:
+            return call
+        # the blank's name alone cannot say what a value should look like: "scene" wants its lines
+        return "\n".join([call, "What each value is:", *described])
     return "\n".join([
         SUGGEST_HEADER,
         f"A proven recipe fits this request ({component.name}). Follow its steps in order:",
@@ -317,7 +328,13 @@ def _describe(component: Component) -> str:
             )
             lines.append(f"Blanks: {blanks}")
         lines.append(f"Files: {', '.join(component.file_paths())}")
-        lines.append(f"Next: {component.next}")
+        # a model that has only looked at a kit tends to edit files that are not there yet
+        values = ", ".join(f'"{key}": "..."' for key in component.blanks)
+        lines.append(
+            f'Nothing is written yet. To write these files: component(action="use", name="{component.name}", '
+            f'path="<folder>", values={{{values}}})'
+        )
+        lines.append(f"After that: {component.next}")
         return "\n".join(lines)
     return "\n".join([head, "Steps:",
                       *(f"{number}. {step}" for number, step in enumerate(component.steps, 1)),
@@ -339,15 +356,14 @@ def _folder(workspace: Workspace, path: str | None) -> Path:
         raise ComponentError(str(exc)) from exc
 
 
-def _blank_values(component: Component, values: dict[str, str]) -> dict[str, str]:
-    """The kit's blanks with the given values over the defaults; an unknown key is refused."""
-    for key in values:
-        if key not in component.blanks:
-            known = ", ".join(component.blanks) or "none"
-            raise ComponentError(f'{component.name} has no blank named "{key}". Its blanks: {known}.')
+def _blank_values(component: Component, values: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """The kit's blanks with the given values over the defaults, and the given keys it has no blank for.
+
+    An extra key does not stop the kit: a small model that adds one would otherwise give up on a
+    kit that fits. The result of ``use`` names what was left out."""
     filled = {key: str(blank.get("default", "")) for key, blank in component.blanks.items()}
-    filled.update({key: str(value) for key, value in values.items()})
-    return filled
+    filled.update({key: str(value) for key, value in values.items() if key in component.blanks})
+    return filled, [key for key in values if key not in component.blanks]
 
 
 def _kit_plan(
@@ -406,7 +422,7 @@ def use(
     if not wanted:
         raise ComponentError("use needs name.")
     component = (library or default_library()).get(wanted)
-    filled = _blank_values(component, values or {})
+    filled, extra = _blank_values(component, values or {})
     if component.kind != KIT:
         return _describe(component)
     folder = _folder(workspace, path)
@@ -431,5 +447,12 @@ def use(
     return "\n".join([
         f"Used {component.name} in {where}: {count} file{'s' if count != 1 else ''} written",
         *(f"{shown} ({number} lines)" for shown, number in written),
+        *([_left_out(component, extra)] if extra else []),
         f"Next: {component.next}",
     ])
+
+
+def _left_out(component: Component, extra: list[str]) -> str:
+    names = ", ".join(f'"{key}"' for key in extra)
+    known = ", ".join(component.blanks) or "none"
+    return f"Left out: {names} ({component.name} has no such blank; its blanks: {known})."

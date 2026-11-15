@@ -54,5 +54,8 @@
    "what is the capital of Norway",
    "Explain the difference between a mutex and a semaphore, with a short Python example of each.",
    "tell me a joke about cats",
-   "Compare renting and buying a home over ten years: the main costs of each, and when buying wins."]}
+   "Compare renting and buying a home over ten years: the main costs of each, and when buying wins."]},
+ {"name": "scene", "messages": [
+   "make a 3d scene where a fox walks to a campfire and stops",
+   "make it night"]}
 ]

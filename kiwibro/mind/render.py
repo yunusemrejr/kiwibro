@@ -29,6 +29,7 @@ STOP = (IM_END, "<|endoftext|>")
 _CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _OPEN_CALL_RE = re.compile(r"<tool_call>\s*(\{.*)\Z", re.DOTALL)
 _WORKSPACE_RE = re.compile(r"work inside the folder `([^`]+)`")
+_TEMP_WORKSPACE = "work inside a temporary folder that belongs to this chat"  # prompts.WORKSPACE_TEMP_BLOCK
 _SUMMARY_RE = re.compile(r"## Earlier conversation summary\n(.*?)(?=\n## |\Z)", re.DOTALL)
 # Text that would read as prompt structure when it arrives inside a message or a tool result.
 _STRUCTURE_RE = re.compile(r"<\|(im_start|im_end|endoftext)\|>|</?tool_(call|response)>")
@@ -105,7 +106,8 @@ def _system_facts(messages: list[dict[str, Any]]) -> tuple[str, str]:
     text = str(messages[0].get("content") or "")
     workspace = _WORKSPACE_RE.search(text)
     summary = _SUMMARY_RE.search(text)
-    return (workspace.group(1) if workspace else ""), (summary.group(1).strip() if summary else "")
+    folder = workspace.group(1) if workspace else ("this chat's temporary folder" if _TEMP_WORKSPACE in text else "")
+    return folder, (summary.group(1).strip() if summary else "")
 
 
 def split_notes(content: str) -> tuple[str, list[str]]:

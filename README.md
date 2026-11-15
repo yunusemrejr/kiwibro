@@ -45,7 +45,7 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
   changes only after you have read what changed and the git command that undoes it. It
   never deletes: deletions come as commands for you to run.
-- **Components.** 69 ready parts, from a web page to a GTK app for Ubuntu, that any model
+- **Components.** 70 ready parts, from a web page to a 3D scene to a GTK app for Ubuntu, that any model
   can search and build on instead of starting from a blank page.
 - **Knowledge base.** About 2,000 short entries on 24 topics, from Linux commands and Python
   to maths, history and the countries of the world, kept as read-only text. Code looks a
@@ -287,7 +287,7 @@ copy are listed as `rm` commands for you to run.
 | **Undo** | Every file the agent writes, edits, moves or deletes is checkpointed first, and so are the workspace files a command is about to change or remove (`rm`, `sed -i`, `git reset --hard`). |
 | **Command sandbox** | Commands run sealed with bubblewrap: read-only system, writable workspace, credentials hidden, memory and process caps. |
 | **Servers** | The `remote` tool runs commands and copies files on hosts from your `~/.ssh/config`. |
-| **How it works** | Nine short animated figures inside the app explain the ideas behind Kiwibro, from the context window to adapters, with a live Kiwi Sense you can type into. |
+| **How it works** | Fifteen short animated figures inside the app explain the ideas behind Kiwibro, from the context window to how its own model was trained, with a live Kiwi Sense you can type into. |
 
 ## Configuration
 

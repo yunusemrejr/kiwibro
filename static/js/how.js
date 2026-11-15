@@ -1,5 +1,5 @@
 /**
- * How it works: ten small animated figures, one idea each.
+ * How it works: small animated figures, one idea each.
  *
  * Every figure is a pure function of time: draw(t) places its parts for second t of a
  * loop, so the picture can be paused, frozen for reduced motion, or rendered at any
@@ -366,7 +366,7 @@ function readyParts(root) {
     root.append(tile);
     return tile;
   });
-  text(root, 240, 216, "69 ready parts", "hw-t-tan");
+  text(root, 240, 216, "70 ready parts", "hw-t-tan");
   const chosen = text(root, 240, 236, "picked by code, not by the model");
   const model = box(root, 420, 152, 88, 96, "Model", "", 152);
   const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
@@ -830,6 +830,130 @@ function kiwiMind(root) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Training data: tasks go to a teacher model, practice conversations come out */
+/* -------------------------------------------------------------------------- */
+
+// Counts from the pack's own record of its training (manifest.json of Kiwi Mind 2.0.1).
+const LESSONS = { trunk: 3104, skills: 1294, held: 300 };
+const LOSS = { base: 2.0926, grid: 2.1746, trained: 1.19, steps: 173 };
+
+/** The point k (0 to 1) of the way along a path of straight pieces. */
+function along(points, k) {
+  const lengths = points.slice(1).map(([x, y], index) => Math.hypot(x - points[index][0], y - points[index][1]));
+  let left = clamp01(k) * lengths.reduce((sum, length) => sum + length, 0);
+  for (let index = 0; index < lengths.length - 1; index += 1) {
+    if (left <= lengths[index]) break;
+    left -= lengths[index];
+    points = points.slice(1);
+  }
+  const share = Math.min(1, left / Math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1]));
+  return [mix(points[0][0], points[1][0], share), mix(points[0][1], points[1][1], share)];
+}
+
+function trainingData(root) {
+  const total = LESSONS.trunk + LESSONS.skills + LESSONS.held;
+  const sources = [["oasst2", 66], ["Dolly", 112], ["MASSIVE", 158]];
+  const teacherX = 226;
+  const teacherY = 112;
+  const pileX = 404;
+  text(root, 62, 32, "real questions");
+  const cards = sources.map(([name, y]) => {
+    root.append(s("path", { class: "hw-line", d: `M110 ${y}H136V${teacherY}H164` }));
+    const group = s("g", { class: "hw-card" });
+    group.append(s("rect", { x: 14, y: y - 15, width: 96, height: 30, rx: 6 }));
+    group.append(s("text", { x: 62, y: y + 5, class: "hw-t", "text-anchor": "middle" }, name));
+    root.append(group);
+    return group;
+  });
+  root.append(s("path", { class: "hw-line", d: `M288 ${teacherY}H340` }), s("path", { class: "hw-arrow", d: `M334 ${teacherY - 4}l6 4-6 4` }));
+  const teacher = box(root, teacherX, teacherY, 124, 64, "", "hw-node");
+  text(root, teacherX, teacherY + 5, "teacher model", "hw-t-big");
+
+  // The pile of finished conversations grows upward, one sheet per sixth of the total.
+  const sheets = [0, 1, 2, 3, 4, 5].map((index) => {
+    const sheet = s("rect", { class: "hw-slab", x: pileX - 44, y: 142 - index * 15, width: 88, height: 11, rx: 3 });
+    root.append(sheet);
+    return sheet;
+  });
+  const count = text(root, pileX, 180, "0", "hw-t-big");
+  text(root, pileX, 198, "conversations");
+  const number = (value) => value.toLocaleString("en");
+  text(root, 240, 252, `${number(LESSONS.trunk)} for the shared layers · ${number(LESSONS.skills)} for the skills · ${LESSONS.held} held back`);
+  const dot = s("circle", { r: 6, class: "hw-dot" });
+  root.append(dot);
+
+  return {
+    duration: 8,
+    still: 7.4,
+    draw(t) {
+      // Three rounds of two seconds: a task goes in, the teacher writes, conversations come out.
+      const round = Math.min(2, Math.floor(t / 2));
+      const local = t - round * 2;
+      const y = sources[round][1];
+      const outbound = span(local, 1.3, 1.9);
+      const [x, yy] = outbound > 0
+        ? along([[288, teacherY], [340, teacherY]], outbound)
+        : along([[110, y], [136, y], [136, teacherY], [164, teacherY]], span(local, 0, 0.9));
+      at(dot, x, yy);
+      const writing = local >= 0.9 && local < 1.3;
+      fade(dot, writing || local >= 1.9 ? 0 : 1);
+      on(teacher, writing);
+      cards.forEach((card, index) => on(card, index === round && local < 0.9));
+      const done = (round + outbound) / 3;
+      count.textContent = number(Math.round(total * done));
+      sheets.forEach((sheet, index) => fade(sheet, done > (index + 0.5) / 6 ? 1 : 0.18));
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Training: the loss on held-back conversations, before and after            */
+/* -------------------------------------------------------------------------- */
+
+function training(root) {
+  const floor = 204;
+  const scale = 60; // pixels per unit of loss
+  const width = 88;
+  const xs = [92, 240, 388];
+  const labels = ["as downloaded", "rounded to 4 bits", "after training"];
+  text(root, 24, 30, "how wrong its next-word guesses are (lower is better)", "hw-t-muted", "start");
+  root.append(s("path", { class: "hw-line", d: `M24 ${floor}H456` }));
+  const bars = xs.map((x, index) => {
+    const group = s("g", { class: `hw-bar ${["", "hw-bar-orange", "hw-bar-tan"][index]}`.trim() });
+    const rect = s("rect", { x: x - width / 2, width, rx: 5 });
+    const value = s("text", { x, class: "hw-t-big", "text-anchor": "middle" });
+    group.append(rect, value);
+    root.append(group);
+    text(root, x, floor + 22, labels[index]);
+    return { group, rect, value };
+  });
+  const steps = text(root, xs[2], floor + 42, "", "hw-t-green");
+  const set = (bar, loss) => {
+    const height = loss * scale;
+    bar.rect.setAttribute("y", (floor - height).toFixed(1));
+    bar.rect.setAttribute("height", height.toFixed(1));
+    bar.value.setAttribute("y", (floor - height - 9).toFixed(1));
+    bar.value.textContent = loss.toFixed(2);
+  };
+  set(bars[0], LOSS.base);
+
+  return {
+    duration: 9,
+    still: 8.4,
+    draw(t) {
+      // Rounding makes the second bar a little taller; training brings the third one down.
+      const learning = span(t, 3.4, 7.2);
+      set(bars[1], mix(LOSS.base, LOSS.grid, span(t, 1.2, 2.4)));
+      fade(bars[1].group, span(t, 1.0, 1.4));
+      set(bars[2], mix(LOSS.grid, LOSS.trained, learning));
+      fade(bars[2].group, span(t, 3.0, 3.4));
+      on(bars[2].group, learning > 0 && learning < 1);
+      steps.textContent = t >= 3 ? `step ${Math.round(LOSS.steps * learning)} of ${LOSS.steps}` : "";
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* The stops                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -870,6 +994,48 @@ const STOPS = [
       ],
     },
     build: kiwiMind,
+  },
+  {
+    title: "Training data",
+    question: "What did Kiwi Mind learn from?",
+    lines:
+      "A model learns from examples, the way you pick up a job by watching it done well. Kiwi Mind's examples are about 4,700 practice conversations in which an assistant uses Kiwibro's tools properly. A much larger [[teacher model]] wrote them: it was handed a task, sometimes a question a real person once asked, and wrote how a careful assistant would carry it out: which tool to call, what comes back, what to say. Handing a big model's habits to a small one like this is called [[distillation]].",
+    fact: "One conversation in sixteen is never trained on. Those 300 are the exam every number on the next stop comes from.",
+    tech: {
+      model: [
+        ["Teacher", "Qwen3.8-27B, an open model about 45 times Kiwi Mind's size, run with vLLM. It samples at temperature 0.9 and its output is held to a JSON schema, so every conversation it writes can be read back by a program."],
+        ["Four kinds of conversation", "A single request; a session of several turns; a repair, where a bad first reply is put right; and real first messages from three open collections: OpenAssistant oasst2, Databricks Dolly 15k and Amazon MASSIVE."],
+        ["Written the way the model reads", "Each conversation is stored in ChatML with Qwen's tool-call tags, the exact text Kiwi Mind sees when you use it, down to Kiwibro's note with the local time."],
+        ["What counts most", "Tokens do not weigh the same in training. A word of an answer counts 1, a token of a tool call 1.5 and the first three tokens of a reply 3, because that is where the model decides between calling a tool and talking."],
+      ],
+      app: [
+        ["Checked against the real tools", "Every conversation is checked against Kiwibro's own tool list. One with a call that would not run is thrown away."],
+        ["Three shares", "3,104 conversations train the shared layers, 1,294 others train the skills, and 300 are held back for testing."],
+      ],
+    },
+    build: trainingData,
+  },
+  {
+    title: "Training",
+    question: "How was Kiwi Mind trained?",
+    lines:
+      "Kiwi Mind did not start from nothing. Its base is [[Qwen3-0.6B]], a small open model that already knows language. Training shows it a practice conversation, lets it guess each next word, and nudges its numbers a little toward the right one, thousands of times over. The unusual part is that the numbers stay rounded to the 4 bits they are stored with while they learn ([[QAT]]), so saving the file loses nothing. Then the lower layers are frozen, seven thin [[skills]] are trained on top, and last comes the small [[control head]] that picks between them.",
+    fact: "The whole training takes about 25 minutes on one cloud graphics card.",
+    tech: {
+      model: [
+        ["Base", "Qwen3-0.6B: 28 layers, each 1,024 numbers wide, with a vocabulary of 151,936 tokens."],
+        ["Trunk on the 4-bit grid", "One pass over 3,104 conversations in 173 steps of about 28,000 tokens (AdamW, learning rate 4e-5, cosine decay). At every step each weight is snapped to one of 16 levels, one scale per group of 32, and the gradient is passed straight through the rounding."],
+        ["What it gained", "Loss on the held-back conversations, lower is better: 2.09 as downloaded, 2.17 once rounded to 4 bits, 1.19 after training."],
+        ["Seven skills", "With the trunk frozen, each skill is a LoRA adapter of rank 16 on layers 16 to 27, trained for two passes at learning rate 1e-4 with its B matrix learning four times faster (LoRA+). A skill that does not beat the plain trunk is stored as no change."],
+        ["Control head", "Trained on 14,691 saved model states to name the skill. On 711 held-back states it is right 87% of the time."],
+        ["Heavy and action units", "Two more small networks read the same state. The heavy unit finds 77% of heavy requests; the action unit has the right tool among its top three 88% of the time."],
+      ],
+      app: [
+        ["One script, six stages", "Write the conversations, train the trunk, the skills and the head, measure on the held-back set, export the pack."],
+        ["Parity check", "Before a pack is used, Kiwibro's engine and the training code must name the same next token on 32 prompts."],
+      ],
+    },
+    build: training,
   },
   {
     title: "The model file",
@@ -940,13 +1106,13 @@ const STOPS = [
     title: "Ready parts",
     question: "Why does it not start from a blank page?",
     lines:
-      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 69 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 70 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
     fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
     tech: {
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["40 kits", "Web pages, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
+        ["41 kits", "Web pages, 3D scenes, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
         ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
         ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
       ],
@@ -1067,6 +1233,10 @@ const TERM_NOTES = {
     "A tiny network, under 1 MB, that reads the model's state after your message and scores the seven skills and whether the request is heavy.",
   skills: "Seven thin sets of extra weights, 9 MB each, one per kind of work. One is active at a time.",
   "helper model": "Any other model you downloaded. Optional.",
+  "teacher model": "A large model whose written examples a small model learns from.",
+  distillation: "Training a small model on what a large one wrote, so it picks up the large one's behaviour.",
+  "Qwen3-0.6B": "An open model of the Qwen family with 0.6 billion weights.",
+  QAT: "Quantization-aware training: the model learns with its weights already rounded, instead of being rounded afterwards.",
   kit: "Starter files that already work, for example a page, a server or a test file.",
   recipe: "Four to eight steps written in terms of Kiwibro's own tools.",
 };

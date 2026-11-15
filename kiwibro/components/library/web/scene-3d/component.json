@@ -1,0 +1,47 @@
+{
+  "name": "web/scene-3d",
+  "kind": "kit",
+  "title": "3D scene",
+  "summary": "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, follows, orbits).",
+  "when": "Use when the user wants something in 3D, a three.js or WebGL page, a 3D simulation, or an animated scene of things that walk, drive or fly.",
+  "blanks": {
+    "title": {
+      "about": "A short name for the scene, shown in the browser tab and on the page.",
+      "default": "A dog comes home"
+    },
+    "scene": {
+      "about": "What the user asked for, as plain lines separated by \\n: one thing or one action per line, no code. A thing: \"house at 5 -1\". An action: \"dog walks to house\" (also runs to, flies to, drives to, follows, orbits). For \"a dog comes home\" the value is \"house at 5 -1\\ndog at -7 2\\ndog walks to house\".",
+      "default": "house at 5 -1\ntree at -2 -4\ndog at -7 2\ndog walks to house"
+    },
+    "sky": {
+      "about": "The sky: day, dawn, sunset or night.",
+      "default": "day"
+    },
+    "ground": {
+      "about": "The ground: grass, sand, snow, water, stone, dirt or moon.",
+      "default": "grass"
+    }
+  },
+  "next": "The page is finished and shows itself in the chat; it needs no build, no npm and no server. To change the scene, edit only the plain lines inside <script id=\"scene\"> in index.html with replace_in_file, for example the line \"sky day\" (the comment above them lists every thing and action). Do not rewrite the file.",
+  "match": [
+    "3d",
+    "3d scene",
+    "3d simulation",
+    "3d animation",
+    "3d world",
+    "3d page",
+    "3d html",
+    "3d website",
+    "3d model",
+    "three js",
+    "threejs",
+    "webgl",
+    "animated scene"
+  ],
+  "unless": [
+    "3d printer",
+    "3d printing",
+    "3d print",
+    "3d printed"
+  ]
+}

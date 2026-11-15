@@ -96,6 +96,7 @@ COMPONENTS = [  # name, blanks, summary: the library in kiwibro/components/libra
     ("web/flask-api", "name, resource", "Flask JSON API with SQLite, input validation and tests."),
     ("web/fastapi-service", "name, resource", "FastAPI service with typed models, a health route and tests."),
     ("web/pwa", "app_name", "Installable web app that works offline: manifest, service worker and an offline page."),
+    ("web/scene-3d", "title, scene, sky, ground", "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, follows, orbits)."),
     ("code/python-package", "name", "Python package: pyproject.toml, src layout and pytest tests."),
     ("code/python-cli", "name", "Command-line tool in Python: argparse subcommands, logging, exit codes and tests."),
     ("code/node-cli", "name", "Node.js command-line tool without dependencies: argument parsing and node:test tests."),

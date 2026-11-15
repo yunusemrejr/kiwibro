@@ -831,3 +831,26 @@
   fill: var(--green);
   stroke: var(--green);
 }
+
+/* Training: three bars of the loss on held-back conversations */
+.hw-bar rect {
+  fill: var(--surface);
+  stroke: var(--line-2);
+  stroke-width: 1.4;
+  transition: fill 0.25s, stroke 0.25s;
+}
+
+.hw-bar-orange rect {
+  fill: var(--orange-dim);
+  stroke: var(--orange);
+}
+
+.hw-bar-tan rect {
+  fill: var(--tan-dim);
+  stroke: var(--tan);
+}
+
+.hw-bar.is-on rect {
+  fill: var(--green-dim);
+  stroke: var(--green);
+}

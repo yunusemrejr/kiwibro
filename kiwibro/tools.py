@@ -1398,10 +1398,18 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
             "query": _opt_str(args, "query"),
             "name": _opt_str(args, "name"),
             "path": _opt_str(args, "path"),
-            "values": {str(key): _as_str(value, f"values.{key}", allow_empty=True)
-                       for key, value in (values or {}).items()},
+            "values": {str(key): _blank_text(value, f"values.{key}") for key, value in (values or {}).items()},
         }
     raise ValueError(f"unknown tool: {name}")
+
+
+def _blank_text(value: Any, field_name: str) -> str:
+    """A kit value as text. Small models send a list of lines or a number where a string belongs."""
+    if isinstance(value, (list, tuple)) and all(isinstance(item, (str, int, float)) for item in value):
+        return "\n".join(str(item) for item in value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return _as_str(value, field_name, allow_empty=True)
 
 
 # --- execution ------------------------------------------------------------------------

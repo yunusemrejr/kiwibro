@@ -40,6 +40,12 @@ WORKSPACE_BLOCK = (
     "\n## Workspace\nYour file and command tools work inside the folder `{workspace}`. "
     "Use paths relative to it: `.` is its top level, e.g. `src/app.py`. Paths outside it are refused.\n"
 )
+# A chat in its own temporary folder is told so without the path. Message 0 then reads the same in every
+# such chat, so a new chat starts on the prefix the model already holds instead of reading the tools again.
+WORKSPACE_TEMP_BLOCK = (
+    "\n## Workspace\nYour file and command tools work inside a temporary folder that belongs to this chat. "
+    "Use paths relative to it: `.` is its top level, e.g. `src/app.py`. Paths outside it are refused.\n"
+)
 # Tool-failure loop breakers (agent.py): small models otherwise keep guessing until the round limit.
 FAILURE_COACH = (
     "[Kiwibro: the last {count} tool calls failed. Stop and change approach: read the error messages, "

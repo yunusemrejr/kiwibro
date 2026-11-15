@@ -1,0 +1,1320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dff1fb; }
+  body { font: 15px/1.4 system-ui, sans-serif; color: #16324a; }
+  body.dark { color: #eef3ff; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; }
+  h1 { position: fixed; left: 16px; top: 12px; right: 16px; margin: 0; font-size: 1.05rem; font-weight: 600; pointer-events: none; }
+  #replay {
+    position: fixed; left: 16px; bottom: 16px; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+    font: inherit; font-weight: 600; color: inherit; background: rgb(255 255 255 / 0.55); border: 1px solid currentColor;
+  }
+  body.dark #replay { background: rgb(10 18 44 / 0.55); }
+  #replay:hover { background: rgb(255 255 255 / 0.85); }
+  body.dark #replay:hover { background: rgb(10 18 44 / 0.85); }
+  #replay:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+  #notice {
+    position: fixed; right: 16px; bottom: 16px; max-width: min(360px, calc(100% - 150px)); margin: 0; padding: 8px 12px;
+    border-radius: 10px; font-size: 0.85rem; white-space: pre-line; color: #3b1d05; background: #ffe2bd;
+  }
+</style>
+</head>
+<body>
+<!-- KIWIBRO: the scene is the plain lines below. One thing or one action per line; no code.
+  Things:   tree at 4 0  |  red car at -6 2  |  3 rocks  |  big house near tree  |  dog named rex
+            (the two numbers are left-right and back-front, about -10 to 10; leave them out to be placed for you)
+  Actions:  kiwi walks to tree  |  dog runs to house  |  bird flies to tree  |  car drives to 6 2
+            rabbit hops to rock |  cat follows dog    |  plane orbits tower   |  ball spins  |  dog waits 2  |  dog walks home
+            (actions of one thing run in the order written; "slowly" or "fast" changes the speed)
+  Setting:  sky day | dawn | sunset | night      ground grass | sand | snow | water | stone | dirt
+            camera follows kiwi      repeat
+  Known things: kiwi bird duck chicken penguin cat dog fox rabbit sheep cow horse pig mouse bear deer frog fish butterfly bee
+            person robot car truck bus boat plane rocket balloon tree pine palm bush rock flower mushroom log cactus pond
+            hill mountain cloud campfire snowman house hut barn tower lighthouse tent windmill fence lamp bench sign table
+            chair crate barrel ball flag cube sphere cylinder cone pyramid ring. Any other word is shown as a labelled box. -->
+<script type="text/plain" id="scene">
+sky {{sky}}
+ground {{ground}}
+{{scene}}
+</script>
+
+<canvas id="view" aria-label="{{title}}"></canvas>
+<h1>{{title}}</h1>
+<button id="replay" type="button">Replay</button>
+<p id="notice" hidden></p>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+const el = (id) => document.getElementById(id);
+function tell(lines) {
+  el("notice").textContent = lines.join("\n");
+  el("notice").hidden = lines.length === 0;
+}
+
+// ---------------------------------------------------------------- words the scene lines may use
+
+const COUNTS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, few: 3, several: 4, some: 4, many: 8 };
+const COLORS = {
+  red: "#d6504a", orange: "#e88a3a", yellow: "#efc94c", green: "#5ba453", blue: "#4a8cd4", purple: "#8b68c2", pink: "#e690b2",
+  brown: "#8a5a3b", black: "#2c2c32", white: "#f4f2ec", grey: "#9a9ea6", gray: "#9a9ea6", gold: "#d8a93a", golden: "#d8a93a",
+  silver: "#c5cad3", teal: "#3fa39a", cyan: "#56c2d6", beige: "#d9c7a3", tan: "#c9a37a", cream: "#f1e6c9",
+};
+const SIZES = { tiny: 0.5, small: 0.7, little: 0.7, baby: 0.6, short: 0.8, big: 1.5, large: 1.5, tall: 1.4, huge: 2.1, giant: 2.5, enormous: 2.5 };
+const PACES = { slowly: 0.5, slow: 0.5, gently: 0.6, quickly: 1.8, quick: 1.8, fast: 1.8 };
+const SKY_WORDS = { day: "day", noon: "day", morning: "day", sunny: "day", daytime: "day", dawn: "dawn", sunrise: "dawn", sunset: "sunset", evening: "sunset", dusk: "sunset", night: "night", midnight: "night", dark: "night" };
+const GROUND_WORDS = {
+  grass: "grass", meadow: "grass", field: "grass", lawn: "grass", sand: "sand", desert: "sand", beach: "sand", snow: "snow", ice: "snow", snowy: "snow",
+  water: "water", sea: "water", ocean: "water", lake: "water", stone: "stone", pavement: "stone", concrete: "stone", road: "stone", dirt: "dirt", mud: "dirt", soil: "dirt", earth: "dirt", moon: "moon",
+};
+const SIDES = { left: [-7, 0], right: [7, 0], center: [0, 0], centre: [0, 0], middle: [0, 0], back: [0, -6], front: [0, 5] };
+const WAYS = { forward: [1, 0], ahead: [1, 0], right: [1, 0], east: [1, 0], left: [-1, 0], west: [-1, 0], backward: [0, -1], backwards: [0, -1], away: [0, -1], north: [0, -1], closer: [0, 1], south: [0, 1] };
+const VERBS = {
+  walk: "walk", go: "walk", move: "walk", come: "walk", stroll: "walk", wander: "walk", waddle: "walk", step: "walk", approach: "walk", travel: "walk", crawl: "walk", return: "walk",
+  run: "run", race: "run", dash: "run", sprint: "run", rush: "run", charge: "run", chase: "run", hurry: "run",
+  fly: "fly", soar: "fly", glide: "fly", flap: "fly",
+  hop: "hop", jump: "hop", leap: "hop", bounce: "hop",
+  drive: "glide", ride: "glide", sail: "glide", roll: "glide", swim: "glide", slide: "glide", float: "glide", drift: "glide",
+  follow: "follow", orbit: "orbit", circle: "orbit", spin: "spin", rotate: "spin", twirl: "spin",
+  wait: "wait", pause: "wait", rest: "wait", sleep: "wait", sit: "wait", stand: "wait",
+  stop: "stop", stay: "stop", arrive: "stop", halt: "stop", look: "face", face: "face", turn: "face",
+};
+const PHRASES = [
+  [/\bkiwi birds?\b/g, "kiwi"], [/\bpine trees?\b/g, "pine"], [/\bpalm trees?\b/g, "palm"], [/\b(?:street ?lamps?|lamp ?posts?|street ?lights?)\b/g, "lamp"],
+  [/\btraffic cones?\b/g, "cone"], [/\bsnow ?m[ae]n\b/g, "snowman"], [/\bcamp ?fires?\b/g, "campfire"], [/\blight ?houses?\b/g, "lighthouse"],
+  [/\bwind ?mills?\b/g, "windmill"], [/\bhot air balloons?\b/g, "balloon"], [/\bspace ?ships?\b/g, "rocket"],
+  [/\b(?:next to|close to|in front of|beside|by the side of)\b/g, "near"], [/\bthree\.?js\b/g, " "],
+];
+const IRREGULAR = { people: "person", men: "person", women: "person", children: "person", mice: "mouse", geese: "goose", wolves: "wolf", bushes: "bush", benches: "bench", boxes: "box", foxes: "fox", cacti: "cactus" };
+// Other names for a known thing, some with a colour or a size of their own.
+const ALSO = {
+  puppy: ["dog", { size: 0.7 }], kitten: ["cat", { size: 0.7 }], bunny: "rabbit", hare: "rabbit", human: "person", man: "person", woman: "person", girl: "person",
+  boy: "person", child: ["person", { size: 0.7 }], kid: ["person", { size: 0.7 }], farmer: "person", automobile: "car", taxi: ["car", { color: "#efc94c" }], van: "truck",
+  lorry: "truck", ship: "boat", sailboat: "boat", airplane: "plane", aeroplane: "plane", jet: "plane", spaceship: "rocket", stone: "rock", boulder: ["rock", { size: 1.8 }],
+  pebble: ["rock", { size: 0.4 }], shrub: "bush", hedge: "bush", oak: "tree", forest: "tree", woods: "tree", lake: ["pond", { size: 1.6 }], pool: "pond", home: "house",
+  cottage: "house", building: "tower", cabin: "hut", shed: "hut", streetlight: "lamp", lantern: "lamp", box: "crate", block: "cube", orb: "sphere", football: "ball",
+  donut: "ring", torus: "ring", chick: ["chicken", { size: 0.5, color: "#f2d35b" }], hen: "chicken", rooster: "chicken", bull: "cow", pony: ["horse", { size: 0.75 }],
+  lamb: ["sheep", { size: 0.65 }], piglet: ["pig", { size: 0.6 }], hog: "pig", rat: "mouse", wolf: ["dog", { color: "#8d929b", size: 1.15 }], sparrow: ["bird", { color: "#9a7b5c", size: 0.8 }],
+  parrot: ["bird", { color: "#3fae5a" }], eagle: ["bird", { color: "#6b4a2f", size: 1.6 }], crow: ["bird", { color: "#2c2c32" }], seagull: ["bird", { color: "#f4f2ec" }],
+  pigeon: ["bird", { color: "#9a9ea6" }], swan: ["duck", { size: 1.4 }], goose: ["duck", { size: 1.25 }], toad: "frog", stump: "log", fire: "campfire", bonfire: ["campfire", { size: 1.5 }],
+};
+const LEAD = new Set(["add", "place", "put", "create", "make", "draw", "show", "spawn", "there", "is", "are", "and", "with", "also", "then", "a", "an", "the", "please", "one"]);
+const JOIN = new Set(["and", "then"]);
+const PRONOUNS = new Set(["it", "he", "she", "they", "them", "him", "her"]);
+const STOP = new Set(("to towards toward up over into onto at after around behind past near of in on from with by for and then the a an its is are was will wants want " +
+  "should can now there here until when while as that which who where very speed seconds second sec s times time forever again x y z away back home start new another other " +
+  "each every all both first next finally also just starts begins begin tries try gets get does do its their his").split(" ").concat(Object.keys(PACES), Object.keys(WAYS), Object.keys(SIDES)));
+
+// ---------------------------------------------------------------- reading the scene lines
+
+function verbOf(word) {
+  const forms = [word, word.replace(/(.)\1ing$/, "$1"), word.replace(/ing$/, ""), word.replace(/ing$/, "e"), word.replace(/ies$/, "y"),
+    word.replace(/es$/, ""), word.replace(/s$/, ""), word.replace(/ed$/, ""), word.replace(/ed$/, "e")];
+  for (const form of forms) if (VERBS[form]) return VERBS[form];
+  return null;
+}
+
+function readScene(text, KINDS) {
+  const setup = { sky: "day", ground: "grass", follow: null, loop: false, plain: false };
+  const specs = [], named = {}, problems = [];
+  let last = [];
+
+  function nounOf(word) {
+    for (const form of [word, IRREGULAR[word], word.replace(/ies$/, "y"), word.replace(/es$/, ""), word.replace(/s$/, "")]) {
+      if (!form) continue;
+      if (KINDS[form]) return { kind: form };
+      if (ALSO[form]) return typeof ALSO[form] === "string" ? { kind: ALSO[form] } : { kind: ALSO[form][0], ...ALSO[form][1] };
+    }
+    return null;
+  }
+  function make(spec) {
+    const taken = specs.filter((other) => other.kind === spec.kind && other.label === spec.label).length;
+    spec.id = spec.name || (taken ? `${spec.label || spec.kind}${taken + 1}` : spec.label || spec.kind);
+    spec.acts = [];
+    specs.push(spec);
+    if (spec.name) named[spec.name] = spec;
+    return spec;
+  }
+  function marker(word, where) {
+    if (!named[word]) {
+      named[word] = make({ kind: "marker", label: word, size: 1, count: 1, auto: !where });
+      problems.push(`"${word}" is not a known thing; it is shown as a box.`);
+    }
+    if (where && named[word].kind === "marker") Object.assign(named[word], where, { auto: false });
+    return named[word];
+  }
+  // The thing a few words point at. Before a verb the noun is the last word, after one it is the first.
+  function refer(words, pickLast) {
+    const order = words.map((_word, index) => index);
+    if (pickLast) order.reverse();
+    for (const index of order) {
+      const word = words[index];
+      if (PRONOUNS.has(word) && last.length) return last[0];
+      if (named[word]) return named[word];
+      const found = nounOf(word);
+      if (!found) continue;
+      const color = COLORS[words[index - 1]] || COLORS[words[index - 2]] || found.color || null;
+      const size = (SIZES[words[index - 1]] || SIZES[words[index - 2]] || 1) * (found.size || 1);
+      const same = specs.filter((spec) => spec.kind === found.kind);
+      const many = [1, 2, 3].map((back) => words[index - back] || "").map((entry) => COUNTS[entry] || (/^\d+$/.test(entry) ? Number(entry) : 0)).find(Boolean) || 1;
+      return same.find((spec) => color && spec.color === color) || same[0] || make({ kind: found.kind, color, size, count: Math.min(many, 40), auto: true });
+    }
+    const odd = order.map((index) => words[index]).find((word) => /^[a-z]{3,}$/.test(word) && !STOP.has(word) && !COLORS[word] && !SIZES[word] && !verbOf(word));
+    return odd ? marker(odd) : null;
+  }
+  function numbersAfter(words, from) {
+    const found = [];
+    for (let index = from; index < words.length && found.length < 3; index++) {
+      if (/^-?\d/.test(words[index])) found.push(Number(words[index]));
+      else if (!"xyz".includes(words[index])) break;
+    }
+    return found;
+  }
+
+  function setting(words) {
+    const sky = words.map((word) => SKY_WORDS[word]).find(Boolean), ground = words.map((word) => GROUND_WORDS[word]).find(Boolean);
+    const short = words.length <= 4 && !words.some((word, index) => index > 0 && verbOf(word));
+    if (["sky", "time", "weather", "light"].includes(words[0]) && sky) return (setup.sky = sky);
+    if (["ground", "floor", "land", "terrain", "surface"].includes(words[0]) && ground) return (setup.ground = ground);
+    if (["sky", "ground"].includes(words[0]) && !words.slice(1).some(verbOf)) return true;  // an unknown sky or ground keeps the one in use
+    if (short && sky && !words.some(nounOf)) return (setup.sky = sky);
+    if (short && ground && (words.includes("ground") || ["on", "in"].includes(words[0])) && !words.slice(1).some((word) => !GROUND_WORDS[word] && nounOf(word))) return (setup.ground = ground);
+    if (words[0] === "camera") {
+      const target = refer(words.slice(1), false);
+      if (target) setup.follow = target;
+      return true;
+    }
+    if (["repeat", "loop", "forever"].includes(words[0])) return (setup.loop = true);
+    if (["plain", "empty"].includes(words[0])) return (setup.plain = true);
+    return ["title", "caption", "scene"].includes(words[0]);
+  }
+
+  function action(words) {
+    let at = -1;
+    for (let index = 1; index < words.length && at < 0; index++) {
+      const facing = /^fac/.test(words[index]) && /^-?\d/.test(words[index + 1] || "");
+      if (verbOf(words[index]) && !facing && !["named", "called", "at", "near"].includes(words[index - 1])) at = index;
+    }
+    if (at < 0) return false;
+    const before = words.slice(0, at);
+    const who = [];
+    let group = [];
+    for (const word of [...before, "and"]) {
+      if (word !== "and") { group.push(word); continue; }
+      const found = group.some((entry) => PRONOUNS.has(entry)) ? last : [refer(group, true)];
+      who.push(...found.filter(Boolean));
+      group = [];
+    }
+    if (!who.length) return false;
+    const parts = [];
+    for (let index = at; index < words.length; index++) {
+      const type = verbOf(words[index]);
+      if (type && (index === at || JOIN.has(words[index - 1]) || type === "wait" || type === "stop")) parts.push({ type, verb: words[index], words: [] });
+      else if (!JOIN.has(words[index])) parts[parts.length - 1].words.push(words[index]);
+    }
+    for (const part of parts) {
+      const act = { type: part.type };
+      const numbers = [];
+      part.words.forEach((word, index) => {
+        const before = part.words[index - 1], after = part.words[index + 1] || "";
+        if (/^-?\d/.test(word)) {
+          if (before === "for" || /^sec|^s$/.test(after) || part.type === "wait") act.seconds = Number(word);
+          else if (before === "speed") act.pace = Number(word);
+          else if (/^times?$/.test(after)) act.times = Number(word);
+          else numbers.push(Number(word));
+        } else if (PACES[word]) act.pace = PACES[word];
+        else if (word === "home" || word === "back") act.home = true;
+        else if (word === "forever") act.forever = true;
+        else if (WAYS[word] && !act.way) act.way = WAYS[word];
+      });
+      if (/^return/.test(part.verb)) act.home = true;
+      if (part.words.includes("around") && SPEEDS[act.type]) {
+        if (act.type === "run") act.pace = (act.pace ?? 1) * 2.4;
+        act.type = "orbit";
+      }
+      if (numbers.length >= 2) act.point = numbers.length >= 3 ? [numbers[0], numbers[2]] : numbers;
+      else if (!act.home && !["wait", "stop", "spin"].includes(act.type)) act.to = refer(part.words, false);
+      for (const thing of who) if (act.to !== thing) thing.acts.push({ ...act });
+    }
+    last = who;
+    return true;
+  }
+
+  function declare(words) {
+    let made = false, group = [];
+    for (const word of [...words, "and"]) {
+      if (word !== "and") { group.push(word); continue; }
+      made = declareOne(group) || made;
+      group = [];
+    }
+    return made;
+  }
+  function declareOne(words) {
+    let start = 0, at = -1, found = null;
+    while (start < words.length && LEAD.has(words[start]) && words[start] !== "one") start++;
+    for (let index = start; index < words.length && at < 0; index++) {
+      const known = named[words[index]];
+      if (known && !(known.auto && known.kind === "marker")) return true;
+      if (known) at = index;
+      else if (["at", "near", "named", "called", "behind", "under"].includes(words[index])) break;
+      else if ((found = nounOf(words[index]))) at = index;
+    }
+    // A word nobody knows still becomes a thing (a labelled box), when the line is short enough to be one.
+    const plain = (word) => /^[a-z]{3,}$/.test(word) && !STOP.has(word) && !COLORS[word] && !SIZES[word] && !COUNTS[word] && !LEAD.has(word) && !verbOf(word);
+    if (at < 0 && words.length <= 6) at = words.findIndex((word, index) => index >= start && plain(word));
+    if (at < 0) return false;
+    let count = 1, color = null, size = 1;
+    for (const word of words.slice(start, at)) {
+      if (/^\d+$/.test(word)) count = Number(word);
+      else if (COUNTS[word]) count = COUNTS[word];
+      else if (COLORS[word]) color = COLORS[word];
+      else if (SIZES[word]) size *= SIZES[word];
+    }
+    if (words[at] === "forest" || words[at] === "woods") count = Math.max(count, 9);
+    const spec = { kind: found ? found.kind : "marker", label: found ? undefined : words[at], color: color || (found && found.color) || null,
+      size: size * ((found && found.size) || 1), count: Math.min(Math.max(count, 1), 40) };
+    const rest = words.slice(at + 1);
+    rest.forEach((word, place) => {
+      const next = rest[place + 1];
+      if ((word === "named" || word === "called") && next) spec.name = next;
+      else if (word === "at") {
+        const numbers = numbersAfter(rest, place + 1);
+        if (numbers.length >= 2) spec.at = numbers.length >= 3 ? [numbers[0], numbers[1], numbers[2]] : [numbers[0], 0, numbers[1]];
+      } else if (word === "near" || word === "behind" || word === "under") spec.near = refer(rest.slice(place + 1), false);
+      else if (SIDES[word] && !spec.at && !spec.near) spec.side = SIDES[word];
+      else if ((word === "size" || word === "scale") && /^\d/.test(next || "")) spec.size *= Number(next);
+      else if ((word === "color" || word === "colour") && COLORS[next]) spec.color = COLORS[next];
+      else if ((word === "facing" || word === "faces") && /^-?\d/.test(next || "")) spec.facing = Number(next);
+    });
+    if (!spec.at && /^-?\d/.test(rest[0] || "") && /^-?\d/.test(rest[1] || "")) spec.at = [Number(rest[0]), 0, Number(rest[1])];
+    if (!found) {
+      marker(words[at], spec);
+      return true;
+    }
+    // A thing an earlier action line already called into being is this one: the line now says where it stands.
+    const loose = spec.count === 1 && specs.find((other) => other.auto && other.kind === spec.kind);
+    if (loose) {
+      Object.assign(loose, { color: spec.color || loose.color, size: spec.size, at: spec.at, near: spec.near, side: spec.side, facing: spec.facing, auto: false });
+      if (spec.name) named[(loose.name = spec.name)] = loose;
+      last = [loose];
+      return true;
+    }
+    last = [make(spec)];
+    return true;
+  }
+
+  // "the car drives to the house and a dog follows it" is two actions; "sheep and cow walk to the barn" is one.
+  function clauses(words) {
+    const out = [];
+    let from = 0, seen = false;
+    words.forEach((word, index) => {
+      if (index > from && verbOf(word)) seen = true;
+      const next = words[index + 1];
+      if (seen && JOIN.has(word) && next && !verbOf(next) && !JOIN.has(next) && words.slice(index + 2, index + 6).some(verbOf)) {
+        out.push(words.slice(from, index));
+        from = index + 1;
+        seen = false;
+      }
+    });
+    out.push(words.slice(from));
+    return out;
+  }
+
+  let clean = text.toLowerCase().replace(/[“”"'`]/g, "").replace(/^\s*(?:\d+[.)]|[-*•])\s+/gm, "");
+  for (const [pattern, word] of PHRASES) clean = clean.replace(pattern, word);
+  clean = clean.replace(/(\d)\s*,\s*(-?\d)/g, "$1 $2");  // "at 4, 0" is one place, not two lines
+  for (const line of clean.split(/\n|;|!|,|\.(?=\s|$)/)) {
+    const all = (line.match(/-?\d+(?:\.\d+)?|[a-z][a-z0-9_]*/g) || []).filter((word) => !["a", "an", "the", "please"].includes(word));
+    if (all[0] === "scene" && all.length > 1) all.shift();
+    for (const words of clauses(all)) {
+      if (!words.length || setting(words) || action(words) || declare(words)) continue;
+      problems.push(`Not understood: "${words.join(" ").slice(0, 60)}"`);
+    }
+  }
+  if (!specs.length) problems.push("The scene is empty. Add lines such as: kiwi walks to tree");
+  return { setup, specs, problems };
+}
+
+// ---------------------------------------------------------------- three.js
+
+let THREE, OrbitControls;
+try {
+  THREE = await import("three");
+  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+} catch (error) {
+  tell(["This scene needs three.js from cdn.jsdelivr.net. Connect to the internet and reload."]);
+  throw error;
+}
+
+function seeded(text) {
+  let state = 2166136261;
+  for (const letter of text) state = Math.imul(state ^ letter.charCodeAt(0), 16777619);
+  return () => {
+    state += 0x6d2b79f5;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const materials = {};
+const paint = (color, extra) => (materials[color + (extra ? JSON.stringify(extra) : "")] ??=
+  new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.92, metalness: 0, ...extra }));
+const glow = (color, strength = 1.6) => paint(color, { emissive: color, emissiveIntensity: strength });
+const WINDOW = new THREE.MeshStandardMaterial({ color: "#bfe1f0", flatShading: true, roughness: 0.4, emissive: "#ffcf7a", emissiveIntensity: 0 });
+const ico = (radius, detail = 1) => new THREE.IcosahedronGeometry(radius, detail);
+const box = (width, height, depth) => new THREE.BoxGeometry(width, height, depth);
+const cyl = (top, bottom, height, sides = 8) => new THREE.CylinderGeometry(top, bottom, height, sides);
+const cone = (radius, height, sides = 7) => new THREE.ConeGeometry(radius, height, sides);
+const group = () => new THREE.Group();
+const pick = (rng, list) => list[Math.floor(rng() * list.length)];
+
+function part(parent, geometry, color, x = 0, y = 0, z = 0) {
+  const mesh = new THREE.Mesh(geometry, typeof color === "string" ? paint(color) : color);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+// A leg or an arm: it hangs from a pivot at its top so it can swing.
+function limb(parent, length, thick, color, x, y, z, foot) {
+  const pivot = group();
+  pivot.position.set(x, y, z);
+  parent.add(pivot);
+  part(pivot, cyl(thick, thick * 0.8, length, 6), color, 0, -length / 2, 0);
+  if (foot) part(pivot, box(thick * 2.6, thick * 0.9, thick * 4.4), foot === true ? color : foot, 0, -length + thick * 0.45, thick * 1.3);
+  return pivot;
+}
+
+// Two-legged birds. All creatures and vehicles are built facing +z.
+function bird(o) {
+  const whole = group(), body = group(), r = o.r, leg = o.leg ?? r * 0.8;
+  whole.add(body);
+  body.position.y = leg + r * (o.up ? 1.05 : 0.72);
+  part(body, ico(r, 1), o.c).scale.set(0.9, o.up ? 1.3 : 0.92, o.up ? 0.85 : 1.22);
+  if (o.belly) part(body, ico(r * 0.8, 1), o.belly, 0, -r * 0.05, r * 0.28).scale.set(0.85, o.up ? 1.3 : 0.8, 0.85);
+  const head = group(), hr = r * (o.head ?? 0.55);
+  head.position.set(0, o.up ? r * 1.45 : r * (o.headY ?? 0.6), o.up ? r * 0.1 : r * 0.95);
+  body.add(head);
+  part(head, ico(hr, 1), o.c2 ?? o.c);
+  const length = o.beak ?? hr * 0.9, tilt = o.beakTilt ?? 0;
+  const beak = part(head, o.flat ? box(hr * 0.9, hr * 0.28, length) : cone(o.beakR ?? hr * 0.3, length, 6), o.beakC ?? "#e8a23c",
+    0, -hr * 0.1 - Math.sin(tilt) * length / 2, hr * 0.85 + Math.cos(tilt) * length / 2);
+  beak.rotation.x = o.flat ? tilt : Math.PI / 2 + tilt;
+  for (const side of [-1, 1]) part(head, ico(hr * 0.14, 1), "#1d1d22", side * hr * 0.52, hr * 0.28, hr * 0.7);
+  if (o.comb) part(head, box(0.05, hr * 0.5, hr * 0.8), "#d6504a", 0, hr * 0.95, 0.04);
+  if (o.tail) part(body, cone(r * 0.32, r * 0.9, 5), o.c, 0, r * 0.2, -r * 1.25).rotation.x = -Math.PI / 2 - 0.35;
+  const legs = [-1, 1].map((side) => limb(whole, leg, r * (o.legR ?? 0.09), o.legC ?? "#d9a441", side * r * 0.34, leg, o.up ? 0 : -r * 0.05, true));
+  const wings = !o.wings ? [] : [-1, 1].map((side) => {
+    const pivot = group();
+    pivot.position.set(side * r * 0.75, r * 0.3, 0);
+    body.add(pivot);
+    part(pivot, ico(r * 0.62, 0), o.wingC ?? o.c, side * r * 0.6, 0, -r * 0.1).scale.set(1.35, 0.12, 0.8);
+    pivot.userData.side = side;
+    return pivot;
+  });
+  whole.userData = { legs, swing: [0, Math.PI], body, baseY: body.position.y, head, wings, peck: o.peck };
+  return whole;
+}
+
+// Four-legged animals.
+function quad(o) {
+  const whole = group(), body = group(), { L, W, H, leg } = o, hr = o.head;
+  whole.add(body);
+  body.position.y = leg + H / 2 - 0.04;
+  part(body, ico(1, o.wool ? 1 : 1), o.c).scale.set(W / 2, H / 2, L / 2);
+  if (o.wool) for (const [x, y, z] of [[0, H * 0.3, L * 0.2], [0, H * 0.3, -L * 0.22], [W * 0.3, 0, 0], [-W * 0.3, 0, 0]]) part(body, ico(H * 0.42, 1), o.c, x, y, z);
+  if (o.spots) for (const [x, y, z, s] of [[W * 0.36, H * 0.2, 0.1, 0.2], [-W * 0.38, 0.05, -L * 0.2, 0.24], [0.05, H * 0.44, -L * 0.1, 0.22]]) part(body, ico(s, 1), o.spots, x, y, z).scale.y = 0.5;
+  const head = group();
+  head.position.set(0, H * 0.3 + (o.neck ?? 0), L / 2 + hr * 0.45);
+  body.add(head);
+  if (o.neck) part(body, cyl(hr * 0.5, hr * 0.7, o.neck + H * 0.4, 6), o.c, 0, H * 0.2 + o.neck / 2, L / 2 - 0.02).rotation.x = 0.5;
+  part(head, ico(hr, 1), o.c2 ?? o.c);
+  const snout = o.snout ?? hr * 0.7;
+  part(head, box(hr * 0.9, hr * 0.7, snout), o.snoutC ?? o.c2 ?? o.c, 0, -hr * 0.25, hr * 0.6 + snout / 2 - 0.05);
+  part(head, ico(hr * 0.18, 1), o.nose ?? "#2c2c32", 0, -hr * 0.12, hr * 0.6 + snout);
+  for (const side of [-1, 1]) {
+    part(head, ico(hr * 0.13, 1), "#1d1d22", side * hr * 0.55, hr * 0.25, hr * 0.68);
+    if (o.ears === "up") part(head, cone(hr * 0.3, hr * 0.7, 4), o.earC ?? o.c, side * hr * 0.55, hr * 0.95, 0);
+    if (o.ears === "long") part(head, box(hr * 0.3, hr * 1.7, hr * 0.16), o.c, side * hr * 0.4, hr * 1.5, -hr * 0.1).rotation.z = -side * 0.12;
+    if (o.ears === "flop") part(head, box(hr * 0.22, hr * 0.9, hr * 0.5), o.earC ?? o.c, side * hr * 0.98, hr * 0.15, 0).rotation.z = side * 0.25;
+    if (o.ears === "round") part(head, ico(hr * 0.34, 1), o.earC ?? o.c, side * hr * 0.75, hr * 0.8, 0);
+    if (o.horns) part(head, cone(hr * 0.14, hr * 0.7, 5), o.horns, side * hr * 0.7, hr * 0.95, 0).rotation.z = -side * 0.6;
+  }
+  if (o.antlers) for (const side of [-1, 1]) for (const [lean, height] of [[0.3, 1.1], [0.9, 0.7]]) part(head, cyl(0.03, 0.04, hr * height * 1.4, 4), "#a98458", side * hr * (0.5 + lean * 0.4), hr * (1.1 + height * 0.3), 0).rotation.z = -side * lean;
+  if (o.mane) part(body, box(0.1, H * 0.7 + (o.neck ?? 0), L * 0.45), o.mane, 0, H * 0.45 + (o.neck ?? 0) * 0.5, L * 0.3);
+  const back = -L / 2;
+  if (o.tail === "long") part(body, cyl(0.04, 0.06, L * 0.6, 5), o.tailC ?? o.c, 0, H * 0.3, back - L * 0.2).rotation.x = -0.9;
+  if (o.tail === "bushy") {
+    part(body, ico(H * 0.3, 1), o.c, 0, H * 0.15, back - H * 0.35).scale.set(0.8, 0.8, 1.9);
+    part(body, ico(H * 0.2, 1), o.tailC ?? "#f4f2ec", 0, H * 0.15, back - H * 0.85);
+  }
+  if (o.tail === "short") part(body, cone(0.07, H * 0.5, 5), o.c, 0, H * 0.35, back - 0.05).rotation.x = -2.2;
+  if (o.tail === "puff") part(body, ico(H * 0.2, 1), o.tailC ?? "#f4f2ec", 0, H * 0.1, back - 0.03);
+  if (o.tail === "hair") part(body, box(0.1, H * 0.9, 0.12), o.tailC ?? o.c, 0, -H * 0.05, back - 0.08).rotation.x = 0.25;
+  const legs = [];
+  for (const z of [L * 0.3, -L * 0.3]) for (const side of [-1, 1]) legs.push(limb(whole, leg, o.legR ?? 0.07, o.legC ?? o.c, side * W * 0.28, leg, z, o.hoof ?? false));
+  whole.userData = { legs, swing: [0, Math.PI, Math.PI, 0], body, baseY: body.position.y, head, peck: o.graze };
+  return whole;
+}
+
+function person(o) {
+  const whole = group(), body = group();
+  whole.add(body);
+  body.position.y = 0.82;
+  part(body, cyl(0.2, 0.26, 0.7, 8), o.shirt, 0, 0.35, 0);
+  const head = group();
+  head.position.y = 0.92;
+  body.add(head);
+  part(head, ico(0.21, 1), o.skin);
+  if (o.hair) part(head, ico(0.22, 1), o.hair, 0, 0.06, -0.04).scale.set(1, 0.8, 1);
+  for (const side of [-1, 1]) part(head, ico(0.03, 1), "#1d1d22", side * 0.08, 0.02, 0.19);
+  const legs = [-1, 1].map((side) => limb(whole, 0.82, 0.085, o.pants, side * 0.11, 0.82, 0, "#3a3028"));
+  const arms = [-1, 1].map((side) => limb(body, 0.62, 0.06, o.sleeve ?? o.shirt, side * 0.29, 0.66, 0, false));
+  whole.userData = { legs: [...legs, ...arms], swing: [0, Math.PI, Math.PI, 0], body, baseY: 0.82, head };
+  return whole;
+}
+
+function robot(color) {
+  const whole = group(), body = group();
+  whole.add(body);
+  body.position.y = 0.7;
+  part(body, box(0.62, 0.7, 0.42), color, 0, 0.35, 0);
+  part(body, box(0.3, 0.2, 0.02), glow("#63e6c8", 1.2), 0, 0.42, 0.22);
+  const head = group();
+  head.position.y = 0.95;
+  body.add(head);
+  part(head, box(0.46, 0.36, 0.38), "#c5cad3");
+  for (const side of [-1, 1]) part(head, ico(0.055, 1), glow("#63e6c8", 2), side * 0.11, 0.02, 0.19);
+  part(head, cyl(0.012, 0.012, 0.22, 4), "#2c2c32", 0, 0.29, 0);
+  part(head, ico(0.04, 1), glow("#ff7b54", 2), 0, 0.41, 0);
+  const legs = [-1, 1].map((side) => limb(whole, 0.7, 0.085, "#7d8591", side * 0.16, 0.7, 0, true));
+  const arms = [-1, 1].map((side) => limb(body, 0.55, 0.06, "#7d8591", side * 0.39, 0.62, 0, false));
+  whole.userData = { legs: [...legs, ...arms], swing: [0, Math.PI, Math.PI, 0], body, baseY: 0.7, head };
+  return whole;
+}
+
+function wheelsOn(whole, spots, radius, width) {
+  const geometry = cyl(radius, radius, width, 12).rotateZ(Math.PI / 2);
+  const wheels = spots.map(([x, z]) => part(whole, geometry, "#2c2c32", x, radius, z));
+  for (const wheel of wheels) part(wheel, cyl(radius * 0.45, radius * 0.45, width + 0.02, 8).rotateZ(Math.PI / 2), "#c5cad3");
+  return wheels;
+}
+function car(color, long = 2.3, tall = 0.42, cabin = 1.15) {
+  const whole = group(), half = long / 2;
+  part(whole, box(1.1, tall, long), color, 0, 0.32 + tall / 2, 0);
+  part(whole, box(0.96, 0.4, cabin), WINDOW, 0, 0.32 + tall + 0.2, -0.12);
+  part(whole, box(1.0, 0.06, cabin + 0.06), color, 0, 0.32 + tall + 0.43, -0.12);
+  for (const side of [-1, 1]) {
+    part(whole, box(0.2, 0.1, 0.04), glow("#fff3c4", 1.4), side * 0.36, 0.56, half);
+    part(whole, box(0.2, 0.1, 0.04), glow("#d6504a", 0.8), side * 0.36, 0.56, -half);
+  }
+  whole.userData = { wheels: wheelsOn(whole, [[0.56, half - 0.5], [-0.56, half - 0.5], [0.56, -half + 0.5], [-0.56, -half + 0.5]], 0.27, 0.2), wheelR: 0.27 };
+  return whole;
+}
+
+function house(rng, color, roof = "#b3513e") {
+  const whole = group();
+  part(whole, box(2.7, 1.8, 2.2), color, 0, 0.9, 0);
+  const top = part(whole, cone(2.2, 1.25, 4), roof, 0, 2.42, 0);
+  top.rotation.y = Math.PI / 4;
+  top.scale.z = 0.86;
+  part(whole, box(0.55, 1.0, 0.06), "#7a5234", 0.1, 0.5, 1.11);
+  for (const x of [-0.85, 0.85]) part(whole, box(0.46, 0.46, 0.05), WINDOW, x, 1.1, 1.11);
+  part(whole, box(0.3, 0.7, 0.3), "#9c8a7a", -0.7, 2.6, -0.2);
+  return whole;
+}
+
+// Every thing the scene lines can name: how it is built, how much room it takes (r) and how it moves.
+const KINDS = {
+  kiwi: { r: 0.55, make: (_rng, c) => bird({ r: 0.44, c: c || "#7a5237", c2: c || "#8b6347", head: 0.5, headY: 0.42, beak: 0.62, beakR: 0.045, beakTilt: 0.42, beakC: "#eadcbd", leg: 0.36, legR: 0.11, legC: "#b9966d", peck: 0.45 }) },
+  bird: { r: 0.4, gait: "fly", make: (_rng, c) => bird({ r: 0.3, c: c || "#4a8cd4", belly: "#f4f2ec", wings: true, tail: true, leg: 0.22, peck: 0.3 }) },
+  duck: { r: 0.45, make: (_rng, c) => bird({ r: 0.36, c: c || "#f4f2ec", flat: true, beak: 0.22, beakC: "#e88a3a", leg: 0.2, legC: "#e88a3a", wings: true, tail: true, peck: 0.3 }) },
+  chicken: { r: 0.4, make: (_rng, c) => bird({ r: 0.33, c: c || "#f4f2ec", comb: true, beak: 0.12, leg: 0.26, tail: true, peck: 0.5 }) },
+  penguin: { r: 0.4, make: () => bird({ r: 0.34, c: "#2c2c32", belly: "#f4f2ec", up: true, beak: 0.16, leg: 0.12, legC: "#e88a3a", wings: true, wingC: "#2c2c32" }) },
+  cat: { r: 0.5, make: (rng, c) => quad({ c: c || pick(rng, ["#e0913f", "#8d929b", "#3a3a40", "#efe6d6"]), L: 0.95, W: 0.36, H: 0.36, leg: 0.34, head: 0.2, ears: "up", tail: "long", snout: 0.08, legR: 0.045 }) },
+  dog: { r: 0.6, make: (rng, c) => quad({ c: c || pick(rng, ["#c9925a", "#8a5a3b", "#e8dcc6"]), earC: "#6e4a30", L: 1.15, W: 0.42, H: 0.44, leg: 0.42, head: 0.25, ears: "flop", tail: "short", snout: 0.24, legR: 0.06 }) },
+  fox: { r: 0.6, make: (_rng, c) => quad({ c: c || "#dd7a34", c2: c || "#e58a44", snoutC: "#f4f2ec", earC: "#2c2c32", L: 1.1, W: 0.36, H: 0.38, leg: 0.4, head: 0.22, ears: "up", tail: "bushy", snout: 0.24, legC: "#3a2a22", legR: 0.05 }) },
+  rabbit: { r: 0.4, gait: "hop", make: (_rng, c) => quad({ c: c || "#d9d2c5", L: 0.6, W: 0.34, H: 0.36, leg: 0.16, head: 0.17, ears: "long", tail: "puff", snout: 0.07, nose: "#e690b2", legR: 0.05 }) },
+  sheep: { r: 0.65, make: (_rng, c) => quad({ c: c || "#f1eee6", c2: "#3a3a40", legC: "#3a3a40", wool: true, L: 1.1, W: 0.62, H: 0.6, leg: 0.4, head: 0.2, ears: "flop", snout: 0.14, graze: 0.5 }) },
+  cow: { r: 0.95, make: (_rng, c) => quad({ c: c || "#f4f2ec", spots: "#2c2c32", snoutC: "#e7b7b0", nose: "#b98580", horns: "#e9dcc0", L: 1.9, W: 0.72, H: 0.8, leg: 0.7, head: 0.3, ears: "flop", tail: "hair", tailC: "#2c2c32", snout: 0.3, legR: 0.09, hoof: "#2c2c32", graze: 0.5 }) },
+  horse: { r: 0.95, make: (rng, c) => quad({ c: c || pick(rng, ["#8a5a3b", "#5b3d2b", "#c9a37a"]), mane: "#2c2c32", tail: "hair", tailC: "#2c2c32", L: 1.9, W: 0.56, H: 0.72, leg: 0.95, neck: 0.5, head: 0.24, ears: "up", snout: 0.42, legR: 0.075, hoof: "#2c2c32", graze: 0.3 }) },
+  pig: { r: 0.6, make: (_rng, c) => quad({ c: c || "#eca9b3", snoutC: "#e08f9c", nose: "#b9606f", L: 1.1, W: 0.6, H: 0.58, leg: 0.26, head: 0.26, ears: "up", tail: "short", snout: 0.14, legR: 0.07 }) },
+  mouse: { r: 0.25, make: (_rng, c) => quad({ c: c || "#a7a39d", earC: "#e7b7b0", L: 0.4, W: 0.2, H: 0.2, leg: 0.08, head: 0.11, ears: "round", tail: "long", tailC: "#e7b7b0", snout: 0.08, legR: 0.025 }) },
+  bear: { r: 0.9, make: (_rng, c) => quad({ c: c || "#6b4a2f", snoutC: "#c9a37a", L: 1.6, W: 0.85, H: 0.9, leg: 0.5, head: 0.36, ears: "round", tail: "puff", tailC: "#6b4a2f", snout: 0.24, legR: 0.13 }) },
+  deer: { r: 0.75, make: (_rng, c) => quad({ c: c || "#b07a4a", antlers: true, tail: "puff", L: 1.4, W: 0.42, H: 0.52, leg: 0.85, neck: 0.4, head: 0.2, ears: "up", snout: 0.26, legR: 0.05 }) },
+  frog: { r: 0.3, gait: "hop", make: (_rng, c) => quad({ c: c || "#5ba453", L: 0.42, W: 0.36, H: 0.24, leg: 0.1, head: 0.15, snout: 0.05, nose: "#5ba453", legR: 0.05 }) },
+  fish: { r: 0.4, gait: "glide", lift: 0.5, make: (_rng, c) => {
+    const whole = group();
+    part(whole, ico(0.3, 1), c || "#e88a3a").scale.set(0.5, 0.85, 1.5);
+    part(whole, cone(0.24, 0.4, 4), c || "#e88a3a", 0, 0, -0.58).rotation.x = Math.PI / 2;
+    for (const side of [-1, 1]) part(whole, ico(0.035, 1), "#1d1d22", side * 0.12, 0.06, 0.28);
+    return whole;
+  } },
+  butterfly: { r: 0.3, gait: "fly", lift: 1.2, make: (rng, c) => {
+    const whole = group(), color = c || pick(rng, ["#e88a3a", "#8b68c2", "#efc94c", "#4a8cd4"]);
+    part(whole, cyl(0.03, 0.03, 0.34, 5), "#2c2c32").rotation.x = Math.PI / 2;
+    const wings = [-1, 1].map((side) => {
+      const pivot = group();
+      whole.add(pivot);
+      part(pivot, ico(0.2, 0), color, side * 0.2, 0, 0).scale.set(1, 0.08, 1.2);
+      pivot.userData.side = side;
+      return pivot;
+    });
+    whole.userData = { wings, always: true };
+    return whole;
+  } },
+  bee: { r: 0.25, gait: "fly", lift: 1.1, make: () => {
+    const whole = group();
+    part(whole, ico(0.14, 1), "#efc94c").scale.z = 1.4;
+    part(whole, cyl(0.142, 0.142, 0.07, 8), "#2c2c32").rotation.x = Math.PI / 2;
+    const wings = [-1, 1].map((side) => {
+      const pivot = group();
+      pivot.position.y = 0.1;
+      whole.add(pivot);
+      part(pivot, ico(0.1, 0), "#eef6fb", side * 0.1, 0, 0).scale.set(1, 0.08, 0.7);
+      pivot.userData.side = side;
+      return pivot;
+    });
+    whole.userData = { wings, always: true };
+    return whole;
+  } },
+  person: { r: 0.4, make: (rng, c) => person({ shirt: c || pick(rng, ["#d6504a", "#4a8cd4", "#efc94c", "#5ba453", "#8b68c2"]), pants: pick(rng, ["#3d4a66", "#5b4a3b", "#2c2c32"]), skin: pick(rng, ["#f0c9a4", "#c98f62", "#8a5a3b"]), hair: pick(rng, ["#3a2a22", "#2c2c32", "#c9a04e", "#8a4a2f"]) }) },
+  robot: { r: 0.45, make: (_rng, c) => robot(c || "#9aa3b0") },
+  car: { r: 1.3, gait: "glide", pace: 1.5, make: (rng, c) => car(c || pick(rng, ["#d6504a", "#4a8cd4", "#efc94c", "#3fa39a"])) },
+  truck: { r: 1.7, gait: "glide", pace: 1.3, make: (_rng, c) => {
+    const whole = car(c || "#4a8cd4", 3.2, 0.5, 0.9);
+    whole.children[1].position.z = whole.children[2].position.z = 0.95;
+    part(whole, box(1.2, 1.0, 1.9), "#e8e2d2", 0, 1.32, -0.6);
+    return whole;
+  } },
+  bus: { r: 1.9, gait: "glide", pace: 1.2, make: (_rng, c) => {
+    const whole = group();
+    part(whole, box(1.25, 1.15, 3.6), c || "#efc94c", 0, 0.9, 0);
+    part(whole, box(1.27, 0.42, 3.1), WINDOW, 0, 1.12, 0.05);
+    whole.userData = { wheels: wheelsOn(whole, [[0.62, 1.2], [-0.62, 1.2], [0.62, -1.2], [-0.62, -1.2]], 0.3, 0.2), wheelR: 0.3 };
+    return whole;
+  } },
+  boat: { r: 1.3, gait: "glide", make: (_rng, c) => {
+    const whole = group();
+    part(whole, box(0.9, 0.4, 1.7), c || "#8a5a3b", 0, 0.25, -0.1);
+    const bow = part(whole, cone(0.45, 0.8, 4).rotateY(Math.PI / 4), c || "#8a5a3b", 0, 0.25, 1.1);
+    bow.rotation.x = Math.PI / 2;
+    bow.scale.set(1.41, 1, 0.63);
+    part(whole, cyl(0.035, 0.035, 2.0, 5), "#6b4a2f", 0, 1.4, 0);
+    part(whole, cone(0.75, 1.5, 3), "#f4f2ec", 0, 1.5, -0.38).scale.set(0.08, 1, 1);
+    return whole;
+  } },
+  plane: { r: 1.4, gait: "fly", lift: 4.5, pace: 1.6, make: (_rng, c) => {
+    const whole = group(), color = c || "#e8e2d2";
+    part(whole, cyl(0.3, 0.22, 2.4, 8), color).rotation.x = Math.PI / 2;
+    part(whole, cone(0.3, 0.5, 8), "#d6504a", 0, 0, 1.45).rotation.x = Math.PI / 2;
+    part(whole, box(3.4, 0.07, 0.62), "#d6504a", 0, 0.05, 0.25);
+    part(whole, box(1.2, 0.06, 0.4), "#d6504a", 0, 0.05, -1.05);
+    part(whole, box(0.06, 0.55, 0.45), "#d6504a", 0, 0.32, -1.05);
+    const propeller = part(whole, box(1.0, 0.09, 0.04), "#2c2c32", 0, 0, 1.72);
+    whole.userData = { spin: [[propeller, "z", 26]] };
+    return whole;
+  } },
+  rocket: { r: 0.7, gait: "fly", lift: 6, pace: 1.6, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.38, 0.38, 1.7, 10), c || "#f4f2ec", 0, 1.25, 0);
+    part(whole, cone(0.38, 0.8, 10), "#d6504a", 0, 2.5, 0);
+    for (let fin = 0; fin < 3; fin++) part(whole, box(0.06, 0.7, 0.5), "#d6504a", Math.sin(fin * 2.094) * 0.45, 0.65, Math.cos(fin * 2.094) * 0.45).rotation.y = fin * 2.094;
+    part(whole, ico(0.13, 1), WINDOW, 0, 1.6, 0.36);
+    return whole;
+  } },
+  balloon: { r: 1.0, gait: "fly", lift: 5, pace: 0.5, make: (rng, c) => {
+    const whole = group();
+    part(whole, ico(1.1, 2), c || pick(rng, ["#d6504a", "#efc94c", "#4a8cd4"]), 0, 2.5, 0).scale.y = 1.15;
+    part(whole, box(0.5, 0.4, 0.5), "#8a5a3b", 0, 0.5, 0);
+    for (const [x, z] of [[0.22, 0.22], [-0.22, 0.22], [0.22, -0.22], [-0.22, -0.22]]) part(whole, cyl(0.012, 0.012, 1.0, 3), "#3a3028", x, 1.15, z);
+    return whole;
+  } },
+  tree: { r: 0.7, vary: true, make: (rng, c) => {
+    const whole = group(), green = c || pick(rng, ["#4f9a4a", "#5aa652", "#468c45", "#62ad56"]);
+    part(whole, cyl(0.16, 0.26, 1.7, 7), "#7a5234", 0, 0.85, 0);
+    for (const [x, y, z, r] of [[0, 2.45, 0, 1.15], [0.6, 1.95, 0.25, 0.8], [-0.55, 2.05, -0.3, 0.85], [0.1, 3.2, -0.05, 0.72]]) {
+      part(whole, ico(r * (0.9 + rng() * 0.2), 1), green, x, y, z).rotation.set(rng() * 3, rng() * 3, 0);
+    }
+    return whole;
+  } },
+  pine: { r: 0.7, vary: true, make: (rng, c) => {
+    const whole = group(), green = c || pick(rng, ["#2f6f4f", "#35785a", "#2a6648"]);
+    part(whole, cyl(0.13, 0.19, 1.0, 6), "#6b4a2f", 0, 0.5, 0);
+    for (const [r, h, y] of [[1.1, 1.5, 1.55], [0.85, 1.3, 2.45], [0.55, 1.15, 3.3]]) part(whole, cone(r, h, 7), green, 0, y, 0).rotation.y = rng() * 3;
+    return whole;
+  } },
+  palm: { r: 0.6, vary: true, make: (rng, c) => {
+    const whole = group();
+    for (let piece = 0; piece < 5; piece++) part(whole, cyl(0.13, 0.16, 0.75, 6), "#a98458", piece * piece * 0.035, 0.36 + piece * 0.68, 0).rotation.z = -piece * 0.07;
+    const crown = group();
+    crown.position.set(0.58, 3.35, 0);
+    whole.add(crown);
+    for (let leaf = 0; leaf < 7; leaf++) {
+      const pivot = group();
+      pivot.rotation.y = leaf * 0.9 + rng();
+      crown.add(pivot);
+      const blade = part(pivot, cone(0.3, 1.9, 4).translate(0, 0.95, 0), c || "#4f9a4a");
+      blade.scale.z = 0.22;
+      blade.rotation.z = -1.25 - rng() * 0.35;
+    }
+    for (const [x, z] of [[0.12, 0.1], [-0.1, 0.08], [0, -0.14]]) part(crown, ico(0.11, 1), "#6b4a2f", x, -0.12, z);
+    return whole;
+  } },
+  bush: { r: 0.6, vary: true, make: (rng, c) => {
+    const whole = group(), green = c || pick(rng, ["#4f9a4a", "#5aa652", "#3f8a4f"]);
+    for (const [x, y, z, r] of [[0, 0.38, 0, 0.5], [0.42, 0.3, 0.1, 0.36], [-0.38, 0.3, -0.12, 0.4]]) part(whole, ico(r, 1), green, x, y, z).rotation.y = rng() * 3;
+    return whole;
+  } },
+  rock: { r: 0.5, vary: true, make: (rng, c) => {
+    const whole = group(), stone = part(whole, ico(0.5, 0), c || pick(rng, ["#9a9ea6", "#8a8d94", "#a8a59c"]), 0, 0.26, 0);
+    stone.scale.set(1 + rng() * 0.4, 0.6 + rng() * 0.3, 0.8 + rng() * 0.4);
+    stone.rotation.set(rng(), rng() * 3, rng());
+    return whole;
+  } },
+  flower: { r: 0.15, vary: true, make: (rng, c) => {
+    const whole = group(), color = c || pick(rng, ["#e690b2", "#efc94c", "#f4f2ec", "#d6504a", "#8b68c2"]);
+    part(whole, cyl(0.018, 0.018, 0.5, 4), "#4f9a4a", 0, 0.25, 0);
+    part(whole, ico(0.06, 1), "#efc94c", 0, 0.52, 0);
+    for (let petal = 0; petal < 5; petal++) part(whole, ico(0.07, 0), color, Math.cos(petal * 1.257) * 0.1, 0.52, Math.sin(petal * 1.257) * 0.1);
+    return whole;
+  } },
+  mushroom: { r: 0.25, vary: true, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.07, 0.09, 0.3, 6), "#f1e6c9", 0, 0.15, 0);
+    part(whole, ico(0.24, 1), c || "#d6504a", 0, 0.32, 0).scale.y = 0.6;
+    return whole;
+  } },
+  log: { r: 0.8, make: () => {
+    const whole = group();
+    part(whole, cyl(0.24, 0.24, 1.6, 8), "#7a5234", 0, 0.24, 0).rotation.z = Math.PI / 2;
+    return whole;
+  } },
+  cactus: { r: 0.45, vary: true, make: (_rng, c) => {
+    const whole = group(), green = c || "#4f9a5f";
+    part(whole, cyl(0.22, 0.24, 1.7, 8), green, 0, 0.85, 0);
+    part(whole, ico(0.22, 1), green, 0, 1.7, 0);
+    for (const [side, y] of [[1, 0.9], [-1, 1.15]]) {
+      part(whole, cyl(0.1, 0.1, 0.42, 6), green, side * 0.4, y, 0).rotation.z = Math.PI / 2;
+      part(whole, cyl(0.1, 0.1, 0.5, 6), green, side * 0.56, y + 0.25, 0);
+    }
+    return whole;
+  } },
+  pond: { r: 1.9, flat: true, make: () => {
+    const whole = group();
+    part(whole, cyl(1.9, 1.9, 0.05, 20), "#4f9fd4", 0, 0.03, 0).castShadow = false;
+    part(whole, cyl(2.05, 2.05, 0.03, 20), "#c9b98f", 0, 0.012, 0).castShadow = false;
+    return whole;
+  } },
+  hill: { r: 6, far: true, make: (rng, c) => {
+    const whole = group();
+    part(whole, ico(6, 1), c || "#6aa552", 0, -0.4, 0).scale.set(1.5 + rng() * 0.4, 0.5, 1.1);
+    return whole;
+  } },
+  mountain: { r: 7, far: true, make: (rng, c) => {
+    const whole = group(), height = 8 + rng() * 3;
+    part(whole, cone(7, height, 6), c || "#7f8794", 0, height / 2, 0).rotation.y = rng() * 3;
+    part(whole, cone(2.3, height * 0.33, 6), "#f4f2ec", 0, height * 0.84, 0);
+    return whole;
+  } },
+  cloud: { r: 2, sky: 9, make: (rng) => {
+    const whole = group(), white = new THREE.MeshStandardMaterial({ color: "#ffffff", flatShading: true, roughness: 1 });
+    for (const [x, r] of [[0, 1.1], [1.2, 0.8], [-1.2, 0.85], [0.5, 0.75]]) {
+      const puff = part(whole, ico(r, 1), white, x, rng() * 0.3, rng() * 0.6);
+      puff.scale.y = 0.62;
+      puff.castShadow = puff.receiveShadow = false;
+    }
+    whole.userData = { drift: 0.25 + rng() * 0.2 };
+    return whole;
+  } },
+  campfire: { r: 0.6, make: () => {
+    const whole = group();
+    for (let stick = 0; stick < 3; stick++) part(whole, cyl(0.07, 0.07, 0.9, 5), "#5b3d2b", 0, 0.08, 0).rotation.set(Math.PI / 2, 0, stick * 1.05);
+    const flames = [[0.26, 0.7, "#e8662a"], [0.17, 0.5, "#f5a623"], [0.09, 0.32, "#ffe08a"]].map(([r, h, color]) => part(whole, cone(r, h, 6), glow(color, 2.2), 0, 0.1 + h / 2, 0));
+    for (const flame of flames) flame.castShadow = false;
+    const light = new THREE.PointLight("#ff9a3c", 7, 11, 2);
+    light.position.y = 0.7;
+    whole.add(light);
+    whole.userData = { flicker: flames, lamp: light };
+    return whole;
+  } },
+  snowman: { r: 0.6, make: () => {
+    const whole = group();
+    for (const [r, y] of [[0.55, 0.5], [0.4, 1.25], [0.28, 1.8]]) part(whole, ico(r, 1), "#f6f8fb", 0, y, 0);
+    part(whole, cone(0.05, 0.3, 5), "#e88a3a", 0, 1.8, 0.38).rotation.x = Math.PI / 2;
+    for (const side of [-1, 1]) part(whole, ico(0.035, 1), "#1d1d22", side * 0.1, 1.88, 0.25);
+    part(whole, cyl(0.2, 0.2, 0.26, 8), "#2c2c32", 0, 2.14, 0);
+    part(whole, cyl(0.32, 0.32, 0.04, 8), "#2c2c32", 0, 2.02, 0);
+    return whole;
+  } },
+  house: { r: 1.9, make: (rng, c) => house(rng, c || pick(rng, ["#efe3c8", "#e9d3b0", "#dfe7ea"])) },
+  barn: { r: 2.0, make: (rng, c) => {
+    const whole = house(rng, c || "#b3463a", "#5b4a44");
+    whole.scale.set(1.15, 1.2, 1.2);
+    return whole;
+  } },
+  hut: { r: 1.3, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(1.1, 1.1, 1.2, 9), c || "#c9a37a", 0, 0.6, 0);
+    part(whole, cone(1.5, 1.3, 9), "#a98458", 0, 1.85, 0);
+    part(whole, box(0.5, 0.8, 0.1), "#5b3d2b", 0, 0.4, 1.08);
+    return whole;
+  } },
+  tower: { r: 1.2, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.9, 1.05, 4.6, 10), c || "#b9b3a6", 0, 2.3, 0);
+    part(whole, cone(1.15, 1.3, 10), "#5d6f8f", 0, 5.25, 0);
+    for (const y of [1.6, 3.2]) part(whole, box(0.3, 0.5, 0.06), WINDOW, 0, y, 0.97);
+    part(whole, box(0.5, 0.9, 0.08), "#7a5234", 0, 0.45, 1.03);
+    return whole;
+  } },
+  lighthouse: { r: 1.1, make: () => {
+    const whole = group();
+    for (let band = 0; band < 5; band++) part(whole, cyl(0.86 - band * 0.09 - 0.09, 0.86 - band * 0.09, 1.0, 10), band % 2 ? "#f4f2ec" : "#d6504a", 0, 0.5 + band, 0);
+    part(whole, cyl(0.42, 0.42, 0.5, 8), glow("#ffe9a8", 2.2), 0, 5.25, 0);
+    part(whole, cone(0.55, 0.5, 8), "#2c2c32", 0, 5.75, 0);
+    const light = new THREE.PointLight("#ffe9a8", 6, 14, 2);
+    light.position.y = 5.25;
+    whole.add(light);
+    whole.userData = { lamp: light };
+    return whole;
+  } },
+  tent: { r: 1.1, make: (rng, c) => {
+    const whole = group();
+    part(whole, cone(1.25, 1.5, 4), c || pick(rng, ["#e88a3a", "#3fa39a", "#d6504a"]), 0, 0.75, 0).rotation.y = Math.PI / 4;
+    part(whole, box(0.45, 0.8, 0.04), "#3a3028", 0, 0.38, 0.72).rotation.x = -0.55;
+    return whole;
+  } },
+  windmill: { r: 1.2, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.55, 0.9, 3.4, 8), c || "#efe3c8", 0, 1.7, 0);
+    part(whole, cone(0.7, 0.8, 8), "#b3513e", 0, 3.8, 0);
+    const blades = group();
+    blades.position.set(0, 3.2, 0.72);
+    whole.add(blades);
+    for (let blade = 0; blade < 4; blade++) {
+      const arm = group();
+      arm.rotation.z = blade * Math.PI / 2;
+      blades.add(arm);
+      part(arm, box(0.34, 1.7, 0.05), "#8a5a3b", 0, 0.95, 0);
+    }
+    whole.userData = { spin: [[blades, "z", 1.1]] };
+    return whole;
+  } },
+  fence: { r: 1.2, make: (_rng, c) => {
+    const whole = group(), wood = c || "#b08d62";
+    for (const x of [-1.1, 0, 1.1]) part(whole, box(0.1, 0.8, 0.1), wood, x, 0.4, 0);
+    for (const y of [0.3, 0.6]) part(whole, box(2.4, 0.08, 0.05), wood, 0, y, 0);
+    return whole;
+  } },
+  lamp: { r: 0.3, make: () => {
+    const whole = group();
+    part(whole, cyl(0.05, 0.08, 2.5, 6), "#3d4a52", 0, 1.25, 0);
+    part(whole, ico(0.17, 1), glow("#ffe9a8", 2), 0, 2.6, 0);
+    const light = new THREE.PointLight("#ffdf9a", 5, 10, 2);
+    light.position.y = 2.6;
+    whole.add(light);
+    whole.userData = { lamp: light };
+    return whole;
+  } },
+  bench: { r: 0.8, make: (_rng, c) => {
+    const whole = group(), wood = c || "#a98458";
+    part(whole, box(1.4, 0.08, 0.42), wood, 0, 0.45, 0);
+    part(whole, box(1.4, 0.4, 0.07), wood, 0, 0.75, -0.2);
+    for (const x of [-0.58, 0.58]) part(whole, box(0.08, 0.45, 0.38), "#3d4a52", x, 0.22, 0);
+    return whole;
+  } },
+  sign: { r: 0.4, make: (_rng, c) => {
+    const whole = group();
+    part(whole, box(0.08, 1.2, 0.08), "#7a5234", 0, 0.6, 0);
+    part(whole, box(0.9, 0.45, 0.06), c || "#e9d3b0", 0, 1.15, 0.06);
+    return whole;
+  } },
+  table: { r: 0.8, make: (_rng, c) => {
+    const whole = group(), wood = c || "#a98458";
+    part(whole, box(1.4, 0.08, 0.85), wood, 0, 0.74, 0);
+    for (const [x, z] of [[0.6, 0.34], [-0.6, 0.34], [0.6, -0.34], [-0.6, -0.34]]) part(whole, box(0.08, 0.72, 0.08), wood, x, 0.36, z);
+    return whole;
+  } },
+  chair: { r: 0.4, make: (_rng, c) => {
+    const whole = group(), wood = c || "#a98458";
+    part(whole, box(0.46, 0.06, 0.46), wood, 0, 0.45, 0);
+    part(whole, box(0.46, 0.5, 0.06), wood, 0, 0.72, -0.2);
+    for (const [x, z] of [[0.19, 0.19], [-0.19, 0.19], [0.19, -0.19], [-0.19, -0.19]]) part(whole, box(0.06, 0.44, 0.06), wood, x, 0.22, z);
+    return whole;
+  } },
+  crate: { r: 0.6, make: (_rng, c) => {
+    const whole = group();
+    part(whole, box(0.8, 0.8, 0.8), c || "#b08d62", 0, 0.4, 0);
+    for (const y of [0.1, 0.7]) part(whole, box(0.84, 0.1, 0.84), "#8a6a44", 0, y, 0);
+    return whole;
+  } },
+  barrel: { r: 0.45, make: (_rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.36, 0.36, 0.9, 10), c || "#8a5a3b", 0, 0.45, 0);
+    for (const y of [0.2, 0.7]) part(whole, cyl(0.375, 0.375, 0.06, 10), "#3d4a52", 0, y, 0);
+    return whole;
+  } },
+  ball: { r: 0.4, gait: "roll", make: (rng, c) => {
+    const whole = group(), color = c || pick(rng, ["#d6504a", "#4a8cd4", "#efc94c"]);
+    const round = part(whole, ico(0.36, 2), color, 0, 0.36, 0);
+    part(round, cyl(0.365, 0.365, 0.09, 12), "#f4f2ec");
+    whole.userData = { roll: round, rollR: 0.36 };
+    return whole;
+  } },
+  flag: { r: 0.3, make: (rng, c) => {
+    const whole = group();
+    part(whole, cyl(0.03, 0.04, 2.6, 5), "#c5cad3", 0, 1.3, 0);
+    part(whole, box(0.95, 0.56, 0.03), c || pick(rng, ["#d6504a", "#4a8cd4", "#5ba453"]), 0.5, 2.25, 0);
+    return whole;
+  } },
+  cube: { r: 0.75, make: (_rng, c) => { const whole = group(); part(whole, box(1, 1, 1), c || "#4a8cd4", 0, 0.5, 0); return whole; } },
+  sphere: { r: 0.65, gait: "roll", make: (_rng, c) => { const whole = group(); whole.userData = { roll: part(whole, ico(0.6, 3), c || "#d6504a", 0, 0.6, 0), rollR: 0.6 }; return whole; } },
+  cylinder: { r: 0.6, make: (_rng, c) => { const whole = group(); part(whole, cyl(0.5, 0.5, 1.2, 20), c || "#5ba453", 0, 0.6, 0); return whole; } },
+  cone: { r: 0.5, make: (_rng, c) => { const whole = group(); part(whole, cone(0.42, 1.0, 16), c || "#e88a3a", 0, 0.5, 0); return whole; } },
+  pyramid: { r: 0.9, make: (_rng, c) => { const whole = group(); part(whole, cone(0.95, 1.3, 4), c || "#e4cf99", 0, 0.65, 0).rotation.y = Math.PI / 4; return whole; } },
+  ring: { r: 0.8, make: (_rng, c) => { const whole = group(); part(whole, new THREE.TorusGeometry(0.6, 0.18, 10, 24), c || "#d8a93a", 0, 0.8, 0); return whole; } },
+  marker: { r: 0.55, make: (_rng, c, spec) => {
+    const whole = group();
+    part(whole, box(0.8, 0.8, 0.8), c || "#b9a7d6", 0, 0.4, 0);
+    const paper = document.createElement("canvas");
+    paper.width = 256;
+    paper.height = 64;
+    const pen = paper.getContext("2d");
+    pen.fillStyle = "#ffffff";
+    pen.fillRect(0, 0, 256, 64);
+    pen.fillStyle = "#16324a";
+    pen.font = "600 34px system-ui, sans-serif";
+    pen.textAlign = "center";
+    pen.textBaseline = "middle";
+    pen.fillText(String(spec.label).slice(0, 12), 128, 34);
+    const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(paper) }));
+    tag.scale.set(1.6, 0.4, 1);
+    tag.position.y = 1.2;
+    whole.add(tag);
+    return whole;
+  } },
+};
+
+const SKIES = {
+  day: { top: "#58a5e4", low: "#e1f2fb", sun: "#fff3d9", power: 3.0, fill: 1.25, from: [8, 14, 9] },
+  dawn: { top: "#7c9fd9", low: "#ffdccb", sun: "#ffc9a3", power: 2.4, fill: 0.95, from: [-12, 6, 6] },
+  sunset: { top: "#3e4c8c", low: "#ffb27a", sun: "#ff9d5c", power: 2.7, fill: 1.05, from: [14, 4.5, -3] },
+  night: { top: "#060b20", low: "#1f2c57", sun: "#9db8ff", power: 0.85, fill: 0.4, from: [-7, 12, 5], dark: true },
+};
+const GROUNDS = { grass: "#79b356", sand: "#e4cf99", snow: "#f1f5fa", water: "#4f9fd4", stone: "#a9aaa3", dirt: "#a17c55", moon: "#b9bcc4" };
+const SPEEDS = { walk: 1.5, run: 3.6, fly: 3.2, hop: 2.0, glide: 3.2 };
+
+// ---------------------------------------------------------------- building the scene
+
+const sceneText = el("scene").textContent;
+const { setup, specs, problems } = readScene(sceneText, KINDS);
+const rng = seeded(sceneText);
+const report = (window.sceneReport = { things: [], problems, done: false });
+
+// A count ("3 rocks") becomes that many things; the first keeps the name the lines use.
+const things = [];
+for (const spec of specs) {
+  for (let copy = 0; copy < (spec.count || 1); copy++) {
+    const kind = KINDS[spec.kind];
+    const size = spec.size * (kind.vary ? 0.85 + rng() * 0.35 : 1);
+    things.push({ spec, copy, kind, id: copy ? `${spec.id}-${copy + 1}` : spec.id, size, r: kind.r * size, acts: spec.acts.map((act) => ({ ...act })), x: null, z: null, y: 0 });
+  }
+}
+const first = (spec) => things.find((thing) => thing.spec === spec && thing.copy === 0);
+const taken = [];
+const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(x - tx, z - tz) > r + tr + 0.4);
+function settle(thing, x, z) {
+  thing.x = x;
+  thing.z = z;
+  if (!thing.kind.sky && !thing.kind.far) taken.push([x, z, thing.r]);
+}
+function around(thing, cx, cz, start) {
+  for (let turn = 0; turn < 300; turn++) {
+    const angle = rng() * Math.PI * 2, reach = start + turn * 0.06;
+    const x = cx + Math.cos(angle) * reach, z = cz + Math.sin(angle) * reach;
+    if (clear(x, z, thing.r)) return settle(thing, x, z);
+  }
+  settle(thing, cx, cz);
+}
+const movers = new Set(), targets = new Set();
+for (const thing of things) {
+  const moves = thing.acts.filter((act) => SPEEDS[act.type] || act.type === "follow");
+  if (moves.length) movers.add(thing);
+  for (const act of moves) if (act.to) targets.add(first(act.to));
+}
+const SPOTS = {
+  mover: [[-6, 0.8], [-7.5, -3], [-6.5, 4.2], [-9.5, 1]],
+  target: [[5, -0.5], [7, 3.6], [6.5, -4.6], [9.5, 0.5]],
+  other: [[0.5, -4.6], [-1.6, 4.6], [2.6, 5.6], [-3.2, -6.6], [3.2, -7.6], [-4.4, 7.2], [0, 0.4]],
+};
+const leads = things.filter((thing) => thing.copy === 0);
+for (const thing of leads) {
+  const { spec, kind } = thing;
+  if (spec.at) { settle(thing, spec.at[0], spec.at[2]); thing.y = spec.at[1]; }
+  else if (spec.side) around(thing, spec.side[0], spec.side[1], 0);
+  else if (kind.sky) settle(thing, rng() * 40 - 20, -4 - rng() * 16);
+  else if (kind.far) settle(thing, rng() * 60 - 30, -30 - rng() * 8);
+}
+for (const thing of leads) {
+  if (thing.x !== null || thing.spec.near) continue;
+  const list = SPOTS[targets.has(thing) && !movers.has(thing) ? "target" : movers.has(thing) ? "mover" : "other"];
+  const spot = list.find(([x, z]) => clear(x, z, thing.r));
+  if (spot) settle(thing, spot[0], spot[1]);
+  else around(thing, 0, 0, 4);
+}
+for (const thing of leads) {
+  if (thing.x !== null) continue;
+  const anchor = first(thing.spec.near);
+  if (anchor && anchor.x !== null) around(thing, anchor.x, anchor.z, anchor.r + thing.r + 0.5);
+  else around(thing, 0, 0, 4);
+}
+for (const thing of things) {
+  if (thing.copy === 0) continue;
+  const lead = first(thing.spec);
+  if (thing.kind.sky) settle(thing, rng() * 44 - 22, -2 - rng() * 20);
+  else if (thing.kind.far) settle(thing, lead.x + (rng() - 0.5) * 40, lead.z - rng() * 6);
+  else around(thing, lead.x, lead.z, lead.r + thing.r + 0.4);
+}
+
+const view = el("view");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: view, antialias: true });
+} catch (error) {
+  tell(["This scene needs WebGL, which this browser does not offer."]);
+  throw error;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const sky = SKIES[setup.sky];
+document.body.classList.toggle("dark", Boolean(sky.dark) || setup.sky === "sunset");
+const scene = new THREE.Scene();
+const wash = document.createElement("canvas");
+wash.width = 4;
+wash.height = 256;
+const brush = wash.getContext("2d"), fade = brush.createLinearGradient(0, 0, 0, 256);
+fade.addColorStop(0, sky.top);
+fade.addColorStop(0.62, sky.low);
+fade.addColorStop(1, sky.low);
+brush.fillStyle = fade;
+brush.fillRect(0, 0, 4, 256);
+scene.background = new THREE.CanvasTexture(wash);
+scene.background.colorSpace = THREE.SRGBColorSpace;
+scene.fog = new THREE.Fog(sky.low, 34, 90);
+
+const groundColor = GROUNDS[setup.ground];
+const ground = new THREE.Mesh(new THREE.CircleGeometry(170, 48).rotateX(-Math.PI / 2), paint(groundColor, { flatShading: false, roughness: setup.ground === "water" ? 0.25 : 1 }));
+ground.receiveShadow = true;
+scene.add(ground);
+scene.add(new THREE.HemisphereLight(sky.low, groundColor, sky.fill));
+const sun = new THREE.DirectionalLight(sky.sun, sky.power);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.04;
+scene.add(sun, sun.target);
+WINDOW.emissiveIntensity = sky.dark ? 1.4 : setup.sky === "sunset" ? 0.7 : 0;
+
+for (const thing of things) {
+  const built = thing.kind.make(rng, thing.spec.color, thing.spec);
+  built.scale.setScalar(thing.size);
+  const data = built.userData;
+  thing.mesh = built;
+  thing.data = data;
+  thing.y += (thing.kind.sky || 0) + (thing.kind.sky ? rng() * 3 : 0);
+  thing.gait = thing.kind.gait || (data.legs ? "legs" : "glide");
+  thing.lift = (thing.kind.lift ?? 3.2) * Math.sqrt(thing.size);
+  thing.seed = rng() * 10;
+  if (data.lamp) data.lamp.visible = Boolean(sky.dark) || setup.sky === "sunset" || thing.spec.kind === "campfire";
+  scene.add(built);
+}
+// Where a thing looks before it moves: at its first goal, or wherever the line says.
+for (const thing of things) {
+  const act = thing.acts.find((entry) => entry.to || entry.point || entry.way);
+  const goal = act && (act.point || (act.to && [first(act.to).x, first(act.to).z]) || [thing.x + act.way[0], thing.z + act.way[1]]);
+  if (thing.spec.facing !== undefined) thing.yaw = thing.spec.facing * Math.PI / 180;
+  else if (goal && movers.has(thing)) thing.yaw = Math.atan2(goal[0] - thing.x, goal[1] - thing.z);
+  else if (thing.kind.vary || thing.kind.far || thing.kind.sky) thing.yaw = rng() * Math.PI * 2;
+  else thing.yaw = thing.data.legs || thing.data.wheels || thing.kind.gait ? (rng() - 0.5) * 1.2 + 0.5 : 0;
+  thing.home = { x: thing.x, z: thing.z, yaw: thing.yaw };
+  const lead = first(thing.spec); // the others of a group head for a place beside the first one's
+  if (thing.copy) for (const act of thing.acts) if (act.point) act.point = [act.point[0] + thing.x - lead.x, act.point[1] + thing.z - lead.z];
+  report.things.push({ id: thing.id, kind: thing.spec.kind, x: thing.x, z: thing.z, acts: thing.acts.map((act) => act.type + (act.to ? ` ${act.to.id}` : "")) });
+}
+
+// Small scenery so a short scene does not stand on a bare plate. "plain" switches it off.
+if (!setup.plain) {
+  const scatter = (count, geometry, colors, low, high, reach) => {
+    const mesh = new THREE.InstancedMesh(geometry, new THREE.MeshStandardMaterial({ flatShading: true, roughness: 1 }), count);
+    const place = new THREE.Object3D(), tint = new THREE.Color();
+    for (let index = 0; index < count; index++) {
+      let x, z;
+      do { x = (rng() - 0.5) * reach; z = (rng() - 0.5) * reach; } while (!clear(x, z, 0.2));
+      place.position.set(x, 0, z);
+      place.rotation.y = rng() * 6;
+      place.scale.setScalar(low + rng() * (high - low));
+      place.updateMatrix();
+      mesh.setMatrixAt(index, place.matrix);
+      mesh.setColorAt(index, tint.set(pick(rng, colors)));
+    }
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+  };
+  if (setup.ground === "grass") {
+    scatter(260, cone(0.09, 0.42, 4).translate(0, 0.2, 0), ["#5f9e48", "#6aa94f", "#8fbf5e"], 0.6, 1.5, 46);
+    scatter(40, ico(0.07, 0).translate(0, 0.16, 0), ["#f4f2ec", "#efc94c", "#e690b2"], 0.7, 1.3, 40);
+  }
+  if (setup.ground !== "water" && setup.ground !== "snow") scatter(26, ico(0.2, 0).translate(0, 0.05, 0), ["#9a9ea6", "#a8a59c", "#8a8d94"], 0.4, 1.3, 50);
+  if (setup.ground === "snow") scatter(30, ico(0.6, 1).translate(0, -0.25, 0), ["#ffffff", "#e9eef5"], 0.6, 1.8, 50);
+  if (sky.dark) {
+    const dots = [];
+    for (let star = 0; star < 420; star++) {
+      const angle = rng() * Math.PI * 2, height = 0.08 + rng() * 0.9, flat = Math.sqrt(1 - height * height);
+      dots.push(Math.cos(angle) * flat * 95, height * 95, Math.sin(angle) * flat * 95);
+    }
+    const stars = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(dots, 3)),
+      new THREE.PointsMaterial({ color: "#ffffff", size: 1.6, sizeAttenuation: false, fog: false }));
+    scene.add(stars);
+    const moon = new THREE.Mesh(ico(4, 2), new THREE.MeshBasicMaterial({ color: "#f3f0dc", fog: false }));
+    moon.position.set(-38, 44, -70);
+    scene.add(moon);
+  } else if (!things.some((thing) => thing.spec.kind === "cloud")) {
+    for (let puff = 0; puff < 6; puff++) {
+      const cloud = KINDS.cloud.make(rng);
+      cloud.position.set(rng() * 70 - 35, 11 + rng() * 5, -12 - rng() * 30);
+      cloud.scale.setScalar(1.2 + rng() * 1.4);
+      scene.add(cloud);
+      things.push({ extra: true, mesh: cloud, data: cloud.userData, x: cloud.position.x, z: cloud.position.z, y: cloud.position.y, acts: [], yaw: 0, kind: KINDS.cloud, home: {} });
+    }
+  }
+}
+
+// ---------------------------------------------------------------- camera
+
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
+const controls = new OrbitControls(camera, view);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI / 2 - 0.04;
+controls.minDistance = 3;
+controls.maxDistance = 70;
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+controls.autoRotate = !still;
+controls.autoRotateSpeed = 0.35;
+controls.addEventListener("start", () => { controls.autoRotate = false; });
+let framed = false;
+function frameAll() {
+  const stage = things.filter((thing) => !thing.extra && !thing.kind.sky && !thing.kind.far);
+  const xs = [], zs = [];
+  for (const thing of stage) {
+    xs.push(thing.home.x - thing.r, thing.home.x + thing.r);
+    zs.push(thing.home.z - thing.r, thing.home.z + thing.r);
+    for (const act of thing.acts) if (act.point) { xs.push(act.point[0]); zs.push(act.point[1]); }
+  }
+  if (!xs.length) { xs.push(-4, 4); zs.push(-4, 4); }
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const reach = Math.max(3.5, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2 + 1.5);
+  camera.fov = camera.aspect < 1 ? 52 : 38; // a tall phone screen gets a wider lens, so things stay large
+  camera.updateProjectionMatrix();
+  const half = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const distance = reach / Math.tan(Math.min(half * 1.25, Math.atan(Math.tan(half) * camera.aspect)));
+  controls.target.set(cx, 1.1, cz);
+  camera.position.set(cx + Math.sin(0.3) * distance * 0.95, 1.1 + distance * 0.27, cz + Math.cos(0.3) * distance * 0.95);
+  scene.fog.near = distance * 1.6;
+  scene.fog.far = distance * 1.6 + 70;
+  sun.target.position.set(cx, 0, cz);
+  sun.position.set(cx + sky.from[0] * 2, sky.from[1] * 2, cz + sky.from[2] * 2);
+  const span = reach + 6;
+  Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, near: 1, far: 90 });
+  sun.shadow.camera.updateProjectionMatrix();
+}
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  if (!framed || controls.autoRotate) frameAll();
+  framed = true;
+}
+addEventListener("resize", resize);
+controls.addEventListener("start", () => { framed = true; });
+resize();
+
+// ---------------------------------------------------------------- motion
+
+function reset() {
+  for (const thing of things) {
+    if (thing.extra) continue;
+    Object.assign(thing, { x: thing.home.x, z: thing.home.z, yaw: thing.home.yaw, turnTo: thing.home.yaw, step: 0, clock: 0, speed: 0, air: 0, hop: 0, phase: 0, swingBy: 0, went: 0 });
+  }
+  report.done = false;
+  ended = -1;
+}
+function next(thing) {
+  thing.step += 1;
+  thing.clock = 0;
+  thing.speed = 0;
+}
+const near = (from, to) => { const gap = Math.atan2(Math.sin(to - from), Math.cos(to - from)); return gap; };
+
+function act(thing, dt) {
+  const now = thing.acts[thing.step];
+  if (!now) return false;
+  const begins = thing.clock === 0;
+  thing.clock += dt;
+  const other = now.to && first(now.to);
+  const type = now.type;
+  if (type === "stop") { next(thing); return false; }
+  if (type === "wait") { if (!now.forever && thing.clock > (now.seconds ?? 1.5)) next(thing); return false; }
+  if (type === "spin") {
+    thing.yaw += dt * 2.6;
+    thing.turnTo = thing.yaw;
+    if (now.seconds && thing.clock > now.seconds) next(thing);
+    return false;
+  }
+  if (type === "face") {
+    const goal = now.point || (other && [other.x, other.z]);
+    if (goal) thing.turnTo = Math.atan2(goal[0] - thing.x, goal[1] - thing.z);
+    if (!goal || Math.abs(near(thing.yaw, thing.turnTo)) < 0.06 || thing.clock > 2) next(thing);
+    return false;
+  }
+  const pace = (SPEEDS[type] ?? (thing.gait === "fly" ? SPEEDS.fly : thing.gait === "glide" ? SPEEDS.glide : SPEEDS.walk)) * (now.pace ?? 1) * (thing.kind.pace ?? 1) * Math.sqrt(thing.size);
+  thing.flying = type === "fly" || thing.gait === "fly";
+  thing.hopping = type === "hop" || thing.gait === "hop";
+  const still = !now.home && !now.point && !now.way && !other;
+  if (type === "hop" && still) {
+    thing.hop = Math.abs(Math.sin(thing.clock * 5)) * 0.7 * thing.size;
+    if (thing.clock > (now.times ?? 3) * Math.PI / 5) { thing.hop = 0; next(thing); }
+    return false;
+  }
+  if (type === "orbit" || (type === "fly" && still)) {
+    if (begins) {
+      now.mid = other ? null : [thing.x - 2.5, thing.z];
+      const [cx, cz] = other ? [other.x, other.z] : now.mid;
+      now.reach = Math.max(Math.hypot(thing.x - cx, thing.z - cz), (other ? other.r : 0) + thing.r + 1.2);
+      now.angle = Math.atan2(thing.x - cx, thing.z - cz);
+    }
+    const [cx, cz] = other ? [other.x, other.z] : now.mid;
+    now.angle += pace / now.reach * dt;
+    const tx = cx + Math.sin(now.angle) * now.reach, tz = cz + Math.cos(now.angle) * now.reach;
+    thing.x += (tx - thing.x) * Math.min(1, dt * 3);
+    thing.z += (tz - thing.z) * Math.min(1, dt * 3);
+    thing.turnTo = now.angle + Math.PI / 2;
+    thing.speed = pace;
+    thing.aim = 99;
+    if (now.seconds && thing.clock > now.seconds) next(thing);
+    return true;
+  }
+  // Everything else walks, runs, hops, drives or flies to a place and stops there.
+  if (begins && now.way) now.spot = [thing.x + now.way[0] * 6, thing.z + now.way[1] * 6];
+  if (begins && still) now.spot = [thing.x + Math.sin(thing.yaw) * 6, thing.z + Math.cos(thing.yaw) * 6];
+  let gx, gz;
+  if (now.home) [gx, gz] = [thing.home.x, thing.home.z];
+  else if (now.point || now.spot) [gx, gz] = now.point || now.spot;
+  else {
+    const gap = thing.r + other.r + 0.15, away = Math.hypot(thing.x - other.x, thing.z - other.z) || 1;
+    gx = other.x + (thing.x - other.x) / away * gap;
+    gz = other.z + (thing.z - other.z) / away * gap;
+    if (away <= gap + 0.02) [gx, gz] = [thing.x, thing.z];
+  }
+  const left = Math.hypot(gx - thing.x, gz - thing.z);
+  thing.aim = left;
+  const wanted = Math.min(pace, 0.5 + left * 2.4);
+  thing.speed += (wanted - thing.speed) * Math.min(1, dt * 4);
+  if (left <= Math.max(0.03, thing.speed * dt)) {
+    thing.x = gx;
+    thing.z = gz;
+    thing.speed = 0;
+    if (type !== "follow") next(thing);
+    return false;
+  }
+  thing.x += (gx - thing.x) / left * thing.speed * dt;
+  thing.z += (gz - thing.z) / left * thing.speed * dt;
+  thing.turnTo = Math.atan2(gx - thing.x, gz - thing.z);
+  return true;
+}
+
+function pose(thing, moving, dt, time) {
+  const { data, mesh } = thing;
+  thing.yaw += near(thing.yaw, thing.turnTo) * Math.min(1, dt * 7);
+  const travel = moving ? thing.speed * dt : 0;
+  thing.went += travel;
+  thing.phase += travel * 4.2 / Math.max(0.35, thing.size);
+  thing.swingBy += ((moving ? 1 : 0) - thing.swingBy) * Math.min(1, dt * 8);
+  const airborne = moving && thing.flying ? Math.min(thing.lift, (thing.aim ?? 9) * 0.9, 0.3 + thing.went * 0.9) : 0;
+  thing.air += (airborne - thing.air) * Math.min(1, dt * 3);
+  const bounce = moving && thing.hopping && !thing.flying ? Math.abs(Math.sin(thing.phase * 0.55)) * 0.45 * thing.size : thing.hop;
+  mesh.position.set(thing.x, thing.y + thing.air + bounce, thing.z);
+  mesh.rotation.y = thing.yaw;
+  const walking = thing.air < 0.15 ? thing.swingBy : 0;
+  if (data.legs) data.legs.forEach((leg, index) => { leg.rotation.x = Math.sin(thing.phase + data.swing[index]) * 0.62 * walking; });
+  if (data.body) {
+    const idle = !moving && thing.step >= thing.acts.length && data.peck ? Math.max(0, Math.sin(time * 1.3 + thing.seed)) ** 6 * data.peck : 0;
+    data.body.position.y = data.baseY + Math.abs(Math.sin(thing.phase)) * 0.045 * walking + Math.sin(time * 2 + thing.seed) * 0.008;
+    data.body.rotation.x = idle;
+    if (data.head) data.head.position.z += (Math.sin(thing.phase * 2) * 0.012 * walking);
+  }
+  if (data.wings) for (const wing of data.wings) {
+    const flap = data.always || thing.air > 0.15 ? Math.sin(time * (data.always ? 22 : 13) + thing.seed) * 0.75 : -1.15;
+    wing.rotation.z = wing.userData.side * flap;
+  }
+  if (data.wheels) for (const wheel of data.wheels) wheel.rotation.x += travel / data.wheelR / thing.size;
+  if (data.roll) data.roll.rotation.x += travel / data.rollR / thing.size;
+}
+
+let ended = -1;
+const clock = new THREE.Clock();
+reset();
+let playing = !still;
+if (still) {
+  el("replay").textContent = "Play";
+  for (const thing of things) if (!thing.extra) pose(thing, false, 0, 0);
+}
+el("replay").addEventListener("click", () => {
+  reset();
+  playing = true;
+  el("replay").textContent = "Replay";
+});
+tell(problems.slice(0, 3));
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05), time = clock.elapsedTime;
+  let busy = false;
+  for (const thing of things) {
+    const { data, mesh } = thing;
+    if (data.spin) for (const [target, axis, rate] of data.spin) target.rotation[axis] += rate * dt;
+    if (data.flicker) data.flicker.forEach((flame, index) => { flame.scale.set(1 + Math.sin(time * 9 + index) * 0.12, 1 + Math.sin(time * 13 + index * 2) * 0.2, 1 + Math.cos(time * 8 + index) * 0.12); });
+    if (data.drift) {
+      thing.x = thing.x > 60 ? -60 : thing.x + data.drift * dt;
+      if (thing.extra) mesh.position.x = thing.x;
+    }
+    if (thing.extra) continue;
+    const moving = playing && act(thing, dt);
+    const open = thing.acts[thing.step];
+    if (open && !(open.forever || ["follow", "orbit", "spin"].includes(open.type) && !open.seconds || open.type === "fly" && !open.to && !open.point && !open.home && !open.way)) busy = true;
+    pose(thing, moving, dt, time);
+  }
+  if (playing && !busy && !report.done) { report.done = true; ended = time; }
+  if (setup.loop && report.done && time - ended > 2) reset();
+  if (setup.follow) {
+    const lead = first(setup.follow);
+    controls.target.lerp(new THREE.Vector3(lead.x, 1, lead.z), Math.min(1, dt * 2.5));
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
