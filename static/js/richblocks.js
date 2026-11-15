@@ -192,7 +192,7 @@ function showView(block, view) {
 }
 
 /** One plain line for what a page reported, or "" when it is nothing to tell. */
-function problemLine(kind, detail) {
+function problemLine(kind, detail, fromFile) {
   if (kind === "error") {
     const text = String(detail || "").replace(/^Uncaught\s+/, "").trim();
     return text && text !== "Script error." ? `The page stopped with an error: ${text.slice(0, 90)}` : "A script on the page stopped with an error.";
@@ -208,13 +208,16 @@ function problemLine(kind, detail) {
     return "";
   }
   const thing = THING[directive.split("-")[0]] || "A file";
-  return `${thing} from ${host} did not load: previews run offline, so a page needs its own copy.`;
+  const allowed = fromFile
+    ? "a page may load its own files, and scripts and styles from jsdelivr, unpkg, cdnjs and esm.sh."
+    : "a preview in a reply loads nothing from the internet.";
+  return `${thing} from ${host} was blocked: ${allowed}`;
 }
 
 /** Shows what the page of this frame reported, once, in the bar under the preview. */
 function reportProblem(frame, kind, detail) {
   const bar = frame.closest(".rich-preview")?.querySelector(".rich-bar");
-  const line = problemLine(kind, detail);
+  const line = problemLine(kind, detail, !frame.hasAttribute("srcdoc"));
   if (!bar || !line || bar.querySelector(".rich-note.is-problem")) return;
   bar.querySelector(".rich-note")?.remove();
   bar.prepend(make("span", { class: "rich-note is-problem", role: "status" }, line));

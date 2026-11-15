@@ -77,8 +77,13 @@ def test_page_is_sandboxed_and_loads_only_from_its_own_folder_tree(chat) -> None
     assert reply.status_code == 200
     csp = reply.headers["Content-Security-Policy"]
     assert csp.startswith("sandbox allow-scripts;") and "allow-same-origin" not in csp
-    assert f"script-src 'unsafe-inline' http://localhost/api/preview/{cid}/" in csp
-    assert "connect-src http://localhost/api/preview/" in csp and "https:" not in csp
+    hosts = " ".join(preview.SCRIPT_HOSTS)
+    assert f"script-src 'unsafe-inline' http://localhost/api/preview/{cid}/ {hosts};" in csp
+    assert f"style-src 'unsafe-inline' http://localhost/api/preview/{cid}/ {hosts};" in csp
+    for directive in ("connect-src", "img-src", "media-src", "font-src"):  # only scripts and styles may leave the tree
+        assert "https:" not in next(part for part in csp.split("; ") if part.startswith(directive)), directive
+    assert "connect-src http://localhost/api/preview/" in csp and "form-action 'none'" in csp and "base-uri 'none'" in csp
+    assert "https://example.com" not in csp
     body = reply.get_data(as_text=True)
     assert body.index("kiwibroPreview") < body.index("<title>")  # the monitor runs first
     assert reply.headers["X-Content-Type-Options"] == "nosniff"

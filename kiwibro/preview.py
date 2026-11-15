@@ -3,7 +3,8 @@
 Every file goes through Workspace.resolve (nothing outside the chat's folder, no symlink out of
 it), a type allow-list and a size cap. An HTML page is served with a Content-Security-Policy that
 sandboxes it (scripts only, an opaque origin, so it cannot reach this app's cookies or API) and
-lets it load files from its own folder tree only, never the network.
+lets it load files from its own folder tree, plus scripts and styles from four public libraries
+(SCRIPT_HOSTS: a three.js page names one in a script tag). Nothing else reaches the network.
 """
 
 from __future__ import annotations
@@ -127,16 +128,21 @@ def page_bytes(path: Path) -> bytes:
     return text.encode("utf-8")
 
 
+# Public libraries a page may load scripts and styles from. Nothing else (requests, images, media,
+# fonts, forms) goes to these or to any other host.
+SCRIPT_HOSTS = ("https://cdn.jsdelivr.net", "https://unpkg.com", "https://cdnjs.cloudflare.com", "https://esm.sh")
+
+
 def policy(base_url: str, kind: str) -> str:
     """The Content-Security-Policy of one served file. `base_url` is the folder tree of the chat:
-    a page may load files from there and from nowhere else."""
+    a page may load files from there, and scripts and styles from SCRIPT_HOSTS."""
     parts = ["sandbox allow-scripts", "default-src 'none'", "style-src 'unsafe-inline'"]
     if kind == "html":
         parts = [
             "sandbox allow-scripts",
             "default-src 'none'",
-            f"script-src 'unsafe-inline' {base_url}",
-            f"style-src 'unsafe-inline' {base_url}",
+            f"script-src 'unsafe-inline' {base_url} {' '.join(SCRIPT_HOSTS)}",
+            f"style-src 'unsafe-inline' {base_url} {' '.join(SCRIPT_HOSTS)}",
             f"img-src data: blob: {base_url}",
             f"media-src data: blob: {base_url}",
             f"font-src data: {base_url}",
