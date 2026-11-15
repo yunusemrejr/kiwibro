@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <main id="main" class="wrap">
+    <h1>{{title}}</h1>
+
+    <div class="field">
+      <label for="filter">Filter</label>
+      <input id="filter" type="search" autocomplete="off" enterkeyhint="search">
+    </div>
+
+    <div class="scroll" tabindex="0" role="region" aria-label="{{title}}">
+      <table id="table">
+        <thead><tr id="head"></tr></thead>
+        <tbody id="body"></tbody>
+      </table>
+    </div>
+    <p id="empty" class="empty" hidden>No rows match this filter.</p>
+
+    <div class="pager">
+      <button type="button" id="prev">Previous</button>
+      <p id="status" role="status"></p>
+      <button type="button" id="next">Next</button>
+    </div>
+  </main>
+
+  <script src="data.js"></script>
+  <script src="table.js"></script>
+</body>
+</html>

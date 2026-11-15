@@ -15,5 +15,13 @@
     "Check that the value comes from the page body itself, not from a search snippet, before reporting any change.",
     "If the page cannot be reached, say so plainly; otherwise report the old value, the new value, the date and the change."
   ],
-  "next": "The final answer must give the old and new value with their dates and the size of the change, or say plainly that this is the first reading."
+  "next": "The final answer must give the old and new value with their dates and the size of the change, or say plainly that this is the first reading.",
+  "match": [
+    "monitor page",
+    "watch page",
+    "page changed",
+    "has changed since",
+    "track price",
+    "check page for changes"
+  ]
 }

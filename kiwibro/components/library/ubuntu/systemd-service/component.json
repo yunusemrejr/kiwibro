@@ -18,5 +18,12 @@
       "default": "daily"
     }
   },
-  "next": "Write every file under files/ into the user's project, set command and schedule to what the user needs, run ./install.sh and follow the systemctl lines it prints."
+  "next": "Write every file under files/ into the user's project, set command and schedule to what the user needs, run ./install.sh and follow the systemctl lines it prints.",
+  "match": [
+    "systemd service",
+    "systemd timer",
+    "systemd",
+    "run at login",
+    "start at login"
+  ]
 }

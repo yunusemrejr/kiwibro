@@ -10,5 +10,12 @@
       "default": "Your app"
     }
   },
-  "next": "Write the files, serve the folder with a local HTTP server so ES modules load, then replace the sample text marked KIWIBRO and point the fetch helper at the project's API."
+  "next": "Write the files, serve the folder with a local HTTP server so ES modules load, then replace the sample text marked KIWIBRO and point the fetch helper at the project's API.",
+  "match": [
+    "single page app",
+    "app shell",
+    "hash routing",
+    "web app",
+    "spa"
+  ]
 }

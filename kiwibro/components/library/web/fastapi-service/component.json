@@ -14,5 +14,10 @@
       "default": "items"
     }
   },
-  "next": "Write the files, install requirements.txt in a virtual environment, run pytest with pytest and httpx present, then replace the sample fields and resource name with the project's own data."
+  "next": "Write the files, install requirements.txt in a virtual environment, run pytest with pytest and httpx present, then replace the sample fields and resource name with the project's own data.",
+  "match": [
+    "fastapi",
+    "fastapi service",
+    "fastapi app"
+  ]
 }

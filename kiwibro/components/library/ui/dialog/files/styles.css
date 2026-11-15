@@ -1,0 +1,84 @@
+/* KIWIBRO: choose palette and fonts from the subject */
+:root {
+  --paper: #eef4f0;
+  --ink: #10231f;
+  --muted: #40544f;
+  --accent: #0b7a5c;
+  --accent-strong: #095f48;
+  --accent-2: #f2c230;
+  --danger: #9b2c1f;
+  --surface: #ffffff;
+  --line: rgba(16, 35, 31, 0.16);
+  --tint: rgba(11, 122, 92, 0.1);
+  --radius: 10px;
+  --space-1: 0.5rem;
+  --space-2: 0.75rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+  --step-0: clamp(1rem, 0.97rem + 0.15vw, 1.06rem);
+  --step-1: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);
+  --step-2: clamp(1.6rem, 1.35rem + 1.2vw, 2.25rem);
+  --font-body: system-ui, sans-serif;
+  --font-heading: "Ubuntu", "Cantarell", "Segoe UI", system-ui, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+h1, h2 { margin: 0 0 var(--space-3); font-family: var(--font-heading); font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; }
+h1 { font-size: var(--step-2); }
+h2 { font-size: var(--step-1); }
+p { margin: 0; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.wrap { width: min(100% - 2rem, 38rem); margin-inline: auto; padding-block: var(--space-5) var(--space-6); }
+.skip {
+  position: absolute; left: -999px; top: var(--space-2);
+  padding: var(--space-2) var(--space-3); background: var(--surface); border-radius: var(--radius);
+}
+.skip:focus { left: var(--space-3); z-index: 10; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+button {
+  min-height: 48px; padding: var(--space-2) var(--space-4); border: 2px solid var(--accent);
+  border-radius: var(--radius); background: var(--accent); color: #ffffff;
+  font: inherit; font-weight: 600; cursor: pointer;
+}
+button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+button.quiet { background: var(--surface); color: var(--accent-strong); }
+button.quiet:hover { background: var(--tint); }
+dialog {
+  width: 100%; max-width: none; height: fit-content; max-height: 100%; margin: auto 0 0; padding: 0;
+  border: 0; border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); color: var(--ink);
+}
+dialog::backdrop { background: rgba(16, 35, 31, 0.55); }
+dialog form { padding: var(--space-4); }
+dialog .actions { margin-top: var(--space-4); }
+dialog .actions button { flex: 1 1 8rem; }
+#toasts {
+  position: fixed; inset: auto var(--space-3) var(--space-3); z-index: 20;
+  display: grid; gap: var(--space-1); justify-items: center; pointer-events: none;
+}
+.toast {
+  width: min(100%, 24rem); padding: var(--space-3) var(--space-4); border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--ink); color: #ffffff; font-weight: 600;
+}
+.toast.error { background: var(--danger); }
+@media (min-width: 640px) {
+  dialog {
+    width: min(100% - 2rem, 28rem); margin: auto;
+    border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  dialog .actions { justify-content: flex-end; }
+  dialog .actions button { flex: 0 0 auto; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  dialog[open] { animation: rise 0.18s ease-out; }
+  .toast { animation: rise 0.18s ease-out; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(0.5rem); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

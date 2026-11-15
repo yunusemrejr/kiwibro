@@ -14,5 +14,14 @@
       "default": "A small, fast page that stays readable on phones and desktops."
     }
   },
-  "next": "Write the files, replace the text marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width to check the layout."
+  "next": "Write the files, replace the text marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width to check the layout.",
+  "match": [
+    "landing page",
+    "web page",
+    "webpage",
+    "html page",
+    "responsive page",
+    "home page",
+    "homepage"
+  ]
 }

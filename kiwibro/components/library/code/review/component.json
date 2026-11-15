@@ -1,0 +1,29 @@
+{
+  "name": "code/review",
+  "kind": "recipe",
+  "title": "Review a change",
+  "summary": "Review a change or a file: read the diff, check errors, edge cases and tests, list findings by severity with lines.",
+  "when": "Use when the user asks for a review of a change, a diff or a file before it is kept or merged.",
+  "blanks": {},
+  "steps": [
+    "Call git action diff for the unstaged change, or action diff with ref for a commit or branch; if it is empty, review the file the user named.",
+    "Call read_file around each changed line when a diff hunk lacks the context to judge it.",
+    "Call grep_files with patterns such as password, token and secret over the changed paths to catch a key.",
+    "Check each hunk for a swallowed error, empty or missing input, an edge case at the boundary and the permission it runs with.",
+    "Call grep_files with the changed function name over the tests to see whether a test covers it, and read the test it finds.",
+    "Call run_command with the project's test command, such as pytest, and read which tests cover the change and whether they pass.",
+    "List each finding by severity, from critical to nit, with its file, line and one sentence on what goes wrong.",
+    "Answer with the findings in that order, then say plainly when nothing serious was found and what was not checked."
+  ],
+  "next": "The final answer must list findings from critical to nit, each with file and line and a concrete fix, and say plainly what was checked and what was not.",
+  "match": [
+    "review changes",
+    "review diff",
+    "review code",
+    "code review",
+    "review pull request",
+    "review pr",
+    "review commit",
+    "check diff"
+  ]
+}

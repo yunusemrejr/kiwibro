@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <main id="main" class="wrap">
+    <h1>{{title}}</h1>
+
+    <!-- KIWIBRO: sample drawings; replace each svg with <img src="photo.jpg" alt="what it shows" width="120" height="90"> -->
+    <ul class="grid">
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Morning hills"><rect width="120" height="90" fill="#cfe3d9"/><circle cx="90" cy="26" r="11" fill="#f2c230"/><path d="M0 70 30 42 60 66 90 38 120 62V90H0Z" fill="#0b7a5c"/><path d="M0 90V76Q40 58 120 78V90Z" fill="#095f48"/></svg></button></li>
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Yellow field"><rect width="120" height="90" fill="#f6e7ae"/><circle cx="30" cy="24" r="9" fill="#ffffff"/><path d="M0 52Q60 36 120 52V90H0Z" fill="#f2c230"/><path d="M0 70Q60 54 120 72V90H0Z" fill="#0b7a5c"/></svg></button></li>
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Evening lake"><rect width="120" height="90" fill="#b7d3c7"/><circle cx="60" cy="40" r="14" fill="#f2c230"/><path d="M0 44 25 34 50 44 80 30 120 46V50H0Z" fill="#095f48"/><rect y="50" width="120" height="40" fill="#0b7a5c"/><rect x="42" y="58" width="36" height="4" rx="2" fill="#f2c230"/></svg></button></li>
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Night pines"><rect width="120" height="90" fill="#10231f"/><circle cx="96" cy="20" r="8" fill="#eef4f0"/><path d="M20 80 34 40 48 80ZM44 80 62 30 80 80ZM76 80 90 46 104 80Z" fill="#0b7a5c"/><rect y="78" width="120" height="12" fill="#095f48"/></svg></button></li>
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Quiet shore"><rect width="120" height="90" fill="#d4e6dd"/><rect y="30" width="120" height="30" fill="#b7d3c7"/><path d="M0 60Q30 52 60 60T120 58V90H0Z" fill="#f6e7ae"/><circle cx="24" cy="18" r="7" fill="#f2c230"/></svg></button></li>
+      <li><button type="button" class="thumb"><svg viewBox="0 0 120 90" role="img" aria-label="Low sun"><rect width="120" height="90" fill="#095f48"/><circle cx="60" cy="62" r="24" fill="#f2c230"/><rect y="62" width="120" height="28" fill="#10231f"/><path d="M0 62 20 50 40 62ZM80 62 100 46 120 62Z" fill="#10231f"/></svg></button></li>
+    </ul>
+  </main>
+
+  <dialog id="viewer" aria-label="Picture viewer">
+    <div class="frame">
+      <button type="button" class="close" id="close">Close</button>
+      <div class="stage" id="stage"></div>
+      <p id="caption" aria-live="polite"></p>
+      <div class="steps">
+        <button type="button" id="prev">Previous</button>
+        <p id="count"></p>
+        <button type="button" id="next">Next</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="gallery.js"></script>
+</body>
+</html>

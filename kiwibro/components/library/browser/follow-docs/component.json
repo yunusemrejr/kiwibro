@@ -15,5 +15,15 @@
     "If the site cannot be reached, say so plainly and quote a local manual page via run_command man or doc_search instead.",
     "Give the quoted command, the page URL, the section heading and the version it applies to; never paraphrase a signature."
   ],
-  "next": "The final answer must contain the exact quoted command or signature, the documentation URL, the section and the version it applies to."
+  "next": "The final answer must contain the exact quoted command or signature, the documentation URL, the section and the version it applies to.",
+  "match": [
+    "official documentation",
+    "official docs",
+    "docs say",
+    "documentation say",
+    "according to docs",
+    "check docs",
+    "look up docs",
+    "in docs"
+  ]
 }

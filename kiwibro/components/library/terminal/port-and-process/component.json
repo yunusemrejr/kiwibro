@@ -14,5 +14,15 @@
     "If nothing listens on the port, say so plainly and call run_command with journalctl -u name -n 50 before guessing.",
     "Give the user the exact command that stops the process in a code block and say what it does; do not run it."
   ],
-  "next": "The final answer must name the pid, user and command line holding the port or the memory, and give the exact stop command without running it."
+  "next": "The final answer must name the pid, user and command line holding the port or the memory, and give the exact stop command without running it.",
+  "match": [
+    "port in use",
+    "using port",
+    "what uses port",
+    "address already in use",
+    "which process",
+    "kill process",
+    "most memory",
+    "high cpu"
+  ]
 }

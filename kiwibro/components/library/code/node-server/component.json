@@ -1,0 +1,21 @@
+{
+  "name": "code/node-server",
+  "kind": "kit",
+  "title": "Node.js JSON API server",
+  "summary": "HTTP JSON API in Node with no dependencies: routing, input checks, error replies and node:test tests.",
+  "when": "Use when the user wants a small HTTP JSON API in Node.js that must run with no npm packages installed.",
+  "blanks": {
+    "name": {
+      "about": "Service name, used as the package name, in the README title and in the start-up log line (lowercase).",
+      "default": "notes-api"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, run node --test to confirm the tests pass, then run node src/server.js and call the routes with curl.",
+  "match": [
+    "node server",
+    "node api",
+    "node http server",
+    "node backend",
+    "javascript server"
+  ]
+}

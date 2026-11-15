@@ -15,5 +15,14 @@
     "If the page needs a login or blocks reading, say so plainly and save the part you read, marked as partial.",
     "Report the file path, the row count and the columns, and call open_path when the user wants to see the file."
   ],
-  "next": "The final answer must give the CSV file path, the number of data rows written and the column names, noting any partial read."
+  "next": "The final answer must give the CSV file path, the number of data rows written and the column names, noting any partial read.",
+  "match": [
+    "extract table",
+    "table from page",
+    "table from website",
+    "table from site",
+    "table from url",
+    "table into csv",
+    "scrape table"
+  ]
 }

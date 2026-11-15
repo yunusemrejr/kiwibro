@@ -15,5 +15,12 @@
     "If a page cannot be read, keep its cells empty, name the source that failed and say the comparison is incomplete there.",
     "Present the table, a three-line verdict and the numbered sources; the table carries the answer, not a wall of text."
   ],
-  "next": "The final answer must contain the comparison table with a source number in each cell, a short verdict and the numbered source list."
+  "next": "The final answer must contain the comparison table with a source number in each cell, a short verdict and the numbered source list.",
+  "match": [
+    "compare products",
+    "compare options",
+    "comparison table",
+    "which is better",
+    "which one should i buy"
+  ]
 }

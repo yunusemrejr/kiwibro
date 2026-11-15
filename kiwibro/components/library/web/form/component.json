@@ -10,5 +10,15 @@
       "default": "Send a message"
     }
   },
-  "next": "Write the files, replace the sample labels and messages marked KIWIBRO with the project's own, then connect the valid branch in form.js to the project's endpoint."
+  "next": "Write the files, replace the sample labels and messages marked KIWIBRO with the project's own, then connect the valid branch in form.js to the project's endpoint.",
+  "match": [
+    "contact form",
+    "signup form",
+    "sign up form",
+    "login form",
+    "registration form",
+    "form validation",
+    "html form",
+    "web form"
+  ]
 }

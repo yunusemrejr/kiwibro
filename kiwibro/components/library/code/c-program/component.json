@@ -10,5 +10,11 @@
       "default": "textstats"
     }
   },
-  "next": "Write every file under files/ into the user's project, run make && make test, then run the binary on a real file and extend the header and source for the program's own job."
+  "next": "Write every file under files/ into the user's project, run make && make test, then run the binary on a real file and extend the header and source for the program's own job.",
+  "match": [
+    "c program",
+    "program in c",
+    "c project",
+    "c with makefile"
+  ]
 }

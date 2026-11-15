@@ -10,5 +10,12 @@
       "default": "bigfiles"
     }
   },
-  "next": "Write every file under files/ into the user's project, run node --test to confirm the tests pass, then run the tool on a real folder."
+  "next": "Write every file under files/ into the user's project, run node --test to confirm the tests pass, then run the tool on a real folder.",
+  "match": [
+    "node cli",
+    "node command line",
+    "cli in node",
+    "javascript cli",
+    "command line tool in node"
+  ]
 }

@@ -14,5 +14,11 @@
       "default": "items"
     }
   },
-  "next": "Write the files, create a virtual environment and install requirements.txt, run pytest, then replace the sample fields and resource name with the project's own data."
+  "next": "Write the files, create a virtual environment and install requirements.txt, run pytest, then replace the sample fields and resource name with the project's own data.",
+  "match": [
+    "flask",
+    "flask api",
+    "flask app",
+    "flask server"
+  ]
 }

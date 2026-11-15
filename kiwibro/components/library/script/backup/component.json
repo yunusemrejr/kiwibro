@@ -14,5 +14,13 @@
       "default": "$HOME/Backups"
     }
   },
-  "next": "Write every file under files/ into the user's project, set source and target to the user's folders, then run ./backup.sh and show the archive path it prints."
+  "next": "Write every file under files/ into the user's project, set source and target to the user's folders, then run ./backup.sh and show the archive path it prints.",
+  "match": [
+    "backup script",
+    "back up folder",
+    "backup folder",
+    "backup of folder",
+    "backup files",
+    "back up files"
+  ]
 }

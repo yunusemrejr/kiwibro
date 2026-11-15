@@ -15,5 +15,13 @@
     "If install or build fails, read the first real error; when the network is down, say so and use packages already installed.",
     "Report the commands that worked, the test result and how to start the app, and say plainly what still fails."
   ],
-  "next": "The final answer must give the setup commands that worked, the test result and the command that starts the app, plus what still fails."
+  "next": "The final answer must give the setup commands that worked, the test result and the command that starts the app, plus what still fails.",
+  "match": [
+    "set up project",
+    "setup project",
+    "set up repo",
+    "get project running",
+    "install dependencies",
+    "how to run project"
+  ]
 }

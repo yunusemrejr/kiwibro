@@ -10,5 +10,12 @@
       "default": "Your app"
     }
   },
-  "next": "Write the files, serve the folder over localhost or HTTPS, then add every new shell file to FILES in sw.js and raise the cache version before shipping."
+  "next": "Write the files, serve the folder over localhost or HTTPS, then add every new shell file to FILES in sw.js and raise the cache version before shipping.",
+  "match": [
+    "pwa",
+    "progressive web app",
+    "installable web app",
+    "offline web app",
+    "service worker"
+  ]
 }

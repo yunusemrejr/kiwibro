@@ -7,6 +7,9 @@ data, ranks it for a search, writes it out for the model in a fixed shape, and
 writes a kit's files into the workspace through the same sandbox and checkpoint
 machinery as ``write_file``, so a path cannot leave the workspace and
 ``undo_changes`` takes the files back.
+
+It also picks the component that fits a user's message (``suggest``), so the fitting
+kit or recipe reaches the model in the turn note without a search of its own.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ class Component:
     next: str
     steps: tuple[str, ...]
     folder: Path
+    match: tuple[str, ...] = ()  # phrases in a user's message that call for this component
 
     @property
     def area(self) -> str:
@@ -69,7 +73,11 @@ class Component:
         root = self.folder / "files"
         if not root.is_dir():
             return []
-        found = [item.relative_to(root).as_posix() for item in root.rglob("*") if item.is_file()]
+        found = [
+            item.relative_to(root).as_posix() for item in root.rglob("*")
+            # running a kit's tests in place leaves bytecode behind; it is not part of the kit
+            if item.is_file() and "__pycache__" not in item.parts and item.suffix != ".pyc"
+        ]
         return sorted(found, key=str.lower)
 
     def line(self) -> str:
@@ -115,6 +123,7 @@ class Library:
                     next=str(data.get("next") or ""),
                     steps=tuple(str(step) for step in data.get("steps") or ()),
                     folder=path.parent,
+                    match=tuple(str(phrase) for phrase in data.get("match") or ()),
                 )
             )
         return sorted(components, key=lambda component: component.name)
@@ -202,6 +211,88 @@ def catalogue(query: str | None = None, library: Library | None = None) -> str:
     count = len(components)
     return "\n".join([f"{count} component{'s' if count != 1 else ''}:",
                       *(component.line() for component in components), _USE_HINT])
+
+
+# --- suggest ------------------------------------------------------------------------
+
+SUGGEST_HEADER = "## Ready-made part for this turn"
+_MAX_MESSAGE = 600  # a pasted document names many things; none of them is the request
+_MAX_GAP = 2  # "fix the login bug" still says "fix bug"
+_FILLER = frozenset({"a", "an", "the", "my", "this", "that", "these", "those", "me", "please", "our", "your", "some"})
+# A kit is files to start from, so it fits only a message that asks for something to be made.
+_MAKES = re.compile(
+    r"\b(?:create|make|build|write|generate|scaffold|set\s*up|start|add|implement|develop|code|"
+    r"need|want|give\s+me|new)\b",
+    re.IGNORECASE,
+)
+
+
+def _sequence(text: str) -> list[str]:
+    return [_stem(word) for word in _WORD.findall(str(text).lower()) if word not in _FILLER]
+
+
+def _says(message: list[str], phrase: list[str]) -> int:
+    """Where the message holds the phrase's words in order, at most ``_MAX_GAP`` words apart; -1 if nowhere."""
+    if not phrase:
+        return -1
+    for start, word in enumerate(message):
+        if word != phrase[0]:
+            continue
+        at = start
+        for wanted in phrase[1:]:
+            reach = message[at + 1:at + 2 + _MAX_GAP]
+            if wanted not in reach:
+                break
+            at += 1 + reach.index(wanted)
+        else:
+            return start
+    return -1
+
+
+def suggest(message: str, library: Library | None = None) -> Component | None:
+    """The one component a message calls for, or None when none or several fit equally.
+
+    Each component lists the phrases that call for it (``match`` in its manifest). The
+    longest phrase found wins, then the number of phrases found, then the one said first
+    ("a web page with a contact form" is a page). A tie names nothing, because a wrong
+    recipe in the turn note costs more than a missing one."""
+    text = (message or "").strip()
+    if not text or len(text) > _MAX_MESSAGE:
+        return None
+    said = _sequence(text)
+    makes = bool(_MAKES.search(text))
+    ranked = []
+    for component in (library or default_library()).all():
+        if component.kind == KIT and not makes:
+            continue
+        hits = [(len(phrase), _says(said, phrase)) for phrase in map(_sequence, component.match)]
+        hits = [(length, at) for length, at in hits if at >= 0]
+        if hits:
+            ranked.append(((max(length for length, _at in hits), len(hits), -min(at for _length, at in hits)), component))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda hit: hit[0], reverse=True)
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return None
+    return ranked[0][1]
+
+
+def advice(component: Component) -> str:
+    """What the turn note says about a suggested component: a kit's call, or a recipe's steps."""
+    if component.kind == KIT:
+        values = ", ".join(f'"{key}": "..."' for key in component.blanks)
+        return (
+            f"{SUGGEST_HEADER}\n"
+            f"A ready kit fits this request: {component.name} - {component.summary}\n"
+            f'If the user wants it made, start with component(action="use", name="{component.name}", '
+            f'path="<folder>", values={{{values}}}) and adapt the files it writes; do not write them from scratch.'
+        )
+    return "\n".join([
+        SUGGEST_HEADER,
+        f"A proven recipe fits this request ({component.name}). Follow its steps in order:",
+        *(f"{number}. {step}" for number, step in enumerate(component.steps, 1)),
+        f"Then: {component.next}",
+    ])
 
 
 # --- show ---------------------------------------------------------------------------

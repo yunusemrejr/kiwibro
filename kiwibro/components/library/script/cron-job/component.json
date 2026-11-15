@@ -14,5 +14,11 @@
       "default": "0 3 * * *"
     }
   },
-  "next": "Write every file under files/ into the user's project, put the real job in the marked function, run it once by hand, then print ./{{name}}.sh --crontab for the user to paste into crontab -e."
+  "next": "Write every file under files/ into the user's project, put the real job in the marked function, run it once by hand, then print ./{{name}}.sh --crontab for the user to paste into crontab -e.",
+  "match": [
+    "cron job",
+    "crontab",
+    "cron script",
+    "cron"
+  ]
 }

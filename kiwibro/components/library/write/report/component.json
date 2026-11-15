@@ -1,0 +1,22 @@
+{
+  "name": "write/report",
+  "kind": "kit",
+  "title": "Markdown report",
+  "summary": "Report in Markdown: summary first, findings with evidence, a table, open questions and numbered sources.",
+  "when": "Use when the user wants a written report in Markdown with a summary, findings, a table and sources.",
+  "blanks": {
+    "title": {
+      "about": "Report title shown as the heading.",
+      "default": "Report title"
+    }
+  },
+  "next": "Write the file under files/ into the user's project as report.md, replace each guidance comment with real findings and sources, and read the result once before sharing it.",
+  "match": [
+    "write report",
+    "report with sources",
+    "findings report",
+    "markdown report",
+    "report on",
+    "report about"
+  ]
+}

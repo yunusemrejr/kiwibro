@@ -77,7 +77,8 @@ def train_module():
 
 
 def kit_files(folder: Path) -> list[str]:
-    return [item.relative_to(folder).as_posix() for item in folder.rglob("*") if item.is_file()]
+    return [item.relative_to(folder).as_posix() for item in folder.rglob("*")
+            if item.is_file() and "__pycache__" not in item.parts]
 
 
 def lines_that_delete(text: str) -> list[str]:
@@ -110,7 +111,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 38
+    assert len(MANIFESTS) == 68
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):
@@ -182,7 +183,8 @@ def test_kit_files_survive_their_defaults(tmp_path: Path):
                 done = subprocess.run([node, "--check", str(target)], capture_output=True, text=True)
                 assert done.returncode == 0, f"{target}: {done.stderr}"
             assert len(text.splitlines()) <= 200, f"{target} is over 200 lines"
-        size = sum(item.stat().st_size for item in path.parent.rglob("*") if item.is_file())
+        size = sum(item.stat().st_size for item in path.parent.rglob("*")
+                   if item.is_file() and "__pycache__" not in item.parts)
         assert size <= 16 * 1024, f"{path.parent} is {size} bytes"
 
 
@@ -484,3 +486,85 @@ def test_the_user_is_asked_like_for_any_other_file_write(tmp_path: Path):
     assert kit.mode == written.mode == "ask"
     default = safety.decide({}, "component", {"action": "search", "query": "web page"}, workspace=ws.root, risk="write")
     assert default.mode == "auto"
+
+
+# --- the component a message calls for ------------------------------------------------
+
+
+@pytest.mark.parametrize("message, name", [
+    ("make me a dashboard for my sales numbers", "ui/dashboard"),
+    ("build a landing page for my bakery", "web/page"),
+    ("create a web page with a contact form", "web/page"),
+    ("I need a contact form for my web page", "web/form"),
+    ("I need a flask api with sqlite for notes", "web/flask-api"),
+    ("can you write a bash script that backs up my documents folder", "script/backup"),
+    ("write pytest tests for my module utils.py", "code/tests-python"),
+    ("set up a dockerfile for my python app", "code/docker"),
+    ("fix the login bug in app.py", "code/fix-bug"),
+    ("my tests are failing, make them pass", "code/failing-tests"),
+    ("review my changes before i commit", "code/review"),
+    ("what's the latest news about the mars mission", "browser/news"),
+    ("what is the current price of the pixel 9", "browser/price-check"),
+    ("read this page https://example.com/pricing and tell me the plans", "browser/read-page"),
+    ("draft an email to my landlord about the broken heater", "write/email"),
+    ("how many rows are in sales.csv", "data/analyse-table"),
+    ("which process is using port 8080", "terminal/port-and-process"),
+    ("review the ui of my page, it looks broken on mobile", "ui/review"),
+])
+def test_a_message_gets_the_component_it_calls_for(message: str, name: str):
+    found = components.suggest(message)
+    assert found is not None and found.name == name
+
+
+@pytest.mark.parametrize("message", [
+    "hello", "how are you today?", "what is the capital of France?", "what is 17 * 23",
+    "my wifi is not working", "I sent an email to Bob yesterday", "write a dialog between two pirates",
+    "what is a dockerfile?", "remember that my sister's name is Ada", "write a poem about the sea",
+    "what's the weather in Izmir", "what is taking the space on my disk", "save this as a csv file",
+    "I work in research and need a break", "give me a toast for my brother's wedding",
+    "explain how a transformer model works", "open the downloads folder", "how much does the moon weigh",
+    "write a function that reverses a list", "python vs rust for a beginner", "",
+    "fix the bug " + "and then some more words " * 30,
+])
+def test_an_ordinary_message_gets_no_component(message: str):
+    assert components.suggest(message) is None
+
+
+def test_two_components_that_fit_equally_name_none(tmp_path: Path):
+    root = tmp_path / "library"
+    for name in ("code/fix-bug", "code/refactor"):
+        folder = root / name
+        folder.mkdir(parents=True)
+        data = manifest(LIBRARY / name / "component.json")
+        data["match"] = ["tidy parser"]
+        (folder / "component.json").write_text(json.dumps(data), encoding="utf-8")
+    assert components.suggest("tidy the parser", components.Library(root)) is None
+
+
+def test_the_advice_names_the_call_for_a_kit_and_the_steps_for_a_recipe():
+    library = components.Library(LIBRARY)
+    kit = components.advice(library.get("web/page"))
+    assert kit.startswith(components.SUGGEST_HEADER)
+    assert 'component(action="use", name="web/page", path="<folder>", values={"title": "...", "description": "..."})' in kit
+    recipe = components.advice(library.get("browser/research"))
+    assert [f"{number}. {step}" for number, step in enumerate(RESEARCH_STEPS, 1)] == recipe.splitlines()[2:-1]
+    assert recipe.splitlines()[-1] == f"Then: {RESEARCH_NEXT}"
+
+
+def test_every_tool_a_recipe_calls_exists():
+    known = set(tools.tool_names())
+    for component in components.Library(LIBRARY).all():
+        for step in component.steps:
+            for name in re.findall(r"\bCall ([a-z]+_[a-z_]+)", step):
+                assert name in known, f"{component.name}: {name}"
+
+
+def test_bytecode_left_in_a_kit_is_not_part_of_it(tmp_path: Path):
+    root = tmp_path / "library"
+    shutil.copytree(LIBRARY / "web/page", root / "web/page")
+    cache = root / "web/page/files/__pycache__"
+    cache.mkdir()
+    (cache / "x.cpython-312.pyc").write_bytes(b"\xba\x00\xff")
+    ws = Workspace(tmp_path / "ws")
+    out = components.use("web/page", workspace=ws, library=components.Library(root))
+    assert "pyc" not in out and not list(ws.root.rglob("*.pyc"))

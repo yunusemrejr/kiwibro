@@ -15,5 +15,12 @@
     "Check every task and note quoted is still open, drop finished items and say plainly when the board is empty.",
     "If a task or note tool fails, say what could not be read and build the brief from what is available, inventing nothing."
   ],
-  "next": "The final answer must be a short dated brief with the tasks due soonest first, the relevant notes and saved facts, and nothing invented."
+  "next": "The final answer must be a short dated brief with the tasks due soonest first, the relevant notes and saved facts, and nothing invented.",
+  "match": [
+    "daily brief",
+    "morning brief",
+    "brief for today",
+    "plan for today",
+    "open tasks"
+  ]
 }

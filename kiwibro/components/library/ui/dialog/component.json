@@ -1,0 +1,23 @@
+{
+  "name": "ui/dialog",
+  "kind": "kit",
+  "title": "Modal dialog and toasts",
+  "summary": "Accessible modal dialog and toast messages built on the dialog element: focus stays inside, Escape closes.",
+  "when": "Use when the project needs a confirmation popup or short status messages that appear and fade away.",
+  "blanks": {
+    "title": {
+      "about": "The demo page heading, shown in the browser tab and the main heading.",
+      "default": "Project files"
+    }
+  },
+  "next": "Write the files, replace the sample question and messages marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width, open the dialog with the keyboard and close it with Escape.",
+  "match": [
+    "modal",
+    "modal dialog",
+    "dialog box",
+    "confirm dialog",
+    "popup",
+    "toast notification",
+    "toast message"
+  ]
+}

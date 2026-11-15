@@ -1,0 +1,23 @@
+{
+  "name": "ui/nav",
+  "kind": "kit",
+  "title": "Responsive site header",
+  "summary": "Responsive site header: navigation links, a menu button on phones, a skip link and a mark on the current page.",
+  "when": "Use when the project has several pages and needs a header with navigation that works on phones and desktops.",
+  "blanks": {
+    "site_name": {
+      "about": "The site name, shown in the browser tab, the header and the main heading.",
+      "default": "Example Bakery"
+    }
+  },
+  "next": "Write the files, replace the sample links and the page text marked KIWIBRO with the project's own, copy the header block into every page, then open index.html at 360 px and at desktop width and try the menu button.",
+  "match": [
+    "navigation bar",
+    "nav bar",
+    "navbar",
+    "sidebar",
+    "tab bar",
+    "navigation menu",
+    "hamburger menu"
+  ]
+}

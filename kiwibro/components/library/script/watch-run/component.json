@@ -10,5 +10,12 @@
       "default": "make"
     }
   },
-  "next": "Write every file under files/ into the user's project, set the command at the top of the script, then run ./watch-run.sh on the folder to watch and save a file in it."
+  "next": "Write every file under files/ into the user's project, set the command at the top of the script, then run ./watch-run.sh on the folder to watch and save a file in it.",
+  "match": [
+    "watch files",
+    "when files change",
+    "on file change",
+    "file watcher",
+    "inotify"
+  ]
 }

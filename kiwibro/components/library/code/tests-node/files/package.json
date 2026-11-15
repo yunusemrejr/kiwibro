@@ -1,0 +1,12 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "description": "Sample module with node:test tests",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

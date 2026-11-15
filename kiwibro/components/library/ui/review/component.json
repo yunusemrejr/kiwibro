@@ -1,0 +1,30 @@
+{
+  "name": "ui/review",
+  "kind": "recipe",
+  "title": "Review a page's UI",
+  "summary": "Check a web page's UI: phone width, contrast, keyboard focus, states and overflow, with a fix for each finding.",
+  "when": "Use when the user wants a web page checked for phone layout, contrast, keyboard focus, states or overflow.",
+  "blanks": {},
+  "steps": [
+    "Call glob_files with **/*.html to find the page and call read_file on it; when no page is found, say so and ask for the file's path.",
+    "Call read_file on each CSS file the page links, and read the rules that set width, max-width, padding and font-size.",
+    "Call grep_files with @media and max-width over the CSS to see whether a phone breakpoint exists and what it changes.",
+    "Call grep_files with color and background over the CSS, then compare each text colour with the background behind it for 4.5:1.",
+    "Call grep_files with focus and focus-visible to check that every button, link and input has a visible focus style.",
+    "Call grep_files with overflow, white-space and width to find rules that could push the page wider than a phone screen.",
+    "Read the HTML for loading, empty and error states, and list a state that is missing rather than assume it works.",
+    "Answer with each finding at its file and line plus the exact fix, and say which checks the files alone could not settle."
+  ],
+  "next": "The final answer must list each finding with its file and line and the exact fix, and say which checks the files alone could not settle.",
+  "match": [
+    "review ui",
+    "ui review",
+    "review design",
+    "review layout",
+    "review screen",
+    "check ui",
+    "page looks broken",
+    "layout broken",
+    "broken on mobile"
+  ]
+}

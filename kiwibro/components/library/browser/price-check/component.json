@@ -1,0 +1,26 @@
+{
+  "name": "browser/price-check",
+  "kind": "recipe",
+  "title": "Check a price",
+  "summary": "Find what something costs now: search shops and the maker's page, read each price with its date and currency, cite.",
+  "when": "Use when the user asks what something costs now or where it is sold cheapest.",
+  "blanks": {},
+  "steps": [
+    "Name the exact product, model and size in one line, because prices differ between versions.",
+    "Call multi_search with queries holding the product name plus price and max_results 6.",
+    "Call fetch_pages with urls set to up to five shop and maker pages whose snippet shows a price.",
+    "Read each price with its currency, the exact version it covers and the date the page shows.",
+    "Keep every price in the currency the page shows; call calculate with expression only when the user supplied a conversion rate.",
+    "If a page hides the price behind a login or an add-to-cart button, drop it and say that shop could not be checked.",
+    "Answer as a short list: product, price, currency, shop, date and citation [1]; mark a missing price as not found."
+  ],
+  "next": "The final answer must give each price with its currency, shop, date and a numbered citation [1], [2] and the URLs, and mark any price not found as not found.",
+  "match": [
+    "current price",
+    "price of",
+    "price for",
+    "cheapest price",
+    "best price",
+    "how much does cost"
+  ]
+}

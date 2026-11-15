@@ -344,6 +344,63 @@ function toolsLoop(frame) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Ready parts: code picks a kit or recipe from the shelf                     */
+/* -------------------------------------------------------------------------- */
+
+function readyParts(root) {
+  const COLS = 6;
+  const PICK = 9;
+  root.append(s("path", { class: "hw-line", d: "M100 82V152H138" }), s("path", { class: "hw-line", d: "M342 152H372" }));
+  root.append(s("path", { class: "hw-line", d: "M420 102V88" }));
+  text(root, 100, 32, "your message");
+  const message = box(root, 100, 60, 164, 40, "make a dashboard");
+  const tiles = Array.from({ length: 18 }, (_, index) => {
+    const tile = s("rect", {
+      class: "hw-part",
+      x: 147 + (index % COLS) * 32,
+      y: 118 + Math.floor(index / COLS) * 25,
+      width: 26,
+      height: 18,
+      rx: 4,
+    });
+    root.append(tile);
+    return tile;
+  });
+  text(root, 240, 216, "68 ready parts", "hw-t-tan");
+  const chosen = text(root, 240, 236, "picked by code, not by the model");
+  const model = box(root, 420, 152, 88, 96, "Model", "", 152);
+  const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
+  root.append(card);
+  const files = [0, 1, 2].map((index) => {
+    const sheet = s("g", { class: "hw-sheet" });
+    sheet.append(s("rect", { x: 380 + index * 30, y: 44, width: 22, height: 30, rx: 4 }));
+    sheet.append(s("path", { d: `M${385 + index * 30} 53h12M${385 + index * 30} 59h12M${385 + index * 30} 65h7` }));
+    root.append(sheet);
+    return sheet;
+  });
+  const written = text(root, 420, 32, "working files");
+  const home = { x: 147 + (PICK % COLS) * 32 + 13, y: 118 + Math.floor(PICK / COLS) * 25 + 9 };
+
+  return {
+    duration: 9,
+    still: 6.4,
+    draw(t) {
+      const out = 1 - span(t, 8.4, 8.95);
+      on(message, t > 0.3 && t < 1.4);
+      const scan = Math.floor((t - 1.2) / 0.09);
+      tiles.forEach((tile, index) => on(tile, (t > 1.2 && t < 2.8 && index === scan) || (t >= 2.8 && t < 3.3 && index === PICK)));
+      fade(chosen, span(t, 2.8, 3.3) * out);
+      const travel = span(t, 3.3, 4.4);
+      at(card, mix(home.x, 400, travel), mix(home.y, 152, travel));
+      fade(card, during(t, 3.2, 4.7, 0.15));
+      on(model, t > 4.3 && t < 8.4);
+      files.forEach((sheet, index) => fade(sheet, span(t, 4.9 + index * 0.45, 5.3 + index * 0.45) * out));
+      fade(written, span(t, 5.0, 5.5) * out);
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* 6. Checked answers                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -768,6 +825,23 @@ const STOPS = [
     build: toolsLoop,
   },
   {
+    title: "Ready parts",
+    question: "Why does it not start from a blank page?",
+    lines:
+      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 68 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+    fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
+    tech: {
+      model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
+      app: [
+        ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
+        ["39 kits", "Web pages, dashboards, tables, charts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
+        ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
+        ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
+      ],
+    },
+    build: readyParts,
+  },
+  {
     title: "Checked answers",
     question: "How does it avoid making things up?",
     lines:
@@ -848,21 +922,23 @@ const TERM_NOTES = {
     "A tiny network, under 1 MB, that reads the model's state after your message and scores the seven skills and whether the request is heavy.",
   skills: "Seven thin sets of extra weights, 9 MB each, one per kind of work. One is active at a time.",
   "helper model": "Any other model you downloaded. Optional.",
+  kit: "Starter files that already work, for example a page, a server or a test file.",
+  recipe: "Four to eight steps written in terms of Kiwibro's own tools.",
 };
 
 // The optional "Under the hood" block: tech names per layer, model first.
 function techBlock(tech) {
   const groups = [
-    ["Model layer", tech.model],
-    ["App layer", tech.app],
+    ["Model layer", tech.model, "model"],
+    ["App layer", tech.app, "app"],
   ].filter(([, rows]) => rows && rows.length);
   return el("div", { class: "how-tech" }, [
     el("h4", { class: "how-tech-title", text: "Under the hood" }),
     el(
       "div",
       { class: "how-tech-groups" },
-      groups.map(([label, rows]) =>
-        el("section", { class: "how-tech-group" }, [
+      groups.map(([label, rows, layer]) =>
+        el("section", { class: `how-tech-group how-tech-${layer}` }, [
           el("h5", { class: "how-tech-layer", text: label }),
           el(
             "dl",
@@ -1036,6 +1112,7 @@ export function createHowView({ dialog }) {
     const stop = STOPS[index];
     steps.forEach((button, which) => {
       button.setAttribute("aria-current", which === index ? "step" : "false");
+      button.classList.toggle("is-seen", which < index);
     });
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "how-svg", role: "img", "aria-label": `${stop.title}: animated figure` });
     scene = stop.build(svg);

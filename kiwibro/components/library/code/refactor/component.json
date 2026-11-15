@@ -1,0 +1,26 @@
+{
+  "name": "code/refactor",
+  "kind": "recipe",
+  "title": "Restructure code safely",
+  "summary": "Restructure code without changing what it does: tests first, one small move at a time, tests after each.",
+  "when": "Use when the user wants code restructured and the same behaviour kept.",
+  "blanks": {},
+  "steps": [
+    "Call run_command with the project's test command, such as pytest; when tests already fail, stop and report that, otherwise read that they pass.",
+    "Call file_outline on the file to see its functions, classes and line numbers without reading it all.",
+    "Call grep_files with the name of each function being moved to list every place that calls it.",
+    "Move one small piece with apply_patch and change no behaviour and no public name in that step.",
+    "Call run_command with the same test command after each move and read that the same tests still pass.",
+    "Call undo_changes when a step changes any test result, then cut that move smaller and try again.",
+    "Answer with the moves made, the test result before and after, and anything still left to restructure."
+  ],
+  "next": "The final answer must list each move with its file, confirm the tests gave the same result before and after, and name anything still to restructure.",
+  "match": [
+    "refactor",
+    "restructure code",
+    "clean up code",
+    "tidy code",
+    "simplify code",
+    "extract function"
+  ]
+}

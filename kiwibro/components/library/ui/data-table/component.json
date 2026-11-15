@@ -1,0 +1,22 @@
+{
+  "name": "ui/data-table",
+  "kind": "kit",
+  "title": "Sortable data table",
+  "summary": "Data table that sorts by column, filters as you type and pages its rows, from a JSON array, plain JavaScript.",
+  "when": "Use when the project needs to show a list of records that people can sort, search and page through.",
+  "blanks": {
+    "title": {
+      "about": "The table heading, shown in the browser tab and the main heading.",
+      "default": "Stock list"
+    }
+  },
+  "next": "Write the files, replace the sample rows in data.js and the column list in table.js marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width and try a sort, a filter and the page buttons.",
+  "match": [
+    "data table",
+    "sortable table",
+    "searchable table",
+    "table with sorting",
+    "table with filter",
+    "table with pagination"
+  ]
+}

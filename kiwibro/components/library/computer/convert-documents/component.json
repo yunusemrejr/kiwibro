@@ -15,5 +15,15 @@
     "If a needed converter is missing, say so plainly, name the package and offer a format the machine does handle.",
     "Call open_path on the new file when the user wants to see it, and report the path, format and check result."
   ],
-  "next": "The final answer must give the new file path and format, the check that it is complete, and confirm the original was not changed."
+  "next": "The final answer must give the new file path and format, the check that it is complete, and confirm the original was not changed.",
+  "match": [
+    "convert to pdf",
+    "convert to docx",
+    "convert to html",
+    "convert to markdown",
+    "convert document",
+    "docx to pdf",
+    "markdown to pdf",
+    "into pdf"
+  ]
 }

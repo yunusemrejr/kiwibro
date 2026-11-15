@@ -10,5 +10,12 @@
       "default": "textcli"
     }
   },
-  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q and try the tool on a real file from the project root."
+  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q and try the tool on a real file from the project root.",
+  "match": [
+    "python cli",
+    "python command line",
+    "cli in python",
+    "command line tool in python",
+    "argparse"
+  ]
 }

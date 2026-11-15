@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{site_name}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- KIWIBRO: copy this header into every page; the link that matches the page address is marked current -->
+  <header class="site-header">
+    <div class="wrap bar">
+      <a class="wordmark" href="index.html">{{site_name}}</a>
+      <button type="button" class="menu-button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      <nav id="site-nav" aria-label="Main">
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="about.html">About</a></li>
+          <li><a href="products.html">Products</a></li>
+          <li><a href="contact.html">Contact</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <!-- KIWIBRO: replace the page heading and text -->
+    <h1>{{site_name}}</h1>
+    <p>Fresh every morning, from our oven to your table.</p>
+  </main>
+
+  <script src="nav.js"></script>
+</body>
+</html>

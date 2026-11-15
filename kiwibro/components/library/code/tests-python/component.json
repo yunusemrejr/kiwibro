@@ -10,5 +10,12 @@
       "default": "calculator"
     }
   },
-  "next": "Write every file under files/ into the user's project next to the module, rename the imports and cases to match its real functions, then run python3 -m pytest -q."
+  "next": "Write every file under files/ into the user's project next to the module, rename the imports and cases to match its real functions, then run python3 -m pytest -q.",
+  "match": [
+    "pytest",
+    "python tests",
+    "tests in python",
+    "unit tests for python",
+    "tests for my module"
+  ]
 }

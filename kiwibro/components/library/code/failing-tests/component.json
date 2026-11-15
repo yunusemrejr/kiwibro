@@ -1,0 +1,28 @@
+{
+  "name": "code/failing-tests",
+  "kind": "recipe",
+  "title": "Make failing tests pass",
+  "summary": "Make failing tests pass: run them, read the first failure, decide whether code or test is wrong, fix, rerun.",
+  "when": "Use when tests fail and the user wants them passing again.",
+  "blanks": {},
+  "steps": [
+    "Call run_command with the project's test command, such as pytest -x, and read the first failure; when none fails, say so and stop.",
+    "Call read_file on the test and on the code it calls at the failing line to see what each one expects.",
+    "Decide in one sentence whether the code or the test is wrong, and say which before editing anything.",
+    "Change the code with apply_patch when the code is wrong, and only the line the failure points at.",
+    "Change the test with replace_in_file only when it asserts behaviour that was meant to change, and say why.",
+    "Call run_command with the same test command again and read whether that first failure is gone.",
+    "Call undo_changes when the fix breaks more tests, then take the other answer from step 3.",
+    "Answer with which side was wrong, the fix, and the full test result."
+  ],
+  "next": "The final answer must say which side was wrong, what changed with file and line, and the full test result.",
+  "match": [
+    "failing tests",
+    "tests fail",
+    "tests failing",
+    "make tests pass",
+    "fix tests",
+    "test failure",
+    "tests broken"
+  ]
+}

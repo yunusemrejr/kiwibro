@@ -10,5 +10,11 @@
       "default": "textkit"
     }
   },
-  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q from the project root and confirm the tests pass."
+  "next": "Write every file under files/ into the user's project, then run python3 -m pytest -q from the project root and confirm the tests pass.",
+  "match": [
+    "python package",
+    "python library",
+    "pyproject",
+    "pip package"
+  ]
 }

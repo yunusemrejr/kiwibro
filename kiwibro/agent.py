@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
-    sessions, shape, steer, syntaxcheck, terms, toolcall, tools, weather, workspaces, safemode,
+    adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
+    sessions, shape, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -1745,9 +1745,10 @@ class AgentManager:
 
     @staticmethod
     def _worked(turn: Turn) -> tuple[tuple[str, str], ...]:
-        """The sums in the message, done exactly in code: a small model gets them wrong with confidence."""
+        """The sums and letter counts in the message, done exactly in code: a small model gets them
+        wrong with confidence."""
         try:
-            return tuple(compute.worked(turn.message))
+            return tuple(compute.worked(turn.message)) + tuple(textfacts.worked(turn.message))
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not work out the sums", turn.conversation_id, exc_info=True)
             return ()
@@ -2353,6 +2354,7 @@ class AgentManager:
             plan_kinds=[step.kind for step in steps],
             plan_steps=len(steps),
         ))
+        ready_part = self._ready_part(turn, settings)
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
         worked = prompts.WORKED_OUT.format(
             lines="\n".join(f"- {asked} = {result}" for asked, result in turn.worked)
@@ -2369,12 +2371,27 @@ class AgentManager:
             clock, worked, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
             safemode.context_line(self.db, turn.conversation_id),
             _directives_note(self.db, turn.conversation_id), plan_note, several, readings.note(reading),
-            guidance_note, learned, turn.reaction.note() if turn.reaction is not None else "",
+            guidance_note, ready_part, learned, turn.reaction.note() if turn.reaction is not None else "",
             prompts.TAKING_OVER if turn.lead else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
+    @staticmethod
+    def _ready_part(turn: Turn, settings: dict[str, Any]) -> str:
+        """The library component this message calls for, named in the note so the model starts from
+        a kit or follows a recipe's steps without searching for it first."""
+        if not settings.get("agent_enabled", True) or plan.is_small_talk(turn.message):
+            return ""
+        if "component" not in tools.select_tool_names(settings.get("tool_profile")):
+            return ""
+        try:
+            fitting = components.suggest(turn.message)
+            return components.advice(fitting) if fitting is not None else ""
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not pick a component", turn.conversation_id, exc_info=True)
+            return ""
 
     def _notes_block(self, turn: Turn) -> str:
         """The user's notes that bear on this message (never in a private chat, never for small talk)."""

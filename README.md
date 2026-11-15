@@ -45,7 +45,7 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
   changes only after you have read what changed and the git command that undoes it. It
   never deletes: deletions come as commands for you to run.
-- **Components.** 38 ready parts, from a web page to a GTK app for Ubuntu, that any model
+- **Components.** 68 ready parts, from a web page to a GTK app for Ubuntu, that any model
   can search and build on instead of starting from a blank page.
 - **Works without internet.** Kiwi Mind, your files, notes and memory need no connection.
   When it drops, Kiwibro says so and carries on with what is on the computer.

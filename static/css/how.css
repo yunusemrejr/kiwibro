@@ -50,6 +50,11 @@
   color: var(--text-2);
 }
 
+.how-step.is-seen .how-step-n {
+  border-color: var(--green);
+  color: var(--green-bright);
+}
+
 .how-step[aria-current="step"] {
   background: var(--green-dim);
   color: var(--text);
@@ -147,17 +152,34 @@
   font-weight: 600;
 }
 
+/* The two layers are two panels: green for the model, tan for Kiwibro's own code. */
+.how-tech-group {
+  margin-top: 12px;
+  padding: 14px 16px 16px;
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: 12px;
+  background: var(--green-dim);
+}
+
+.how-tech-app {
+  border-color: var(--tan-line);
+  background: var(--tan-dim);
+}
+
 .how-tech-layer {
-  margin-top: 14px;
-  margin-bottom: 6px;
-  color: var(--muted);
+  margin-bottom: 10px;
+  color: var(--green-bright);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.how-tech-app .how-tech-layer {
+  color: var(--tan-soft);
 }
 
 .how-tech-name {
-  margin-top: 10px;
-  color: var(--green-bright);
+  margin-top: 12px;
+  color: var(--text);
   font-size: 14px;
   font-weight: 600;
 }
@@ -173,12 +195,55 @@
   line-height: 1.5;
 }
 
-@media (min-width: 900px) {
+@media (min-width: 900px) and (max-width: 1099px) {
   .how-tech-groups {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    column-gap: 32px;
+    column-gap: 14px;
     align-items: start;
+  }
+}
+
+/* Wide screens: the figure stays in view on the left while the text scrolls beside it. */
+@media (min-width: 1100px) {
+  #how-sheet.sheet-wide {
+    width: min(1360px, calc(100vw - 48px));
+    height: min(880px, calc(100dvh - 48px));
+  }
+
+  .how-scroll {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+    gap: 40px;
+    align-items: start;
+    padding: 30px 40px 12px;
+  }
+
+  .how-figure {
+    position: sticky;
+    top: 0;
+    max-width: none;
+    margin: 0;
+  }
+
+  .how-copy {
+    max-width: none;
+    margin: 0;
+  }
+
+  .how-question {
+    font-size: 27px;
+    line-height: 1.18;
+    letter-spacing: -0.022em;
+  }
+
+  .how-lines {
+    margin-top: 14px;
+    font-size: 15.5px;
+  }
+
+  .how-nav {
+    padding: 10px 40px 16px;
   }
 }
 
@@ -751,4 +816,17 @@
 
 .hw-mask {
   fill: var(--bg);
+}
+
+/* ---------- Ready parts figure ------------------------------------------- */
+.hw-part {
+  fill: var(--tan-dim);
+  stroke: var(--tan-line);
+  stroke-width: 1.2;
+  transition: fill 0.12s, stroke 0.12s;
+}
+
+.hw-part.is-on {
+  fill: var(--green);
+  stroke: var(--green);
 }

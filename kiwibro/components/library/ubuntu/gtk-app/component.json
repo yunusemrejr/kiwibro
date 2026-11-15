@@ -14,5 +14,12 @@
       "default": "org.example.Notes"
     }
   },
-  "next": "Write every file under files/ into the user's project, then run python3 main.py and replace the places marked with a comment with the user's own screen and data."
+  "next": "Write every file under files/ into the user's project, then run python3 main.py and replace the places marked with a comment with the user's own screen and data.",
+  "match": [
+    "gtk app",
+    "gtk",
+    "libadwaita",
+    "gnome app",
+    "native ubuntu app"
+  ]
 }

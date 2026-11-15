@@ -1,0 +1,26 @@
+{
+  "name": "code/add-feature",
+  "kind": "recipe",
+  "title": "Add a feature",
+  "summary": "Add a feature to existing code: read how the neighbours do it, change the fewest files, add a test, run it.",
+  "when": "Use when the user wants a new feature added to code that already exists.",
+  "blanks": {},
+  "steps": [
+    "Call glob_files with the project's own pattern, such as **/*.py, to see the files and pick the folder the feature belongs in.",
+    "Call grep_files with a word the neighbours use, such as the route or class name; when nothing matches, say so and read the folder's closest file.",
+    "Call read_files on two or three neighbour files to copy their naming, error handling and test style.",
+    "Make the smallest change that adds the feature and touches the fewest files, with apply_patch or replace_in_file.",
+    "Add one test next to the neighbour tests, with write_file or apply_patch, that fails if the feature is removed.",
+    "Call run_command with the project's test command, such as pytest, and read which test fails and why.",
+    "Call undo_changes and take a smaller step when the change breaks tests that passed before it.",
+    "Answer with the files changed, the test that proves the feature, and how the user calls it."
+  ],
+  "next": "The final answer must list the files changed, the test that proves the feature, how to use it, and the test result.",
+  "match": [
+    "add feature",
+    "new feature",
+    "implement feature",
+    "add support for",
+    "add option"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "browser/find-download",
+  "kind": "recipe",
+  "title": "Find the download page",
+  "summary": "Find the official download or documentation link for a program: the maker's site first, check the version and date.",
+  "when": "Use when the user wants the official download or documentation link for a program.",
+  "blanks": {},
+  "steps": [
+    "Write the program's exact name and its maker before searching for anything.",
+    "Call web_search with query set to the program name plus official download and max_results 6.",
+    "Pick the maker's own domain from the results and call browse_page with url set to it to see its download and docs links.",
+    "Call fetch_page with url set to the chosen link and read the version number, release date and supported systems.",
+    "Call fetch_pages with urls set to two maker pages when the first is unclear, and keep the newer version.",
+    "If no maker page is found, say so and give nothing from mirror, ad or download-portal sites; mark the link not found.",
+    "Answer with the official URL, version, date and system, cite it as [1], and say what the page did not confirm."
+  ],
+  "next": "The final answer must give the official URL with its version, date and supported system, cite it as [1] with the URL, and say what the page did not confirm.",
+  "match": [
+    "official download",
+    "download link",
+    "download page",
+    "where to download",
+    "where can i download",
+    "download latest version"
+  ]
+}

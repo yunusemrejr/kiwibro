@@ -15,5 +15,14 @@
     "Call remote action run with the same find command when the folder is on another machine, not a guess.",
     "Report each file with its full path, size and date, and say plainly when nothing matched the search."
   ],
-  "next": "The final answer must list the matching files with full path, size and date, sorted as asked, and give the total count or say nothing matched."
+  "next": "The final answer must list the matching files with full path, size and date, sorted as asked, and give the total count or say nothing matched.",
+  "match": [
+    "find files",
+    "search for files",
+    "largest files",
+    "biggest files",
+    "newest files",
+    "files larger than",
+    "files older than"
+  ]
 }

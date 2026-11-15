@@ -1,0 +1,21 @@
+{
+  "name": "code/api-client",
+  "kind": "kit",
+  "title": "Python API client",
+  "summary": "Python client for a JSON web API: timeout, bounded retries with backoff, clear errors, standard library only, with tests.",
+  "when": "Use when the project has to call a JSON web API from Python and needs timeouts, bounded retries and readable errors.",
+  "blanks": {
+    "name": {
+      "about": "Package name, used for the src/ folder, the imports and the README title (lowercase, underscores).",
+      "default": "tasks_client"
+    }
+  },
+  "next": "Write the files, run python3 -m pytest -q to confirm the client tests pass, then point ApiClient at the project's base URL and add its real routes.",
+  "match": [
+    "api client",
+    "client for api",
+    "http client",
+    "rest client",
+    "api wrapper"
+  ]
+}

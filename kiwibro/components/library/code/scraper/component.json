@@ -1,0 +1,21 @@
+{
+  "name": "code/scraper",
+  "kind": "kit",
+  "title": "Page scraper",
+  "summary": "Python page scraper on the standard library: fetch with a timeout, pull links and tables out of the HTML, save as CSV.",
+  "when": "Use when a page's links or tables have to be pulled out of the HTML and saved as CSV without installing a parser.",
+  "blanks": {
+    "name": {
+      "about": "Script name, used for the file name, the prog name in the help text and the user agent (lowercase, underscores).",
+      "default": "linkgrab"
+    }
+  },
+  "next": "Write the files, run python3 -m pytest -q to confirm the scraper tests pass, then run python3 {{name}}.py https://example.com --what links --out links.csv.",
+  "match": [
+    "scraper",
+    "scrape",
+    "web scraping",
+    "crawler",
+    "scrape links"
+  ]
+}

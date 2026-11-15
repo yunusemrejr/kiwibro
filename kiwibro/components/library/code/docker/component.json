@@ -1,0 +1,22 @@
+{
+  "name": "code/docker",
+  "kind": "kit",
+  "title": "Docker container setup",
+  "summary": "Container setup for a Python web app: Dockerfile with a non-root user, compose file with a health check, ignore file.",
+  "when": "Use when a small Python web app has to run in a container with a non-root user and a health check.",
+  "blanks": {
+    "name": {
+      "about": "Service name, used for the compose service, the image tag and the health response (lowercase).",
+      "default": "webapp"
+    }
+  },
+  "next": "Write the files, then run docker compose up --build and check with docker compose ps that the service reports healthy.",
+  "match": [
+    "dockerfile",
+    "docker compose",
+    "dockerize",
+    "dockerise",
+    "docker image",
+    "containerize"
+  ]
+}

@@ -10,5 +10,11 @@
       "default": "{n}-{stem}{ext}"
     }
   },
-  "next": "Write every file under files/ into the user's project, then run ./batch-rename.sh on a few sample files and only use --apply once the user has seen the preview."
+  "next": "Write every file under files/ into the user's project, then run ./batch-rename.sh on a few sample files and only use --apply once the user has seen the preview.",
+  "match": [
+    "batch rename",
+    "bulk rename",
+    "rename files",
+    "rename all"
+  ]
 }

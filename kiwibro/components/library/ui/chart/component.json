@@ -1,0 +1,21 @@
+{
+  "name": "ui/chart",
+  "kind": "kit",
+  "title": "Bar and line chart",
+  "summary": "Bar and line chart drawn as SVG from a data array: axes, labels, a text table for screen readers, no library.",
+  "when": "Use when the project needs one chart of values over categories or time, without pulling in a charting library.",
+  "blanks": {
+    "title": {
+      "about": "The chart heading, shown in the browser tab and above the chart.",
+      "default": "Visitors per weekday"
+    }
+  },
+  "next": "Write the files, replace the sample points in data.js marked KIWIBRO with the project's own values, then open index.html at 360 px and at desktop width and switch between bars and line.",
+  "match": [
+    "bar chart",
+    "line chart",
+    "svg chart",
+    "chart page",
+    "chart component"
+  ]
+}

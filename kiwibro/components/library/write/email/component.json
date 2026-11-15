@@ -1,0 +1,28 @@
+{
+  "name": "write/email",
+  "kind": "recipe",
+  "title": "Draft an email",
+  "summary": "Draft an email or message: purpose first, the facts the user gave and nothing invented, a clear ask, a fitting tone.",
+  "when": "Use when the user asks for an email or message to be written to someone.",
+  "blanks": {},
+  "steps": [
+    "Name the reader, the purpose and the tone in one line before writing a word of the draft.",
+    "Call recall with query set to the reader's name and limit 6 to find facts the user saved earlier.",
+    "Include only facts the user gave or recall returned; leave any missing detail as a blank the user fills.",
+    "Order the draft: greeting, the purpose in the first sentence, the facts, one clear ask, closing.",
+    "Call note with action save, title set to the subject and content set to the draft, so the user keeps a copy.",
+    "Call clipboard with action write and text set to the draft, so the user can paste it into their mail program.",
+    "Say plainly that Kiwibro cannot send email, so this is a draft to copy and send by hand.",
+    "Answer with the draft itself and one line naming the blanks left for the user to fill."
+  ],
+  "next": "The final answer must be the finished draft with the facts that were given, one clear ask, the blanks left marked, and a line saying it was not sent.",
+  "match": [
+    "write email",
+    "draft email",
+    "compose email",
+    "write mail",
+    "draft reply",
+    "write reply",
+    "reply to email"
+  ]
+}

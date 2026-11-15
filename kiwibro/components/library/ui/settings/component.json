@@ -1,0 +1,20 @@
+{
+  "name": "ui/settings",
+  "kind": "kit",
+  "title": "Settings screen",
+  "summary": "Settings screen: grouped options with switches, selects and a text field, saved in the browser and restored on load.",
+  "when": "Use when the project needs a preferences screen whose choices stay after the page is closed.",
+  "blanks": {
+    "title": {
+      "about": "The screen heading, shown in the browser tab and the main heading.",
+      "default": "Settings"
+    }
+  },
+  "next": "Write the files, replace the sample options marked KIWIBRO in index.html and the matching defaults in settings.js with the project's own, then open index.html at 360 px and at desktop width, change an option and reload to see it restored.",
+  "match": [
+    "settings page",
+    "settings screen",
+    "settings panel",
+    "preferences page"
+  ]
+}

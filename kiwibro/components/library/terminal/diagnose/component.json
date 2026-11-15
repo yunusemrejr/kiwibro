@@ -15,5 +15,14 @@
     "Call undo_changes when a change made the error worse, then test the next cause instead of stacking fixes.",
     "If the cause is not found, report the exact error, what was checked and what is still unknown, with no guess."
   ],
-  "next": "The final answer must name the cause if it was found, the evidence for it, the fix that was tried, and honestly what is still unknown."
+  "next": "The final answer must name the cause if it was found, the evidence for it, the fix that was tried, and honestly what is still unknown.",
+  "match": [
+    "diagnose",
+    "command fails",
+    "service fails",
+    "fails to start",
+    "not starting",
+    "command not found",
+    "error when running"
+  ]
 }

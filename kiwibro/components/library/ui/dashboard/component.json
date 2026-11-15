@@ -1,0 +1,21 @@
+{
+  "name": "ui/dashboard",
+  "kind": "kit",
+  "title": "Dashboard page",
+  "summary": "Dashboard page: side navigation, stat tiles, a data table and an SVG bar chart drawn from one data file, no framework.",
+  "when": "Use when the project needs an admin, report or overview screen that shows a few key numbers, a chart and a table.",
+  "blanks": {
+    "title": {
+      "about": "The dashboard name, shown in the browser tab, the side navigation and the main heading.",
+      "default": "Shop overview"
+    }
+  },
+  "next": "Write the files, replace the sample numbers and labels in data.js marked KIWIBRO with the project's own, then open index.html at 360 px and at desktop width to check the layout.",
+  "match": [
+    "dashboard",
+    "admin panel",
+    "admin page",
+    "stat tiles",
+    "analytics page"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "code/tests-node",
+  "kind": "kit",
+  "title": "Node test starter",
+  "summary": "Test starter for Node with node:test: a sample module, table-driven cases and an async case.",
+  "when": "Use when a Node project has no tests yet and needs a starter showing node:test, table-driven cases and an async case.",
+  "blanks": {
+    "name": {
+      "about": "Package name, used in package.json, the temp folder prefix and the README title (lowercase).",
+      "default": "textkit"
+    }
+  },
+  "next": "Write the files, run node --test to confirm the sample tests pass, then replace the sample module and its cases with the project's own code.",
+  "match": [
+    "node tests",
+    "tests in node",
+    "javascript tests",
+    "unit tests for node",
+    "table driven tests"
+  ]
+}

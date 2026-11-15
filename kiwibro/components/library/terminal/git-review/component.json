@@ -15,5 +15,14 @@
     "Call git action compare with the remote to say whether the branch is level, ahead or behind origin.",
     "Summarise what changed, what looks risky and what to check before committing, in three short parts."
   ],
-  "next": "The final answer must summarise the changed files, the diff in plain words, the risky spots and whether the branch matches its remote."
+  "next": "The final answer must summarise the changed files, the diff in plain words, the risky spots and whether the branch matches its remote.",
+  "match": [
+    "what changed in repo",
+    "what changed in repository",
+    "git status",
+    "git diff",
+    "uncommitted changes",
+    "review repo",
+    "review repository"
+  ]
 }

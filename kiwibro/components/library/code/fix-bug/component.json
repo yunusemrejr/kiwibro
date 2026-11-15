@@ -1,0 +1,29 @@
+{
+  "name": "code/fix-bug",
+  "kind": "recipe",
+  "title": "Fix a bug",
+  "summary": "Fix a bug: reproduce it, find the line that causes it, change only that, run the tests, report what changed.",
+  "when": "Use when something fails or misbehaves and the user wants the cause found and fixed, not guessed.",
+  "blanks": {},
+  "steps": [
+    "Call run_command with the command or the steps that show the bug, and read the first error line.",
+    "Call grep_files with the error text and context_lines 2 to find the file and line that raises it.",
+    "Call read_file on that file with start and end around the failing line to see what the code expects.",
+    "Name the cause in one sentence before editing anything; if no line explains the error, stop and say what is unknown.",
+    "Change only that spot with apply_patch, or replace_in_file for one line, and keep the diff to the cause.",
+    "Call run_command with the same reproduction command again; if the error got worse, call undo_changes and try the next cause.",
+    "Call run_command with the project's test command, such as pytest, and read which tests pass or fail.",
+    "Answer with the cause, the file and line, what changed, and the test result."
+  ],
+  "next": "The final answer must name the cause and its file and line, say what changed, and give the test result, or say plainly that the cause was not found.",
+  "match": [
+    "fix bug",
+    "fix error",
+    "fix crash",
+    "fix exception",
+    "fix issue",
+    "bug in",
+    "debug",
+    "traceback"
+  ]
+}

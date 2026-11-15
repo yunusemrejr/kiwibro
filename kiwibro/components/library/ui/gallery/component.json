@@ -1,0 +1,21 @@
+{
+  "name": "ui/gallery",
+  "kind": "kit",
+  "title": "Image gallery",
+  "summary": "Responsive image gallery: a grid of thumbnails and a full-size viewer with keyboard and swipe navigation.",
+  "when": "Use when the project needs a photo or artwork gallery that opens each picture larger and lets people move through them.",
+  "blanks": {
+    "title": {
+      "about": "The gallery heading, shown in the browser tab and the main heading.",
+      "default": "Gallery"
+    }
+  },
+  "next": "Write the files, swap the sample pictures marked KIWIBRO for the project's own images (keep the button and the label around each one), then open index.html at 360 px and at desktop width and step through the viewer with the arrow keys.",
+  "match": [
+    "gallery",
+    "image gallery",
+    "photo gallery",
+    "lightbox",
+    "image grid"
+  ]
+}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <main id="main" class="wrap">
+    <div class="top">
+      <h1>{{title}}</h1>
+      <div class="switch" role="group" aria-label="Chart type">
+        <button type="button" data-kind="bar" aria-pressed="true">Bars</button>
+        <button type="button" data-kind="line" aria-pressed="false">Line</button>
+      </div>
+    </div>
+
+    <figure>
+      <svg id="chart" class="chart" role="img" aria-labelledby="chart-title"></svg>
+      <figcaption id="chart-title" class="sr">{{title}}, in the table below.</figcaption>
+    </figure>
+
+    <details>
+      <summary>Show as table</summary>
+      <table id="table"></table>
+    </details>
+  </main>
+
+  <script src="data.js"></script>
+  <script src="chart.js"></script>
+</body>
+</html>

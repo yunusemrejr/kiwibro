@@ -15,5 +15,16 @@
     "Leave any file that fits no group where it is, and say which files those are at the end.",
     "Report the folders made, the files moved and the files left alone; nothing on disk changed beyond the moves."
   ],
-  "next": "The final answer must list the folders created, how many files went into each and which files were left where they were."
+  "next": "The final answer must list the folders created, how many files went into each and which files were left where they were.",
+  "match": [
+    "organise folder",
+    "organize folder",
+    "sort folder",
+    "tidy folder",
+    "clean up folder",
+    "messy folder",
+    "organise downloads",
+    "organize downloads",
+    "sort files into"
+  ]
 }

@@ -14,5 +14,10 @@
       "default": "Count lines in the files given"
     }
   },
-  "next": "Write every file under files/ into the user's project, replace the function marked with a comment in {{name}}.py, then run python3 {{name}}.py --help and python3 {{name}}.py on a real file."
+  "next": "Write every file under files/ into the user's project, replace the function marked with a comment in {{name}}.py, then run python3 {{name}}.py --help and python3 {{name}}.py on a real file.",
+  "match": [
+    "python script",
+    "script in python",
+    "single file python"
+  ]
 }

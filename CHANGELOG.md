@@ -6,6 +6,20 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **Ready parts, chosen by code.** The component library grows from 38 to 68 kits and recipes:
+  dashboards, data tables, charts, dialogs, galleries, navigation and settings screens, API
+  clients, scrapers, Node servers and tests, Docker files, CSV and JSON tools, and recipes for
+  fixing a bug, failing tests, a review, a refactor, reading a page, news, a price check, an
+  email, a report and a summary. Each part lists the phrases that call for it. Kiwibro matches
+  your message against them before the model writes and names the fitting kit, or the steps
+  of the fitting recipe, in the turn's note, so the model starts from working files instead of
+  a blank page. A kit is offered only when the message asks for something to be made, and two
+  parts that fit equally name none.
+- **Exact answers about text.** How many letters, words or characters a quoted text has, how
+  often a letter occurs in a word, and a word spelled backwards are worked out by code and
+  handed to the model, the way sums already are.
+- **How it works: a "Ready parts" stop.** On wide screens the figure now stays beside the
+  text, and the notes under the hood are grouped into the model layer and the app layer.
 - **Kiwi Mind: Kiwibro's own model.** Kiwibro now thinks with a model stack of its own: one
   4-bit model (Qwen3-0.6B, trained on the grid it is stored in), seven skills it swaps by
   itself (chat, web, code, terminal, computer, tools, write) and a control head that picks

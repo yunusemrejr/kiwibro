@@ -1,0 +1,72 @@
+/* KIWIBRO: choose palette and fonts from the subject */
+:root {
+  --paper: #eef4f0;
+  --ink: #10231f;
+  --muted: #40544f;
+  --accent: #0b7a5c;
+  --accent-strong: #095f48;
+  --accent-2: #f2c230;
+  --surface: #ffffff;
+  --line: rgba(16, 35, 31, 0.16);
+  --tint: rgba(11, 122, 92, 0.1);
+  --radius: 10px;
+  --space-1: 0.5rem;
+  --space-2: 0.75rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+  --step-0: clamp(1rem, 0.97rem + 0.15vw, 1.06rem);
+  --step-1: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);
+  --step-3: clamp(2.1rem, 1.6rem + 2.4vw, 3.4rem);
+  --font-body: system-ui, sans-serif;
+  --font-heading: "Ubuntu", "Cantarell", "Segoe UI", system-ui, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+h1 { margin: 0 0 var(--space-3); font-family: var(--font-heading); font-size: var(--step-3); font-weight: 700; line-height: 1.12; letter-spacing: -0.02em; }
+p { margin: 0; max-width: 58ch; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.wrap { width: min(100% - 2rem, 66rem); margin-inline: auto; }
+main { padding-block: var(--space-5) var(--space-6); }
+.skip {
+  position: absolute; left: -999px; top: var(--space-2);
+  padding: var(--space-2) var(--space-3); background: var(--surface); border-radius: var(--radius);
+}
+.skip:focus { left: var(--space-3); z-index: 20; }
+.site-header { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); background: var(--surface); }
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; padding-block: var(--space-1); }
+.wordmark {
+  display: inline-flex; align-items: center; min-height: 48px; color: var(--ink);
+  font-family: var(--font-heading); font-size: var(--step-1); font-weight: 700; text-decoration: none;
+}
+nav { width: 100%; }
+nav ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0 0 var(--space-3); list-style: none; }
+nav a {
+  display: flex; align-items: center; min-height: 48px; padding: 0 var(--space-3);
+  border-radius: var(--radius); color: var(--ink); font-weight: 600; text-decoration: none;
+}
+nav a:hover { background: var(--tint); color: var(--accent-strong); }
+nav a[aria-current="page"] { background: var(--accent); color: #ffffff; }
+.menu-button {
+  min-height: 44px; padding: 0 var(--space-3); border: 2px solid var(--accent); border-radius: var(--radius);
+  background: var(--surface); color: var(--accent-strong); font: inherit; font-weight: 600; cursor: pointer;
+}
+.menu-button[aria-expanded="true"] { background: var(--accent); color: #ffffff; }
+/* Without script the links stay visible; the menu button only exists once nav.js has run. */
+.menu-button { display: none; }
+.js .menu-button { display: inline-flex; align-items: center; }
+.js nav:not(.open) { display: none; }
+@media (min-width: 48rem) {
+  .js .menu-button { display: none; }
+  .js nav:not(.open), nav { display: block; width: auto; }
+  nav ul { flex-direction: row; gap: var(--space-1); padding: 0; }
+  nav a { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

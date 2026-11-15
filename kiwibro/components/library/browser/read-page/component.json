@@ -1,0 +1,29 @@
+{
+  "name": "browser/read-page",
+  "kind": "recipe",
+  "title": "Read one page",
+  "summary": "Read one web page and answer from it: fetch it, find the passage that answers, quote the figure, give the URL.",
+  "when": "Use when the user gives one web address or asks what a single page says and the answer must come from that page.",
+  "blanks": {},
+  "steps": [
+    "Call fetch_page with url set to the exact address and max_chars 8000 to get the page text.",
+    "Read the returned text for the passage that answers the question, skipping menus, cookie banners and footers.",
+    "If the page is mostly links, call browse_page with url set to the same address and read its numbered link list.",
+    "Copy the figure or sentence exactly as printed, with its unit and the heading it appears under.",
+    "If fetch_page fails with a host or timeout error, say the page could not be read and call open_path with target set to the url.",
+    "Mark any figure, date or link the page does not hold as not found; never fill it from memory.",
+    "Answer in two or three sentences, quote the exact figure, cite the page as [1] with its URL, and name what was missing."
+  ],
+  "next": "The final answer must quote the sentence or figure from the fetched page, cite it as [1] with its URL, and mark anything the page did not hold as not found.",
+  "match": [
+    "read page",
+    "read url",
+    "read link",
+    "read article",
+    "summarise page",
+    "summarize page",
+    "summarise article",
+    "summarize article",
+    "what does page say"
+  ]
+}

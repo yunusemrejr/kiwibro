@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <div class="shell">
+    <header class="side">
+      <p class="wordmark">{{title}}</p>
+      <nav aria-label="Dashboard sections">
+        <ul>
+          <li><a href="#tiles">Summary</a></li>
+          <li><a href="#chart-title">Chart</a></li>
+          <li><a href="#table-title">Orders</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main id="main">
+      <h1>{{title}}</h1>
+
+      <section id="tiles" class="tiles" aria-label="Summary"></section>
+
+      <section class="card" aria-labelledby="chart-title">
+        <h2 id="chart-title">Orders per month</h2>
+        <svg id="chart" class="chart" role="img"></svg>
+      </section>
+
+      <section class="card" aria-labelledby="table-title">
+        <h2 id="table-title">Latest orders</h2>
+        <div class="scroll" tabindex="0" role="region" aria-labelledby="table-title">
+          <table id="table"></table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

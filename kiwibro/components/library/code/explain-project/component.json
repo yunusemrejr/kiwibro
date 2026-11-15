@@ -1,0 +1,29 @@
+{
+  "name": "code/explain-project",
+  "kind": "recipe",
+  "title": "Explain a project",
+  "summary": "Explain an unfamiliar project: entry point, folder layout, main modules and how to run and test it.",
+  "when": "Use when the user wants to understand a project or codebase they did not write.",
+  "blanks": {},
+  "steps": [
+    "Call list_files on the project root to see its top folders and what the project is made of.",
+    "Call read_files on README, pyproject.toml, package.json and Makefile; when one is missing, skip it and read the others.",
+    "Call glob_files with **/main.py and **/__main__.py to find the entry point; when neither exists, say so and read the top module instead.",
+    "Call file_outline on the entry point to see its functions and imports and which modules it loads.",
+    "Call file_outline on the two or three largest modules to see what each one is responsible for.",
+    "Call grep_files with def main and app.run to trace how the program starts and where the first real work happens.",
+    "Call run_command with the run or test command the README gives, such as pytest, and read what it prints.",
+    "Answer with the entry point, the folder layout, the main modules and the exact run and test commands."
+  ],
+  "next": "The final answer must name the entry point, the folder layout, the main modules and the exact commands to run and test, marking anything that could not be read.",
+  "match": [
+    "explain project",
+    "explain codebase",
+    "explain repo",
+    "understand codebase",
+    "walk through project",
+    "how does project work",
+    "what does project do",
+    "what does repo do"
+  ]
+}

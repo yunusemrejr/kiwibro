@@ -1,0 +1,13 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "description": "HTTP JSON API with routing, input checks and no dependencies",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

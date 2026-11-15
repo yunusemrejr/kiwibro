@@ -1,0 +1,2 @@
+# The starter app uses only the standard library. Add pinned packages here,
+# one per line, for example: requests==2.32.3

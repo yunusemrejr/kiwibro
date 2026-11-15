@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <main id="main" class="wrap">
+    <h1>{{title}}</h1>
+    <div class="actions">
+      <button type="button" data-open="confirm">Archive file</button>
+      <button type="button" class="quiet" data-toast="Link copied.">Copy link</button>
+    </div>
+  </main>
+
+  <!-- KIWIBRO: set the question and the two answers; the form closes the dialog with the button's value -->
+  <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <form method="dialog">
+      <h2 id="confirm-title">Archive this file?</h2>
+      <p id="confirm-text">It moves to the archive and can be restored later.</p>
+      <div class="actions">
+        <button value="cancel" class="quiet" autofocus>Cancel</button>
+        <button value="archive">Archive</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <script src="dialog.js"></script>
+</body>
+</html>

@@ -14,5 +14,13 @@
     "If the screen is locked, blank or unreadable, say so plainly and ask for the window to be brought forward.",
     "Answer with what is on screen, the exact text found and the next step; never guess text the image does not show."
   ],
-  "next": "The final answer must describe what the screen shows, quote the exact text found and give the next step for the user."
+  "next": "The final answer must describe what the screen shows, quote the exact text found and give the next step for the user.",
+  "match": [
+    "what is on screen",
+    "what on screen",
+    "look at screen",
+    "see screen",
+    "take screenshot",
+    "explain screen"
+  ]
 }

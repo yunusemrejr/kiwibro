@@ -113,7 +113,7 @@ kiwibro/
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
 │   ├── components.py         # the component library: search, show, use
-│   ├── components/library/   # 38 kits and recipes, one folder each (plain data)
+│   ├── components/library/   # 68 kits and recipes, one folder each (plain data)
 │   │   # safety
 │   ├── safety.py             # risk grading, auto/ask/deny policy, confinement
 │   ├── sandbox.py            # workspace paths, file tools, process runner, terminals
@@ -1272,13 +1272,25 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 38 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
-  service), `code/` (Python CLI and package, Node CLI, C program, SQLite store, tests),
-  `script/` (bash, Python, backup, batch rename, cron job, watch and run), `ubuntu/` (GTK
-  app, desktop entry, systemd service, deb package), `terminal/` (diagnose, git review,
-  ports and processes, project setup), `computer/` (find files, free space, organise a
-  folder, convert documents, daily brief, explain a screenshot) and `browser/` (research,
-  compare, extract a table, follow docs, monitor a page).
+- **Areas.** 68 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service), `ui/` (dashboard, data table, chart, dialog and toast, navigation, settings,
+  gallery, and a UI review recipe), `code/` (Python CLI and package, Node CLI and server, C
+  program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
+  fix a bug, add a feature, refactor, review, explain a project and repair failing tests),
+  `data/` (CSV report, JSON tool, answer from a table), `write/` (README, report, summary,
+  email draft), `script/` (bash, Python, backup, batch rename, cron job, watch and run),
+  `ubuntu/` (GTK app, desktop entry, systemd service, deb package), `terminal/` (diagnose,
+  git review, ports and processes, project setup), `computer/` (find files, free space,
+  organise a folder, convert documents, daily brief, explain a screenshot) and `browser/`
+  (research, compare, extract a table, follow docs, monitor a page, read a page, news,
+  price check, find a download).
+- **Chosen by code.** Each manifest lists `match` phrases. `components.suggest(message)`
+  looks for them in the user's message (words in order, at most two words apart; a kit
+  only when the message asks for something to be made) and the agent puts the result in
+  the turn note: for a kit the exact `component(action="use", ...)` call, for a recipe its
+  steps. The longest phrase wins, then the number of phrases, then the one said first; a
+  tie or a message over 600 characters names nothing. `textfacts.worked` adds exact letter
+  and word counts to the sums `compute.worked` already hands the model.
 - **The tool.** `component(action=search|list|show|use, ...)`. `search` ranks by the words
   of the name, title, summary and "when" line and returns at most six; `use` fills the
   blanks and writes a kit into the workspace through the same path checks and checkpoint as

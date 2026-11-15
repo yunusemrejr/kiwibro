@@ -14,5 +14,9 @@
       "default": "Run one task and report what it did"
     }
   },
-  "next": "Write every file under files/ into the user's project, replace the work loop marked with a comment in {{name}}.sh, then run ./{{name}}.sh --help and ./{{name}}.sh on a real file."
+  "next": "Write every file under files/ into the user's project, replace the work loop marked with a comment in {{name}}.sh, then run ./{{name}}.sh --help and ./{{name}}.sh on a real file.",
+  "match": [
+    "bash script",
+    "shell script"
+  ]
 }

@@ -1,0 +1,18 @@
+{
+  "name": "write/readme",
+  "kind": "kit",
+  "title": "Project README",
+  "summary": "README for a project: what it is, install, use, configure, test and licence sections ready to fill.",
+  "when": "Use when the user needs a README for a new project with the main sections ready to fill in.",
+  "blanks": {
+    "project": {
+      "about": "Project name shown as the README title.",
+      "default": "Project name"
+    }
+  },
+  "next": "Write the file under files/ into the user's project as README.md, replace each guidance comment with real text, and read the result once at phone width.",
+  "match": [
+    "readme",
+    "readme for project"
+  ]
+}

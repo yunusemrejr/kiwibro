@@ -14,5 +14,12 @@
       "default": "/usr/bin/my-app"
     }
   },
-  "next": "Write every file under files/ into the user's project, set name, command and the icon to the user's program, then run ./install.sh and look for the icon in the app grid."
+  "next": "Write every file under files/ into the user's project, set name, command and the icon to the user's program, then run ./install.sh and look for the icon in the app grid.",
+  "match": [
+    "desktop entry",
+    "desktop file",
+    "app launcher",
+    "desktop shortcut",
+    "menu entry"
+  ]
 }

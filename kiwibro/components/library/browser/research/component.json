@@ -14,5 +14,14 @@
     "If a fetch fails with a host or timeout error, say the page could not be read and use search snippets only, marked unverified.",
     "Answer in plain sentences, cite each fact as [1] or [2] in order of first use, and list the URLs at the end."
   ],
-  "next": "The final answer must state the answer in plain sentences with numbered citations [1], [2] and the URL list below."
+  "next": "The final answer must state the answer in plain sentences with numbered citations [1], [2] and the URL list below.",
+  "match": [
+    "research on",
+    "research about",
+    "do research",
+    "with sources",
+    "several sources",
+    "find out about",
+    "investigate"
+  ]
 }

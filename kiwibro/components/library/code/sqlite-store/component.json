@@ -10,5 +10,11 @@
       "default": "notes"
     }
   },
-  "next": "Write every file under files/ into the user's project, run python3 -m pytest -q, then add the columns the user actually needs inside the version 1 migration and the queries beside it."
+  "next": "Write every file under files/ into the user's project, run python3 -m pytest -q, then add the columns the user actually needs inside the version 1 migration and the queries beside it.",
+  "match": [
+    "sqlite",
+    "sqlite database",
+    "sqlite store",
+    "sqlite data layer"
+  ]
 }

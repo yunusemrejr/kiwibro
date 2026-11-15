@@ -10,5 +10,13 @@
       "default": "Your site"
     }
   },
-  "next": "Write the files, replace the sample text and contact address marked KIWIBRO with the project's own, then click through all three pages at 360 px and desktop width."
+  "next": "Write the files, replace the sample text and contact address marked KIWIBRO with the project's own, then click through all three pages at 360 px and desktop width.",
+  "match": [
+    "website",
+    "web site",
+    "static site",
+    "multi page site",
+    "portfolio site",
+    "personal site"
+  ]
 }

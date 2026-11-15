@@ -1,0 +1,27 @@
+{
+  "name": "browser/news",
+  "kind": "recipe",
+  "title": "Today's news",
+  "summary": "Today's news on a topic: search with dates, read dated sources, keep only items from the asked period, cite each.",
+  "when": "Use when the user asks what is happening now or this week on a topic and wants dated news rather than evergreen pages.",
+  "blanks": {},
+  "steps": [
+    "Write the topic and the asked period, today, this week or exact dates, in one line first.",
+    "Call multi_search with queries holding two or three phrases that name the topic and the period, and max_results 6.",
+    "Read the titles and snippets for dates, and call fetch_pages with urls set to up to five pages whose date fits the period.",
+    "Read the date printed on each page and keep only items published inside the asked period; note each date.",
+    "Call web_research with query set to the topic and depth 3 when the search list has no dated articles.",
+    "If no dated article falls inside the period, say so plainly and give the closest older item with its date.",
+    "Answer with one line per item: what happened, its date, and the citation [1] with the URL."
+  ],
+  "next": "The final answer must list each news item with its date and a numbered citation [1], [2] and the URLs, and say plainly when nothing dated was found for the period.",
+  "match": [
+    "latest news",
+    "news today",
+    "news about",
+    "news on",
+    "recent news",
+    "today headlines",
+    "what happened today"
+  ]
+}

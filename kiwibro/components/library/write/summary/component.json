@@ -1,0 +1,31 @@
+{
+  "name": "write/summary",
+  "kind": "recipe",
+  "title": "Summarise a long document",
+  "summary": "Summarise a long file or document: index it, read it section by section, keep figures exact, state what was left out.",
+  "when": "Use when a file or document is too long to read whole and the user wants its content summarised.",
+  "blanks": {},
+  "steps": [
+    "Call doc_add with path set to the document so doc_search and doc_read can open it.",
+    "Call doc_list with document left empty to get its handle, then with document set to the handle for its heading outline.",
+    "Call doc_read with document set to the handle, chunk 1 and count 3, then raise chunk by 3 until the end.",
+    "Call study_file with path and question for one long plain text file, and keep the part numbers it returns.",
+    "Copy every figure, name and date exactly as printed, with the heading it came under.",
+    "Call doc_search with query set to a term and limit 5 when a section you need never appeared in the chunks read.",
+    "If doc_add refuses the format, call read_file with path and start and end line numbers, and say the rest was not read.",
+    "Answer in the document's own order in a few short paragraphs, keep figures exact, and name the sections left out."
+  ],
+  "next": "The final answer must summarise the document in its own order with every figure exact and one line naming the sections that were left out.",
+  "match": [
+    "summarise file",
+    "summarize file",
+    "summarise document",
+    "summarize document",
+    "summarise pdf",
+    "summarize pdf",
+    "summarise report",
+    "summarize report",
+    "summary of document",
+    "summary of file"
+  ]
+}

@@ -14,5 +14,11 @@
       "default": "1.0.0"
     }
   },
-  "next": "Write every file under files/ into the user's project, copy the user's program into payload/ (replacing the stub), then run ./build.sh and report the .deb path it prints."
+  "next": "Write every file under files/ into the user's project, copy the user's program into payload/ (replacing the stub), then run ./build.sh and report the .deb path it prints.",
+  "match": [
+    "deb package",
+    "debian package",
+    "package as deb",
+    "deb file"
+  ]
 }
