@@ -16,9 +16,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
+        # numpy: the tests build a tiny Kiwi Mind pack with it; the app itself runs without it.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          pip install -r requirements.txt pytest numpy
       - name: Run tests
         run: python -m pytest -q
 

@@ -612,7 +612,7 @@ export class MockBackend {
     return {
       usable,
       installed,
-      version: installed ? "2.0.0" : null,
+      version: installed ? "2.0.1" : null,
       bytes: installed ? MIND_BYTES : 0,
       node: param === "nonode" ? null : "/usr/bin/node",
       running: usable,

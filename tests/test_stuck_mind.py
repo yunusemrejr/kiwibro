@@ -88,6 +88,15 @@ def test_the_helper_never_sees_the_answer_it_replaces(mind: Env) -> None:
     assert VENUS not in redo and context.REJECTED_STUB in redo
 
 
+def test_only_the_helper_that_takes_over_is_told_to_rely_on_tool_results(mind: Env) -> None:
+    choose_helper(mind)
+    mind.fake.stream_script = [ChatResult(content=VENUS), ChatResult(content=MERCURY)]
+    _events, cid = asked(mind, PLANET)
+    asked(mind, TURNED_DOWN, cid)
+    first, redo = (prompt_text(call) for call in mind.fake.stream_calls[:2])
+    assert prompts.TAKING_OVER in redo and prompts.TAKING_OVER not in first
+
+
 def test_a_repeated_reply_is_written_again_by_the_helper(mind: Env) -> None:
     choose_helper(mind)
     mind.fake.stream_script = [ChatResult(content=CAPITAL), ChatResult(content=CAPITAL), ChatResult(content=CAPITAL_AGAIN)]

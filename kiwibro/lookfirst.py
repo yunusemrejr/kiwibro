@@ -326,7 +326,8 @@ def _disk_answer(found: dict[str, Any]) -> str:
     free = next((m for m in map(_DISK_FREE.match, lines) if m), None)
     if free:
         said += ["", f"{free.group(1)} is free of {free.group(2)} on this disk."]
-    said += [line for line in lines if line.endswith("could not be read") or line.startswith("The walk was cut short")]
+    said += [line for line in lines
+             if line.endswith("could not be read") or line.startswith(("The walk was cut short", "Measured "))]
     return "\n".join(said)
 
 

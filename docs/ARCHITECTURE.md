@@ -656,9 +656,11 @@ anything in it; the model picked in the header is a helper for it.
   `web`, `code`, `terminal`, `computer`, `tools`, `write`. One file each,
   `skills/<name>.kms`, 8.7 MB. Every turn of a conversation runs under its own skill;
   the system text at the top runs under none.
-- **Control head.** `head.kmh`, 0.8 MB: a two-layer network that reads the state entering
+- **Control head.** `head.kmh`, 0.9 MB: a two-layer network that reads the state entering
   layer 16 at the last position of the prompt and gives eight scores, one per skill and one
-  for "this request is heavy".
+  for "this request is heavy". The heavy score has 32 hidden units of its own, which no
+  skill score reads, and is trained apart on states read from the running engine
+  (`heavy.py` below).
 - **Action unit.** `units.kmh`, 0.8 MB: a second two-layer network on the same state. It says
   how likely the reply to come is a tool call and which tool it expects. The manifest names
   the reading (`open_at`) from which Kiwibro opens a reply as a tool call, and names one only
@@ -677,8 +679,9 @@ anything in it; the model picked in the header is a helper for it.
 - **`host/host.mjs`.** A Node program without packages. It loads the pack, takes the best
   build the processor supports and serves it on a random port of `127.0.0.1` behind a
   bearer key: `GET /health`, `POST /tokenize`, `POST /skills`, `POST /warm`, `POST
-  /control` (the head's scores and the action unit's) and `POST /generate` (streamed). It leaves when its stdin
-  closes or on SIGTERM.
+  /control` (the head's scores and the action unit's; with `"state": true` also the numbers
+  they read, for training a unit on the engine's own states) and `POST /generate`
+  (streamed). It leaves when its stdin closes or on SIGTERM.
 - **Slots.** A conversation has a slot with what the lower layers read and the upper
   layers' cache. All slots share one copy of the weights and one thread pool, so a second
   conversation costs about 140 MB at 2,000 tokens and no second model. Requests that arrive
@@ -774,6 +777,18 @@ learns from its own part of them. A skill that never beats the trunk alone is st
 change.
 `formats.py` reads and writes the three file formats, `reference.py` is a plain PyTorch
 reading of the same files to check the engine against, and `bench.mjs` measures the engine.
+
+`heavy.py` trains the head's heavy score, after the export. Its `states` step sends labelled
+requests to a running host, each under the system text and the turn note the app really
+sends, alone and as the second message of a short chat, and keeps the state the head reads
+(`/control` with `"state": true`). Its `train` step fits a two-layer unit on those states:
+the requests are split by their text into training, validation and test, the weights that
+rank the validation requests best are kept, and the bias is set so that it names at most
+`--light` (3 in 100) of the light validation requests. The unit becomes extra
+hidden units of the head that only the heavy score reads, so the skill scores keep their
+values, and with `--pack` the manifest follows the new head. For the 2.0.1 pack a larger
+open model sorted 6,000 first messages from oasst2, Dolly and MASSIVE into heavy and light,
+and the states of 2,200 of them were read (660 also as a second message).
 
 ---
 
@@ -1224,7 +1239,10 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   same sentence line after line, and `loop_start`: a block of up to three lines
   repeated, as in "**The fix**" + the same bullet a dozen times, which it cuts at the
   third copy; markdown markers and case are ignored, fenced code is skipped, lists,
-  FAQs and tables never match), and every 250 characters `inference.is_looping`
+  FAQs and tables never match; and `said_again_at`: a reply that says again what it
+  had said, seen when the last 24 words stand in the last line for the third time, or
+  the last 48 words anywhere in the reply for the third time, whatever changed between
+  the copies), and every 250 characters `inference.is_looping`
   checks for circling deliberation (≥0.15 five-word-phrase recurrence with ≥4 hedges
   per 100 words; code blocks ignored). The agent raises out of the stream (closing the
   stream stops the server generating). A reply that repeated itself keeps its good start (up
@@ -1233,7 +1251,11 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   (`repeat_penalty` 1.15, `frequency_penalty` 0.3) for that request only; the stored
   reply is the start plus the continuation, as the user saw it. A circling reply is
   cleared and redone with `prompts.DEGENERATE_NUDGE`. A second collapse ends the round
-  with what is good (or `DEGENERATE_GAVE_UP`). Nothing degenerate is stored.
+  with what is good (or `DEGENERATE_GAVE_UP`). A reply that was saying itself again
+  ends at once with what it said first, up to its last whole sentence: the answer had
+  been given, and sampling against repetition would garble the figures such a reply
+  copies, so it is not continued and the model gets no `LOOP` mark. Nothing degenerate
+  is stored.
 - **Paths.** Every file-tool path is resolved and must stay inside the workspace;
   a conversation can bind its own folder (`workspaces.py`, schema v3), and the
   model may switch folders on its own only to a folder the user's message names.

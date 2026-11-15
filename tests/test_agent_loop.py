@@ -54,7 +54,7 @@ def test_degeneration_detector() -> None:
     assert inference.is_degenerate("Let me use the workspace path. " * 20)
     assert inference.is_degenerate("\n".join(["The workspace is given."] * 9) + "\n" + "x" * 300)
     prose = ("Kiwis are flightless birds native to New Zealand. They are nocturnal and have long beaks "
-             "with nostrils at the tip, which they use to find food in the soil. ") * 3
+             "with nostrils at the tip, which they use to find food in the soil. ") * 2  # a passage and its copy
     code = "\n".join(f"def handler_{i}(event):\n    return process(event, retries={i})" for i in range(12))
     assert not inference.is_degenerate(prose)
     assert not inference.is_degenerate(code)
@@ -200,3 +200,53 @@ def test_a_sum_is_worked_out_before_the_model_replies_and_a_wrong_answer_is_redo
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert shown == ["12% of 480 is 57.6."]
     assert [payload for event, payload in events if event == "done"][0]["inference"]["steered"] == ["wrong_result"]
+
+
+SHELF = ("The top shelf holds 14 jars of plum jam, 9 jars of honey and 3 bottles of elderflower syrup. The lower "
+         "shelf holds 22 tins of tomatoes, 17 bags of rice and 6 boxes of oat biscuits, counted on Monday morning. ")
+SHELF_CHANGED = SHELF.replace("17 bags", "71 bags")
+
+
+def test_a_reply_said_again_in_one_paragraph_is_a_loop() -> None:
+    """Seen live: a 4B model restated a measurement over and over as one paragraph, with small changes
+    between the copies, until the output limit."""
+    loop = SHELF + SHELF_CHANGED + SHELF + SHELF
+    assert inference.is_degenerate(loop)
+    assert inference.trim_degenerate(loop) == SHELF.strip()
+    assert not inference.is_degenerate(SHELF + SHELF_CHANGED)  # a text next to its corrected copy
+    items = "".join(f"- On {day}, open the shed, count the jars on both shelves, write the totals in the book and "
+                    f"lock the door behind you before you leave for the day.\n" for day in ("Monday", "Tuesday", "Friday", "Sunday"))
+    assert not inference.is_degenerate(items)  # a list whose items share their wording
+    answer = ("- Plum jam: 14 jars on the top shelf.\n- Honey: 9 jars beside it.\n- Syrup: 3 bottles at the back.\n"
+              "- Tomatoes: 22 tins below.\n- Rice: 17 bags in the corner.\n- Biscuits: 6 boxes by the door.\n"
+              "- Tea: 4 tins above the sink.\n- Flour: 2 sacks under it.\n- Salt: 5 tubs on the window sill.\n"
+              "- Candles: 12 in the drawer by the stove.\n")
+    assert not inference.is_degenerate(answer * 2)
+    assert inference.is_degenerate(answer * 3)  # an answer in lines, begun for the third time
+    assert inference.trim_degenerate(answer * 3) == answer.strip()
+    fenced = "```\n" + SHELF * 4 + "\n```\n"
+    assert not inference.is_degenerate(fenced)  # code repeats legitimately
+
+
+def test_a_reply_that_says_itself_again_ends_with_what_it_said_first(env: Env, monkeypatch) -> None:
+    """No second request: the answer was given, and sampling against repetition would garble its figures."""
+    calls: list[dict] = []
+    noted: list[str] = []
+
+    def stream_chat(**kwargs):
+        calls.append(kwargs)
+        text = SHELF + SHELF_CHANGED + SHELF * 6
+        for start in range(0, len(text), 9):  # streamed in small pieces, as a model server does
+            kwargs["on_delta"](text[start:start + 9])
+        return ChatResult(content=text)
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", stream_chat)
+    monkeypatch.setattr(env.svc.db, "note_trait", lambda model, kind: noted.append(kind))
+    monkeypatch.setattr(env.svc.search, "web_search", lambda query, max_results=5: [])  # nothing to check the reply against
+    events, _raw = chat_events(env, "Say what the two pantry shelves hold.")
+    assert len(calls) == 1
+    stored = [m for m in env.svc.db.list_messages(env.svc.db.list_conversations()[0]["id"]) if m["role"] == "assistant"]
+    assert stored[-1]["content"] == SHELF.strip()
+    rewrites = [payload["text"] for event, payload in events if event == "rewrite"]
+    assert rewrites and rewrites[-1] == SHELF.strip()
+    assert "loop" not in noted

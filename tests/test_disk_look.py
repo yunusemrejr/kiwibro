@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from test_backend import Env, chat_events
 
-from kiwibro import desktop, lookfirst, readings
+from kiwibro import desktop, lookfirst, prompts, readings
+from kiwibro.llm import ChatResult
 
 TOOLS = frozenset({"disk_usage", "system_info", "list_files", "git"})
 ROOT = Path("/nonexistent-workspace")
@@ -78,6 +79,11 @@ def test_a_time_window_answer_names_the_files_written_in_it():
     said = lookfirst.answer("what is taking the space today", {"disk_usage": {"output": TODAY}})
     assert said.startswith("Since 14 Nov 00:00, 3.3 GiB was written in your home folder. Largest first:")
     assert "- Videos/trip.mp4: 2.9 GiB, 09:12" in said and "Largest files written since 14 Nov 00:00:" in said
+
+
+def test_a_reused_measurement_says_its_age_in_the_answer():
+    said = lookfirst.answer("what is taking the space today", {"disk_usage": {"output": TODAY + "\nMeasured 40 seconds ago."}})
+    assert said.splitlines()[-1] == "Measured 40 seconds ago."
 
 
 def test_nothing_written_is_said_as_that():
@@ -166,3 +172,16 @@ def test_after_a_chat_answer_the_same_message_still_searches(env: Env, monkeypat
     events, _raw = chat_events(env, "and is any of it from today", conversation_id)
     done = [payload for event, payload in events if event == "done"][0]
     assert done["inference"].get("searched_first") is True
+
+
+def test_a_turned_down_answer_is_written_again_from_a_new_measurement(env: Env, measured):
+    env.fake.stream_script = [ChatResult(content="Videos holds most of it."), ChatResult(content="2.9 GiB of it is one film.")]
+    events, _raw = chat_events(env, "check the disk usage and tell me what was written today")
+    conversation_id = events[0][1]["conversation_id"]
+    events, _raw = chat_events(env, "that is wrong, try again", conversation_id)
+    done = [payload for event, payload in events if event == "done"][0]
+    assert measured == [(None, "today", 10)] * 2
+    assert done["inference"]["looked_first"] == ["disk_usage"] and "answered_from_look" not in done["inference"]
+    shown = [str(m.get("content") or "") for m in env.fake.stream_calls[-1]["messages"]]
+    assert sum(TODAY in text for text in shown) == 2  # the first measurement and the new one
+    assert shown[-1] == prompts.LOOKED_FIRST

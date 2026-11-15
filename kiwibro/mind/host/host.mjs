@@ -530,6 +530,8 @@ async function main(opts) {
     if (kind === 'control' && !head) throw bad('no control head loaded');
     const tokens = encode(prompt);
     fit(tokens);
+    // "state": true also returns the numbers the head and the units read (to train a unit on the engine's own states)
+    const wantState = kind === 'control' && field(body, 'state', 'boolean', false);
     const job = newJob(field(body, 'slot', 'string', 'default'));
     job.fail = e => {
       send(res, e instanceof HttpError ? e.status : 500, { error: e.message });
@@ -544,7 +546,8 @@ async function main(opts) {
       const control = readControl(ctx);
       const usage = { prompt_tokens: tokens.length, cached_tokens: cached, completion_tokens: 0 };
       if (kind === 'control') {
-        send(res, 200, { names: control?.names ?? head, logits: control?.logits ?? null, units: control?.units ?? null, scoped, usage });
+        const state = wantState ? Array.from(engine.stateAt(engine.nPast - 1)) : undefined;
+        send(res, 200, { names: control?.names ?? head, logits: control?.logits ?? null, units: control?.units ?? null, scoped, usage, state });
         return;
       }
       const skill = resolveSkill(spec, control);

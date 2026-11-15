@@ -412,12 +412,14 @@ _DEGENERATE_WINDOW = 300
 class DegenerateOutput(Exception):
     """Raised from a stream callback when the reply has collapsed into repetition.
 
-    ``circling`` marks a deliberation loop (nothing worth keeping); otherwise the reply
+    ``circling`` marks a deliberation loop (nothing worth keeping); ``said`` a reply that had
+    been given and was being said again (what it said first is the answer); otherwise the reply
     started well and then repeated itself, and its good start is kept and continued."""
 
-    def __init__(self, circling: bool = False) -> None:
-        super().__init__("circling" if circling else "repeating")
+    def __init__(self, circling: bool = False, said: bool = False) -> None:
+        super().__init__("circling" if circling else "saying it again" if said else "repeating")
         self.circling = circling
+        self.said = said
 
 
 class Overthinking(Exception):
@@ -488,12 +490,70 @@ def loop_start(text: str, *, repeats: int = 3) -> int | None:
     return None
 
 
+SAID_RUN = 24  # words in a row: more than a phrase that comes back, less than the shortest stretch seen looping
+SAID_LAG = 12  # words by which a text being trimmed may be behind the stream its loop was seen on
+_WORD = re.compile(r"\w+")
+_CODE_BLOCK = re.compile(r"(?:```|~~~).*?(?:```|~~~|\Z)", re.S)
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*\s+|\n+")
+
+
+def _comes_back(keys: list[str], run: int, times: int, lag: int) -> int | None:
+    """Index of the first word in ``keys`` that begins ``run`` words already seen, when a stretch of
+    ``run`` words ending in the last ``lag`` + 1 words stands there for the ``times``-th time."""
+    total = len(keys)
+    if total < times * run:
+        return None
+
+    def copies(end: int) -> int:
+        tail = keys[end - run:end]
+        if len(set(tail)) < 8:  # "0, 0, 0" and rules of dashes are the period check's business
+            return 0
+        return sum(keys[at] == tail[0] and keys[at:at + run] == tail for at in range(end - run + 1))
+
+    if not any(copies(total - back) >= times for back in range(lag + 1)):
+        return None
+    seen: set[tuple[str, ...]] = set()
+    for at in range(total - run + 1):
+        stretch = tuple(keys[at:at + run])
+        if stretch in seen:
+            return at
+        seen.add(stretch)
+    return None
+
+
+def said_again_at(text: str, *, times: int = 3, lag: int = 0) -> int | None:
+    """Offset in ``text`` from which it says again what it had said, when it ends in such a loop;
+    None when it does not.
+
+    A model that restates a long tool result may not stop: it says the same stretch over and over
+    as one paragraph without a line break, with small changes between the copies, so neither the
+    line check nor the exact-period check sees it (seen live on a 4B model: 2,000 tokens and five
+    minutes on a laptop, twice in one chat). The text ends in such a loop when its last
+    ``SAID_RUN`` words stand in its last line for the ``times``-th time, or twice as many words
+    anywhere in it: a text rewritten next to its original shares long stretches twice, not three
+    times, and a list whose items share their wording has line breaks. The offset is the end of the
+    last whole sentence before the first stretch that came back. Text already known to have looped
+    is trimmed with ``times=2`` and ``lag`` (the stream it was seen on ran a chunk ahead of it).
+    Fenced code is skipped: code repeats legitimately."""
+    plain = _CODE_BLOCK.sub(lambda block: " " * len(block.group()), text)
+    words = [(match.start(), match.group().lower()) for match in _WORD.finditer(plain)]
+    last_line = plain.rfind("\n") + 1
+    first = next((index for index, (offset, _key) in enumerate(words) if offset >= last_line), len(words))
+    for begin, run in ((first, SAID_RUN), (0, 2 * SAID_RUN)):
+        at = _comes_back([key for _offset, key in words[begin:]], run, times, lag)
+        if at is not None:
+            cut = words[begin + at][0]
+            ends = [match.end() for match in _SENTENCE_END.finditer(text, 0, cut)]
+            return ends[-1] if ends else cut
+    return None
+
+
 def is_degenerate(tail: str) -> bool:
     """True when the streamed tail is near content-free, one unit repeated end to end, the
-    same sentence line after line, or a short block of lines repeated (:func:`loop_start`).
-    Thresholds need several repetitions, so ordinary prose and code (even nested closing
-    braces) never trip it."""
-    if loop_start(tail[-3000:]) is not None:
+    same sentence line after line, a short block of lines repeated (:func:`loop_start`), or a
+    reply said again and again (:func:`said_again_at`). Thresholds need several repetitions, so
+    ordinary prose and code (even nested closing braces) never trip it."""
+    if loop_start(tail[-3000:]) is not None or said_again_at(tail[-3000:]) is not None:
         return True
     window = tail[-_DEGENERATE_WINDOW:]
     if len(window) < _DEGENERATE_WINDOW:
@@ -538,8 +598,11 @@ def is_looping(tail: str) -> bool:
 
 def trim_degenerate(text: str) -> str:
     """The reply without its collapsed tail (trailing filler or repeated paragraphs); a
-    repeated block of lines keeps only its first copy."""
+    repeated block of lines keeps only its first copy, and so does a reply that was said again."""
     start = loop_start(text, repeats=2)
+    if start is not None:
+        text = text[:start]
+    start = said_again_at(text, times=2, lag=SAID_LAG)
     if start is not None:
         text = text[:start]
     paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]

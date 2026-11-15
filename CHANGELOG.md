@@ -23,13 +23,30 @@ All notable changes to Kiwibro are documented here.
   reply to come should be a tool call. The model was trained again on new conversations:
   sessions of several turns, bad replies put right and real first messages from open data
   sets, each with the notes Kiwibro really adds to a turn. Packs from before 2.0 keep working.
+- **Heavy requests reach the helper again (pack 2.0.1).** In the 2.0 pack the control head's
+  "this request is heavy" score had gone silent: of 65 heavy requests that were held back it
+  named 2, so a helper only wrote after an answer was turned down. The score is now a small
+  unit of its own inside the head, trained on what the running engine computes for 2,200
+  real first messages that a larger model sorted into heavy and light
+  (`scripts/mind/heavy.py`). On the held-back requests it names 50 of the 65 heavy ones and
+  19 of the 402 light ones. The seven skill scores are unchanged.
 - **Measuring what fills the disk.** A new read-only tool, `disk_usage`, measures the folders
   and the files written today, this week or this month. A question about what takes up the
   space is answered from that measurement first, also as a short follow-up to a question
-  about the disk, and is no longer sent to a web search.
+  about the disk, and is no longer sent to a web search. A finished measurement answers the
+  same question again for ten minutes, as long as the free space has not moved by more
+  than a quarter of a gigabyte, and says how old it is, so a follow-up does not walk the
+  folder again.
 - **A stuck Kiwi Mind hands the turn to the helper.** When you turn an answer down, or two
   corrected attempts fail, the helper model you selected writes the rest of the turn, tools
-  included. The answer you turned down is set aside so that it is not copied again.
+  included. The answer you turned down is set aside so that it is not copied again. For a
+  question about this computer, Kiwibro first repeats the measurement that answer was
+  written from, and the helper is told to take its figures from tool results only, so the
+  new answer comes from new figures.
+- **A reply that says itself again stops at its first copy.** A helper model that restated
+  a long measurement over and over, with small changes each time, wrote until its output
+  limit, for minutes. Kiwibro now sees a reply that has begun to say the same thing for
+  the third time, stops the model and keeps what it said first.
 - **An announced step is taken.** A reply that ends with "I'll check..." and no tool call
   gets a corrected attempt, and Kiwi Mind's corrected attempt starts as a tool call.
 - **Notes sent while Kiwibro works** are answered in the same turn.

@@ -213,3 +213,73 @@ def test_the_home_folder_is_named_with_a_tilde(monkeypatch: pytest.MonkeyPatch, 
     inner.mkdir()
     (inner / "b.txt").write_text("x")
     assert _run(tmp_path, path=str(inner)).content.splitlines()[0].startswith("~/projects: ")
+
+
+# --- the same question again --------------------------------------------------
+
+
+def _walks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The folders walked from here on."""
+    walked: list[str] = []
+    real = desktop._disk_walk
+    monkeypatch.setattr(desktop, "_disk_walk", lambda top, *rest: walked.append(top) or real(top, *rest))
+    return walked
+
+
+def _tree(root: Path) -> None:
+    (root / "a").mkdir()
+    (root / "a" / "big.bin").write_bytes(b"x" * 8192)
+
+
+def test_the_same_question_again_reuses_the_walk_and_says_its_age(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _tree(tmp_path)
+    first = _lines(_run(tmp_path, changed="today").content)
+    walked = _walks(monkeypatch)
+    again = _lines(_run(tmp_path, changed="today").content)
+    assert not walked
+    assert again[-1] == "Measured 1 second ago."
+    assert [line for line in again[:-1] if not line.startswith("Disk:")] == [
+        line for line in first if not line.startswith("Disk:")
+    ]
+
+
+def test_another_time_window_is_walked_afresh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _tree(tmp_path)
+    _run(tmp_path, changed="today")
+    walked = _walks(monkeypatch)
+    assert "Measured" not in _run(tmp_path).content
+    assert walked == [str(tmp_path / "a")]
+
+
+def test_an_old_walk_is_not_reused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _tree(tmp_path)
+    _run(tmp_path)
+    monkeypatch.setattr(desktop, "DISK_REUSE_SECONDS", 0.0)
+    walked = _walks(monkeypatch)
+    assert "Measured" not in _run(tmp_path).content
+    assert walked == [str(tmp_path / "a")]
+
+
+def test_a_walk_is_not_reused_once_the_free_space_moved(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _tree(tmp_path)
+    _run(tmp_path)
+    usage = desktop.shutil.disk_usage(tmp_path)
+    moved = usage._replace(free=usage.free - desktop.DISK_REUSE_DRIFT - 1)
+    monkeypatch.setattr(desktop.shutil, "disk_usage", lambda _path: moved)
+    walked = _walks(monkeypatch)
+    assert "Measured" not in _run(tmp_path).content
+    assert walked == [str(tmp_path / "a")]
+
+
+def test_a_walk_cut_short_is_done_again(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _tree(tmp_path)
+    monkeypatch.setattr(desktop, "DISK_WALK_SECONDS", -1.0)
+    assert "cut short" in _run(tmp_path).content
+    assert "Measured" not in _run(tmp_path).content
+
+
+def test_five_files_are_listed_as_written(tmp_path: Path):
+    for index in range(8):
+        (tmp_path / f"f{index}.bin").write_bytes(b"x" * 4096 * (index + 1))
+    listed = _run(tmp_path, changed="today").content.split("Largest files written since", 1)[1]
+    assert [line.split()[-1] for line in _lines(listed)[1:]] == ["f7.bin", "f6.bin", "f5.bin", "f4.bin", "f3.bin"]

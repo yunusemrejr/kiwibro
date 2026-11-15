@@ -235,6 +235,13 @@ hates long emails".
 
 APPROVAL_SUMMARY_TOOL = "The agent wants to {verb} {target}. Review the details before allowing."
 
+# For a helper model that writes the rest of a turn because the user turned Kiwi Mind's answer down.
+TAKING_OVER = (
+    "The earlier replies in this chat came from a smaller model and may be wrong. Take facts and figures only "
+    "from tool results, and call the tool again when you need a newer one. Answer the request itself, directly: "
+    "no account of how you worked it out."
+)
+
 # Kiwibro acted before the model wrote (agent.py): what it did and how to answer from it.
 REDO_FIRST = (
     "[Kiwibro: the user turned the last answer down, so Kiwibro searched again for what they asked: "

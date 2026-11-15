@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,7 +33,11 @@ DESKTOP_TIMEOUT_S = 10
 SCREENSHOT_TIMEOUT_S = 20
 DISK_WALK_SECONDS = 45.0  # a walk past this stops and says which sizes are lower bounds
 DISK_MAX_ENTRIES = 50
-DISK_MAX_FILES = 10  # files listed as written since the chosen moment
+DISK_MAX_FILES = 5  # files listed as written since the chosen moment
+DISK_REUSE_SECONDS = 600.0  # a finished walk answers the same question again for this long...
+# ...unless the disk's free space has moved by more than this since. Wide enough for a desktop in use, where it
+# drifts by some 10 MiB a minute (caches, logs); narrow enough that a real clean-up or download is measured anew.
+DISK_REUSE_DRIFT = 256 * 1024 * 1024
 
 
 class DesktopError(Exception):
@@ -443,8 +448,105 @@ def disk_usage(path: str | None = None, changed: str | None = None, top: int = 1
     since_at = since.timestamp() if since is not None else None
 
     limit = max(1, min(10 if top is None else int(top), DISK_MAX_ENTRIES))
-    deadline = started + DISK_WALK_SECONDS
-    rows: list[tuple[int, str, bool]] = []  # bytes, name, measured to the end
+    try:
+        disk = shutil.disk_usage(root)
+    except OSError:  # pragma: no cover - defensive
+        disk = None
+    asked = (str(root), since_at)
+    kept = _disk_recall(asked, disk.free) if disk is not None else None
+    if kept is not None:
+        (rows, recent, unreadable), age = kept
+        unmeasured: list[str] = []
+    else:
+        age = None
+        rows, recent, unmeasured, unreadable = _disk_measure(children, root_dev, since_at, started + DISK_WALK_SECONDS)
+        if disk is not None and not unmeasured and all(finished for _size, _name, finished in rows):
+            _disk_keep(asked, disk.free, (rows, recent, unreadable))
+    total = sum(row[0] for row in rows)
+
+    shown = str(root)
+    home = Path.home()
+    if root == home:
+        shown = "~"
+    elif home in root.parents:
+        shown = "~/" + str(root.relative_to(home))
+    disk_line = f"Disk: {_human_bytes(disk.free)} free of {_human_bytes(disk.total)}" if disk is not None else ""
+    when = since.strftime("%d %b %H:%M") if since is not None else ""
+    lines = [f"{shown}: {_human_bytes(total)} in {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}"
+             + (f" changed since {when}" if since is not None else "")]
+    if disk_line:
+        lines.append(disk_line)
+    for size, name, finished in rows[:limit]:
+        lines.append(f"{_human_bytes(size) + ('' if finished else '+'):>10}  {_disk_share(size, total):>4}  {name}")
+    leftover = len(rows) - min(limit, len(rows))
+    if leftover > 0:
+        lines.append(f"({leftover} more not listed; ask for a higher top)")
+    if since is not None:
+        lines.append("")
+        lines.append(f"Largest files written since {when}:")
+        if not recent:
+            lines.append("(none)")
+        today = datetime.now().date()
+        for size, mtime, found_path in recent:
+            moment = datetime.fromtimestamp(mtime)
+            stamp = f"{moment:%H:%M}" if moment.date() == today else f"{moment:%d %b %H:%M}"
+            lines.append(f"{_human_bytes(size):>10}  {stamp}  {os.path.relpath(found_path, root)}")
+    if unreadable:
+        lines.append(f"{unreadable} folder{'s' if unreadable != 1 else ''} could not be read")
+    partial = [name for _size, name, finished in rows if not finished]
+    if partial or unmeasured:
+        said = []
+        if partial:
+            said.append("sizes marked + are lower bounds")
+        if unmeasured:
+            names = ", ".join(unmeasured[:6]) + (", ..." if len(unmeasured) > 6 else "")
+            said.append(f"not measured at all: {names}")
+        lines.append(f"The walk was cut short after {DISK_WALK_SECONDS:g} seconds: " + "; ".join(said)
+                     + ". Ask again with one of those folders as the path for its full size.")
+    if age is not None:
+        lines.append(f"Measured {_ago(age)} ago.")
+    return "\n".join(lines)
+
+
+Measured = tuple[list[tuple[int, str, bool]], list[tuple[int, float, str]], int]  # rows, newest files, unreadable
+_disk_kept: dict[tuple[str, float | None], tuple[float, int, Measured]] = {}
+_disk_kept_lock = threading.Lock()
+
+
+def _disk_recall(asked: tuple[str, float | None], free: int) -> tuple[Measured, float] | None:
+    """A finished walk of the same folder and time window with how many seconds old it is, when it is recent
+    and the disk's free space has not moved since. A walk of a home folder takes many seconds, and the
+    follow-up question about it comes within a minute or two."""
+    with _disk_kept_lock:
+        kept = _disk_kept.get(asked)
+    if kept is None:
+        return None
+    at, free_then, found = kept
+    age = time.monotonic() - at
+    if age > DISK_REUSE_SECONDS or abs(free - free_then) > DISK_REUSE_DRIFT:
+        return None
+    return found, age
+
+
+def _disk_keep(asked: tuple[str, float | None], free: int, found: Measured) -> None:
+    with _disk_kept_lock:
+        if asked not in _disk_kept and len(_disk_kept) >= 8:
+            del _disk_kept[min(_disk_kept, key=lambda key: _disk_kept[key][0])]
+        _disk_kept[asked] = (time.monotonic(), free, found)
+
+
+def _ago(seconds: float) -> str:
+    if seconds < 90:
+        count = max(1, round(seconds))
+        return f"{count} second{'' if count == 1 else 's'}"
+    return f"{round(seconds / 60)} minutes"
+
+
+def _disk_measure(children: list[os.DirEntry[str]], root_dev: int, since_at: float | None,
+                  deadline: float) -> tuple[list[tuple[int, str, bool]], list[tuple[int, float, str]], list[str], int]:
+    """(rows of bytes, name, measured to the end, largest first; the largest files written since ``since_at``;
+    folders not reached before ``deadline``; unreadable folders) for a folder's children."""
+    rows: list[tuple[int, str, bool]] = []
     recent: list[tuple[int, float, str]] = []
     unmeasured: list[str] = []
     unreadable = 0
@@ -481,52 +583,7 @@ def disk_usage(path: str | None = None, changed: str | None = None, top: int = 1
             continue  # nothing was written there in that time
         rows.append((size + own, child.name + "/", finished))
     rows.sort(key=lambda row: (-row[0], row[1]))
-    total = sum(row[0] for row in rows)
-
-    shown = str(root)
-    home = Path.home()
-    if root == home:
-        shown = "~"
-    elif home in root.parents:
-        shown = "~/" + str(root.relative_to(home))
-    try:
-        disk = shutil.disk_usage(root)
-        disk_line = f"Disk: {_human_bytes(disk.free)} free of {_human_bytes(disk.total)}"
-    except OSError:  # pragma: no cover - defensive
-        disk_line = ""
-    when = since.strftime("%d %b %H:%M") if since is not None else ""
-    lines = [f"{shown}: {_human_bytes(total)} in {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}"
-             + (f" changed since {when}" if since is not None else "")]
-    if disk_line:
-        lines.append(disk_line)
-    for size, name, finished in rows[:limit]:
-        lines.append(f"{_human_bytes(size) + ('' if finished else '+'):>10}  {_disk_share(size, total):>4}  {name}")
-    leftover = len(rows) - min(limit, len(rows))
-    if leftover > 0:
-        lines.append(f"({leftover} more not listed; ask for a higher top)")
-    if since is not None:
-        lines.append("")
-        lines.append(f"Largest files written since {when}:")
-        if not recent:
-            lines.append("(none)")
-        today = datetime.now().date()
-        for size, mtime, found_path in heapq.nlargest(DISK_MAX_FILES, recent):
-            moment = datetime.fromtimestamp(mtime)
-            stamp = f"{moment:%H:%M}" if moment.date() == today else f"{moment:%d %b %H:%M}"
-            lines.append(f"{_human_bytes(size):>10}  {stamp}  {os.path.relpath(found_path, root)}")
-    if unreadable:
-        lines.append(f"{unreadable} folder{'s' if unreadable != 1 else ''} could not be read")
-    partial = [name for _size, name, finished in rows if not finished]
-    if partial or unmeasured:
-        said = []
-        if partial:
-            said.append("sizes marked + are lower bounds")
-        if unmeasured:
-            names = ", ".join(unmeasured[:6]) + (", ..." if len(unmeasured) > 6 else "")
-            said.append(f"not measured at all: {names}")
-        lines.append(f"The walk was cut short after {DISK_WALK_SECONDS:g} seconds: " + "; ".join(said)
-                     + ". Ask again with one of those folders as the path for its full size.")
-    return "\n".join(lines)
+    return rows, heapq.nlargest(DISK_MAX_FILES, recent), unmeasured, unreadable
 
 
 # --- open_path -------------------------------------------------------------------

@@ -61,6 +61,7 @@ LATE_NOTE_PASSES = 2  # times a turn that is over answers the steering notes tha
 LATE_NOTE_ROUNDS = 3  # generations one such answer may take (tool calls included)
 HELPER_AFTER_FAILED_REPAIRS = 2  # failed repairs of Kiwi Mind's replies in one turn before the helper leads
 LOOK_TOOLS = ("system_info", "disk_usage", "list_files", "git")  # read-only looks at the user's own computer
+MEASURES = ("system_info", "disk_usage")  # looks whose arguments say everything: a retry makes them again as they were
 
 
 class BusyError(Exception):
@@ -1064,8 +1065,7 @@ class AgentManager:
         read-only call first, so the answer is written from what is really there."""
         if turn.facts is None or turn.facts.small_talk or turn.plan is not None:
             return False
-        if turn.reaction is not None and not turn.reaction.asks:
-            return False
+        redo = turn.reaction is not None and not turn.reaction.asks
         try:
             earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=8)
                        if m.get("role") == "user" and m.get("id") != turn.user_message_id]
@@ -1073,7 +1073,9 @@ class AgentManager:
             # Not only the tools listed for the model: every read-only look the user has not switched off.
             allowed = frozenset(name for name in LOOK_TOOLS
                                 if name in tools.TOOL_SPECS and tools.permission_mode(settings, name) != "deny")
-            looks = lookfirst.calls(turn.message, self._workspace(turn.conversation_id).root, allowed, before)
+            # "try again": what the turned-down answer measured is measured again, whichever model writes the new one
+            looks = (self._measured_before(turn, allowed) if redo
+                     else lookfirst.calls(turn.message, self._workspace(turn.conversation_id).root, allowed, before))
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not look first", turn.conversation_id, exc_info=True)
             return False
@@ -1096,7 +1098,7 @@ class AgentManager:
             for look in looks:  # a folder inside the workspace is named by its path
                 if look.name == "list_files" and "list_files" in turn.looked and not turn.looked["list_files"].get("shown"):
                     turn.looked["list_files"]["shown"] = look.shown or str(look.args.get("path") or "")
-            if all(look.name in turn.looked for look in looks):
+            if not redo and all(look.name in turn.looked for look in looks):
                 said = lookfirst.answer(turn.message, turn.looked)
         except Exception:  # a convenience; the model answers from the result instead
             log.warning("turn %s: could not answer from the look", turn.conversation_id, exc_info=True)
@@ -1110,6 +1112,25 @@ class AgentManager:
             return True
         turn.pending_review = prompts.LOOKED_FIRST
         return True
+
+    def _measured_before(self, turn: Turn, allowed: frozenset[str]) -> list[lookfirst.Look]:
+        """The measurements of this computer that the turned-down answer was written from, oldest first."""
+        looks: list[lookfirst.Look] = []
+        earlier = [m for m in self.db.recent_messages(turn.conversation_id, limit=14) if m.get("id") != turn.user_message_id]
+        for message in reversed(earlier):
+            if message.get("role") == "user":
+                break
+            for call in reversed(message.get("tool_calls") or []):
+                function = call.get("function") or {}
+                name, raw = str(function.get("name") or ""), function.get("arguments")
+                try:
+                    args = json.loads(raw) if isinstance(raw, str) else raw
+                except ValueError:
+                    continue
+                look = lookfirst.Look(name, args if isinstance(args, dict) else {})
+                if name in MEASURES and name in allowed and look not in looks:
+                    looks.append(look)
+        return looks[::-1]
 
     def _own_search(self, turn: Turn, reading: Any) -> str:
         """The search the message itself asks for ("" for none)."""
@@ -1945,16 +1966,20 @@ class AgentManager:
                 turn.emit("rewrite", {"text": "", "reasoning": ""})
                 turn.emit("status", {"phase": "thinking", "label": "Correcting course"})
             except inference.DegenerateOutput as collapse:
-                self._note_trait(model, steer.LOOP)
                 # Cut off (closing the stream stops the server generating). A reply that began
                 # well and then repeated itself keeps its start and is continued with
                 # anti-repetition sampling; a circling one is cleared and redone. Both reuse
-                # the cached prefix. A second collapse ends the round with what is good.
+                # the cached prefix. A second collapse ends the round with what is good, and so
+                # does a reply that was being said again: what it said first is the answer, and
+                # a model that copies figures is not one to sample against repetition.
                 turn.timer.finish()
                 clean = "" if collapse.circling else inference.trim_degenerate(turn.partial_text)
+                done = collapse.said and bool(clean)
+                if not done:
+                    self._note_trait(model, steer.LOOP)
                 log.info("turn %s round %s: output %s; cut off", turn.conversation_id, round_index,
-                         "circled" if collapse.circling else "repeated itself")
-                if collapsed:
+                         "circled" if collapse.circling else "said itself again" if done else "repeated itself")
+                if collapsed or done:
                     turn.partial_text = clean
                     turn.emit("rewrite", {"text": clean, "reasoning": ""})
                     if not clean:
@@ -2108,7 +2133,7 @@ class AgentManager:
         turn.stream_tail = (turn.stream_tail + text)[-3000:]
         turn.loop_checked += len(text)
         if inference.is_degenerate(turn.stream_tail):
-            raise inference.DegenerateOutput()
+            raise inference.DegenerateOutput(said=inference.said_again_at(turn.stream_tail) is not None)
         if turn.loop_checked >= 250:  # the phrase-recurrence check is costlier: run it in steps
             turn.loop_checked = 0
             if inference.is_looping(turn.stream_tail):
@@ -2345,6 +2370,7 @@ class AgentManager:
             safemode.context_line(self.db, turn.conversation_id),
             _directives_note(self.db, turn.conversation_id), plan_note, several, readings.note(reading),
             guidance_note, learned, turn.reaction.note() if turn.reaction is not None else "",
+            prompts.TAKING_OVER if turn.lead else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
