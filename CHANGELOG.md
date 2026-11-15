@@ -167,6 +167,8 @@ All notable changes to Kiwibro are documented here.
 - **Ready parts forgive small slips.** A value the kit has no blank for is left out and named
   instead of refusing the kit; a list of lines or a number is taken as text; looking at a kit
   says that nothing is written yet and gives the call that writes it.
+- **A finished page is left alone.** After the 3D scene kit has written its page, calls in the
+  same turn that read, run, rewrite or remake it are refused and the model is told to answer.
 - **Starting a chat stays fast with temporary folders.** The instructions no longer carry the
   chat's own folder path, so a new chat reuses what the model has already read.
 - **"Search for…" searches before anything is written.** A message that asks for a search,

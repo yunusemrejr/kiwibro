@@ -329,7 +329,7 @@ function readScene(text, KINDS) {
     return out;
   }
 
-  let clean = text.toLowerCase().replace(/[“”"'`]/g, "").replace(/^\s*(?:\d+[.)]|[-*•])\s+/gm, "");
+  let clean = text.toLowerCase().replace(/[“”"'`]/g, "").replace(/[_-]+(?=[a-z])/g, " ").replace(/^\s*(?:\d+[.)]|[-*•])\s+/gm, "");
   for (const [pattern, word] of PHRASES) clean = clean.replace(pattern, word);
   clean = clean.replace(/(\d)\s*,\s*(-?\d)/g, "$1 $2");  // "at 4, 0" is one place, not two lines
   for (const line of clean.split(/\n|;|!|,|\.(?=\s|$)/)) {

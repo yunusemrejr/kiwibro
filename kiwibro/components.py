@@ -64,6 +64,7 @@ class Component:
     folder: Path
     match: tuple[str, ...] = ()  # phrases in a user's message that call for this component
     unless: tuple[str, ...] = ()  # phrases that rule it out: "3d printer" is not "3d scene"
+    finished: bool = False  # the kit's files are the finished result: nothing to read, run or adapt
 
     @property
     def area(self) -> str:
@@ -126,6 +127,7 @@ class Library:
                     folder=path.parent,
                     match=tuple(str(phrase) for phrase in data.get("match") or ()),
                     unless=tuple(str(phrase) for phrase in data.get("unless") or ()),
+                    finished=data.get("finished") is True,
                 )
             )
         return sorted(components, key=lambda component: component.name)

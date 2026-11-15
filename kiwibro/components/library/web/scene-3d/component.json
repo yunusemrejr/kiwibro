@@ -10,7 +10,7 @@
       "default": "A dog comes home"
     },
     "scene": {
-      "about": "What the user asked for, as plain lines separated by \\n: one thing or one action per line, no code. A thing: \"house at 5 -1\". An action: \"dog walks to house\" (also runs to, flies to, drives to, follows, orbits). For \"a dog comes home\" the value is \"house at 5 -1\\ndog at -7 2\\ndog walks to house\".",
+      "about": "What happens in the scene, in plain words, no code. The user's own sentence works: \"a dog walks to a house and stops\". More lines, separated by \\n, add things and actions: \"tree at 4 0\", \"bird flies to tree\", \"car drives to house\".",
       "default": "house at 5 -1\ntree at -2 -4\ndog at -7 2\ndog walks to house"
     },
     "sky": {
@@ -22,7 +22,7 @@
       "default": "grass"
     }
   },
-  "next": "The page is finished and shows itself in the chat; it needs no build, no npm and no server. To change the scene, edit only the plain lines inside <script id=\"scene\"> in index.html with replace_in_file, for example the line \"sky day\" (the comment above them lists every thing and action). Do not rewrite the file.",
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the scene shows. Only when the user asks for a change: edit the plain lines inside <script id=\"scene\"> in index.html with replace_in_file, for example the line \"sky day\" (the comment above them lists every thing and action).",
   "match": [
     "3d",
     "3d scene",
@@ -43,5 +43,6 @@
     "3d printing",
     "3d print",
     "3d printed"
-  ]
+  ],
+  "finished": true
 }

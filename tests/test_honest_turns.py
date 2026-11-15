@@ -287,3 +287,21 @@ def test_the_step_limit_note_lists_six_files_and_counts_the_rest(env: Env) -> No
     chat_events(env, "Write eight small pages")
     note = next(m["content"] for m in _messages(env, "assistant") if m["meta"].get("truncated"))
     assert "Changed so far: p0.html, p1.html, p2.html, p3.html, p4.html, p5.html and 2 more." in note
+
+
+# --- a finished kit is left alone -------------------------------------------------------------
+
+
+def test_a_finished_kit_is_not_read_run_or_made_again_in_the_same_turn(env: Env) -> None:
+    use = {"action": "use", "name": "web/scene-3d", "path": "fox", "values": {"scene": "fox walks to campfire"}}
+    env.fake.stream_script = [
+        tool_call_result("component", use, "call_1"),
+        tool_call_result("read_file", {"path": "fox/index.html"}, "call_2"),
+        tool_call_result("component", {**use, "path": "fox2"}, "call_3"),
+        ChatResult(content="A fox walks to a campfire."),
+    ]
+    chat_events(env, "make a 3d scene where a fox walks to a campfire")
+    results = [m["content"] for m in _messages(env, "tool")]
+    assert results[0].startswith("Used web/scene-3d in fox: 1 file written")
+    assert results[1] == results[2] == prompts.KIT_FINISHED.format(files="fox/index.html")
+    assert (env.workspace / "fox" / "index.html").exists() and not (env.workspace / "fox2").exists()

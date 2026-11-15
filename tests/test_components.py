@@ -637,7 +637,7 @@ def test_the_scene_kit_advice_explains_its_blanks():
     assert "What each value is:" in about
     assert f'- scene: {scene.blanks["scene"]["about"]}' in about
     assert f'- title: {scene.blanks["title"]["about"]}' in about
-    assert "dog walks to house" in about, "the scene blank is the hard one: its about line shows an example"
+    assert "walks to" in about, "the scene blank is the hard one: its about line shows an example"
 
 
 def test_two_components_that_fit_equally_name_none(tmp_path: Path):

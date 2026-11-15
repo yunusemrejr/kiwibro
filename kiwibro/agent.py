@@ -362,6 +362,7 @@ class Turn:
     reply_text: str = ""  # everything the model said this turn (the plan checks answers against it)
     truncated_calls: bool = False  # this round's tool calls were cut off by max_tokens
     text_calls: bool = False  # this round's tool calls were read out of the reply's text
+    finished_files: list[str] = field(default_factory=list)  # files of a finished kit written this turn
     searches: list[tuple[frozenset[str], str]] = field(default_factory=list)  # (terms, query) this turn
     search_rounds: int = 0  # rounds that ran a web search
     plan_done_at: int | None = None  # search_rounds when every planned tool step was done
@@ -1553,6 +1554,36 @@ class AgentManager:
         every_call = turn.web_offline > 0 and turn.web_failed == 0
         return wanted and (not connectivity.online() or every_call)
 
+    @staticmethod
+    def _note_finished(turn: Turn, item: dict[str, Any]) -> None:
+        """Remember the files of a finished kit. A small model went on to read, patch and run a
+        page that was already right, for fourteen minutes; calls that name these files are refused."""
+        try:
+            kit = components.default_library().get(item["args"].get("name") or "")
+        except components.ComponentError:
+            return
+        if not kit.finished:
+            return
+        folder = (item["args"].get("path") or "").strip().strip("/")
+        for path in kit.file_paths():
+            shown = f"{folder}/{path}" if folder not in ("", ".") else path
+            if shown not in turn.finished_files:
+                turn.finished_files.append(shown)
+
+    @staticmethod
+    def _touches_finished(turn: Turn, name: str, args: dict[str, Any]) -> str:
+        """The finished file a call is about, or ""."""
+        if not turn.finished_files:
+            return ""
+        if name == "component" and args.get("action") == "use":
+            try:
+                again = components.default_library().get(args.get("name") or "").finished
+            except components.ComponentError:
+                again = False
+            return turn.finished_files[0] if again else ""
+        said = json.dumps(args, ensure_ascii=False, default=str)
+        return next((path for path in turn.finished_files if path in said), "")
+
     def _note_changed(self, turn: Turn, item: dict[str, Any]) -> None:
         """Remember a file a successful write call changed, once, in the order it was changed: the
         step-limit message lists them, so a turn stopped by the tool budget says what it did do."""
@@ -1560,6 +1591,7 @@ class AgentManager:
         if item["name"] == "component":  # a kit writes several files into one folder
             if item["args"].get("action") != "use":
                 return
+            self._note_finished(turn, item)
             try:
                 target = workspace.resolve(item["args"].get("path") or ".")
             except SandboxError:
@@ -3024,6 +3056,9 @@ class AgentManager:
         whole = turn.text_calls and not rescued.damaged
         if cut_off and not whole and spec.risk in ("write", "exec"):
             return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
+        finished = self._touches_finished(turn, name, item["args"])
+        if finished:
+            return refuse_shown(prompts.KIT_FINISHED.format(files=finished), "Already finished", spec.risk)
         pacing = self._pacing_refusal(turn, name, item["args"])
         if pacing:
             return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
