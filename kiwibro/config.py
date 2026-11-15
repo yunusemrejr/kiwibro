@@ -120,6 +120,8 @@ DEFAULT_AUTONOMY = "smart"
 # strict = also no network, off = run commands unconfined.
 SANDBOX_MODES = ("auto", "strict", "off")
 DEFAULT_SANDBOX = "auto"
+# Where a chat works unless it was given a folder: its own temporary one, or the Settings folder.
+WORKSPACE_MODES = ("temp", "folder")
 
 DIRECT_THREADS_RANGE = (0, 256)  # 0 = every physical core
 # Direct engine graphics acceleration: auto = a GPU build of llama.cpp on the GPU it finds
@@ -134,6 +136,7 @@ SETTING_CHOICES: dict[str, tuple[str, ...]] = {
     "reasoning": REASONING_MODES,
     "autonomy": AUTONOMY_MODES,
     "sandbox": SANDBOX_MODES,
+    "workspace_mode": WORKSPACE_MODES,
 }
 
 # Stored by versions that talked to another app's server; ignored now.
@@ -188,6 +191,8 @@ def default_settings(server_url: str | None = None, workspace: str | None = None
         "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
         "temperature": DEFAULT_TEMPERATURE,
         "workspace": str(Path(ws).expanduser()),
+        # A forced workspace (tests, rigs) keeps every chat in that one folder.
+        "workspace_mode": "folder" if workspace or os.environ.get("KIWIBRO_WORKSPACE") else "temp",
         "user_name": "",
         "tool_profile": DEFAULT_TOOL_PROFILE,
         "reasoning": DEFAULT_REASONING,

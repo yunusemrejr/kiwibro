@@ -12,7 +12,7 @@ from urllib.parse import quote
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 
-from . import config, connectivity, desktop, media, preview, routing, safemode, safecopy, safety
+from . import config, connectivity, desktop, media, preview, routing, safemode, safecopy, safety, workspaces
 from .agent import BusyError, ConversationNotFound
 from .llm import LLMError
 from .sandbox import SandboxError, Workspace
@@ -401,9 +401,16 @@ def create_conversation() -> Response:
     private = data.get("private", False)
     if not isinstance(private, bool):
         raise ApiError("bad_request", "private must be a boolean", 400)
-    conversation = svc.db.create_conversation(
-        title=title, model=model or svc.settings_provider().get("model"), private=private
-    )
+    folder = data.get("workspace")
+    if folder is not None and not isinstance(folder, str):
+        raise ApiError("bad_request", "workspace must be a folder path", 400)
+    try:
+        conversation = workspaces.create_conversation(
+            svc.db, svc.settings_provider(), title=title, model=model or svc.settings_provider().get("model"),
+            private=private, workspace=folder,
+        )
+    except ValueError as exc:
+        raise ApiError("bad_request", str(exc), 400) from None
     view = _conversation_full(conversation)
     view["summary"] = None
     view["messages"] = []
@@ -595,7 +602,7 @@ def chat() -> Response:
     svc = services()
     data = _json_body()
     message = data.get("message")
-    attachments = _chat_attachments(svc, data.get("attachments"))
+    attachments = _chat_attachments(svc, data.get("attachments"), data.get("conversation_id"))
     if not isinstance(message, str) or not (message.strip() or attachments):
         raise ApiError("bad_request", "message is required", 400)
     if not message.strip():  # attachments alone: name them, like a caption
@@ -626,17 +633,13 @@ def chat() -> Response:
     return response
 
 
-def _workspace(svc: Any) -> Workspace:
-    return Workspace(svc.settings_provider().get("workspace") or str(config.default_workspace()))
-
-
-def _chat_attachments(svc: Any, raw: Any) -> list[dict[str, Any]]:
+def _chat_attachments(svc: Any, raw: Any, conversation_id: Any) -> list[dict[str, Any]]:
     """Attachments named in a chat request, re-derived from the files (never trusted as sent)."""
     if raw in (None, []):
         return []
     if not isinstance(raw, list) or len(raw) > media.MAX_ATTACHMENTS:
         raise ApiError("bad_request", f"attachments must be a list of at most {media.MAX_ATTACHMENTS}", 400)
-    workspace = _workspace(svc)
+    _, workspace = _chat_workspace(svc, conversation_id)
     result = []
     for item in raw:
         path = item.get("path") if isinstance(item, dict) else None
@@ -658,14 +661,15 @@ def _chat_attachments(svc: Any, raw: Any) -> list[dict[str, Any]]:
 
 @bp.post("/api/attachments")
 def upload_attachment() -> Response:
-    """Store one file the user attached, inside the workspace so every tool can reach it."""
+    """Store one file the user attached, inside the chat's folder (form field conversation_id; none: the Settings folder) so every tool can reach it."""
     svc = services()
     request.max_content_length = media.MAX_ATTACHMENT_BYTES + 64 * 1024  # this route only
     upload = request.files.get("file")
     if upload is None or not upload.filename:
         raise ApiError("bad_request", "Send the file as the multipart field 'file'.", 400)
     try:
-        attachment = media.save_attachment(_workspace(svc).root, upload.filename, upload.read())
+        _, workspace = _chat_workspace(svc, request.form.get("conversation_id"))
+        attachment = media.save_attachment(workspace.root, upload.filename, upload.read())
     except ValueError as exc:
         raise ApiError("bad_attachment", str(exc), 400) from None
     except OSError as exc:
@@ -904,13 +908,14 @@ def patch_settings() -> Response:
 
 @bp.get("/api/workspace")
 def workspace_files() -> Response:
+    """The files of the Settings folder, or of a chat's own folder with ?conversation_id=."""
     svc = services()
-    root = svc.settings_provider().get("workspace") or str(config.default_workspace())
+    _, workspace = _chat_workspace(svc, request.args.get("conversation_id"))
     try:
-        files = Workspace(root).list_files(".")
+        files = workspace.list_files(".")
     except SandboxError as exc:
         raise ApiError("workspace_error", str(exc), 400) from None
-    return jsonify({"ok": True, "root": str(Path(root).expanduser().resolve()), "files": files})
+    return jsonify({"ok": True, "root": str(workspace.root), "files": files})
 
 
 # --- what Kiwibro made: folder badge, previews, open -------------------------
@@ -936,10 +941,60 @@ def workspace_info() -> Response:
     """The folder a chat works in, for the badge: `~/path`, git branch, and the real folder of a safe copy."""
     svc = services()
     chat_id, workspace = _chat_workspace(svc, request.args.get("conversation_id"))
+    return jsonify({"ok": True, **_folder_info(svc, chat_id, workspace)})
+
+
+def _folder_info(svc: Any, chat_id: str | None, workspace: Workspace) -> dict[str, Any]:
+    """What the folder badge shows; `temp` says the chat works in a temporary folder of Kiwibro's."""
     info = preview.folder_badge(workspace.root)
     copy = safemode.status(svc.db, chat_id) if chat_id else {"active": False}
     info["safe_copy"] = {"real": config.display_path(copy["real"])} if copy["active"] else None
-    return jsonify({"ok": True, **info})
+    bound = workspaces.folder_for(svc.db, chat_id)
+    info["temp"] = bool(bound and workspaces.in_temp_root(bound))
+    return info
+
+
+@bp.post("/api/workspace/set")
+def workspace_set() -> Response:
+    """The user picks a chat's folder by hand (`path`), or sends it back to its temporary one (`temp`: true)."""
+    svc = services()
+    data = _json_body()
+    chat_id = _conversation_id_from(data)
+    if svc.db.get_conversation(chat_id) is None:
+        raise ApiError("not_found", "Conversation not found.", 404)
+    path, temp = data.get("path"), data.get("temp")
+    if (temp is not None and temp is not True) or (temp is True) == ("path" in data):
+        raise ApiError("bad_request", "Send either path (an absolute or ~/ folder) or temp: true.", 400)
+    if temp is None:
+        try:
+            folder = str(workspaces.resolve_folder(path if isinstance(path, str) else ""))
+        except ValueError as exc:
+            raise ApiError("bad_request", str(exc), 400) from None
+    refusal = safemode.gate(svc.db, chat_id, "workspace").refusal
+    if refusal:
+        raise ApiError("not_allowed", refusal, 403)
+    lock = svc.agent._lock_for(chat_id)  # held for a whole reply: a folder never changes under a running turn
+    if not lock.acquire(blocking=False):
+        raise ApiError("busy", "A reply is already being generated for this chat.", 409)
+    try:
+        if temp:
+            folder = str(workspaces.make_temp_folder(workspaces.temp_folder_of(chat_id)))
+        svc.db.update_conversation(chat_id, workspace=folder, touch=False)
+    finally:
+        lock.release()
+    return jsonify({"ok": True, **_folder_info(svc, chat_id, svc.agent._workspace(chat_id))})
+
+
+@bp.get("/api/workspace/folders")
+def workspace_folders() -> Response:
+    """The sub-folders of a folder for the folder picker (default: the home folder)."""
+    try:
+        listing = workspaces.browse(request.args.get("path"))
+    except PermissionError as exc:
+        raise ApiError("not_allowed", str(exc), 403) from None
+    except ValueError as exc:
+        raise ApiError("bad_request", str(exc), 400) from None
+    return jsonify({"ok": True, **listing})
 
 
 @bp.post("/api/workspace/files")

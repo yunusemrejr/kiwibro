@@ -472,8 +472,8 @@ class AgentManager:
             if conversation is None:
                 raise ConversationNotFound(conversation_id)
         else:
-            conversation = self.db.create_conversation(
-                title="New chat", model=model or (self._settings().get("model")), private=private
+            conversation = workspaces.create_conversation(
+                self.db, self._settings(), title="New chat", model=model or self._settings().get("model"), private=private
             )
             conversation_id = conversation["id"]
         lock = self._lock_for(conversation_id)
@@ -2816,6 +2816,7 @@ class AgentManager:
                 shown_before=turn.shown_before,
                 must_mention=turn.must_mention,
                 deep=turn.own_search,
+                settings=self._settings(),
             )
             if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)

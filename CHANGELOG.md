@@ -6,6 +6,13 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **Every new chat gets a temporary folder of its own.** Its files no longer pile up in
+  `~/Kiwibro`; the system clears temporary folders when the computer restarts, and a chat
+  whose folder is gone gets an empty one again. Older chats keep their folder, and the setting
+  `workspace_mode` (`temp` or `folder`) lets new chats use the Settings folder as before.
+  Two endpoints for a folder picker: `POST /api/workspace/set` (pick a folder or go back to the
+  temporary one) and `GET /api/workspace/folders`; a chat can also be made with a folder
+  already chosen.
 - **What Kiwibro makes shows up in the chat.** A page, drawing, picture, video or sound
   file that a turn writes appears under the reply. A page runs in a sealed frame that loads
   its own files and four public script libraries (enough for a three.js scene) and nothing

@@ -113,6 +113,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         workspace=app.config.get("KIWIBRO_WORKSPACE"),
     )
     workspace_override = app.config.get("KIWIBRO_WORKSPACE")
+    forced_workspace = bool(workspace_override or os.environ.get("KIWIBRO_WORKSPACE"))
     if workspace_override:
         defaults["workspace"] = str(Path(workspace_override).expanduser().resolve())
     try:
@@ -132,7 +133,10 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             cached = db.get_settings(defaults)
             _settings_cache["value"] = cached
             _settings_cache["version"] = db.settings_version
-        return {**cached, "permissions": dict(cached.get("permissions") or {})}
+        value = {**cached, "permissions": dict(cached.get("permissions") or {})}
+        if forced_workspace:  # a stored "temp" must not move the chats of a test rig out of its folder
+            value["workspace_mode"] = "folder"
+        return value
 
     if not app.config.get("TESTING"):
         from .engine import reap_leftovers

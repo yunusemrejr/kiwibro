@@ -957,7 +957,7 @@ const STOPS = [
     title: "Shown in the chat",
     question: "Where does the thing it made go?",
     lines:
-      "When Kiwibro writes a page, a drawing, a picture, a video or a sound file, it appears in the chat as it is: a page runs, an animation moves, a video plays. A page sits in a sealed frame. It can use the files beside it and the well-known script libraries, such as three.js for 3D, and it cannot reach your other files or this app. Above it stands the folder the chat works in, with its git branch, so you see where on your computer things land.",
+      "When Kiwibro writes a page, a drawing, a picture, a video or a sound file, it appears in the chat as it is: a page runs, an animation moves, a video plays. A page sits in a sealed frame. It can use the files beside it and the well-known script libraries, such as three.js for 3D, and it cannot reach your other files or this app. Above it stands the folder the chat works in, with its git branch, so you see where on your computer things land. A new chat starts in a temporary folder of its own, until you pick another.",
     fact: "Code has a copy button. A file has buttons to open it, show it in its folder and copy its path.",
     tech: {
       model: [["Nothing to learn", "The model writes the file as before. Showing it is the app's work and takes no room in the context window."]],
