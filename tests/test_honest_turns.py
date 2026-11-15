@@ -3,6 +3,7 @@ does not parse is named, citation markers need a source, and a reply written wit
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -303,6 +304,14 @@ def test_a_finished_kit_ends_the_turn_and_kiwibro_says_what_was_made(env: Env) -
     assert [m["content"] for m in _messages(env, "tool")][0].startswith("Used web/scene-3d in fox: 1 file written")
     assert _messages(env, "assistant")[-1]["content"] == prompts.KIT_MADE.format(files="fox/index.html")
     assert (env.workspace / "fox" / "index.html").exists()
+    # the next message is told how to change that page instead of reading or remaking it
+    night = {"path": "fox/index.html", "old": "sky day", "new": "sky night"}
+    env.fake.stream_script = [tool_call_result("replace_in_file", night, "call_3"), ChatResult(content="It is night now.")]
+    chat_events(env, "make it night", conversation_id=env.svc.db.list_conversations()[0]["id"])
+    sent = json.dumps(env.fake.stream_calls[-1], default=str)
+    assert "Made earlier in this chat" in sent
+    assert "replace_in_file(path=" in sent and "fox/index.html" in sent
+    assert "sky night" in (env.workspace / "fox" / "index.html").read_text()
 
 
 def test_calls_about_a_finished_file_are_recognised() -> None:

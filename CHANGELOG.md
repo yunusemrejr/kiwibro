@@ -171,6 +171,10 @@ All notable changes to Kiwibro are documented here.
   there and Kiwibro says so itself; a small model used to go on reading, patching and running
   the finished page for minutes. In a turn with more steps to do, calls that read, run,
   rewrite or remake that page are refused.
+- **Changing a page made earlier.** A later message in the same chat ("make it night") comes
+  with the one call that changes the page, so the model edits a line instead of reading the
+  whole file or making a second page. Kiwi Mind's first reply is opened as a tool call when
+  the message asks for something a ready kit makes.
 - **Starting a chat stays fast with temporary folders.** The instructions no longer carry the
   chat's own folder path, so a new chat reuses what the model has already read.
 - **"Search for…" searches before anything is written.** A message that asks for a search,

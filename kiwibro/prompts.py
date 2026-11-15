@@ -46,6 +46,10 @@ KIT_FINISHED = (
     "Error: {files} is finished and already shown to the user, so this call did not run. "
     "Do not read, run, rewrite or remake it. Answer the user now, in one or two sentences, with what was made."
 )
+MADE_EARLIER = (
+    "## Made earlier in this chat\n{file} is finished and shown to the user. If this message asks to change it, "
+    "do not read it, rewrite it or make a new one. {change}"
+)
 KIT_MADE = "Done: {files} is made and shown here. Tell me what to change and I will edit it."
 WORKSPACE_TEMP_BLOCK = (
     "\n## Workspace\nYour file and command tools work inside a temporary folder that belongs to this chat. "

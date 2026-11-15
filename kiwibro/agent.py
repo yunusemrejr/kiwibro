@@ -364,6 +364,7 @@ class Turn:
     text_calls: bool = False  # this round's tool calls were read out of the reply's text
     finished_files: list[str] = field(default_factory=list)  # files of a finished kit written this turn
     kit_called_for: bool = False  # the message asks for something a ready kit makes (components.suggest)
+    finished_kit: str = ""  # the finished kit that wrote finished_files
     searches: list[tuple[frozenset[str], str]] = field(default_factory=list)  # (terms, query) this turn
     search_rounds: int = 0  # rounds that ran a web search
     plan_done_at: int | None = None  # search_rounds when every planned tool step was done
@@ -873,7 +874,8 @@ class AgentManager:
                 # read, patched and ran the finished page for fourteen minutes and then described it wrongly.
                 made = prompts.KIT_MADE.format(files=", ".join(turn.finished_files))
                 said = self.db.add_message(turn.conversation_id, "assistant", made, model=model,
-                                           meta={"done_for_you": True})
+                                           meta={"done_for_you": True, "kit": turn.finished_kit,
+                                                 "files": list(turn.finished_files)})
                 turn.last_message_id = said["id"]
                 turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + made})
                 turn.reply_text += "\n" + made
@@ -1579,6 +1581,7 @@ class AgentManager:
             return
         if not kit.finished:
             return
+        turn.finished_kit = kit.name
         folder = (item["args"].get("path") or "").strip().strip("/")
         for path in kit.file_paths():
             shown = f"{folder}/{path}" if folder not in ("", ".") else path
@@ -2429,7 +2432,7 @@ class AgentManager:
             plan_kinds=[step.kind for step in steps],
             plan_steps=len(steps),
         ))
-        ready_part = self._ready_part(turn, settings)
+        ready_part = self._ready_part(turn, settings) or self._made_earlier(turn)
         knowledge_part = "" if ready_part else self._knowledge_part(turn)
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
         worked = prompts.WORKED_OUT.format(
@@ -2453,6 +2456,21 @@ class AgentManager:
         ]
         body = "\n\n".join(block.strip() for block in blocks if block and block.strip())
         return f"{prompts.TURN_CONTEXT_HEADER}\n{body}"
+
+    def _made_earlier(self, turn: Turn) -> str:
+        """How to change the page a finished kit made earlier in this chat. Without it a small model
+        answered "make it night" by reading the whole page, patching its title or making a second page."""
+        try:
+            for message in reversed(self.db.recent_messages(turn.conversation_id, limit=12)):
+                meta = message.get("meta") or {}
+                if message.get("role") == "assistant" and meta.get("kit") and meta.get("files"):
+                    kit = components.default_library().get(meta["kit"])
+                    file = str(meta["files"][0])
+                    change = kit.change.replace("{file}", file)
+                    return prompts.MADE_EARLIER.format(file=file, change=change) if change else ""
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not look for an earlier kit page", turn.conversation_id, exc_info=True)
+        return ""
 
     @staticmethod
     def _ready_part(turn: Turn, settings: dict[str, Any]) -> str:

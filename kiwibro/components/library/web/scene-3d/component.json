@@ -44,5 +44,6 @@
     "3d print",
     "3d printed"
   ],
-  "finished": true
+  "finished": true,
+  "change": "Make one call per change: replace_in_file(path=\"{file}\", old=\"sky day\", new=\"sky night\") changes the sky (day, dawn, sunset, night); old=\"ground grass\" changes the ground (grass, sand, snow, water, stone, dirt, moon). To add a thing or an action, put it after the ground line: old=\"ground grass\", new=\"ground grass\\nbird flies to tree\"."
 }

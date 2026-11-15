@@ -65,6 +65,7 @@ class Component:
     match: tuple[str, ...] = ()  # phrases in a user's message that call for this component
     unless: tuple[str, ...] = ()  # phrases that rule it out: "3d printer" is not "3d scene"
     finished: bool = False  # the kit's files are the finished result: nothing to read, run or adapt
+    change: str = ""  # a finished kit: how a later message changes what it made ({file} is the file)
 
     @property
     def area(self) -> str:
@@ -128,6 +129,7 @@ class Library:
                     match=tuple(str(phrase) for phrase in data.get("match") or ()),
                     unless=tuple(str(phrase) for phrase in data.get("unless") or ()),
                     finished=data.get("finished") is True,
+                    change=str(data.get("change") or ""),
                 )
             )
         return sorted(components, key=lambda component: component.name)
