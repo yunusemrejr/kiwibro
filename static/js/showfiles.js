@@ -1,10 +1,12 @@
 /**
- * Showing what Kiwibro made: the folder a chat works in (badge), the files a turn wrote as
- * previews or a short list, and the buttons that belong to a file (Open, Show in folder,
- * Copy path). Everything comes from the server: /api/workspace/info, /files, /open and
- * the sandboxed /api/preview route (see kiwibro/preview.py).
+ * Showing what Kiwibro made: the folder a chat works in (the badge under the chat, which
+ * also changes it), the files a turn wrote as previews or a short list, and the buttons that
+ * belong to a file (Open, Show in folder, Copy path). Everything comes from the server:
+ * /api/workspace/info, /set, /files, /open and the sandboxed /api/preview route (see
+ * kiwibro/preview.py).
  */
 
+import { openFolderPicker } from "./folderpick.js";
 import { copyText, el, icon, toast } from "./ui.js";
 
 const MAX_SHOWN = 3;
@@ -18,6 +20,7 @@ const WORKSPACE_TOOLS = new Set([
 ]);
 const NAMED = /(?:^|[\s"'`(=:[])((?:\.{0,2}\/)?[\w@%+.-]+(?:\/[\w@%+.-]+)*\.(?:html?|svg|png|jpe?g|gif|webp|mp4|webm|mp3|wav|ogg))(?=$|[\s"'`),;:\]])/gi;
 const FILENAME = /^[\w+.-]+\.[A-Za-z0-9]{1,8}$/;
+const TEMP_NAME = "Temporary folder";
 
 /** Does this tool call work in the chat's folder? (A component only does when it is used.) */
 export function usesWorkspace(name, args) {
@@ -94,11 +97,14 @@ async function flashCopied(button, text, done = "Copied") {
   }, 1600);
 }
 
-export function createShowFiles({ api, getConversationId }) {
+export function createShowFiles({ api, getConversationId, getSettings, onFolderChanged }) {
   const dock = document.getElementById("workdir");
-  let uses = false;
+  const badge = el("button", { class: "where where-btn", type: "button", "aria-haspopup": "dialog", on: { click: () => openPicker() } });
+  dock.append(badge);
   let cache = null;
   let seq = 0;
+  let shown = null; // what the badge shows: { key, data }
+  let chosen = null; // a new chat's folder, chosen before the chat exists: { path } or { temp: true }
 
   /** The chat's folder (cached for the open chat). Null when the server cannot say. */
   function info() {
@@ -108,34 +114,90 @@ export function createShowFiles({ api, getConversationId }) {
     return cache.promise;
   }
 
-  /** `~/Desktop/` + `app` + branch; a safe copy says so, in the words of the safe copy strip. */
-  function whereNode(data) {
+  /** The parts of a folder line: icon, name, branch. A tool card also shows the folders it sits in. */
+  function whereParts(data, { full }) {
     const safe = data.safe_copy;
-    const text = safe ? `Safe copy of ${folderName(safe.real)}` : data.path;
-    const cut = safe ? 0 : text.lastIndexOf("/") + 1;
-    return el("span", { class: "where", title: safe ? `Safe copy of ${safe.real}` : data.abs }, [
+    const text = safe ? `Safe copy of ${folderName(safe.real)}` : data.temp ? TEMP_NAME : full ? data.path : data.name || folderName(data.path);
+    const cut = safe || data.temp || !full ? 0 : text.lastIndexOf("/") + 1;
+    return [
       icon("folder"),
       cut ? el("span", { class: "where-dir", text: text.slice(0, cut) }) : null,
       el("span", { class: "where-name", text: text.slice(cut) }),
       data.branch ? el("span", { class: "where-branch", title: `Git branch ${data.branch}` }, [icon("branch"), el("span", { text: data.branch })]) : null,
-    ]);
+    ];
+  }
+
+  /** `~/Desktop/` + `app` + branch; a safe copy says so, in the words of the safe copy strip. */
+  function whereNode(data) {
+    const safe = data.safe_copy;
+    return el("span", { class: "where", title: safe ? `Safe copy of ${safe.real}` : data.abs }, whereParts(data, { full: true }));
+  }
+
+  /** The folder a chat that does not exist yet will start in: the one picked, else what the settings say. */
+  async function newChatFolder() {
+    if (chosen?.path) return { temp: false, abs: chosen.path, name: folderName(chosen.path), path: chosen.path };
+    if (chosen?.temp || getSettings()?.workspace_mode === "temp") return { temp: true, abs: "" };
+    cache = cache?.id === "" ? cache : { id: "", promise: api.workspaceInfo().catch(() => null) };
+    return cache.promise;
+  }
+
+  /** What the badge shows now, or null when there is nothing to show (no answer, or a safe copy: its strip says it). */
+  async function currentFolder() {
+    const id = getConversationId();
+    const data = id ? await info() : await newChatFolder();
+    return data && !data.safe_copy ? { key: id || "new", data } : null;
   }
 
   async function renderDock() {
-    const id = getConversationId();
     const mine = ++seq;
-    dock.hidden = true;
-    if (!id || !uses) return;
-    const data = await info();
-    if (mine !== seq || id !== getConversationId() || !data || data.safe_copy) return;
-    dock.replaceChildren(whereNode(data));
-    dock.hidden = false;
+    if ((getConversationId() || "new") !== shown?.key) dock.hidden = true; // another chat: never show the last one's folder
+    const now = await currentFolder();
+    if (mine !== seq) return;
+    shown = now;
+    dock.hidden = !now;
+    if (!now) return;
+    badge.toggleAttribute("title", Boolean(now.data.abs));
+    if (now.data.abs) badge.title = now.data.abs;
+    badge.setAttribute("aria-label", `Folder for this chat: ${now.data.temp ? TEMP_NAME : now.data.name || folderName(now.data.path)}`);
+    badge.replaceChildren(...whereParts(now.data, { full: false }).filter(Boolean));
   }
 
   /** Reads the chat's folder again (it may have changed) and updates the badge above the composer. */
   function refresh() {
     cache = null;
     return renderDock();
+  }
+
+  /** Makes `body` ({ path } or { temp: true }) the folder of the open chat, or of the next one when there is no chat yet. */
+  async function change(body) {
+    const id = getConversationId();
+    if (id) {
+      const data = await api.workspaceSet({ conversation_id: id, ...body });
+      cache = { id, promise: Promise.resolve(data) };
+    } else if (body.temp) {
+      chosen = { temp: true };
+    } else {
+      const listing = await api.workspaceFolders(body.path);
+      if (!listing.allowed) throw new Error("Kiwibro cannot work in that folder.");
+      chosen = { path: listing.path };
+      cache = null;
+    }
+    toast("Folder changed");
+    if (id) onFolderChanged?.();
+    await renderDock();
+  }
+
+  function openPicker() {
+    if (!shown) return;
+    const { data } = shown;
+    openFolderPicker({
+      anchor: badge,
+      api,
+      path: data.temp ? "" : data.abs,
+      temp: data.temp,
+      onUse: (path) => change({ path }),
+      onTemp: () => change({ temp: true }),
+    });
   }
 
   async function act(action, path) {
@@ -297,14 +359,14 @@ export function createShowFiles({ api, getConversationId }) {
     showTurn,
     fileBlocks,
     fileBar,
-    used() {
-      if (uses) return;
-      uses = true;
-      renderDock();
+    /** The folder picked for a chat that does not exist yet: { path } or { temp: true }, else null. */
+    pending: () => chosen,
+    forgetPick() {
+      chosen = null;
     },
     reset() {
-      uses = false;
-      dock.hidden = true;
+      chosen = null;
+      renderDock();
     },
   };
 }

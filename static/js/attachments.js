@@ -30,7 +30,7 @@ function carriesFiles(event) {
 
 /* ---------- Composer attachments ------------------------------------------- */
 
-export function createAttachments({ composer, input, anchor, onChange, disabled = false }) {
+export function createAttachments({ composer, input, anchor, onChange, ensureConversation, disabled = false }) {
   const items = [];
   let nextId = 1;
   let tray = null;
@@ -101,9 +101,11 @@ export function createAttachments({ composer, input, anchor, onChange, disabled 
 
   async function upload(item) {
     const body = new FormData();
-    body.append("file", item.file, item.name);
     let attachment;
     try {
+      // The file is stored in the chat's own folder, so the chat has to exist first.
+      body.append("conversation_id", await ensureConversation());
+      body.append("file", item.file, item.name);
       const response = await fetch(UPLOAD_URL, {
         method: "POST",
         body,

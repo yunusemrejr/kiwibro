@@ -597,9 +597,9 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false, safe
     ]);
   }
 
-  function segmented(label, options, mode, onChoose) {
+  function segmented(label, options, mode, onChoose, extraClass = "") {
     const group = el("div", {
-      class: "segmented",
+      class: extraClass ? `segmented ${extraClass}` : "segmented",
       role: "radiogroup",
       "aria-label": label,
     });
@@ -780,6 +780,26 @@ export function createSettingsSheet({ dialog, api, actions, isMock = false, safe
   function workspaceSection() {
     const section = group("Workspace");
     const workspace = data.settings?.workspace || data.workspace?.root || "";
+    const mode = data.settings?.workspace_mode === "folder" ? "folder" : "temp";
+    section.append(
+      el("div", { class: "setting-row workspace-mode" }, [
+        el("div", { class: "setting-text" }, [el("div", { class: "setting-name", text: "New chats start in" })]),
+        segmented(
+          "New chats start in",
+          [["temp", "A temporary folder"], ["folder", "This folder"]],
+          mode,
+          async (value) => {
+            await patch({ workspace_mode: value });
+            render(); // shows what the server kept: a folder forced by the environment stays "This folder"
+          },
+          "segmented-touch",
+        ),
+      ]),
+    );
+    if (mode === "temp") {
+      if (safeCopy) section.append(safeCopy.starter({ folder: workspace, onStarted: () => closeSheet(dialog) }));
+      return section;
+    }
     const input = el("input", {
       type: "text",
       value: workspace,

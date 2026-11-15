@@ -141,6 +141,7 @@ kiwibro/
 │   │   ├── attachments.js    # composer attachments: pick, paste, drop, upload
 │   │   ├── chat.js           # transcript: messages, streaming, tool activity, approvals
 │   │   ├── export.js         # chat export as Markdown (pure functions)
+│   │   ├── folderpick.js     # the folder picker: a popover from the badge under the chat
 │   │   ├── how.js            # How it works: thirteen small animated figures
 │   │   ├── inference.js      # thinking control, reply speed, context window size
 │   │   ├── markdown.js       # escape-first Markdown renderer for chat replies
@@ -1345,7 +1346,13 @@ for when the web is away or has nothing.
   The app page allows frames from the preview route only, so a previewed page cannot send
   itself to another address.
 - **Folder badge.** `GET /api/workspace/info` gives the folder as `~/…`, its git
-  branch and whether it is a temporary folder. In a safe copy it reads "Safe copy of" and the folder's name.
+  branch and whether it is a temporary folder. The badge under the chat is a button shown for
+  every chat: "Temporary folder", or the folder's name, with the branch. It opens the picker
+  (`folderpick.js`), which lists folders with `GET /api/workspace/folders` and applies the
+  choice with `POST /api/workspace/set`. On the new-chat screen the choice is kept in the
+  page; the chat is made with it when the first message is sent (or a file is attached, since
+  a file is stored in the chat's own folder). In a safe copy the badge gives way to the safe
+  copy strip, which reads "Safe copy of" and the folder's name.
 - **Buttons.** Open and Show in folder go through `POST /api/workspace/open`, which applies
   the `open_path` rules (`safety.decide` and the safe-copy gate). Copy path and Open in new
   tab need no server.

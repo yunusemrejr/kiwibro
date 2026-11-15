@@ -12,7 +12,9 @@ All notable changes to Kiwibro are documented here.
   `workspace_mode` (`temp` or `folder`) lets new chats use the Settings folder as before.
   Two endpoints for a folder picker: `POST /api/workspace/set` (pick a folder or go back to the
   temporary one) and `GET /api/workspace/folders`; a chat can also be made with a folder
-  already chosen.
+  already chosen. The folder name under the chat is a button: it opens a picker to choose
+  another folder or go back to the temporary one, also before the first message, and
+  Settings > Workspace has "New chats start in".
 - **What Kiwibro makes shows up in the chat.** A page, drawing, picture, video or sound
   file that a turn writes appears under the reply. A page runs in a sealed frame that loads
   its own files and four public script libraries (enough for a three.js scene) and nothing
