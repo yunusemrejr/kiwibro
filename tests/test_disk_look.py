@@ -62,7 +62,10 @@ def test_other_questions_get_no_disk_look(message: str):
     assert ("disk_usage", {}) not in looks(message) and all(name != "disk_usage" for name, _ in looks(message))
 
 
-def test_a_file_question_about_a_folder_stays_with_the_folder_listing():
+def test_a_file_question_about_a_folder_stays_with_the_folder_listing(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))  # a home with a Desktop folder, whatever machine this runs on
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    (tmp_path / "Desktop").mkdir()
     assert [name for name, _ in looks("which file takes the most space on my desktop")] == ["list_files"]
 
 

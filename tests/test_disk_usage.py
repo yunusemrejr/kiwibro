@@ -49,7 +49,8 @@ def test_largest_first_with_its_share_of_the_total(tmp_path: Path):
     assert result.ok is True
     lines = _lines(result.content)
     total = _allocated(tmp_path / "small.txt") + _allocated(tmp_path / "big.bin") \
-        + _allocated(big_dir / "clip.bin") + _allocated(tmp_path / ".hidden")
+        + _allocated(big_dir / "clip.bin") + _allocated(tmp_path / ".hidden") \
+        + _allocated(big_dir)  # a folder takes blocks of its own on most disks
     assert desktop._human_bytes(total) in lines[0]
     assert "~" not in lines[0]  # a scratch folder is not the home folder
     assert lines[1].startswith("Disk: ")

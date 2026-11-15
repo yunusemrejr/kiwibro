@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +11,16 @@ from kiwibro import research, search, tools
 from kiwibro.sandbox import Workspace
 
 NOW = datetime(2026, 11, 11, 0, 8, tzinfo=timezone(timedelta(hours=3)))  # just after midnight in Istanbul
+
+
+@pytest.fixture(autouse=True)
+def clock_in_istanbul(monkeypatch):
+    """Days and hours are told in the computer's own time zone; these tests are written for Istanbul's."""
+    monkeypatch.setenv("TZ", "Europe/Istanbul")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.mark.parametrize(
