@@ -864,6 +864,17 @@ class AgentManager:
                 turn.reply_text += "\n" + turn.done_note
                 turn.inference["said_by_kiwibro"] = "note"
                 break
+            if turn.finished_files and turn.plan is None:
+                # A finished kit is the whole job. Kiwibro says so itself: a small model asked to go on
+                # read, patched and ran the finished page for fourteen minutes and then described it wrongly.
+                made = prompts.KIT_MADE.format(files=", ".join(turn.finished_files))
+                said = self.db.add_message(turn.conversation_id, "assistant", made, model=model,
+                                           meta={"done_for_you": True})
+                turn.last_message_id = said["id"]
+                turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + made})
+                turn.reply_text += "\n" + made
+                turn.inference["said_by_kiwibro"] = "kit"
+                break
             if round_index == max_rounds - 1:
                 note = "I reached the tool-use limit for this turn, so I stopped here."
                 if turn.changed_files:  # what the stopped turn still got done, before it asks to go on
@@ -1556,8 +1567,8 @@ class AgentManager:
 
     @staticmethod
     def _note_finished(turn: Turn, item: dict[str, Any]) -> None:
-        """Remember the files of a finished kit. A small model went on to read, patch and run a
-        page that was already right, for fourteen minutes; calls that name these files are refused."""
+        """Remember the files of a finished kit: the turn ends there, and in a turn with more
+        steps to do, calls that name these files are refused."""
         try:
             kit = components.default_library().get(item["args"].get("name") or "")
         except components.ComponentError:

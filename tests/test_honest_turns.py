@@ -292,16 +292,24 @@ def test_the_step_limit_note_lists_six_files_and_counts_the_rest(env: Env) -> No
 # --- a finished kit is left alone -------------------------------------------------------------
 
 
-def test_a_finished_kit_is_not_read_run_or_made_again_in_the_same_turn(env: Env) -> None:
+def test_a_finished_kit_ends_the_turn_and_kiwibro_says_what_was_made(env: Env) -> None:
     use = {"action": "use", "name": "web/scene-3d", "path": "fox", "values": {"scene": "fox walks to campfire"}}
     env.fake.stream_script = [
         tool_call_result("component", use, "call_1"),
-        tool_call_result("read_file", {"path": "fox/index.html"}, "call_2"),
-        tool_call_result("component", {**use, "path": "fox2"}, "call_3"),
-        ChatResult(content="A fox walks to a campfire."),
+        tool_call_result("read_file", {"path": "fox/index.html"}, "call_2"),  # never asked for
     ]
     chat_events(env, "make a 3d scene where a fox walks to a campfire")
-    results = [m["content"] for m in _messages(env, "tool")]
-    assert results[0].startswith("Used web/scene-3d in fox: 1 file written")
-    assert results[1] == results[2] == prompts.KIT_FINISHED.format(files="fox/index.html")
-    assert (env.workspace / "fox" / "index.html").exists() and not (env.workspace / "fox2").exists()
+    assert len(env.fake.stream_calls) == 1
+    assert [m["content"] for m in _messages(env, "tool")][0].startswith("Used web/scene-3d in fox: 1 file written")
+    assert _messages(env, "assistant")[-1]["content"] == prompts.KIT_MADE.format(files="fox/index.html")
+    assert (env.workspace / "fox" / "index.html").exists()
+
+
+def test_calls_about_a_finished_file_are_recognised() -> None:
+    from kiwibro.agent import AgentManager as Agent
+    turn = Turn.__new__(Turn)
+    turn.finished_files = ["fox/index.html"]
+    assert Agent._touches_finished(turn, "read_file", {"path": "fox/index.html"}) == "fox/index.html"
+    assert Agent._touches_finished(turn, "run_command", {"command": "node fox/index.html"}) == "fox/index.html"
+    assert Agent._touches_finished(turn, "component", {"action": "use", "name": "web/scene-3d"}) == "fox/index.html"
+    assert Agent._touches_finished(turn, "write_file", {"path": "notes.md", "content": "x"}) == ""
