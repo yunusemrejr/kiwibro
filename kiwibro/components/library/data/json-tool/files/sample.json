@@ -1,0 +1,10 @@
+[
+  {"name": "alpha", "kind": "tool", "stars": 12, "lang": "python"},
+  {"name": "beta", "kind": "tool", "stars": 7, "lang": "go"},
+  {"name": "gamma", "kind": "game", "stars": 21, "lang": "python"},
+  {"name": "delta", "kind": "tool", "stars": 3, "lang": "rust"},
+  {"name": "epsilon", "kind": "game", "stars": 9, "lang": "js"},
+  {"name": "zeta", "kind": "tool", "stars": 15, "lang": "python"},
+  {"name": "eta", "kind": "tool", "stars": 5, "lang": "js"},
+  {"name": "theta", "kind": "game", "stars": 18, "lang": "python"}
+]

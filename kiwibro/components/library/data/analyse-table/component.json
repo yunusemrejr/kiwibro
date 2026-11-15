@@ -1,0 +1,32 @@
+{
+  "name": "data/analyse-table",
+  "kind": "recipe",
+  "title": "Answer from a table",
+  "summary": "Answer questions about a CSV or spreadsheet with exact figures: inspect columns, compute with the table tool, show the numbers.",
+  "when": "Use when the user asks a question about a CSV, TSV or spreadsheet and wants exact figures rather than a description.",
+  "blanks": {},
+  "steps": [
+    "Call analyze_table with only path set to the table, and read the column names and types it lists.",
+    "Write the question as a filter or a grouping over those exact column names before computing anything.",
+    "Call analyze_table with where set to a filter such as price > 100 and columns set to the fields to show.",
+    "Call analyze_table with group_by set to the column and aggregate set to sum:amount, so each group's total comes in one call.",
+    "Call calculate with expression for any share, percentage or rate applied to those totals.",
+    "If the file ends .xlsx, call run_command with a soffice --headless --convert-to csv command on it, then analyse the new csv.",
+    "Check each total against the row count analyze_table reports, and repeat the call when the two do not fit.",
+    "Answer with the exact figures, their unit or currency and the column they came from, and say what the table cannot show."
+  ],
+  "next": "The final answer must give the exact figures from analyze_table with their unit or currency and column, and say what the table does not contain.",
+  "match": [
+    "analyse csv",
+    "analyze csv",
+    "analyse table",
+    "analyze table",
+    "analyse spreadsheet",
+    "analyze spreadsheet",
+    "how many rows",
+    "rows in csv",
+    "total in csv",
+    "average in csv",
+    "column in csv"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "data/json-tool",
+  "kind": "kit",
+  "title": "JSON reshape tool",
+  "summary": "Python script that reads JSON, picks and renames fields, filters records and writes JSON or CSV.",
+  "when": "Use when the user has a JSON file and wants only some fields, renamed or filtered, out as JSON or CSV.",
+  "blanks": {
+    "name": {
+      "about": "Script name: file stem, prog name in the help text and the logger name.",
+      "default": "reshape"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run python3 {{name}}.py sample.json --pick <fields> --format csv --out out.csv and python3 -m pytest -q.",
+  "match": [
+    "reshape json",
+    "filter json",
+    "json to csv",
+    "convert json",
+    "transform json"
+  ]
+}

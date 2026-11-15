@@ -24,3 +24,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# The component library has an area named data: it is source, not app data.
+!/kiwibro/components/library/data/

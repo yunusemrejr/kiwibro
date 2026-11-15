@@ -1,0 +1,21 @@
+{
+  "name": "data/csv-report",
+  "kind": "kit",
+  "title": "CSV report script",
+  "summary": "Python script that reads a CSV, checks its columns, groups and totals a column and writes a Markdown report.",
+  "when": "Use when the user has a CSV file and wants totals grouped by a column written as a Markdown report.",
+  "blanks": {
+    "name": {
+      "about": "Script name: file stem, prog name in the help text and the logger name.",
+      "default": "report"
+    }
+  },
+  "next": "Write every file under files/ into the user's project, then run python3 {{name}}.py sample.csv --group <column> --sum <numeric column> --out report.md and python3 -m pytest -q.",
+  "match": [
+    "csv report",
+    "report from csv",
+    "summarise csv",
+    "summarize csv",
+    "totals from csv"
+  ]
+}
