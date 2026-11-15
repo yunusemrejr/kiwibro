@@ -363,6 +363,7 @@ class Turn:
     truncated_calls: bool = False  # this round's tool calls were cut off by max_tokens
     text_calls: bool = False  # this round's tool calls were read out of the reply's text
     finished_files: list[str] = field(default_factory=list)  # files of a finished kit written this turn
+    kit_called_for: bool = False  # the message asks for something a ready kit makes (components.suggest)
     searches: list[tuple[frozenset[str], str]] = field(default_factory=list)  # (terms, query) this turn
     search_rounds: int = 0  # rounds that ran a web search
     plan_done_at: int | None = None  # search_rounds when every planned tool step was done
@@ -782,8 +783,11 @@ class AgentManager:
             turn.partial_text = ""
             turn.partial_reasoning = ""
             review, turn.pending_review = turn.pending_review, ""
+            # The message asks for something a kit makes: Kiwi Mind's first reply is opened as a tool call.
+            # Left to choose, it sometimes answered a "make a 3D scene" message with code pasted into the chat.
             result = self._stream_with_recovery(
-                turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=review or None
+                turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=review or None,
+                open_call=round_index == 0 and turn.kit_called_for and tool_list is not None,
             )
             if not turn.nudged and toolcall.is_empty_reply(result.content, result.tool_calls):
                 # Small models sometimes stop with an empty reply (most often after tool
@@ -2460,6 +2464,7 @@ class AgentManager:
             return ""
         try:
             fitting = components.suggest(turn.message)
+            turn.kit_called_for = fitting is not None and fitting.kind == components.KIT
             return components.advice(fitting) if fitting is not None else ""
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not pick a component", turn.conversation_id, exc_info=True)
