@@ -71,9 +71,10 @@ def compaction_happens(env: "Any") -> str:
 
 def compaction_keeps_chatting(env: "Any") -> str:
     conversation_id, streams = _seed_until_compacted(env)
-    follow_up = _chat(env, f"after compaction {LONG} [[scenario:plain]]", conversation_id)
+    # A new answer: the words the earlier turns got would be taken for a repeat and asked for again.
+    follow_up = _chat(env, f"after compaction {LONG} [[scenario:reasoning]]", conversation_id)
     assert_eq(follow_up.of("error"), [], "chat after compaction must succeed")
-    assert_eq(follow_up.text(), "Hello from the fake model.", "answer streamed after compaction")
+    assert_eq(follow_up.text(), "The kiwi is a bird.", "answer streamed after compaction")
     detail = _detail(env, conversation_id)
     assert_true(len(detail["messages"]) >= 8, "transcript still growing")
     return "conversation keeps working after rolling compaction"
