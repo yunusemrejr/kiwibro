@@ -252,8 +252,10 @@ export const api = {
   workspaceInfo: (conversationId) => request(`/api/workspace/info${query({ conversation_id: conversationId })}`),
   workspaceFiles: (body) => request("/api/workspace/files", { method: "POST", body }),
   workspaceOpen: (body) => request("/api/workspace/open", { method: "POST", body }),
+  workspaceFolders: (path) => request(`/api/workspace/folders${query({ path })}`),
+  workspaceSet: (body) => request("/api/workspace/set", { method: "POST", body }),
 
-  createConversation: () => request("/api/conversations", { method: "POST", body: {} }),
+  createConversation: (body = {}) => request("/api/conversations", { method: "POST", body }),
   safeCopyStatus: (conversationId) => request(`/api/safecopy/status${query({ conversation_id: conversationId })}`),
   safeCopyStart: (conversationId, folder) =>
     request("/api/safecopy/start", { method: "POST", body: { conversation_id: conversationId, folder } }),

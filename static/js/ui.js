@@ -301,7 +301,13 @@ export function openPopover({
     }
   };
 
-  const onViewportChange = () => closePopover({ restoreFocus: false });
+  // Scrolling a list inside the popover, or a phone keyboard opening for a field in it, is not a reason to close it.
+  const width = window.innerWidth;
+  const onViewportChange = (event) => {
+    if (event.type === "scroll" && popover.contains(event.target)) return;
+    if (event.type === "resize" && window.innerWidth === width && popover.contains(document.activeElement)) return;
+    closePopover({ restoreFocus: false });
+  };
 
   document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("keydown", onKeyDown, true);

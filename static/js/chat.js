@@ -6,7 +6,7 @@
 import { attachmentChips } from "./attachments.js";
 import { renderMarkdown } from "./markdown.js";
 import { enhanceRendered, handleRichClick } from "./richblocks.js";
-import { detailBlock, usesWorkspace } from "./showfiles.js";
+import { detailBlock } from "./showfiles.js";
 import {
   el,
   icon,
@@ -793,7 +793,6 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
           const toolEntry = createToolRow(call);
           const result = results.get(call.id);
           turn.calls.push({ id: call.id, name: call.name, args: call.args, ok: result ? result.meta?.ok !== false : false, text: result?.content || "" });
-          if (usesWorkspace(call.name, call.args)) showFiles?.used();
           if (result) {
             toolEntry.addResult({
               ok: result.meta?.ok !== false,
@@ -935,7 +934,6 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       if (data.id) turn.tools.set(data.id, entry);
       const name = data.name || data.tool || "tool";
       turn.calls.push({ id: data.id || "", name, args: data.args });
-      if (usesWorkspace(name, data.args)) showFiles?.used();
       scrollIfPinned();
     },
     addToolResult(data) {

@@ -118,6 +118,7 @@ const state = {
   convMatches: new Map(), // chat id -> snippet of a message that matches the filter
   conversationId: null,
   conversation: null,
+  freshChat: null, // id of a chat made before its first message (a picked folder, an attached file)
   memoriesCount: 0,
   notesCount: 0,
   readiness: null,
@@ -141,7 +142,12 @@ let memoryRefreshTimer = 0;
 let memorySheet = null;
 let settingsSheet = null;
 let safeCopy = null;
-const showFiles = createShowFiles({ api, getConversationId: () => state.conversationId });
+const showFiles = createShowFiles({
+  api,
+  getConversationId: () => state.conversationId,
+  getSettings: () => state.settings,
+  onFolderChanged: dropStagedFiles,
+});
 let modelsView = null;
 let notesView = null;
 let howView = null;
@@ -176,8 +182,16 @@ const attachmentsUI = createAttachments({
   input: els.input,
   anchor: els.agentToggle,
   onChange: () => updateSendEnabled(),
+  ensureConversation: () => ensureConversation(),
   disabled: IS_MOCK,
 });
+
+// A file is stored in the folder of the chat it was attached in: in another chat or folder it is gone.
+function dropStagedFiles() {
+  if (!attachmentsUI.count() && !attachmentsUI.busy()) return;
+  attachmentsUI.clear();
+  toast("Attached files were removed. Attach them again.");
+}
 
 /* -------------------------------------------------------------------------- */
 /* Bootstrap                                                                  */
@@ -1004,6 +1018,7 @@ async function openConversation(id, { silent = false } = {}) {
   }
   try {
     const data = await api.conversation(id);
+    attachmentsUI.clear();
     state.conversationId = id;
     state.conversation = data.conversation || null;
     localStorage.setItem(STORAGE.conversation, id);
@@ -1060,6 +1075,7 @@ function offerRetryIfUnanswered(id, data) {
 }
 
 function showEmptyState() {
+  attachmentsUI.clear();
   state.conversationId = null;
   safeCopy?.refresh();
   showFiles.refresh();
@@ -1075,6 +1091,7 @@ function newChat() {
   if (state.streaming) {
     detachCurrentStream();
   }
+  attachmentsUI.clear();
   state.conversationId = null;
   state.conversation = null;
   state.privateNext = false;
@@ -1136,6 +1153,36 @@ function focusComposerSoon() {
   });
 }
 
+let creatingChat = null;
+
+/**
+ * The open chat, or a new one made now. A new chat is made when something needs its folder
+ * before the first message: a folder picked on the new-chat screen, or a file attached.
+ */
+function ensureConversation() {
+  if (state.conversationId) return Promise.resolve(state.conversationId);
+  creatingChat ||= (async () => {
+    const picked = showFiles.pending();
+    const data = await api.createConversation({
+      workspace: picked?.path,
+      private: state.privateNext || undefined,
+      model: state.currentModel || undefined,
+    });
+    const conversation = data.conversation || data;
+    if (picked?.temp) await api.workspaceSet({ conversation_id: conversation.id, temp: true });
+    state.conversationId = conversation.id;
+    state.conversation = conversation;
+    state.freshChat = conversation.id; // the sidebar lists it once its first message is sent
+    showFiles.forgetPick();
+    showFiles.refresh();
+    safeCopy?.refresh();
+    return conversation.id;
+  })().finally(() => {
+    creatingChat = null;
+  });
+  return creatingChat;
+}
+
 async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
   const text = String(rawText || "").trim();
   if (!text && !attachments?.length && !attachmentsUI.count()) return;
@@ -1168,6 +1215,14 @@ async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
   if (attachmentsUI.busy()) {
     toast("Wait for the upload to finish", { tone: "error", iconName: "alert" });
     return;
+  }
+  if (!state.conversationId && showFiles.pending()) {
+    try {
+      await ensureConversation();
+    } catch (error) {
+      toast(error?.message || "Couldn't start the chat", { tone: "error", iconName: "alert" });
+      return;
+    }
   }
   const files = attachments || attachmentsUI.take();
   if (echo) chatView.beginUser(text || files.map((file) => file.name).join(", "), files);
@@ -1271,7 +1326,8 @@ async function sendMessage(rawText, { echo = true, attachments = null } = {}) {
 function handleStreamEvent(event, data, activeStream) {
   switch (event) {
     case "meta": {
-      const isNew = !state.conversationId;
+      const isNew = !state.conversationId || state.freshChat === data.conversation_id;
+      state.freshChat = null;
       if (data.conversation_id) {
         state.conversationId = data.conversation_id;
         if (activeStream) activeStream.conversationId = data.conversation_id;
@@ -1546,6 +1602,7 @@ async function patchSettingsAndSync(patch) {
   state.settings = next;
   if (data?.data_dir) state.dataDir = data.data_dir;
   if (next.workspace) state.workspace = next.workspace;
+  if ("workspace" in patch || "workspace_mode" in patch) showFiles.refresh(); // the badge of a new chat follows them
   applySettingsUI();
   updateComposerState();
   if ("server_url" in patch) {

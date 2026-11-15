@@ -76,6 +76,103 @@
   white-space: nowrap;
 }
 
+/* The badge under the chat is a button: the same line, with a larger target that does not move it. */
+.where-btn {
+  box-sizing: border-box;
+  min-height: 24px;
+  margin: -3px -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur), color var(--dur);
+}
+
+.where-btn:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text-2);
+}
+
+.where-btn .where-name {
+  flex: 0 1 auto;
+  max-width: none;
+}
+
+.where-btn .where-branch {
+  flex: 0 100 auto;
+  min-width: 52px;
+  max-width: none;
+}
+
+.where-btn:hover > .icon {
+  color: var(--muted);
+}
+
+.where-btn:hover .where-name {
+  color: var(--text);
+}
+
+/* The folder picker (a popover from the badge). */
+.folder-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(336px, calc(100vw - 28px));
+  padding: 4px;
+}
+
+.folder-title {
+  padding: 2px 4px 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.folder-pop .inline-error {
+  margin-top: -2px;
+}
+
+.folder-list {
+  height: min(224px, 30vh);
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.folder-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.folder-list .menu-empty {
+  padding: 10px;
+  font-size: 12px;
+}
+
+.folder-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.folder-actions .btn {
+  height: 34px;
+}
+
+.folder-actions .btn-primary {
+  margin-left: auto;
+}
+
+.folder-note {
+  margin: -2px 0 2px 2px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .tool-where {
   display: flex;
   flex-direction: column;
@@ -293,7 +390,36 @@ button.shown-row-main {
 }
 
 /* Phones and touch screens: every button is at least 40 px. */
+@media (max-width: 860px) {
+  .chat.is-empty {
+    padding-bottom: 172px; /* the badge row makes the dock taller */
+  }
+}
+
 @media (max-width: 560px), (pointer: coarse) {
+  .workdir {
+    margin-top: 0;
+  }
+
+  .where-btn {
+    min-height: 40px;
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  .folder-pop .path-field,
+  .folder-actions .btn {
+    height: 40px;
+  }
+
+  .folder-pop .path-field input {
+    font-size: 16px;
+  }
+
+  .folder-row {
+    min-height: 40px;
+  }
+
   .file-btn,
   .detail-head .file-btn {
     width: 40px;
