@@ -121,6 +121,7 @@ kiwibro/
 │   ├── sandbox.py            # workspace paths, file tools, process runner, terminals
 │   ├── safecopy.py           # safe copy: a git-tracked copy of a folder, proof, apply, undo
 │   ├── safemode.py           # what a conversation may do while it works in a safe copy
+│   ├── preview.py            # files a chat made, served to sealed previews; the folder badge
 │   ├── guard.py              # content safety: secrets, injections, bad writes
 │   └── checkpoints.py        # automatic file checkpoints and undo
 ├── templates/index.html      # single page shell
@@ -140,7 +141,7 @@ kiwibro/
 │   │   ├── attachments.js    # composer attachments: pick, paste, drop, upload
 │   │   ├── chat.js           # transcript: messages, streaming, tool activity, approvals
 │   │   ├── export.js         # chat export as Markdown (pure functions)
-│   │   ├── how.js            # How it works: nine small animated figures
+│   │   ├── how.js            # How it works: thirteen small animated figures
 │   │   ├── inference.js      # thinking control, reply speed, context window size
 │   │   ├── markdown.js       # escape-first Markdown renderer for chat replies
 │   │   ├── mathml.js         # LaTeX maths to MathML, without dependencies
@@ -152,6 +153,7 @@ kiwibro/
 │   │   ├── richblocks.js     # live previews of model-written HTML and SVG
 │   │   ├── sense.js          # Kiwi Sense in the browser (WebAssembly core)
 │   │   ├── sheets.js         # Memory and Settings sheets
+│   │   ├── showfiles.js      # files a turn made, shown in the chat; folder badge; open and copy
 │   │   └── ui.js             # DOM helpers, icons, popovers, sheets, toasts
 │   └── img/                  # kiwi logo SVG, favicon and PNG icons
 │   └── sense/                # sense.bin (data file) and sense.wasm (committed build)
@@ -1323,6 +1325,26 @@ for when the web is away or has nothing.
   entry must hold every specific word of the question and most of its weight, with the
   subject in its title; one word alone finds only the entry named exactly so. A word the
   base has never seen means no entry.
+
+### Shown in the chat (`preview.py`, `showfiles.js`)
+
+- **What is shown.** Files a turn wrote (`write_file`, `apply_patch`, `replace_in_file`, a
+  component), or named in the output of a command it ran and changed during the turn: HTML
+  pages, SVG, PNG, JPEG, GIF, WebP, MP4, WebM, MP3, WAV and OGG. At most 40 per turn; a
+  file over 5 MB is listed, not shown. Previews load when they scroll into view and
+  nothing plays by itself.
+- **Serving.** `GET /api/preview/<chat>/<path>` resolves the path inside the chat's
+  workspace (`Workspace.resolve`), refuses hidden files, secret-named files and unknown
+  types, and answers with a Content-Security-Policy: `sandbox allow-scripts` (an opaque
+  origin, so no cookies and no API), files from the chat's own preview tree, scripts and
+  styles also from four public libraries (jsDelivr, unpkg, cdnjs, esm.sh), nothing else.
+  The app page allows frames from the preview route only, so a previewed page cannot send
+  itself to another address.
+- **Folder badge.** `GET /api/workspace/info` gives the folder as `~/…` and its git
+  branch. In a safe copy it reads "Safe copy of" and the folder's name.
+- **Buttons.** Open and Show in folder go through `POST /api/workspace/open`, which applies
+  the `open_path` rules (`safety.decide` and the safe-copy gate). Copy path and Open in new
+  tab need no server.
 
 ### Safe copy (`safecopy.py`, `safemode.py`)
 

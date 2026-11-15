@@ -6,6 +6,12 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **What Kiwibro makes shows up in the chat.** A page, drawing, picture, video or sound
+  file that a turn writes appears under the reply. A page runs in a sealed frame that loads
+  its own files and four public script libraries (enough for a three.js scene) and nothing
+  else; nothing plays by itself and a large file is listed instead. The folder the chat
+  works in stands above it with its git branch. Code has a copy button; a file has Open,
+  Show in folder and Copy path, under the same rules as the `open_path` tool.
 - **A knowledge base of its own.** About 2,000 short entries on 24 topics (AI, programming,
   Python, JavaScript, HTML and CSS, SQL, git, the shell, Linux commands, networking, maths,
   physics, chemistry and the elements, biology, astronomy, geography and the countries,
@@ -16,7 +22,7 @@ All notable changes to Kiwibro are documented here.
 - **Flowchart kit.** `ui/flowchart`: the model fills in steps and links, and plain
   JavaScript lays the chart out in layers and draws it as SVG, with decisions and loops.
   "Draw" now calls for a kit the way "make" does.
-- **How it works: a "Knowledge base" stop and a LoRA figure.** The Adapters figure now
+- **How it works: "Shown in the chat" and "Knowledge base" stops and a LoRA figure.** The Adapters figure now
   shows the frozen table and the two thin tables that are multiplied and added to it.
 - **Ready parts, chosen by code.** The component library grows from 38 to 68 kits and recipes:
   dashboards, data tables, charts, dialogs, galleries, navigation and settings screens, API

@@ -455,6 +455,57 @@ function knowledgeBase(root) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Shown in the chat                                                          */
+/* -------------------------------------------------------------------------- */
+
+function shownInChat(root) {
+  const DOTS = 9;
+  const cx = 303;
+  const cy = 166;
+  root.append(s("path", { class: "hw-line", d: "M106 140H150" }));
+  const tools = box(root, 64, 140, 84, 46, "Tools");
+  root.append(s("rect", { class: "hw-slab", x: 158, y: 40, width: 290, height: 200, rx: 10 }));
+  text(root, 172, 64, "~/projects/site", "hw-t-muted", "start");
+  text(root, 434, 64, "main", "hw-t-tan", "end");
+  const shown = s("g");
+  shown.append(s("rect", { class: "hw-mask", x: 172, y: 104, width: 262, height: 124, rx: 6 }));
+  const seal = s("rect", { class: "hw-frame", x: 172, y: 104, width: 262, height: 124, rx: 6 });
+  shown.append(seal);
+  text(shown, 172, 92, "index.html", "hw-t", "start");
+  const buttons = [392, 410, 428].map((x) => s("rect", { class: "hw-part", x: x - 7, y: 81, width: 14, height: 14, rx: 3 }));
+  const dots = Array.from({ length: DOTS }, () => s("circle", { class: "hw-dot" }));
+  shown.append(...buttons, ...dots);
+  root.append(shown);
+  const file = s("rect", { class: "hw-part is-on", x: -9, y: -12, width: 18, height: 24, rx: 3 });
+  root.append(file);
+  const captions = ["a file it writes appears in the chat", "a page runs live, in a sealed frame", "open it, show its folder, copy its path"].map((line) => text(root, cx, 262, line));
+
+  return {
+    duration: 10.5,
+    still: 5.6,
+    draw(t) {
+      on(tools, t > 0.3 && t < 1.4);
+      const travel = span(t, 1.1, 2.1);
+      at(file, mix(106, 190, travel), mix(140, 132, travel));
+      fade(file, during(t, 1, 2.4, 0.2));
+      fade(shown, span(t, 2.1, 2.7) * (1 - span(t, 9.9, 10.3)));
+      // A ring of dots turning in depth: the page inside the frame is running, not a picture of it.
+      dots.forEach((dot, index) => {
+        const angle = t * 1.1 + (index * 2 * Math.PI) / DOTS;
+        const depth = Math.sin(angle);
+        at(dot, cx + 86 * Math.cos(angle), cy + 26 * depth);
+        dot.setAttribute("r", (3.4 + 1.8 * depth).toFixed(2));
+        dot.setAttribute("opacity", (0.65 + 0.35 * depth).toFixed(2));
+      });
+      fade(captions[0], during(t, 2.3, 4.6));
+      fade(captions[1], during(t, 4.8, 7.1));
+      fade(captions[2], during(t, 7.3, 9.9));
+      buttons.forEach((button, index) => on(button, t > 7.5 + index * 0.7 && t < 8.1 + index * 0.7));
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* 6. Checked answers                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -901,6 +952,23 @@ const STOPS = [
       ],
     },
     build: readyParts,
+  },
+  {
+    title: "Shown in the chat",
+    question: "Where does the thing it made go?",
+    lines:
+      "When Kiwibro writes a page, a drawing, a picture, a video or a sound file, it appears in the chat as it is: a page runs, an animation moves, a video plays. A page sits in a sealed frame. It can use the files beside it and the well-known script libraries, such as three.js for 3D, and it cannot reach your other files or this app. Above it stands the folder the chat works in, with its git branch, so you see where on your computer things land.",
+    fact: "Code has a copy button. A file has buttons to open it, show it in its folder and copy its path.",
+    tech: {
+      model: [["Nothing to learn", "The model writes the file as before. Showing it is the app's work and takes no room in the context window."]],
+      app: [
+        ["What is shown", "Pages, SVG drawings, pictures, video and sound that a turn wrote, or named in the output of a command it ran."],
+        ["Sealed frame", "A sandboxed frame with an origin of its own. Its content security policy lets scripts run and load from the page's folder and four public script libraries, and from nowhere else."],
+        ["Kept light", "A preview loads when it scrolls into view, nothing plays by itself, and a file over 5 MB is listed instead of shown."],
+        ["Safe copy", "In a safe copy the folder line says so, and opening on the desktop is switched off."],
+      ],
+    },
+    build: shownInChat,
   },
   {
     title: "Knowledge base",

@@ -271,7 +271,7 @@ copy are listed as `rm` commands for you to run.
 
 | | |
 |---|---|
-| **Chat** | Streaming replies, Markdown with highlighted code, coloured diffs, CSV tables, maths, live previews of HTML and SVG the model writes (sandboxed, offline), collapsible reasoning, stop. |
+| **Chat** | Streaming replies, Markdown with highlighted code, coloured diffs, CSV tables, maths, live previews of HTML and SVG the model writes (sandboxed, offline), the files a turn makes shown under the reply (pages, pictures, video, sound) with the working folder and git branch above them and buttons to open, show in folder and copy, collapsible reasoning, stop. |
 | **Character** | Every model knows it is Kiwibro, what it can do and where it works: a system prompt that never changes between turns, with time, memory and the current goal arriving with each message, and Kiwi Sense holding the model to it. |
 | **Agent tools (48)** | Web research (`web_search`, `multi_search`, `fetch_pages`, `web_research`, `browse_page`, tabbed `browser`), code (`grep_files`, `glob_files`, `read_files`, `file_outline`, `apply_patch`, `file_manage`, `git`, `multi_command`, `terminal_session`), sandboxed `run_python` / `run_javascript`, desktop (`system_info`, `disk_usage`, `open_path`, `clipboard`, `notify`, `screenshot`), model teamwork (`model_info`, `delegate`, `describe_image`, `study_file`), `task_board`, `recall`, `remember`, `note`, documents, `convert_document`, `calculate`, `analyze_table`, `undo_changes`, `remote` and `workspace`. |
 | **Does it itself** | Sums and unit conversions are calculated by Kiwibro and checked in the reply. When a model only talks about searching or saving a note, Kiwibro does it and says so. Facts you state are saved before the model answers. |
