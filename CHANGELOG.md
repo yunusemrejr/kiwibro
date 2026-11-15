@@ -6,6 +6,18 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **A knowledge base of its own.** About 2,000 short entries on 24 topics (AI, programming,
+  Python, JavaScript, HTML and CSS, SQL, git, the shell, Linux commands, networking, maths,
+  physics, chemistry and the elements, biology, astronomy, geography and the countries,
+  history, language, units, everyday facts) ship as read-only text: half a megabyte, with a
+  hard limit of 200 MB. Code looks a question's subject up before the model answers and when
+  a web search finds nothing. A strong match is handed to the model; anything less adds
+  nothing. No new tool, and it works without the internet.
+- **Flowchart kit.** `ui/flowchart`: the model fills in steps and links, and plain
+  JavaScript lays the chart out in layers and draws it as SVG, with decisions and loops.
+  "Draw" now calls for a kit the way "make" does.
+- **How it works: a "Knowledge base" stop and a LoRA figure.** The Adapters figure now
+  shows the frozen table and the two thin tables that are multiplied and added to it.
 - **Ready parts, chosen by code.** The component library grows from 38 to 68 kits and recipes:
   dashboards, data tables, charts, dialogs, galleries, navigation and settings screens, API
   clients, scrapers, Node servers and tests, Docker files, CSV and JSON tools, and recipes for

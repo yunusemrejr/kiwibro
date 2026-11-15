@@ -113,7 +113,9 @@ kiwibro/
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
 │   ├── components.py         # the component library: search, show, use
-│   ├── components/library/   # 68 kits and recipes, one folder each (plain data)
+│   ├── components/library/   # 69 kits and recipes, one folder each (plain data)
+│   ├── knowledge.py          # the knowledge base: a read-only reference, searched by code
+│   ├── knowledge/base/       # 24 topic files of short entries (plain Markdown)
 │   │   # safety
 │   ├── safety.py             # risk grading, auto/ask/deny policy, confinement
 │   ├── sandbox.py            # workspace paths, file tools, process runner, terminals
@@ -1272,8 +1274,8 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 68 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
-  service), `ui/` (dashboard, data table, chart, dialog and toast, navigation, settings,
+- **Areas.** 69 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
   gallery, and a UI review recipe), `code/` (Python CLI and package, Node CLI and server, C
   program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
   fix a bug, add a feature, refactor, review, explain a project and repair failing tests),
@@ -1300,6 +1302,27 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Adding one.** A new folder with a `component.json` is enough; `tests/test_components.py`
   checks every component in the library (fields, blanks, that a kit's files fill in and its
   Python compiles).
+
+### Knowledge base (`knowledge.py`, `knowledge/base/`)
+
+A read-only reference that ships with Kiwibro, for what a small model half-remembers and
+for when the web is away or has nothing.
+
+- **Content.** 24 Markdown files, one topic each (`# Topic`, then `## Title` and a body of
+  at most 700 characters): about 2,000 entries, half a megabyte. Facts that stay true:
+  commands, language rules, formulas, constants, countries, dates of history. The loader
+  stops reading at `MAX_BYTES` (200 MB) and logs an error, and a test holds the shipped
+  base under it. Nothing writes to the folder at run time.
+- **Search by code.** No tool is added, so the model's tool catalog stays as it was
+  trained. `knowledge.note(message)` builds a block for the turn's note before the model
+  answers. `knowledge.passages(query)` answers a `web_search` that found nothing, and
+  counts as something found, so the source check can use it.
+- **When it speaks.** Only on a question about a subject (what is, who was, when did, how
+  do I). Not on one about the user's files, this chat, Kiwibro itself or the day's news,
+  and not when a ready part already fits the message. Words are weighed by rarity. An
+  entry must hold every specific word of the question and most of its weight, with the
+  subject in its title; one word alone finds only the entry named exactly so. A word the
+  base has never seen means no entry.
 
 ### Safe copy (`safecopy.py`, `safemode.py`)
 

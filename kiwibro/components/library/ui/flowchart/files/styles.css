@@ -1,0 +1,54 @@
+/* KIWIBRO: choose palette and fonts from the subject */
+:root {
+  --paper: #eef4f0;
+  --ink: #10231f;
+  --muted: #40544f;
+  --accent: #0b7a5c;
+  --accent-strong: #095f48;
+  --surface: #ffffff;
+  --line: rgba(16, 35, 31, 0.16);
+  --radius: 10px;
+  --space-2: 0.75rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+  --step-0: clamp(1rem, 0.97rem + 0.15vw, 1.06rem);
+  --step-2: clamp(1.6rem, 1.35rem + 1.2vw, 2.25rem);
+  --font-body: system-ui, sans-serif;
+  --font-heading: "Ubuntu", "Cantarell", "Segoe UI", system-ui, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+h1 {
+  margin: 0; font-family: var(--font-heading); font-size: var(--step-2);
+  font-weight: 700; line-height: 1.12; letter-spacing: -0.02em;
+}
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.wrap { width: min(100% - 2rem, 50rem); margin-inline: auto; padding-block: var(--space-5) var(--space-6); }
+.skip {
+  position: absolute; left: -999px; top: var(--space-2);
+  padding: var(--space-2) var(--space-3); background: var(--surface); border-radius: var(--radius);
+}
+.skip:focus { left: var(--space-3); z-index: 10; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.stage { margin-top: var(--space-4); overflow-x: auto; }
+.stage svg { display: block; }
+.problem { margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+
+.flow { font-family: var(--font-body); font-size: 15px; }
+.flow .shape { fill: var(--surface); stroke: var(--muted); stroke-width: 1.5; }
+.flow .node text { fill: var(--ink); }
+.flow .node.choice .shape { fill: var(--accent); stroke: var(--accent-strong); }
+.flow .node.choice text { fill: var(--surface); }
+.flow .node.start .shape, .flow .node.end .shape { fill: var(--ink); stroke: var(--ink); }
+.flow .node.start text, .flow .node.end text { fill: var(--paper); }
+.flow .edge { fill: none; stroke: var(--muted); stroke-width: 1.75; stroke-linecap: round; }
+.flow .edge.back { stroke-dasharray: 6 5; }
+.flow .arrow { fill: var(--muted); }
+.flow .tag { fill: var(--paper); }
+.flow .tag-text { fill: var(--ink); }

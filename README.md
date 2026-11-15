@@ -45,8 +45,12 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
   changes only after you have read what changed and the git command that undoes it. It
   never deletes: deletions come as commands for you to run.
-- **Components.** 68 ready parts, from a web page to a GTK app for Ubuntu, that any model
+- **Components.** 69 ready parts, from a web page to a GTK app for Ubuntu, that any model
   can search and build on instead of starting from a blank page.
+- **Knowledge base.** About 2,000 short entries on 24 topics, from Linux commands and Python
+  to maths, history and the countries of the world, kept as read-only text. Code looks a
+  question up before the model answers, with or without the internet, and adds nothing when
+  the match is weak.
 - **Works without internet.** Kiwi Mind, your files, notes and memory need no connection.
   When it drops, Kiwibro says so and carries on with what is on the computer.
 - **Light.** One Python process of under 80 MB. The model leaves memory after 30 idle

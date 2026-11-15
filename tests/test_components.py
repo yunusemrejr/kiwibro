@@ -111,7 +111,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 68
+    assert len(MANIFESTS) == 69
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):
@@ -508,6 +508,8 @@ def test_the_user_is_asked_like_for_any_other_file_write(tmp_path: Path):
     ("read this page https://example.com/pricing and tell me the plans", "browser/read-page"),
     ("draft an email to my landlord about the broken heater", "write/email"),
     ("how many rows are in sales.csv", "data/analyse-table"),
+    ("draw a flowchart of the login process", "ui/flowchart"),
+    ("make a decision tree for refunds", "ui/flowchart"),
     ("which process is using port 8080", "terminal/port-and-process"),
     ("review the ui of my page, it looks broken on mobile", "ui/review"),
 ])

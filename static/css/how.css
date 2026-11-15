@@ -707,8 +707,9 @@
   }
 
   .how-steps {
-    flex-direction: row;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+    justify-items: center;
     gap: 4px;
     width: auto;
     padding: 10px 12px;

@@ -366,7 +366,7 @@ function readyParts(root) {
     root.append(tile);
     return tile;
   });
-  text(root, 240, 216, "68 ready parts", "hw-t-tan");
+  text(root, 240, 216, "69 ready parts", "hw-t-tan");
   const chosen = text(root, 240, 236, "picked by code, not by the model");
   const model = box(root, 420, 152, 88, 96, "Model", "", 152);
   const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
@@ -396,6 +396,60 @@ function readyParts(root) {
       on(model, t > 4.3 && t < 8.4);
       files.forEach((sheet, index) => fade(sheet, span(t, 4.9 + index * 0.45, 5.3 + index * 0.45) * out));
       fade(written, span(t, 5.0, 5.5) * out);
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Knowledge base: a strong match is handed over, anything less adds nothing   */
+/* -------------------------------------------------------------------------- */
+
+function knowledgeBase(root) {
+  const PER = 11;
+  const PICK = 15;
+  root.append(s("path", { class: "hw-line", d: "M100 82V150H138" }), s("path", { class: "hw-line", d: "M346 150H372" }));
+  text(root, 100, 32, "your question");
+  const asked = box(root, 100, 60, 172, 40, "capital of Australia?");
+  const other = box(root, 100, 60, 172, 40, "make the title bigger");
+  const spines = [];
+  for (let shelf = 0; shelf < 3; shelf += 1) {
+    const floor = 128 + shelf * 30;
+    root.append(s("path", { class: "hw-line", d: `M144 ${floor}H340` }));
+    for (let index = 0; index < PER; index += 1) {
+      const tall = 15 + ((index * 7 + shelf * 5) % 4) * 3;
+      const spine = s("rect", { class: "hw-part", x: 149 + index * 17, y: floor - tall - 1, width: 13, height: tall, rx: 2.5 });
+      root.append(spine);
+      spines.push(spine);
+    }
+  }
+  text(root, 242, 216, "24 topics, about 2,000 entries", "hw-t-tan");
+  const found = text(root, 242, 236, "a strong match goes to the model");
+  const silent = text(root, 242, 236, "no strong match: nothing is added");
+  const model = box(root, 420, 150, 88, 96, "Model", "", 150);
+  const card = s("rect", { class: "hw-part is-on", x: -6.5, y: -10, width: 13, height: 20, rx: 2.5 });
+  root.append(card);
+  const home = { x: 149 + (PICK % PER) * 17 + 6.5, y: 128 + Math.floor(PICK / PER) * 30 - 11 };
+  const count = spines.length;
+
+  return {
+    duration: 11,
+    still: 3,
+    draw(t) {
+      // First a question the shelf covers, then a request it has nothing to say about.
+      const second = span(t, 5.1, 5.5) * (1 - span(t, 10.5, 10.95));
+      fade(asked, 1 - second);
+      fade(other, second);
+      on(asked, t > 0.3 && t < 1.3);
+      on(other, t > 5.8 && t < 6.8);
+      // The first search stops at the entry it finds; the second runs to the end and finds none.
+      const scan = t < 5 ? (t < 3.3 ? Math.min(PICK, Math.floor(((t - 1.2) / 1.4) * count)) : -1) : Math.floor(((t - 6.7) / 1.4) * count);
+      spines.forEach((spine, index) => on(spine, index === scan));
+      fade(found, span(t, 1.9, 2.4) * (1 - span(t, 4.8, 5.2)));
+      const travel = span(t, 3.3, 4.3);
+      at(card, mix(home.x, 398, travel), mix(home.y, 150, travel));
+      fade(card, during(t, 3.2, 4.6, 0.15));
+      fade(silent, span(t, 8.1, 8.6) * (1 - span(t, 10.2, 10.6)));
+      on(model, (t > 4.2 && t < 5) || (t > 8.6 && t < 10.2));
     },
   };
 }
@@ -594,48 +648,55 @@ function memoryNotes(root) {
 /* -------------------------------------------------------------------------- */
 
 function adapters(root) {
-  const cols = 8;
-  const rows = 6;
-  const x0 = 164;
-  const y0 = 90;
-  const cells = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const cell = s("rect", { class: "hw-cell", x: x0 + col * 21, y: y0 + row * 21, width: 17, height: 17, rx: 3 });
-      root.append(cell);
-      cells.push(cell);
+  const STEP = 17;
+  const TOP = 76;
+  const grid = (x, y, rows, cols) => {
+    const cells = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const cell = s("rect", { class: "hw-cell", x: x + col * STEP, y: y + row * STEP, width: 14, height: 14, rx: 3 });
+        root.append(cell);
+        cells.push(cell);
+      }
     }
-  }
-  text(root, x0 + 83, y0 + 148, "the model: one big file", "hw-t-muted");
+    return cells;
+  };
   const tasks = ["code", "writing", "translate"];
-  text(root, 74, 78, "your task", "hw-t-muted");
-  const chips = tasks.map((name, index) => box(root, 74, 108 + index * 44, 92, 30, name));
-  text(root, 410, 78, "adapters", "hw-t-muted");
-  const strips = tasks.map((_, index) => {
-    const strip = s("rect", { class: "hw-strip", width: 100, height: 12, rx: 4 });
-    root.append(strip);
-    return { strip, parkX: 360, parkY: 102 + index * 44 };
+  const chips = tasks.map((name, index) => box(root, 148 + index * 92, 38, 84, 30, name));
+  // One table of the model's numbers, and beside it the adapter: a tall thin table times a wide thin one.
+  const frozen = grid(52, TOP, 8, 8);
+  const tall = grid(222, TOP, 8, 2);
+  const wide = grid(288, TOP + 3 * STEP, 2, 8);
+  text(root, 204, TOP + 73, "+", "hw-t");
+  text(root, 270, TOP + 73, "\u00d7", "hw-t");
+  text(root, 118, TOP + 152, "a table in the model: frozen");
+  text(root, 322, TOP + 152, "the adapter: two thin tables");
+  // Each task has its own pair of thin tables. Their product is what gets added to the big one.
+  const pairs = tasks.map((_, which) => {
+    const down = Array.from({ length: 16 }, (_, index) => (((index >> 1) * (3 + which) + (index & 1) * 5 + which * 2) % 5) / 4);
+    const across = Array.from({ length: 16 }, (_, index) => (((index % 8) * (2 + which) + (index >> 3) * 3 + which) % 5) / 4);
+    const sum = Array.from({ length: 64 }, (_, index) => {
+      const row = index >> 3;
+      const col = index % 8;
+      return (down[row * 2] * across[col] + down[row * 2 + 1] * across[8 + col]) / 2;
+    });
+    return { down, across, sum };
   });
-  // Which cells each adapter nudges: a fixed scatter per adapter.
-  const touched = [7, 11, 13].map((step, which) => cells.map((_, index) => (index * step + which * 3) % 5 === 0));
 
   return {
     duration: 10.5,
-    still: 1.9,
+    still: 2.4,
     draw(t) {
       const which = Math.min(2, Math.floor(t / 3.5));
       const local = t - which * 3.5;
-      const slide = span(local, 0.5, 1.3) * (1 - span(local, 2.7, 3.4));
-      strips.forEach(({ strip, parkX, parkY }, index) => {
-        const k = index === which ? slide : 0;
-        strip.setAttribute("x", mix(parkX, x0 + 33, k).toFixed(2));
-        strip.setAttribute("y", mix(parkY, y0 - 20, k).toFixed(2));
-        on(strip, k > 0.05);
-      });
+      const leave = 1 - span(local, 2.8, 3.4);
+      const shown = span(local, 0.3, 0.9) * leave;
+      const added = span(local, 1.2, 2.2) * leave;
+      const { down, across, sum } = pairs[which];
       chips.forEach((chip, index) => on(chip, index === which && local > 0.15 && local < 3.3));
-      cells.forEach((cell, index) => {
-        cell.style.setProperty("--tint", (touched[which][index] ? slide : 0).toFixed(3));
-      });
+      tall.forEach((cell, index) => cell.style.setProperty("--tint", (down[index] * shown).toFixed(3)));
+      wide.forEach((cell, index) => cell.style.setProperty("--tint", (across[index] * shown).toFixed(3)));
+      frozen.forEach((cell, index) => cell.style.setProperty("--tint", (sum[index] * added).toFixed(3)));
     },
   };
 }
@@ -828,18 +889,34 @@ const STOPS = [
     title: "Ready parts",
     question: "Why does it not start from a blank page?",
     lines:
-      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 68 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 69 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
     fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
     tech: {
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["39 kits", "Web pages, dashboards, tables, charts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
+        ["40 kits", "Web pages, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
         ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
         ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
       ],
     },
     build: readyParts,
+  },
+  {
+    title: "Knowledge base",
+    question: "What if it does not know, and there is no internet?",
+    lines:
+      "Kiwibro carries a small reference of its own: about 2,000 short entries on 24 topics, from Linux commands and Python to maths, physics, history and the countries of the world. It is read-only, stays on your computer and works with or without the internet. Before the model answers a question, code looks the subject up. A strong match is handed to the model with your words. Anything less adds nothing, so the reference never pulls a chat off its subject.",
+    fact: "A web search that finds nothing falls back on the same shelf.",
+    tech: {
+      model: [["Reading, not recalling", "A small model half-remembers a date, a formula or a command flag. With the entry in front of it, it reads the fact instead of guessing it."]],
+      app: [
+        ["Matching by code", "Rare words weigh most. Everything specific in the question has to be in the entry, and its subject in the entry's title. A word the reference has never seen means no match."],
+        ["Which questions", "Only questions about a subject: what is, who was, when did, how do I. Your files, this chat and today's news are left to the tools and the web."],
+        ["Size", "Half a megabyte of plain text today, with a hard limit of 200 MB. Nothing writes to it while Kiwibro runs."],
+      ],
+    },
+    build: knowledgeBase,
   },
   {
     title: "Checked answers",
@@ -903,7 +980,7 @@ const STOPS = [
     fact: "Adapters adjust themselves: when a reply goes wrong with one and comes out right without it, Kiwibro turns that adapter down, then off.",
     tech: {
       model: [
-        ["LoRA (low-rank adaptation)", "Instead of changing a weight matrix, two thin matrices are added beside it. They hold a small fraction of the model's numbers."],
+        ["LoRA (low-rank adaptation)", "A weight matrix is a big table of numbers. Instead of changing it, two thin tables are kept beside it; multiplied together they give a table of the same size, which is added on top while the adapter is on. The thin tables hold a small fraction of the model's numbers."],
         ["In Kiwi Mind", "Its seven skills are LoRA adapters of rank 16."],
       ],
       app: [

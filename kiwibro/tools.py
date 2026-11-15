@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import codebase, components, config, delegate, desktop, research, safety
+from . import codebase, components, config, delegate, desktop, knowledge, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LLMClient
@@ -1521,6 +1521,11 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if ctx.shown_before:  # what the user has not been shown comes first
             results = sorted(results, key=lambda result: str(result.get("url") or "#") in ctx.shown_before)
         if not results:
+            held = knowledge.passages(args["query"])  # the web has nothing: Kiwibro's own reference may
+            if held:
+                return ToolResult(ok=True, content=f"{knowledge.KNOWLEDGE_INSTEAD}\n{held}",
+                                  preview="From the knowledge base",
+                                  meta={"count": held.count("\n") + 1, "knowledge": True})
             return ToolResult(ok=True, content=research.NO_RESULTS, preview="No results", meta={"count": 0})
         content = research.format_read_results(results)
         return ToolResult(ok=True, content=content, preview=_preview(content), meta={"count": len(results), "results": results})

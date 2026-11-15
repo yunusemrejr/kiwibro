@@ -147,6 +147,7 @@ COMPONENTS = [  # name, blanks, summary: the library in kiwibro/components/libra
     ("data/json-tool", "name", "Python script that reads JSON, picks and renames fields, filters records and writes JSON or CSV."),
     ("ui/chart", "title", "Bar and line chart drawn as SVG from a data array: axes, labels, a text table for screen readers, no library."),
     ("ui/dashboard", "title", "Dashboard page: side navigation, stat tiles, a data table and an SVG bar chart drawn from one data file, no framework."),
+    ("ui/flowchart", "title", "Flowchart drawn as one inline SVG from a list of steps and links: boxes, decisions, layered layout and loops, no library."),
     ("ui/data-table", "title", "Data table that sorts by column, filters as you type and pages its rows, from a JSON array, plain JavaScript."),
     ("ui/dialog", "title", "Accessible modal dialog and toast messages built on the dialog element: focus stays inside, Escape closes."),
     ("ui/gallery", "title", "Responsive image gallery: a grid of thumbnails and a full-size viewer with keyboard and swipe navigation."),

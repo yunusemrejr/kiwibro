@@ -1,0 +1,24 @@
+{
+  "name": "ui/flowchart",
+  "kind": "kit",
+  "title": "Flowchart",
+  "summary": "Flowchart drawn as one inline SVG from a list of steps and links: boxes, decisions, layered layout and loops, no library.",
+  "when": "Use when the project needs a process, decision tree or workflow drawn as boxes and arrows.",
+  "blanks": {
+    "title": {
+      "about": "The chart heading, shown in the browser tab and above the chart.",
+      "default": "Support request"
+    }
+  },
+  "next": "Write the files, replace the sample steps and links in data.js (marked KIWIBRO) with the project's own, then check the chart at 360 px and at desktop width.",
+  "match": [
+    "flowchart",
+    "flow chart",
+    "flow diagram",
+    "process diagram",
+    "decision tree",
+    "workflow diagram",
+    "diagram of the steps",
+    "diagram of the process"
+  ]
+}

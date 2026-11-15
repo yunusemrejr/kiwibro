@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
+    adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
     sessions, shape, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
@@ -2355,6 +2355,7 @@ class AgentManager:
             plan_steps=len(steps),
         ))
         ready_part = self._ready_part(turn, settings)
+        knowledge_part = "" if ready_part else self._knowledge_part(turn)
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
         worked = prompts.WORKED_OUT.format(
             lines="\n".join(f"- {asked} = {result}" for asked, result in turn.worked)
@@ -2371,7 +2372,7 @@ class AgentManager:
             clock, worked, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
             safemode.context_line(self.db, turn.conversation_id),
             _directives_note(self.db, turn.conversation_id), plan_note, several, readings.note(reading),
-            guidance_note, ready_part, learned, turn.reaction.note() if turn.reaction is not None else "",
+            guidance_note, ready_part, knowledge_part, learned, turn.reaction.note() if turn.reaction is not None else "",
             prompts.TAKING_OVER if turn.lead else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
@@ -2391,6 +2392,18 @@ class AgentManager:
             return components.advice(fitting) if fitting is not None else ""
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not pick a component", turn.conversation_id, exc_info=True)
+            return ""
+
+    @staticmethod
+    def _knowledge_part(turn: Turn) -> str:
+        """What Kiwibro's own read-only reference holds on this question: there when the model would
+        otherwise guess, with or without the internet, and absent when the base does not cover it."""
+        if plan.is_small_talk(turn.message):
+            return ""
+        try:
+            return knowledge.note(turn.message)
+        except Exception:  # a convenience; never break a turn
+            log.warning("turn %s: could not look into the knowledge base", turn.conversation_id, exc_info=True)
             return ""
 
     def _notes_block(self, turn: Turn) -> str:
