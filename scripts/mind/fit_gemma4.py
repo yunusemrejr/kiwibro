@@ -53,12 +53,19 @@ def fit(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
     processor = AutoProcessor.from_pretrained(args.checkpoint)
+    packed_training = args.mode == "l4-lora"
     model = AutoModelForImageTextToText.from_pretrained(
-        args.checkpoint, device_map="cuda", dtype=torch.bfloat16, low_cpu_mem_usage=True,
+        args.checkpoint, device_map="cpu" if packed_training else "cuda",
+        dtype=torch.bfloat16, low_cpu_mem_usage=True,
     )
+    packed_bytes = 0
+    if packed_training:
+        from scripts.mind.gemma4_expert_training import pack_experts_for_l4
+
+        packed_bytes = pack_experts_for_l4(model)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    if args.mode == "lora":
+    if args.mode != "full":
         from peft import LoraConfig, get_peft_model
 
         model = get_peft_model(model, LoraConfig(
@@ -151,6 +158,7 @@ def fit(args: argparse.Namespace) -> None:
         "seed": args.seed, "learning_rate": args.lr, "steps": len(losses), "max_tokens": args.max_tokens,
         "corpus_sha256": digest, "workflow_steps": dict(coverage),
         "device": torch.cuda.get_device_name(), "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
+        "frozen_fp8_expert_bytes": packed_bytes,
         "training_seconds": round(time.monotonic() - began, 2),
         "first_20_loss": sum(losses[:20]) / len(losses[:20]),
         "last_20_loss": sum(losses[-20:]) / len(losses[-20:]),
@@ -163,7 +171,7 @@ def main() -> None:
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--mode", choices=["full", "lora"], default="full")
+    parser.add_argument("--mode", choices=["full", "lora", "l4-lora"], default="full")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--per-family", type=int, default=64)

@@ -48,13 +48,21 @@ def messages_for_processor(row: dict, corpus: Path) -> list[dict]:
     return messages
 
 
-def load(base: str, revision: str | None, device: str):
+def load(base: str, revision: str | None, device: str, gpu_budget: str | None = None):
     import torch
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
     processor = AutoProcessor.from_pretrained(base, revision=revision)
+    limits = {}
+    if gpu_budget:
+        from accelerate.utils import get_max_memory
+
+        memory = get_max_memory()
+        memory[0] = gpu_budget
+        limits["max_memory"] = memory
     model = AutoModelForImageTextToText.from_pretrained(
         base, revision=revision, device_map=device, dtype=torch.bfloat16, low_cpu_mem_usage=True,
+        **limits,
     ).eval()
     return model, processor
 
@@ -63,7 +71,7 @@ def collect(args: argparse.Namespace) -> dict:
     import torch
 
     base = str(args.checkpoint) if args.checkpoint else BASE
-    model, processor = load(base, None if args.checkpoint else BASE_REVISION, args.device)
+    model, processor = load(base, None if args.checkpoint else BASE_REVISION, args.device, args.gpu_budget)
     cfg = model.config.text_config
     if cfg.num_experts != 128 or cfg.top_k_experts != 8:
         raise ValueError("Calibration needs the original 128-expert, top-8 checkpoint.")
@@ -135,6 +143,7 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--checkpoint", type=Path, help="Local copy of the pinned original checkpoint.")
     parser.add_argument("--device", default="auto", help="Accelerate device map, e.g. auto, cuda or cpu.")
+    parser.add_argument("--gpu-budget", help="Leave VRAM for CPU-offloaded layers and activations, e.g. 18GiB.")
     parser.add_argument("--per-family", type=int, default=6)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=4071)
