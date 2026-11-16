@@ -297,6 +297,26 @@ def test_extraction_update_must_be_grounded_and_about_the_user(env: Env):
     assert env.svc.db.get_memory(city["id"])["content"] == "User lives in Ankara"
 
 
+def test_extraction_uses_user_statements_as_evidence(env: Env):
+    env.fake.memory_ops = {"ops": [
+        {"op": "add", "content": "User lives in Ankara"},
+        {"op": "add", "content": "User was born in 2001"},
+        {"op": "add", "content": "User was born in 1985"},
+    ]}
+    conversation = env.svc.db.create_conversation()["id"]
+    env.fake.memory_ops["ops"].append({"op": "add", "content": "User lives in Rome"})
+    for role, content in (
+        ("user", "I live in Ankara and I was born in 1985."),
+        ("assistant", "You live in London and were born in 2001."),
+        ("user", "Add I live in Rome to that note"),
+    ):
+        env.svc.db.add_message(conversation, role, content)
+    env.svc.memory.extract_and_apply(conversation, "fake-1")
+    assert {m["content"] for m in env.svc.db.list_memories()} == {
+        "User lives in Ankara", "User was born in 1985",
+    }
+
+
 def test_a_fact_a_newer_memory_already_changed_is_not_learned(env: Env):
     conversation = env.svc.db.create_conversation(title="x", model="fake-1")
     stated = env.svc.db.add_message(conversation["id"], "user", "I live in Istanbul and I mostly write Python.")

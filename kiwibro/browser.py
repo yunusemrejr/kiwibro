@@ -1,31 +1,47 @@
-"""Advanced web browser and page inspection engine for Kiwibro agents."""
+"""Read and navigate public pages in isolated, per-chat browser tabs."""
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
-import logging
 import re
-import shutil
-import subprocess
 import threading
-import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 import uuid
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Tag
 
-from . import connectivity
+from . import browser_render
 from .search import (
     FETCH_MAX_BYTES,
+    BROWSE_MAX_LINKS,
     SearchEngine,
     SearchError,
     assert_public_host,
-    normalize_url,
     require_online,
 )
 
-log = logging.getLogger(__name__)
+MAX_PAGE_CHARS = 8000
+MAX_HISTORY = 16
+MAX_TABS = 12
+MAX_SESSIONS = 32
+
+
+def _link_url(base_url: str, href: str) -> str:
+    """Hand back only links the browser can actually follow."""
+    if not href or href.startswith("#") or len(href) > 2048 or any(ord(char) < 32 for char in href):
+        return ""
+    try:
+        absolute = urljoin(base_url, href.replace(" ", "%20"))
+        parts = urlsplit(absolute)
+        if parts.scheme in ("http", "https") and parts.hostname and parts.username is None:
+            return absolute
+        if not base_url and not parts.scheme and not parts.netloc:
+            return absolute
+    except ValueError:
+        pass
+    return ""
 
 
 def _render_table(table_tag: Tag) -> str:
@@ -93,6 +109,8 @@ def _render_list(
 
 def _render_node(node: Any, include_links: bool, base_url: str) -> str:
     """Render a DOM node into Markdown recursively."""
+    if isinstance(node, Comment):
+        return ""
     if not isinstance(node, Tag):
         return str(node)
 
@@ -138,14 +156,9 @@ def _render_node(node: Any, include_links: bool, base_url: str) -> str:
 
     if name == "a":
         txt = " ".join(tag.get_text(" ", strip=True).split())
-        href = tag.get("href", "").strip()
-        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+        href = _link_url(base_url, tag.get("href", "").strip())
+        if not href:
             return f" {txt} "
-        if base_url:
-            try:
-                href = urljoin(base_url, href)
-            except Exception:
-                pass
         if include_links:
             return f" [{txt or href}]({href}) "
         return f" {txt or href} "
@@ -177,7 +190,11 @@ def html_to_markdown(
     soup = BeautifulSoup(html or "", "html.parser")
 
     title_tag = soup.find("title")
-    title = " ".join(title_tag.get_text(" ", strip=True).split()) if title_tag else ""
+    title = " ".join(title_tag.get_text(" ", strip=True).split())[:300] if title_tag else ""
+    base = soup.find("base", href=True)
+    link_base = (_link_url(base_url, base["href"].strip()) if base else "") or base_url
+    for tag in soup.select("script, style, noscript, template, svg, iframe, [hidden]"):
+        tag.decompose()
 
     if selector:
         try:
@@ -192,25 +209,23 @@ def html_to_markdown(
     # Extract deduplicated links
     links: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    for a in scope.find_all("a", href=True):
-        href = a.get("href", "").strip()
-        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
-            continue
-        abs_url = urljoin(base_url, href) if base_url else href
-        norm = normalize_url(abs_url) if abs_url.startswith(("http://", "https://")) else abs_url
-        if norm in seen_urls:
-            continue
-        seen_urls.add(norm)
-        txt = " ".join(a.get_text(" ", strip=True).split())
-        links.append({
-            "n": len(links) + 1,
-            "text": txt[:120] or abs_url,
-            "url": abs_url,
-        })
+    body = soup.body or soup
+    for root in (scope, body) if not selector and scope is not body else (scope,):
+        for a in root.find_all("a", href=True):
+            abs_url = _link_url(link_base, a["href"].strip())
+            if not abs_url or abs_url == base_url or abs_url in seen_urls:
+                continue
+            seen_urls.add(abs_url)
+            txt = " ".join((a.get_text(" ", strip=True) or a.get("aria-label", "")).split())
+            links.append({"n": len(links) + 1, "text": (txt or abs_url)[:120], "url": abs_url})
+            if len(links) >= BROWSE_MAX_LINKS:
+                break
+        if len(links) >= BROWSE_MAX_LINKS:
+            break
 
     # Extract forms summary
     forms: list[dict[str, Any]] = []
-    for f in scope.find_all("form"):
+    for f in scope.find_all("form", limit=12):
         action = f.get("action", "")
         if base_url and action:
             try:
@@ -219,15 +234,13 @@ def html_to_markdown(
                 pass
         method = f.get("method", "GET").upper()
         fields: list[dict[str, Any]] = []
-        for el in f.find_all(["input", "textarea", "select", "button"]):
+        for el in f.find_all(["input", "textarea", "select", "button"], limit=24):
             tag_name = el.name
             name = el.get("name") or el.get("id") or ""
             field_type = el.get("type", "text" if tag_name == "input" else tag_name)
-            value = el.get("value", "")
             fields.append({
                 "name": name,
                 "type": field_type,
-                "value": value,
                 "tag": tag_name,
             })
         forms.append({
@@ -237,14 +250,11 @@ def html_to_markdown(
         })
 
     # Structured Markdown rendering
-    raw_md = _render_node(scope, include_links, base_url)
+    raw_md = _render_node(scope, include_links, link_base)
     markdown = re.sub(r"\n{3,}", "\n\n", raw_md).strip()
 
     # Plain text extraction
-    scope_copy = BeautifulSoup(str(scope), "html.parser")
-    for t in scope_copy(["script", "style", "noscript", "svg", "iframe"]):
-        t.decompose()
-    plain_text = re.sub(r"\n{2,}", "\n\n", scope_copy.get_text("\n", strip=True)).strip()
+    plain_text = re.sub(r"\n{2,}", "\n\n", scope.get_text("\n", strip=True)).strip()
 
     return {
         "title": title,
@@ -256,51 +266,16 @@ def html_to_markdown(
 
 
 def render_headless(url: str, timeout: int = 12) -> str | None:
-    """Render page using local headless Chromium/Chrome with SSRF validation."""
-    current = (url or "").strip()
-    if not current:
-        return None
-    parts = urlsplit(current)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return None
-    try:
-        assert_public_host(parts.hostname)
-    except Exception as exc:
-        log.warning("Headless request blocked by SSRF check for %s: %s", current, exc)
-        return None
-
-    candidates = ["chromium", "chromium-browser", "google-chrome", "chrome"]
-    chrome_bin: str | None = None
-    for name in candidates:
-        found = shutil.which(name)
-        if found:
-            chrome_bin = found
-            break
-    if not chrome_bin:
-        return None
-
-    cmd = [
-        chrome_bin,
-        "--headless=new",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--dump-dom",
-        current,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-        )
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout
-        return None
-    except Exception as exc:
-        log.warning("render_headless execution failed for %s: %s", current, exc)
-        return None
+    """Return rendered HTML for a public URL without opening a chat tab."""
+    current = _link_url("", (url or "").strip())
+    if current:
+        try:
+            assert_public_host(urlsplit(current).hostname or "")
+        except SearchError:
+            return None
+        rendered = browser_render.render(current, timeout)
+        return rendered[1] if rendered else None
+    return None
 
 
 def inspect_page(
@@ -322,40 +297,39 @@ def inspect_page(
         raise SearchError("Only http(s) URLs can be fetched.")
     if not parts.hostname:
         raise SearchError("URL has no host.")
+    if parts.username is not None:
+        raise SearchError("Browser URLs cannot contain credentials.")
     require_online()
     assert_public_host(parts.hostname)
 
-    mode_used = mode
-    final_url = current
-    html = ""
-
-    if mode == "headless":
-        rendered = render_headless(current)
-        if rendered:
-            html = rendered
-            mode_used = "headless"
-        else:
-            final_url, _ct, encoding, raw = engine._guarded_get(
-                current, read_timeout=10, max_bytes=FETCH_MAX_BYTES
-            )
-            html = raw.decode(encoding or "utf-8", errors="replace")
-            mode_used = "http_fallback"
+    rendered = browser_render.render(current) if mode == "headless" else None
+    if rendered:
+        final_url, html = rendered
+        mode_used = "headless"
     else:
         final_url, _ct, encoding, raw = engine._guarded_get(
             current, read_timeout=10, max_bytes=FETCH_MAX_BYTES
         )
-        html = raw.decode(encoding or "utf-8", errors="replace")
-        mode_used = "http"
+        html = SearchEngine._decode(raw, encoding)
+        mode_used = "http_fallback" if mode == "headless" else "http"
 
-    parsed = html_to_markdown(
-        html,
-        base_url=final_url,
-        selector=selector,
-        include_links=include_links,
-    )
+    parsed = html_to_markdown(html, base_url=final_url, selector=selector, include_links=include_links)
+    empty = not (parsed["text"] or parsed["links"] or parsed["forms"])
+    if mode == "auto" and empty and re.search(r"<script(?:\s|>)", html, re.IGNORECASE):
+        rendered = browser_render.render(final_url)
+        if rendered:
+            final_url, html = rendered
+            parsed = html_to_markdown(html, base_url=final_url, selector=selector, include_links=include_links)
+        mode_used = "headless" if rendered else "http_fallback"
     md = parsed["markdown"]
     txt = parsed["text"]
-    truncated = len(md) > max_chars
+    if not txt and not parsed["links"] and not parsed["forms"]:
+        retry = {
+            "http": " Try headless mode if the page needs JavaScript.",
+            "http_fallback": " JavaScript rendering was unavailable.",
+        }.get(mode_used, "")
+        raise SearchError("The page has no readable text or links." + retry)
+    truncated = len(md) > max_chars or len(txt) > max_chars
 
     return {
         "title": parsed["title"] or parts.hostname or "",
@@ -366,26 +340,23 @@ def inspect_page(
         "forms": parsed["forms"],
         "truncated": truncated,
         "mode_used": mode_used,
+        "mode_requested": mode,
     }
 
 
 @dataclass
 class BrowserTab:
     tab_id: str
-    url: str
-    title: str
-    history: list[str] = field(default_factory=list)
-    last_page: dict[str, Any] = field(default_factory=dict)
-    opened_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
+    last_page: dict[str, Any]
+    history: list[dict[str, Any]] = field(default_factory=list)
 
     def to_summary(self, is_active: bool = False) -> dict[str, Any]:
         return {
             "tab_id": self.tab_id,
-            "url": self.url,
-            "title": self.title,
+            "url": self.last_page["url"],
+            "title": self.last_page["title"],
             "active": is_active,
-            "history_len": len(self.history),
+            "history_len": len(self.history) + 1,
         }
 
 
@@ -395,25 +366,45 @@ class BrowserEngine:
     def __init__(self, search_engine: SearchEngine | None = None) -> None:
         self._lock = threading.RLock()
         self._search_engine = search_engine or SearchEngine()
-        self._sessions: dict[str, dict[str, Any]] = {}
+        self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def _get_session(self, conv_id: str) -> dict[str, Any]:
         if conv_id not in self._sessions:
+            if len(self._sessions) >= MAX_SESSIONS:
+                self._sessions.popitem(last=False)
             self._sessions[conv_id] = {
                 "tabs": {},
-                "tab_order": [],
                 "active_tab_id": None,
             }
+        self._sessions.move_to_end(conv_id)
         return self._sessions[conv_id]
 
     def _list_tabs_unlocked(self, conv_id: str) -> list[dict[str, Any]]:
         sess = self._get_session(conv_id)
         active_id = sess["active_tab_id"]
-        result: list[dict[str, Any]] = []
-        for tid in sess["tab_order"]:
-            if tid in sess["tabs"]:
-                result.append(sess["tabs"][tid].to_summary(is_active=(tid == active_id)))
-        return result
+        return [tab.to_summary(is_active=(tid == active_id)) for tid, tab in sess["tabs"].items()]
+
+    def _tab_unlocked(self, conv: str, tab_id: str | None) -> BrowserTab:
+        sess = self._get_session(conv)
+        tab = sess["tabs"].get(tab_id or sess["active_tab_id"])
+        if tab is None:
+            raise SearchError(f"Tab '{tab_id}' is not open. List tabs to see which are available."
+                              if tab_id else "No active tab. Open a page first.")
+        return tab
+
+    def _outcome(self, conv: str, tab: BrowserTab, max_chars: int) -> dict[str, Any]:
+        page = tab.last_page
+        return {
+            "ok": True,
+            "tab_id": tab.tab_id,
+            "page": {
+                **page,
+                "markdown": page["markdown"][:max_chars],
+                "text": page["text"][:max_chars],
+                "truncated": page["truncated"] or max(len(page["markdown"]), len(page["text"])) > max_chars,
+            },
+            "tabs": self._list_tabs_unlocked(conv),
+        }
 
     def open_tab(
         self,
@@ -425,55 +416,84 @@ class BrowserEngine:
         include_links: bool = True,
     ) -> dict[str, Any]:
         conv = conversation_id or "default"
-        page = inspect_page(
+        page = self.inspect_page(
             url,
             mode=mode,
             selector=selector,
-            max_chars=max_chars,
+            max_chars=MAX_PAGE_CHARS,
             include_links=include_links,
-            search_engine=self._search_engine,
         )
         with self._lock:
             sess = self._get_session(conv)
+            if len(sess["tabs"]) >= MAX_TABS:
+                raise SearchError(f"This chat already has {MAX_TABS} tabs. Close one before opening another.")
             tab_id = f"tab_{uuid.uuid4().hex[:6]}"
-            tab = BrowserTab(
-                tab_id=tab_id,
-                url=page["url"],
-                title=page["title"],
-                history=[page["url"]],
-                last_page=page,
-                opened_at=time.time(),
-                updated_at=time.time(),
-            )
+            tab = BrowserTab(tab_id, page)
             sess["tabs"][tab_id] = tab
-            sess["tab_order"].append(tab_id)
             sess["active_tab_id"] = tab_id
-            return {
-                "ok": True,
-                "tab_id": tab_id,
-                "page": page,
-                "tabs": self._list_tabs_unlocked(conv),
-            }
+            return self._outcome(conv, tab, max_chars)
+
+    def navigate(
+        self,
+        conversation_id: str | None = None,
+        *,
+        url: str | None = None,
+        link_number: int | None = None,
+        tab_id: str | None = None,
+        mode: str | None = None,
+        selector: str | None = None,
+        max_chars: int = 6000,
+        include_links: bool = True,
+    ) -> dict[str, Any]:
+        conv = conversation_id or "default"
+        with self._lock:
+            tab = self._tab_unlocked(conv, tab_id)
+            previous = tab.last_page
+            if link_number is not None:
+                links = previous["links"]
+                if not 1 <= link_number <= len(links):
+                    raise SearchError("Link number is unavailable on the current page. Inspect the tab for its links.")
+                url = links[link_number - 1]["url"]
+
+        page = self.inspect_page(url or "", mode=mode or previous.get("mode_requested", "markdown"),
+                                 selector=selector, max_chars=MAX_PAGE_CHARS, include_links=include_links)
+        with self._lock:
+            sess = self._sessions.get(conv)
+            if not sess or sess["tabs"].get(tab.tab_id) is not tab or tab.last_page is not previous:
+                raise SearchError("The tab changed while the page loaded. Inspect its current page before navigating again.")
+            if previous["url"] != page["url"]:
+                tab.history.append(previous)
+                del tab.history[:-MAX_HISTORY]
+            tab.last_page = page
+            sess["active_tab_id"] = tab.tab_id
+            return self._outcome(conv, tab, max_chars)
+
+    def current_page(self, conversation_id: str | None = None, *, tab_id: str | None = None,
+                     max_chars: int = 6000) -> dict[str, Any]:
+        conv = conversation_id or "default"
+        with self._lock:
+            return self._outcome(conv, self._tab_unlocked(conv, tab_id), max_chars)
+
+    def position(self, conversation_id: str, tab_id: str | None = None) -> tuple[str, str, int] | None:
+        """Identify the logical starting page for a stateful tool call's repeat guard."""
+        with self._lock:
+            session = self._sessions.get(conversation_id)
+            if session is None:
+                return None
+            tab = session["tabs"].get(tab_id or session["active_tab_id"])
+            return (tab.tab_id, tab.last_page["url"], len(tab.history)) if tab else None
 
     def list_tabs(self, conversation_id: str | None = None) -> list[dict[str, Any]]:
         conv = conversation_id or "default"
         with self._lock:
             return self._list_tabs_unlocked(conv)
 
-    def switch_tab(self, tab_id: str, conversation_id: str | None = None) -> dict[str, Any]:
+    def switch_tab(self, tab_id: str, conversation_id: str | None = None, *, max_chars: int = 6000) -> dict[str, Any]:
         conv = conversation_id or "default"
         with self._lock:
-            sess = self._get_session(conv)
-            if tab_id not in sess["tabs"]:
-                raise ValueError(f"Tab '{tab_id}' does not exist in conversation '{conv}'.")
-            sess["active_tab_id"] = tab_id
-            tab = sess["tabs"][tab_id]
-            return {
-                "ok": True,
-                "tab_id": tab_id,
-                "page": tab.last_page,
-                "tabs": self._list_tabs_unlocked(conv),
-            }
+            tab = self._tab_unlocked(conv, tab_id)
+            self._sessions[conv]["active_tab_id"] = tab_id
+            return self._outcome(conv, tab, max_chars)
 
     def close_tab(self, tab_id: str, conversation_id: str | None = None) -> bool:
         conv = conversation_id or "default"
@@ -482,59 +502,31 @@ class BrowserEngine:
             if tab_id not in sess["tabs"]:
                 return False
             del sess["tabs"][tab_id]
-            if tab_id in sess["tab_order"]:
-                sess["tab_order"].remove(tab_id)
             if sess["active_tab_id"] == tab_id:
-                sess["active_tab_id"] = sess["tab_order"][-1] if sess["tab_order"] else None
+                sess["active_tab_id"] = next(reversed(sess["tabs"]), None)
+            if not sess["tabs"]:
+                del self._sessions[conv]
             return True
 
     def back(
         self,
         conversation_id: str | None = None,
-        mode: str = "markdown",
+        *,
+        tab_id: str | None = None,
         max_chars: int = 6000,
-        include_links: bool = True,
     ) -> dict[str, Any]:
         conv = conversation_id or "default"
         with self._lock:
-            sess = self._get_session(conv)
-            active_id = sess["active_tab_id"]
-            if not active_id or active_id not in sess["tabs"]:
-                raise ValueError(f"No active tab open in conversation '{conv}'.")
-            tab = sess["tabs"][active_id]
-            if len(tab.history) <= 1:
+            tab = self._tab_unlocked(conv, tab_id)
+            if not tab.history:
                 return {
                     "ok": False,
                     "reason": "Tab has no previous history.",
                     "tab_id": tab.tab_id,
-                    "page": tab.last_page,
                 }
-            tab.history.pop()
-            prev_url = tab.history[-1]
-
-        page = inspect_page(
-            prev_url,
-            mode=mode,
-            max_chars=max_chars,
-            include_links=include_links,
-            search_engine=self._search_engine,
-        )
-
-        with self._lock:
-            sess = self._get_session(conv)
-            if active_id in sess["tabs"]:
-                tab = sess["tabs"][active_id]
-                tab.url = page["url"]
-                tab.title = page["title"]
-                tab.last_page = page
-                tab.updated_at = time.time()
-                return {
-                    "ok": True,
-                    "tab_id": active_id,
-                    "page": page,
-                    "tabs": self._list_tabs_unlocked(conv),
-                }
-            return {"ok": False, "reason": "Active tab was closed during navigation."}
+            tab.last_page = tab.history.pop()
+            self._sessions[conv]["active_tab_id"] = tab.tab_id
+            return self._outcome(conv, tab, max_chars)
 
     def inspect_page(
         self,
@@ -556,147 +548,4 @@ class BrowserEngine:
 
 
 BROWSER = BrowserEngine()
-
-
-def _exec_browser_inspect(args: dict[str, Any], ctx: Any) -> Any:
-    from .extensions import tool_result
-
-    action = args.get("action", "inspect")
-    conv_id = getattr(ctx, "conversation_id", None)
-    url = args.get("url", "")
-    mode = args.get("mode", "markdown")
-    selector = args.get("selector")
-    max_chars = int(args.get("max_chars", 6000))
-    include_links = bool(args.get("include_links", True))
-    tab_id = args.get("tab_id")
-
-    try:
-        if action == "inspect":
-            data = inspect_page(
-                url,
-                mode=mode,
-                selector=selector,
-                max_chars=max_chars,
-                include_links=include_links,
-            )
-            content = f"Page: {data['title']} ({data['url']})\n\n{data['markdown']}"
-            return tool_result(ok=True, content=content, meta=data)
-        elif action == "open_tab":
-            res = BROWSER.open_tab(
-                url,
-                conversation_id=conv_id,
-                mode=mode,
-                selector=selector,
-                max_chars=max_chars,
-                include_links=include_links,
-            )
-            page = res["page"]
-            content = f"Opened tab {res['tab_id']}: {page['title']} ({page['url']})\n\n{page['markdown']}"
-            return tool_result(ok=True, content=content, meta=res)
-        elif action == "list_tabs":
-            tabs = BROWSER.list_tabs(conversation_id=conv_id)
-            lines = [
-                f"- Tab {t['tab_id']} ({'active' if t['active'] else 'background'}): {t['title']} ({t['url']})"
-                for t in tabs
-            ]
-            return tool_result(ok=True, content="\n".join(lines) or "No open tabs.", meta={"tabs": tabs})
-        elif action == "switch_tab":
-            if not tab_id:
-                return tool_result(ok=False, content="tab_id is required for switch_tab")
-            res = BROWSER.switch_tab(tab_id, conversation_id=conv_id)
-            page = res["page"]
-            return tool_result(
-                ok=True,
-                content=f"Switched to tab {tab_id}: {page.get('title', '')}\n\n{page.get('markdown', '')}",
-                meta=res,
-            )
-        elif action == "close_tab":
-            if not tab_id:
-                return tool_result(ok=False, content="tab_id is required for close_tab")
-            closed = BROWSER.close_tab(tab_id, conversation_id=conv_id)
-            return tool_result(
-                ok=closed,
-                content=f"Closed tab {tab_id}." if closed else f"Tab {tab_id} not found.",
-                meta={"tab_id": tab_id, "closed": closed},
-            )
-        elif action == "back":
-            res = BROWSER.back(
-                conversation_id=conv_id,
-                mode=mode,
-                max_chars=max_chars,
-                include_links=include_links,
-            )
-            if not res.get("ok"):
-                return tool_result(ok=False, content=res.get("reason", "Failed to navigate back"), meta=res)
-            page = res["page"]
-            return tool_result(
-                ok=True,
-                content=f"Navigated back to: {page['title']} ({page['url']})\n\n{page['markdown']}",
-                meta=res,
-            )
-        else:
-            return tool_result(ok=False, content=f"Unknown browser action: '{action}'")
-    except SearchError as exc:
-        if str(exc) == connectivity.OFFLINE_ERROR:
-            raise  # the tool layer reports it as the whole failure, not as one more broken action
-        return tool_result(ok=False, content=f"Browser action failed: {exc}")
-    except Exception as exc:
-        return tool_result(ok=False, content=f"Browser action failed: {exc}")
-
-
-def _browser_summary(args: dict[str, Any]) -> str:
-    act = args.get("action", "inspect")
-    target = args.get("url") or args.get("tab_id") or ""
-    return f"browser: {act} {target}".strip()
-
-
-from .extensions import ExtensionTool, schema
-
-TOOLS = (
-    ExtensionTool(
-        name="browser_inspect",
-        description="Inspect and navigate web pages, render headless dynamic DOM, extract structured Markdown, tables, links, and forms.",
-        parameters=schema(
-            properties={
-                "url": {
-                    "type": "string",
-                    "description": "Web URL to inspect or navigate.",
-                },
-                "action": {
-                    "type": "string",
-                    "enum": ["inspect", "open_tab", "list_tabs", "switch_tab", "close_tab", "back"],
-                    "description": "Browser action to execute (default: inspect).",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["markdown", "headless"],
-                    "description": "Fetch mode: 'markdown' for fast SSRF-guarded fetch, 'headless' for dynamic JS rendering.",
-                },
-                "selector": {
-                    "type": "string",
-                    "description": "Optional CSS selector to scope content extraction.",
-                },
-                "tab_id": {
-                    "type": "string",
-                    "description": "Tab ID for switch_tab or close_tab.",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Max characters of Markdown content to return.",
-                },
-                "include_links": {
-                    "type": "boolean",
-                    "description": "Whether to include markdown links in the output.",
-                },
-            },
-            required=["url"],
-        ),
-        risk="web",
-        phase="web",
-        label="Browser Inspect",
-        summary=_browser_summary,
-        validate=lambda args: args,
-        execute=_exec_browser_inspect,
-    ),
-)
 

@@ -528,7 +528,7 @@ def test_questions_and_requests_wait_for_something_memorable(env, monkeypatch: p
     )
 
 
-def test_a_full_window_is_read_even_without_a_signal(env, monkeypatch: pytest.MonkeyPatch):
+def test_a_full_window_with_no_signal_is_skipped_without_generation(env, monkeypatch: pytest.MonkeyPatch):
     svc, _fake = env
     calls: list[int] = []
     monkeypatch.setattr(svc.llm, "complete_json", lambda **kwargs: calls.append(1) or {"ops": []})
@@ -537,7 +537,8 @@ def test_a_full_window_is_read_even_without_a_signal(env, monkeypatch: pytest.Mo
         svc.db.add_message(conversation["id"], "user", f"Explain topic {n} in detail, please.")
         svc.db.add_message(conversation["id"], "assistant", "A long answer. " * 20)
     svc.memory.extract_and_apply(conversation["id"], "fake-1")
-    assert calls == [1]
+    assert calls == []
+    assert svc.db.get_conversation(conversation["id"])["extracted_through_seq"] == svc.db.last_message_seq(conversation["id"])
 
 
 @pytest.mark.parametrize(("text", "memorable"), [
@@ -625,7 +626,7 @@ def test_extraction_window_fits_the_transcript(env, monkeypatch: pytest.MonkeyPa
     svc, fake = env
     conversation = svc.db.create_conversation()
     for n in range(8):
-        svc.db.add_message(conversation["id"], "user", f"MARKER_{n} " + "x" * 1200)
+        svc.db.add_message(conversation["id"], "user", f"I prefer MARKER_{n} " + "x" * 1200)
     sent: list[str] = []
 
     def capture(**kwargs):

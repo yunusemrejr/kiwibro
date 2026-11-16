@@ -94,7 +94,7 @@ def test_a_chat_turn_that_calls_note_stores_the_note(env: Env):
         tool_call_result("note", {"action": "save", "title": "Wi-Fi", "content": "The password is on the fridge"}),
         ChatResult(content="Noted."),
     ]
-    chat_events(env, "take a note that the wifi password is on the fridge")
+    chat_events(env, "write a note explaining where the Wi-Fi password is")
     (hit,) = env.svc.notes.search("fridge")
     assert hit["title"] == "Wi-Fi" and hit["body"] == "The password is on the fridge"
 
@@ -105,17 +105,26 @@ def test_a_note_saved_from_the_chat_says_who_saved_it(env: Env):
     assert note["origin"] == "kiwibro" and note["source_conversation_id"] == "c_test"
 
 
-def test_a_dictated_note_is_saved_even_when_the_model_only_talks(env: Env):
-    env.fake.stream_script = [ChatResult(content="I'll save the note for you."),  # says so, calls nothing
-                              ChatResult(content="Saved your note.")]
+def test_a_dictated_note_skips_model_generation(env: Env):
     events, _raw = chat_events(env, "save a note: buy oat milk and call the dentist on Friday")
     [note] = env.svc.db.list_notes()
     assert note["body"] == "buy oat milk and call the dentist on Friday"
-    assert len(env.fake.stream_calls) == 1  # Kiwibro kept the note, so it says so itself: the model is not asked again
+    assert not env.fake.stream_calls
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert shown == ["", f"Saved note “{note['title']}”."]  # the empty promise is gone; the first message carries the call
     assert [payload for event, payload in events if event == "done"][0]["inference"]["acted_instead"] == "note"
+
+
+def test_append_to_that_note_uses_the_actual_saved_note(env: Env):
+    events, _ = chat_events(env, "save a note titled Groceries: buy oat milk")
+    conversation_id = events[0][1]["conversation_id"]
+    [original] = env.svc.db.list_notes()
+    other = env.svc.notes.save("Buy rice", title="Groceries")
+    chat_events(env, "add bananas to that note", conversation_id=conversation_id)
+    assert env.svc.db.get_note(original["id"])["body"] == "buy oat milk\n\nbananas"
+    assert env.svc.db.get_note(other["id"])["body"] == "Buy rice"
+    assert not env.fake.stream_calls
 
 
 def test_save_that_as_a_note_keeps_the_last_reply(env: Env):
@@ -131,7 +140,7 @@ def test_save_that_as_a_note_keeps_the_last_reply(env: Env):
 def test_a_model_that_saves_the_note_itself_is_left_alone(env: Env):
     env.fake.stream_script = [tool_call_result("note", {"action": "save", "title": "Shopping", "content": "oat milk"}),
                               ChatResult(content="Saved.")]
-    events, _raw = chat_events(env, "save a note: oat milk and bread")
+    events, _raw = chat_events(env, "put together a note about oat milk and bread")
     assert [note["title"] for note in env.svc.db.list_notes()] == ["Shopping"]
     assert "acted_instead" not in ([payload for event, payload in events if event == "done"][0]["inference"] or {})
 
@@ -184,7 +193,6 @@ def test_dictated_notes_keep_the_words_the_user_said(message, body):
     "I noted that the build failed",
     "note how the function handles errors",
     "create a note called groceries",
-    "note: groceries",
     "note-taking apps are useful",
 ])
 def test_a_note_the_model_writes_or_no_note_is_not_dictated(message):
@@ -192,6 +200,12 @@ def test_a_note_the_model_writes_or_no_note_is_not_dictated(message):
 
     assert notes.dictated(message) is None
     assert notes.dictation(message) is None
+
+
+def test_a_labeled_one_word_note_is_dictation():
+    from kiwibro import notes
+
+    assert notes.dictation("note: groceries") == ("", "groceries")
 
 
 @pytest.mark.parametrize(("message", "found"), [
@@ -302,8 +316,7 @@ def test_a_titled_dictated_note_keeps_its_title(env: Env):
 
 
 def test_a_question_about_the_users_own_things_is_shown_the_note_this_chat_kept(env: Env):
-    env.fake.stream_script = [tool_call_result("note", {"action": "save", "title": "Groceries", "content": "milk, eggs, bread"}),
-                              ChatResult(content="Saved."), ChatResult(content="Milk, eggs and bread.")]
+    env.fake.stream_script = [ChatResult(content="Milk, eggs and bread.")]
     events, _raw = chat_events(env, "note titled Groceries: milk, eggs, bread")
     conversation_id = events[0][1]["conversation_id"]
     chat_events(env, "what did i ask you to buy", conversation_id)

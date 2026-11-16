@@ -86,6 +86,15 @@ class Component:
         ]
         return sorted(found, key=str.lower)
 
+    def output_paths(self, values: dict[str, str]) -> list[str]:
+        paths = self.file_paths()
+        filename = values.get("filename")
+        if not filename or "filename" not in self.blanks:
+            return paths
+        if paths != ["index.html"] or not _HTML_FILENAME.fullmatch(filename):
+            raise ComponentError('filename must be a single .html or .htm file name, such as "scene.html".')
+        return [filename]
+
     def line(self) -> str:
         """The one-line form search and list print."""
         text = f"{self.name} ({self.kind}) - {self.summary}"
@@ -301,6 +310,76 @@ def called_for(component: Component, message: str) -> bool:
     return any(_says(said, _sequence(phrase)) >= 0 for phrase in component.match)
 
 
+_HTML_FILENAME = re.compile(r"[a-z0-9][a-z0-9 ._-]{0,95}\.html?", re.IGNORECASE)
+_SCENE_HEADER = re.compile(
+    r"\s*(?:please\s+)?(?:create|make|build|write|animate)\b"
+    r"(?:\s+(?:a|an|single|html|file|page|named|called|and|in|it|make|write|code|the|that|has|"
+    r"animate[sd]?|animation|nice|three\.?js|3d|scene|of|with|where|show(?:s|ing)?|__file__))*\s*",
+    re.IGNORECASE,
+)
+_ACTOR = r"kiwi(?: bird)?|bird|duck|chicken|penguin|cat|dog|fox|rabbit|sheep|cow|horse|pig|mouse|bear|deer|frog|person|robot|car|truck|bus|boat|plane|rocket"
+_PLACE = r"tree|pine|palm|rock|pond|campfire|house|hut|barn|tower|lighthouse|tent|windmill|bench|flag"
+_SCENE_ACTION = re.compile(
+    rf"\b(?P<actor>{_ACTOR})\s+(?:is\s+)?(?:"
+    rf"(?P<dance>danc(?:e|es|ing))|"
+    rf"(?P<move>walk(?:s|ing)?|run(?:s|ning)?|fl(?:y|ies|ying)|hop(?:s|ping)?|driv(?:e|es|ing)|hug(?:s|ging)?)"
+    rf"\s+(?:(?:up\s+)?to(?:wards?)?\s+)?(?:a[n]?\s+|the\s+)?(?P<place>{_PLACE})"
+    r"(?P<hug>\s+and\s+hug(?:s|ging)?\s+it|\s+and\s+stop(?:s|ping)?)?)\b",
+    re.IGNORECASE,
+)
+_SCENE_SKY = re.compile(
+    r"(?:the\s+)?sky\s*(?:(?:should\s+be|is|in|with)\s+|:\s*)?"
+    r"(?P<sky>#[0-9a-f]{6}|(?:(?:red|orange|yellow|green|blue|purple|pink|lavender|violet|lilac|magenta|indigo|navy|cyan|teal|turquoise|coral|mint|maroon|crimson|white|black|gray|grey)"
+    r"(?:\s+(?:day|dawn|sunset|night))?|day|dawn|sunset|night))",
+    re.IGNORECASE,
+)
+_SCENE_GROUND = re.compile(
+    r"(?:the\s+)?ground\s*(?:(?:should\s+be|is|in|with)\s+|:\s*)?"
+    r"(?P<ground>grass|sand|snow|water|stone|dirt|moon)",
+    re.IGNORECASE,
+)
+_QUALITY_REQUEST = re.compile(r"make sure it works(?: and looks good)?\b", re.IGNORECASE)
+_REQUESTED_HTML = re.compile(r"(?<![\w./\\-])(?:[a-z0-9][a-z0-9_-]*)\.html?(?![\w./\\-])", re.IGNORECASE)
+
+
+def scene_request(message: str) -> dict[str, str] | None:
+    """Translate a complete, supported one-actor request into scene lines. Other requests need design work."""
+    text = (message or "").strip()
+    if not text or len(text) > 520:
+        return None
+    filenames = list(_REQUESTED_HTML.finditer(text))
+    if len(filenames) > 1:
+        return None
+    name = filenames[0].group() if filenames else ""
+    # Mark the filename so the header can allow it without accepting arbitrary words or path fragments.
+    header_text = re.sub(r"""["'\x60]""", "", _REQUESTED_HTML.sub("__file__", text))
+    action = _SCENE_ACTION.search(header_text)
+    if action is None or not _SCENE_HEADER.fullmatch(header_text[:action.start()]):
+        return None
+    values = {}
+    if name:
+        values["filename"] = name
+    tail = _QUALITY_REQUEST.sub("", header_text[action.end():]).strip(" .!,;")
+    for clause in re.split(r"\s*[.!;,]\s*|\s+and\s+|\bwith\s+(?=(?:the\s+)?(?:sky|ground)\b)", tail):
+        clause = clause.strip()
+        if not clause:
+            continue
+        setting = _SCENE_SKY.fullmatch(clause) or _SCENE_GROUND.fullmatch(clause)
+        if setting is None:
+            return None
+        for key, value in setting.groupdict().items():
+            if key in values:
+                return None
+            values[key] = value.lower()
+    actor = action["actor"].lower()
+    if action["dance"]:
+        values.update(title=f"{actor.capitalize()} dancing", scene=f"{actor} dances\nrepeat")
+    else:
+        movement = header_text[action.start("actor"):action.end()].lower()
+        values.update(title=f"{actor.capitalize()} and {action['place'].lower()}", scene=movement)
+    return values
+
+
 def advice(component: Component) -> str:
     """What the turn note says about a suggested component: a kit's call, or a recipe's steps."""
     if component.kind == KIT:
@@ -441,9 +520,9 @@ def _kit_plan(
                 f'the value for "{key}" is used in a file name and cannot contain "/" or start with a dot.'
             )
     plan = []
-    for path in paths:
+    for path, output in zip(paths, component.output_paths(values), strict=True):
         try:
-            target = workspace.resolve(folder / _fill(path, values))
+            target = workspace.resolve(folder / _fill(output, values))
         except SandboxError as exc:
             raise ComponentError(str(exc)) from exc
         plan.append((root / path, target, _fill((root / path).read_text(encoding="utf-8"), values)))

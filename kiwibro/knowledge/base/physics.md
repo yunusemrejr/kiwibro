@@ -233,3 +233,9 @@ The Doppler effect is the change in observed wave frequency when the source and 
 
 ## Hooke's law
 Hooke's law says the stretch of a spring is directly proportional to the force pulling it, up to a limit: force = spring constant * extension. Stretch a spring twice as far and it pulls back twice as hard. Beyond the elastic limit a spring stays permanently deformed.
+## Free fall (acceleration of a falling object)
+For motion near Earth's surface with negligible drag, choose upward as positive and use a = −g, v = v0 − gt, and y = y0 + v0t − gt²/2. Use g ≈ 9.81 m/s² unless local gravity is given. The acceleration does not depend on the object's mass in this model. With appreciable drag, acceleration depends on the net force, so the free-fall equations no longer describe the motion. [OpenStax, University Physics, free fall](https://openstax.org/books/university-physics-volume-1/pages/3-5-free-fall)
+
+
+## Heisenberg uncertainty principle (position and momentum)
+For a quantum state, the standard deviations of position and momentum along the same axis obey σxσp ≥ ℏ/2, where ℏ is the reduced Planck constant. A state with a narrow position distribution therefore needs a wider momentum distribution. The inequality concerns the distributions of measurement outcomes for the state. [OpenStax, University Physics, the uncertainty principle](https://openstax.org/books/university-physics-volume-3/pages/7-2-the-heisenberg-uncertainty-principle)

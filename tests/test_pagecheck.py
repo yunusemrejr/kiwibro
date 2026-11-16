@@ -50,6 +50,8 @@ class Fake:
         report = dict(self.reports[min(max(self.looks, 0), len(self.reports) - 1)])
         report.setdefault("w", width)
         report.setdefault("sw", width)
+        if "motion: { planned:" in page.read_text(encoding="utf-8"):
+            report.setdefault("motion", {"planned": True, "rendered": 30, "observed": self.moves, "waiting": False})
         write_png(png, budget_ms // 100 if self.moves else 0)
         return Render(report=report)
 
@@ -94,8 +96,26 @@ def test_a_page_that_asks_for_motion_and_shows_the_same_picture_is_named(workspa
     assert look(workspace, Fake(still, moves=False), Options(moves=False)).findings == []  # not asked: not raised
 
 
-def test_a_page_that_moves_by_script_is_not_still_when_the_pictures_match(workspace: Workspace) -> None:
-    assert look(workspace, Fake(moves=False), Options(moves=True)).findings == []  # frames were drawn: it runs
+def test_an_animation_callback_without_visible_motion_does_not_pass(workspace: Workspace) -> None:
+    found = look(workspace, Fake(moves=False), Options(moves=True))
+    assert [item.code for item in found.findings] == ["still"]
+    assert "it moves" not in found.confirmed
+
+
+def test_scene_motion_is_checked_on_the_subject(workspace: Workspace) -> None:
+    (workspace.root / "index.html").write_text(
+        '<!doctype html><html><body><canvas></canvas>'
+        '<script id="scene" type="text/plain">kiwi dances</script>'
+        '<script>window.sceneReport={motion: { planned: true }};</script></body></html>',
+        encoding="utf-8",
+    )
+    motion = {"planned": True, "observed": False, "rendered": 30, "waiting": False}
+    found = look(workspace, Fake({**CLEAN, "motion": motion}, moves=True), Options(moves=True))
+    assert [item.code for item in found.findings] == ["still"]  # a background change is insufficient
+    fake = Fake({**CLEAN, "motion": {**motion, "observed": True}})
+    found = look(workspace, fake, Options(moves=True))
+    assert "it moves" in found.confirmed
+    assert fake.widths == [pagecheck.DESKTOP[0]]
 
 
 def test_text_left_unfilled_is_named(workspace: Workspace) -> None:
@@ -126,6 +146,19 @@ def test_the_phone_look_names_a_page_wider_than_the_screen(workspace: Workspace)
     assert pagecheck.PHONE[0] not in look(workspace, fake := Fake(), Options(phone=False)).sizes and 360 not in fake.widths
 
 
+def test_a_failed_phone_view_is_not_confirmed(workspace: Workspace) -> None:
+    class MissingPhone(Fake):
+        def __call__(self, page: Path, png: Path, width: int, height: int, budget_ms: int) -> Render:
+            if width == pagecheck.PHONE[0]:
+                return Render(error="Chrome stopped")
+            return super().__call__(page, png, width, height, budget_ms)
+
+    found = look(workspace, MissingPhone(), Options(phone=True))
+    assert found.sizes == ("1280x800",)
+    assert "it fits a phone screen" not in found.confirmed
+    assert found.could_not == "the phone viewport could not be checked"
+
+
 def test_in_goal_mode_the_picture_is_asked_whether_it_shows_the_goal(workspace: Workspace) -> None:
     asked: list[str] = []
 
@@ -154,7 +187,7 @@ def test_a_page_that_could_not_be_rendered_is_not_called_wrong(workspace: Worksp
     assert found.could_not and found.findings == []
     assert found.report().splitlines() == [
         "Could not look at index.html: Chrome did not start.",
-        "This is not a problem with the page. Nothing more is to be done.",
+        "The render check did not finish.",
     ]
 
 
@@ -214,7 +247,7 @@ def test_the_real_browser_finds_a_script_error_and_a_page_that_moves(tmp_path: P
 
 def test_a_request_that_names_movement_in_plain_words_expects_motion():
     for said in ("a page where a red square moves from left to right forever", "a ball that bounces",
-                 "a logo sliding in", "make an html page with an animation of a bouncing ball"):
+                 "a logo sliding in", "make an html page with an animation of a bouncing ball", "a duck dances"):
         assert pagecheck.wants_motion(said), said
-    for said in ("a page with my opening hours", "a table of prices", "remove the footer"):
+    for said in ("a page with my opening hours", "a table of prices", "remove the footer", "a 3D model of a cup"):
         assert not pagecheck.wants_motion(said), said

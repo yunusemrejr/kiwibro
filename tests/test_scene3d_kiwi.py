@@ -97,7 +97,12 @@ def test_walk_words_mean_walks_to(reader, sentence, kind):
 
 def test_walking_towards_and_hugging_it(reader):
     assert _first_act(reader, "a kiwi walking towards a tree and hugging it") == [
-        ("walk", "tree"), ("walk", "tree"), ("hug", "tree")]
+        ("walk", "tree"), ("hug", "tree")]
+
+
+@pytest.mark.parametrize("sentence", ["kiwi dances", "a kiwi dancing", "kiwi dances for 3 seconds"])
+def test_dance_is_a_subject_action(reader, sentence):
+    assert _first_act(reader, sentence) == [("dance", None)]
 
 
 @pytest.mark.parametrize("sentence", ["kiwi hugs tree", "kiwi walks to tree and hugs it",

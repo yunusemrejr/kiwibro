@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from . import autofacts, config, inference, ledger, prompts, sense, terms
+from . import autofacts, config, inference, ledger, notes, prompts, sense, terms
 from .context import estimate_tokens
 from .db import Database
 from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
@@ -67,6 +67,8 @@ def worth_extracting(window: list[dict[str, Any]]) -> bool:
         if message.get("role") != "user":
             continue
         text = autofacts._URL_RE.sub(" ", autofacts._FENCE_RE.sub(" ", str(message.get("content") or "")))
+        if notes.writes_as_dictated(text):
+            continue
         for sentence in _SENTENCE_RE.findall(autofacts._INLINE_CODE_RE.sub(" ", text)):
             plain = sentence.replace("’", "'")
             if _REMEMBER_INTENT_RE.search(plain):  # "can you remember that…?" asks for a save
@@ -383,10 +385,14 @@ def grounded(content: str, transcript: str) -> bool:
     of the key words is enough, so a memory written in English about a Turkish chat
     still passes on its names, places and numbers.
     """
+    expressed = _folded_words(transcript)
     terms = {word for word in _folded_words(content) if len(word) > 2 and word not in _FRAMING_WORDS}
+    numbers = re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)*(?!\w)", content)
+    if not set(numbers).issubset(re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)*(?!\w)", transcript)):
+        return False
     if not terms:
-        return True
-    seen = {word[:5] for word in _folded_words(transcript)}
+        return bool(numbers)
+    seen = {word[:5] for word in expressed}
     hits = sum(1 for term in terms if term[:5] in seen)
     return hits * 3 >= len(terms)
 
@@ -1092,9 +1098,12 @@ class MemoryEngine:
                 return counts
             full = len(window) >= EXTRACT_WINDOW_MESSAGES or \
                 sum(_transcript_cost(m) for m in window) >= EXTRACT_TRANSCRIPT_CHARS * 3 // 4
-            if not full and not worth_extracting(window):
-                # Questions and requests only: no model call yet. The watermark stays, so a
-                # later turn extracts these messages together with whatever it adds.
+            if not worth_extracting(window):
+                # Short question-only windows stay available for the next user statement.
+                # An entire full window with no candidate can be skipped without generation.
+                if full:
+                    self._advance_watermark(conversation_id, through_seq)
+                    return counts
                 return {**counts, "deferred": 1}
             raw, outcome = self._bounded_extract(conversation_id, model, window=window, abort=abort)
             if outcome == "cancelled":
@@ -1114,8 +1123,12 @@ class MemoryEngine:
             ops = parse_ops(raw)[:MAX_OPS_PER_TURN]
             if not ops:
                 return counts
-            transcript = "\n".join(str(message.get("content") or "") for message in window)
-            return self._apply_ops(ops, transcript, conversation_id=conversation_id, window=window)
+            user_messages = [message for message in window if message.get("role") == "user"
+                             and not notes.writes_as_dictated(str(message.get("content") or ""))]
+            transcript = "\n".join(str(message.get("content") or "") for message in user_messages)
+            if not transcript:
+                return counts
+            return self._apply_ops(ops, transcript, conversation_id=conversation_id, window=user_messages)
         except Exception:  # extraction must never fail the turn
             log.warning("memory extraction failed for %s", conversation_id, exc_info=True)
             return counts
@@ -1218,7 +1231,7 @@ class MemoryEngine:
             if role not in ("user", "assistant"):
                 continue
             content = (message.get("content") or "").strip()
-            if not content:
+            if not content or (role == "user" and notes.writes_as_dictated(content)):
                 continue
             line = f"{'User' if role == 'user' else 'Assistant'}: {content[:EXTRACT_LINE_CHARS]}"
             if len(line) > budget and lines:

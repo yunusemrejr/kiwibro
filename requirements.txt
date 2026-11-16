@@ -1,3 +1,5 @@
 Flask>=3.1,<4
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
+websocket-client>=1.8,<2
+Pillow>=10.4,<13

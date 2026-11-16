@@ -1423,6 +1423,26 @@ class Database:
                 raise
         return self._note(row) if row else None
 
+    def append_note(self, note_id: str, addition: str, *, max_chars: int) -> dict[str, Any] | None:
+        """Append against the current database body and update search in the same transaction."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+                if row is not None:
+                    body = f"{row['body']}\n\n{addition}"
+                    if len(body) > max_chars:
+                        raise ValueError(f"note is too long (max {max_chars} characters)")
+                    conn.execute("UPDATE notes SET body = ?, updated_at = ? WHERE id = ?",
+                                 (body, config.now_iso(), note_id))
+                    self._note_fts_write(conn, note_id, row["title"], body, _json_loads(row["tags"], []) or [])
+                    row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return self._note(row) if row else None
+
     def delete_note(self, note_id: str) -> bool:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

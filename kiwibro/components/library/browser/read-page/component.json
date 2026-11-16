@@ -6,11 +6,11 @@
   "when": "Use when the user gives one web address or asks what a single page says and the answer must come from that page.",
   "blanks": {},
   "steps": [
-    "Call fetch_page with url set to the exact address and max_chars 8000 to get the page text.",
-    "Read the returned text for the passage that answers the question, skipping menus, cookie banners and footers.",
-    "If the page is mostly links, call browse_page with url set to the same address and read its numbered link list.",
+    "Call browser action open with the exact address to get the page text and numbered links.",
+    "Read the passage that answers the question. For a JavaScript page with no readable text, retry once with mode headless.",
+    "If the answer is linked from the page, use browser action follow and the observed link_number.",
     "Copy the figure or sentence exactly as printed, with its unit and the heading it appears under.",
-    "If fetch_page fails with a host or timeout error, say the page could not be read and call open_path with target set to the url.",
+    "If the browser reports a host or timeout error, report that the page could not be read.",
     "Mark any figure, date or link the page does not hold as not found; never fill it from memory.",
     "Answer in two or three sentences, quote the exact figure, cite the page as [1] with its URL, and name what was missing."
   ],

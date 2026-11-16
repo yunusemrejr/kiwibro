@@ -25,20 +25,29 @@ SNIPPETS: dict[str, str] = {
         "Say these in your own words. Do not add a list of things you cannot do."
     ),
     "steps": (
-        "Several steps: keep task_board current, and batch independent calls in one reply "
-        "(multi_search, fetch_pages, read_files, multi_command)."
+        "Several steps: keep task_board current. Batch independent reads with multi_search, fetch_pages "
+        "or read_files. Run dependent steps in order and use each result to decide the next action."
     ),
     "web": (
         "Research: use web_research (or multi_search + fetch_pages), cite evidence as [1], [2] with the "
         "URLs the tools returned, and answer once you have enough."
     ),
     "code": (
-        "Code: find with glob_files / grep_files, read with read_files or file_outline, change with "
-        "apply_patch, then verify by running the tests (multi_command); terminal_session for servers."
+        "Code: locate the entry point and callers with glob_files / grep_files, then read targeted ranges "
+        "with read_files or file_outline. Edit the smallest relevant section with apply_patch or "
+        "replace_in_file; run the relevant check and report its actual result."
     ),
     "compute": (
-        "Numbers and data: compute them with run_python or run_javascript (safe scratch folder) instead of "
-        "estimating; study_file for long files."
+        "Numbers and data: use calculate for arithmetic and unit conversion. For a derivation or numerical "
+        "model, state the equations, substitute the given values, use run_python for checks, and report units."
+    ),
+    "physics": (
+        "Physics: identify the system, known quantities and assumptions. Check dimensions and direction. "
+        "If a needed value is absent, give a symbolic result or label the estimate and its assumption."
+    ),
+    "browser": (
+        "Browser: open the requested page, then inspect the active tab. Use concrete links from the latest "
+        "result, and inspect again after navigation. For a one-off source read, use fetch_page."
     ),
     "desktop": (
         "Desktop: open_path shows a file or URL, clipboard reads or sets text, notify signals completion, "
@@ -46,9 +55,9 @@ SNIPPETS: dict[str, str] = {
         "what fills a folder."
     ),
     "memory": (
-        "Memory: facts the user states are saved automatically. Call remember only to correct one "
-        "(action \"update\", old = the outdated fact) or remove one (action \"forget\"); use recall to "
-        "look up earlier conversations instead of asking the user to repeat themselves."
+        "Memory: explicitly stated facts may already be saved. Use remember to save a requested durable fact, "
+        "revise it with action \"update\" and old = the outdated fact, or remove it with action \"forget\". "
+        "Use recall to retrieve earlier conversations."
     ),
     "about_user": (
         "The user asks about themselves. Answer from the memory in this note, speaking to them (“Your … "
@@ -69,7 +78,7 @@ SNIPPETS: dict[str, str] = {
         "a vision model or by code). Treat it as what you see; use the path with your tools for more."
     ),
 }
-TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "desktop", "memory", "notes"})
+TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "browser", "desktop", "memory", "notes"})
 HEADER = "## Guidance for this turn"
 
 _CAPABILITIES = re.compile(
@@ -91,9 +100,20 @@ _WEB_EXTRA = re.compile(
 )
 _COMPUTE = re.compile(
     r"\b(?:calculate|compute|how\s+much\s+is|average|mean|median|percent(?:age)?|statistics|"
+    r"equation|integral|derivative|differentiate|matrix|probability|solve\s+for|"
     r"convert\s+\d|analy[sz]e\s+(?:the\s+|this\s+|my\s+)?(?:data|csv|table|spreadsheet|numbers))\b|"
     r"\d\s*[-+*/^×÷]\s*\d",
     re.I,
+)
+_PHYSICS = re.compile(
+    r"\b(?:physics|kinematics|acceleration|momentum|centripetal|free\s+fall|"
+    r"kinetic\s+energy|Ohm's\s+law|Newton's\s+(?:laws?|second)|wavelength|heat\s+capacity|"
+    r"angular\s+velocity|gravitational|projectile\s+motion)\b", re.I,
+)
+_BROWSER = re.compile(
+    r"\b(?:navigate\s+to|browse\s+(?:to|the|a|https?://)|follow\s+(?:the|a|link)|"
+    r"(?:open|switch|inspect|close)\b[^.?!\n]{0,35}\b(?:browser tab|tab in the browser)|"
+    r"browser automation)\b", re.I,
 )
 _DESKTOP = re.compile(
     r"\bopen\s+(?:the\s+|this\s+|that\s+|my\s+)?(?:file|folder|url|link|page|it|https?://)|\bclipboard\b|"
@@ -155,6 +175,10 @@ def select(
         keys.add("code")
     if _COMPUTE.search(text):
         keys.add("compute")
+    if _PHYSICS.search(text):
+        keys.add("physics")
+    if _BROWSER.search(text):
+        keys.add("browser")
     if _DESKTOP.search(text):
         keys.add("desktop")
     if _MEMORY.search(text):

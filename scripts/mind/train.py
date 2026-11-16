@@ -96,7 +96,7 @@ COMPONENTS = [  # name, blanks, summary: the library in kiwibro/components/libra
     ("web/flask-api", "name, resource", "Flask JSON API with SQLite, input validation and tests."),
     ("web/fastapi-service", "name, resource", "FastAPI service with typed models, a health route and tests."),
     ("web/pwa", "app_name", "Installable web app that works offline: manifest, service worker and an offline page."),
-    ("web/scene-3d", "title, scene, sky, ground", "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, hugs, follows, orbits), with a sky in any colour."),
+    ("web/scene-3d", "title, scene, sky, ground, filename", "One HTML file with a low-poly three.js scene of familiar objects and actions: walk, run, fly, drive, dance, hug, follow or orbit. Uses a pinned three.js CDN."),
     ("web/object-3d", "title, shape, color, background", "One 3D shape (cube, sphere, ring, gem, star and more) that turns slowly on the page and can be turned with the mouse or a finger."),
     ("web/particles-3d", "title, kind, color, count", "One HTML file with a moving 3D field of particles: stars, snow, rain, fireflies, a turning galaxy or confetti. It can be turned and zoomed with the mouse or a finger."),
     ("web/chart-3d", "title, data, color, unit", "One HTML file with a three.js 3D bar chart of the user's numbers: bars grow from zero on a floor, turn with mouse or finger, each with its label and value, a few reference lines on a back wall."),

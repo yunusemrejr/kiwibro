@@ -712,6 +712,27 @@ _SUM_CONVERSION = re.compile(
 _SUM_DATE_LIKE = re.compile(r"\d{4}-\d{1,2}(?:-\d{1,2})?|\d{1,2}/\d{1,2}(?:/\d{2,4})?")
 
 
+def direct_answer(message: str) -> str:
+    """Return an exact answer only if the whole message is a calculator request."""
+    text = (message or "").strip()
+    if not text or len(text) > MAX_EXPRESSION_CHARS or "\n" in text:
+        return ""
+    expression = _TRAILING.sub(
+        "", re.sub(r"^(?:please\s+)?(?:(?:convert|evaluate|work\s+out)\s+)?", "", text, flags=re.I)
+    ).strip()
+    expression = _LEADING.sub("", expression)
+    if not expression or not any(char.isdigit() for char in expression):
+        return ""
+    try:
+        outcome = evaluate(expression)
+    except (ValueError, ArithmeticError):
+        return ""
+    if outcome["kind"] == "date" or expression.isdigit():
+        return ""
+    result = outcome["result"]
+    return f"{expression} = {result}."
+
+
 def worked(message: str) -> list[tuple[str, str]]:
     """The sums and unit conversions a message asks for, as (what was asked, exact result)."""
     text = _CODE_SPANS.sub(" ", (message or "").replace("\u2019", "'"))

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from test_backend import Env, chat_events
 
 from kiwibro.agent import FAILURE_COACH_AT, FAILURE_PAUSE_AT
@@ -35,9 +37,13 @@ def test_failing_calls_get_coached_then_paused(env: Env) -> None:
     assert events[-1][0] == "done"
 
 
-def test_a_pause_stops_only_the_tools_that_kept_failing(env: Env) -> None:
+def test_a_pause_stops_only_the_tools_that_kept_failing(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     """16 Nov 2026: six calls for a component that does not exist paused tools, and the write_file that
     finally made the page was refused with them."""
+    from kiwibro import pagecheck
+    from test_pagecheck import Fake
+
+    monkeypatch.setattr(pagecheck, "chrome_render", Fake())
     guesses = ["/tmp", "/Desktop", "/", "/etc", "/usr", "/opt", "/srv"]
     write = {"id": "call_w", "type": "function",
              "function": {"name": "write_file", "arguments": json.dumps({"path": "page.html", "content": "<p>hi</p>"})}}
@@ -61,16 +67,48 @@ def _kit_call(message_index: int) -> ChatResult:
 def test_a_finished_kit_runs_only_when_the_request_calls_for_it(env: Env) -> None:
     """16 Nov 2026: asked for a kiwi walking to a tree, the 2D animation kit drew bouncing balls."""
     env.fake.stream_script = [_kit_call(0), ChatResult(content="I will draw it by hand.")]
-    chat_events(env, "Create kiwitree.html that animates a kiwi walking towards a tree. Sky should be purple.")
+    chat_events(env, "Create a hand-drawn kiwitree.html that animates a kiwi walking towards a tree.")
     refused = _tool_messages(env)[0]["content"]
     assert refused.startswith("This call did not run: web/animation-2d makes only") and "write_file" in refused
     assert not (env.workspace / "anim").exists()
 
 
-def test_a_finished_kit_still_runs_when_asked_for(env: Env) -> None:
+def test_a_finished_kit_still_runs_when_asked_for(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiwibro import pagecheck
+    from test_pagecheck import Fake
+
+    monkeypatch.setattr(pagecheck, "chrome_render", Fake())
     env.fake.stream_script = [_kit_call(0), ChatResult(content="Here are the balls.")]
     chat_events(env, "Make a bouncing balls animation.")
     assert (env.workspace / "anim" / "index.html").exists()
+
+
+def test_a_named_supported_scene_is_built_and_checked_without_a_model(env: Env, monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import pagecheck
+    from test_pagecheck import Fake
+
+    monkeypatch.setattr(pagecheck, "chrome_render", Fake())
+    events, _ = chat_events(env, "Create a single HTML file named dancer.html that animates a kiwi dancing.")
+    assert (env.workspace / "dancer.html").is_file()
+    assert not env.fake.stream_calls
+    [done] = [payload for event, payload in events if event == "done"]
+    assert done["inference"]["looked"] == "good"
+
+
+def test_an_explicit_browser_open_reports_the_landed_url_without_a_model(env: Env, monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import tools
+
+    def opened(args, _ctx):
+        assert args["action"] == "open" and args["url"] == "https://example.com"
+        return tools.ToolResult(ok=True, content="Example page",
+                                meta={"url": "https://example.org/docs", "tab_id": "example"})
+
+    monkeypatch.setattr(tools, "_execute_browser", opened)
+    events, _ = chat_events(env, "Navigate to https://example.com")
+    assert not env.fake.stream_calls
+    assert [payload["text"] for event, payload in events if event == "delta"] == [
+        "Opened https://example.org/docs in the browser.",
+    ]
 
 
 def test_a_success_resets_the_failure_streak(env: Env) -> None:
@@ -84,7 +122,7 @@ def test_a_success_resets_the_failure_streak(env: Env) -> None:
 # --- degeneration guard ---------------------------------------------------------
 
 from kiwibro import inference  # noqa: E402
-from test_backend import tool_call_result  # noqa: E402
+from test_backend import SSEStream, tool_call_result  # noqa: E402
 
 
 def test_degeneration_detector() -> None:
@@ -191,7 +229,7 @@ def test_a_repeating_reply_keeps_its_start_and_is_continued(env: Env, monkeypatc
 
 def test_wrapper_tags_around_an_answer_are_neither_shown_nor_stored(env: Env):
     env.fake.stream_script = [ChatResult(content="<output>\n400\n</output>")]
-    events, _raw = chat_events(env, "what is 17 * 23 + 9?")
+    events, _raw = chat_events(env, "give the code word")
     shown = "".join(payload["text"] for event, payload in events if event == "delta")
     assert shown.strip() == "400" and not [event for event, _ in events if event == "rewrite"]
     conversation_id = events[0][1]["conversation_id"]
@@ -231,13 +269,66 @@ def test_a_short_preface_before_a_tool_call_stays(env: Env):
 
 def test_a_sum_is_worked_out_before_the_model_replies_and_a_wrong_answer_is_redone(env: Env):
     env.fake.stream_script = [ChatResult(content="12% of 480 = 5760."), ChatResult(content="12% of 480 is 57.6.")]
-    events, _raw = chat_events(env, "what is 12% of 480?")
+    events, _raw = chat_events(env, "what is 12% of 480, rounded to one decimal place?")
     assert "- 12% of 480 = 57.6" in env.fake.stream_calls[0]["messages"][-1]["content"]
     assert "Kiwibro worked it out exactly: 12% of 480 = 57.6" in env.fake.stream_calls[1]["messages"][-1]["content"]
     conversation_id = events[0][1]["conversation_id"]
     shown = [m["content"] for m in env.svc.db.list_messages(conversation_id) if m["role"] == "assistant"]
     assert shown == ["12% of 480 is 57.6."]
     assert [payload for event, payload in events if event == "done"][0]["inference"]["steered"] == ["wrong_result"]
+
+
+def test_a_standalone_sum_skips_generation(env: Env):
+    events, _raw = chat_events(env, "what is 12% of 480?")
+    assert not env.fake.stream_calls
+    assert [payload["text"] for event, payload in events if event == "delta"] == ["12% of 480 = 57.6."]
+
+
+def test_a_read_after_a_write_in_one_batch_sees_the_change(env: Env):
+    target = env.workspace / "state.txt"
+    target.write_text("previous contents")
+    before = tool_call_result("read_file", {"path": "state.txt"})
+    write = tool_call_result("replace_in_file", {"path": "state.txt", "old": "previous", "new": "updated"})
+    after = tool_call_result("read_file", {"path": "state.txt"})
+    for index, response in enumerate((before, write, after)):
+        response.tool_calls[0]["id"] = f"change_{index}"
+    before.tool_calls.extend(write.tool_calls + after.tool_calls)
+    env.fake.stream_script = [before, ChatResult(content="The state file now says updated contents.")]
+    events, _ = chat_events(env, "Inspect state.txt, change previous to updated, then read it again.")
+    tool_results = [payload for event, payload in events if event == "tool_result"]
+    assert [payload["id"] for payload in tool_results[:3]] == ["change_0", "change_1", "change_2"]
+    assert "previous contents" in tool_results[0]["preview"]
+    assert "updated contents" in tool_results[2]["preview"]
+
+
+def test_stopping_at_later_approval_keeps_the_completed_tool_result(env: Env):
+    env.settings_patch({"autonomy": "supervised", "permissions": {"replace_in_file": "auto", "file_manage": "ask"}})
+    target = env.workspace / "state.txt"
+    target.write_text("before")
+    write = tool_call_result("replace_in_file", {"path": "state.txt", "old": "before", "new": "after"}, "write")
+    delete = tool_call_result("file_manage", {"action": "delete", "path": "state.txt"}, "delete")
+    later = tool_call_result("write_file", {"path": "later.txt", "content": "unexpected"}, "later")
+    write.tool_calls.extend(delete.tool_calls + later.tool_calls)
+    env.fake.stream_script = [write]
+
+    response = env.client.post("/api/chat", json={"message": "Replace before with after in state.txt, then delete it."},
+                               buffered=False)
+    assert response.status_code == 200
+    stream = SSEStream(response).start()
+    conversation_id = stream.wait_for("meta")["conversation_id"]
+    assert stream.wait_for("approval")["tool"] == "file_manage"
+    assert target.read_text() == "after"
+    assert env.new_client().post("/api/chat/stop", json={"conversation_id": conversation_id}).status_code == 200
+    events = stream.finish()
+
+    assert events[-1][0] == "done" and events[-1][1]["aborted"]
+    results = [(payload["id"], payload["ok"]) for event, payload in events if event == "tool_result"]
+    assert results == [("write", True), ("delete", False), ("later", False)]
+    messages = _tool_messages(env)
+    assert [message["tool_call_id"] for message in messages] == ["write", "delete", "later"]
+    assert messages[0]["meta"]["ok"] is True
+    assert all(message["content"].startswith("Cancelled before execution") for message in messages[1:])
+    assert target.read_text() == "after" and not (env.workspace / "later.txt").exists()
 
 
 SHELF = ("The top shelf holds 14 jars of plum jam, 9 jars of honey and 3 bottles of elderflower syrup. The lower "

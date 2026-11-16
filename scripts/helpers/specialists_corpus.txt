@@ -1,0 +1,802 @@
+# Synthesized and manually labeled requests. One request per line under its head,
+# split, and label. Split by scenario and phrasing, with withheld calibration/test
+# families. "none" describes tasks that should receive no hint from this head.
+
+[browser train lookup]
+Find official release notes for Debian stable and link them.
+Is the library open this Monday? Find the hours on the county website.
+Verify the retirement age using a government source.
+Locate the current API documentation for the new weather endpoint.
+Check whether this railway runs on Sundays and cite the timetable.
+Search the web for the operator's latest service notice.
+Use official sources to check the price of this annual permit.
+Find the manufacturer's specification page for this camera.
+Check the shipping policy for the store and show me the link you used.
+Look up current entry requirements on the embassy website.
+See whether the public consultation is still taking submissions.
+Web'de en yeni Node güvenlik duyurusunu bul ve resmi kaynağını göster.
+Bu vakfın kayıt tarihini resmi sayfasından araştır.
+Compare the two vendor websites and link their actual warranty terms.
+Find where the conference organizers published the corrected schedule.
+Which archive holds the public minutes from that council meeting? Look it up.
+Find a page from the university that confirms its application deadline.
+Search the internet for current wildfire evacuation notices for the district.
+Go online and check if the park is currently open to visitors.
+Look up the official method to transfer this licensing certificate.
+Verify this claim against the original paper and link to the result.
+
+[browser train path]
+Open the museum's website and follow the link labeled Exhibitions.
+Go to https://example.com/contact and tell me which departments are listed.
+Visit the home page and follow Products, then choose the Accessories category.
+Take the second link from the results page and summarize where it leads.
+On this public admissions page, follow the tuition and fees link.
+Open the user-supplied URL, then find its FAQ section and read the return policy.
+Go to the docs index and open the link marked Installation.
+Follow the link to the alternate language version of the site.
+Bu bağlantıyı aç, ardından sayfadaki Etkinlikler bölümüne git.
+Sitede Destek bağlantısını açıp Kullanım Kılavuzu sayfasına geç.
+Navigate from the store home page to the public clearance page using the navigation.
+Jump to the policy page linked in the footer and read its first paragraph.
+Read the sidebar link named Troubleshooting and tell me what it lists.
+Open the first public search result and follow its About link.
+Take me through the tabs on the public documentation site until you reach samples.
+Use the URL I gave you and confirm the redirect goes to the expected help center.
+Open https://example.org/blog/ and read the linked announcement about accessibility.
+Follow the Download link to see what the public page offers. Stop on the destination.
+Find the linked event program on the organizer's current public page, then open it.
+Scroll through the table of contents and visit Chapter Four through its link.
+The Index page has a link to an appendix. Open it and report the title.
+
+[browser train state]
+The active tab is blank when you read it, although the page shows results after loading.
+The tabs got mixed up. Inspect the active browser tab and see which article is open.
+Your reader returned nothing but an empty script-generated shell for this address.
+After clicking the link, the browser opened another tab. Confirm where it landed.
+Refresh your page inspection. The previous link numbers belong to another view.
+The page is JavaScript-rendered and you keep reading the placeholder.
+The browser already has a tab for that page. Check it before reopening the link.
+The HTML source has no table rows until the script populates them.
+The current page moved after the previous action. Get its new title and visible text.
+Görünen liste güncellendi, aktif sekmeyi yeniden kontrol et.
+Sekmeler karıştı. Şu anda hangi tarayıcı sekmesi açık kontrol et.
+The reader sees only a placeholder loader on a public listings page.
+The old tab reference is stale after the redirect. Get the new browser state.
+The public article view opens with a spinner until its client code finishes.
+The appointment list only appears after the page renders. Check what is visible now.
+You've been inspecting the wrong tab. Switch to the one that displays the dashboard.
+I went back. Read the current page and confirm which links are there now.
+The URL changed but the page you quoted was cached. Check the fresh visible page.
+The content viewer never sees the results fetched by the site's scripts.
+Open tabs changed since the last step. Check what is actually on screen now.
+The public page loaded enough to show the heading, but navigation is still loading.
+
+[browser train none]
+Build a bookmark manager web app with keyboard navigation.
+Create a WebGL page with an orbit camera and snow.
+Explain the history of public libraries in two paragraphs.
+Read the local Python page renderer and find why it is slow.
+Run the unit tests for the browser package in this checkout.
+Rename my notes folder and update imports.
+Send a message in my private work account on the website.
+Click Buy now to order the headset.
+Log in and change the two-factor authentication method on my bank account.
+Delete the previously saved password from my browser.
+Check the algebra in this answer and correct the units.
+Write browser-compatible JavaScript to make a spinning cube.
+I pasted the page text below. Summarize the supplied text.
+Tell me how a search engine indexes links.
+Make a HTML page with a button labeled View your tabs.
+Diff the visible output in the two attached screenshots.
+Use my authenticated browser account to upload the file.
+In browser.js, change open_tab to handle an empty page title.
+Save the appointment as a note for me.
+Remember I prefer more specific citations in long answers.
+Tarayıcı eklentimin kaynak kodundaki hatayı düzelt.
+Banka hesabıma giriş yapıp havale gönder.
+Translate the paragraph I gave you into English.
+Show me how to use Ctrl+Tab without opening a web page.
+The first law of thermodynamics for a closed system?
+Organize these five assignments in parallel and check their dependencies.
+Add research, notes and memory sections to the documentation.
+How do I find the URL in my own browser? Give instructions.
+Create a web page that lists my books using these entries.
+Look for a release note string in this local package only.
+Write a CSS mock browser tab layout with form states.
+Use private account data to complete the purchase.
+
+[browser calibrate lookup]
+Could you find the primary source for the road closure before I leave?
+Find a calendar from the department that backs up these term dates.
+Is there a public changelog for this editor's newest version?
+Research the most recent fare notice on the transit service's official website.
+Web'den son belediye kararının resmi duyurusunu bulabilir misin?
+Find the public documentation that describes how this service collects data.
+Get the original evacuation order from a public emergency management website.
+
+[browser calibrate path]
+The page I gave you has a support link at the top. Follow it and read the landing page.
+Use the second link titled Terms of Use and tell me which page opens.
+Visit the official form linked on the guidelines page, then check its heading.
+Go from the product page to Manuals using a visible link.
+Ana sayfayı aç, menüdeki Arşiv bağlantısını takip et.
+Read https://example.org/start and continue into the Project Downloads page.
+From the help page, go through the link in its last callout and tell me the next section.
+
+[browser calibrate state]
+That site only returns its initial loading markup instead of the populated content.
+The active tab now shows a signpost page; check where the redirect actually finished.
+You have an old index of links since I changed tabs.
+Check again after the rendered content is visible, the empty container is useless.
+Tarayıcıda başka sekmeye geçtim. Aktif olan sayfayı tekrar incele.
+The state was loading when you last looked. Re-read it once the client populated the table.
+The navigation caused a tab to open in the background: inspect the tabs for the new page.
+
+[browser calibrate none]
+Patch the web scraper using the supplied HTML fixture.
+Please read my commit history and add a test for popups.
+Create a diagram showing the architecture of browser tabs.
+File my notes by country and remember I use Turkish for errands.
+Açık sekme sayaçlı bir tarayıcı teması tasarla.
+Read this HTML string and extract URLs with a script. Keep it all local.
+Use an authenticated session to publish the draft on my blog.
+Compare two force diagrams from the document I uploaded.
+Make the next month of study tasks fit my calendar without changing it.
+Type and submit my customer service complaint.
+Draft the agenda for a public meeting.
+What is the past tense of “navigate”?
+Explain the difference between selective and inherited traits.
+
+[browser regression lookup]
+Can you verify the latest bridge toll at the source and give me the page?
+Check whether the city has announced a new snow emergency online.
+Where did the regulator publish the current safety bulletin? Link it.
+Find an official list of closures for the state trail network this weekend.
+Kütüphane şubelerinin güncel çalışma saatlerini resmi siteden öğren.
+Find the latest text of the open standard and cite the issuing body.
+Use the internet to find which authority issued this recall.
+I want the original grant call, not an aggregator. Find it online.
+Has the agency posted a revised timetable? Check the official announcement.
+Bu laboratuvarın güncel başvuru koşullarını internetteki resmi belgeden kontrol et.
+Find the current public policy about allowed carry-on dimensions.
+Track down the publisher page where the erratum appeared.
+
+[browser regression path]
+Read the public page I linked and follow its Accessibility statement.
+Go from this index into the referenced equipment inventory.
+Get the route map using the link on the network overview page, and confirm where it takes you.
+The citation box points to another public document. Open the link it exposes.
+Giriş sayfasından duyuru arşivini aç ve son kayda geç.
+Follow the numbered navigation element for page 3, then inspect that result page.
+Visit https://example.com/resources and read the separate page it links as Procurement.
+Use the visible link from the project landing page to its contribution guidelines.
+Open the external appendix from the public annual report link.
+Sağ taraftaki Arşiv bağlantısıyla bir sonraki sayfaya ilerle.
+Find the public gallery from the URL I gave you and follow the Collections link.
+Navigate to the Troubleshooting chapter from the linked manual's directory.
+
+[browser regression state]
+The reader has plain text that's different from the browser because a client script filled the list.
+I already navigated elsewhere in that tab, so use what is visible now.
+The website's empty server response is just a root div that hydrates later.
+The destination opened in a separate tab but you still quote the tab we started in.
+The page was still initializing when the first inspection ran. Check the displayed results.
+Yeni bir sekme açıldı, önceki adres artık geçerli değil. Açık olanı kontrol et.
+The ref appeared before the page switched views. Reinspect what actually loaded.
+The dashboard is just a stub until its front end mounts, then it shows the public values.
+I pressed the browser's back button. Which page and links are active?
+Your last extraction returned a spinner. Recheck the rendered listing.
+Tarayıcı sekmesi değiştikten sonra güncel başlığı ve gördüğün içeriği doğrula.
+You are on a temporary interstitial. Resolve the current URL and visible page before continuing.
+
+[browser regression none]
+Make an animated kiosk interface that looks like a desktop browser.
+Use my session to submit the insurance application.
+Calculate the trajectory of the ball and show the assumptions.
+The URL below is sample test data. Build a parser around it.
+Write a Rust scraper with support for links and pagination.
+Open my local test fixture and fix the broken link in the file.
+I want to save “open the signup page first” as a note.
+Please remember I use newspaper archives when researching.
+Tarayıcı tarzı başlık çubuğunu CSS ile yeniden tasarla.
+How does a Fourier series approximate a square wave?
+Read the three source files and propose a smaller API.
+Group these four deliverables by priority and work on them in parallel.
+In the notebook below, what does the term destination index mean?
+Pretend you are a travel agent and write a brochure.
+No network requests. Inspect the attached screenshot for obvious spacing issues.
+Log in to the private forum and post my reply.
+My bank's public landing page is already open. Click Transfer and send $300.
+I pasted a public calendar. Which dates on that text overlap?
+Explain the Browser History API using examples.
+Build a 3D animation of a search result list folding like an accordion.
+
+[visual train scene]
+Create a Three.js scene of a tree swaying while cartoon birds fly around it.
+Build an animated 3D beach scene with moving surf and a slowly orbiting camera.
+Make a low-poly WebGL forest where the clouds drift and the leaves fall.
+Use Three.js to create a single page where the camera tracks a rolling ball.
+Make an interactive 3D scene of a night sky, with stars crossing behind the landscape.
+Create a single HTML file in which two animal characters dance in a 3D clearing.
+Visualize a city skyline in a WebGL canvas with moving traffic.
+Create a true 3D model of a balloon over the mountains and let me orbit while it floats.
+Build a new WebGL page with snowfall and sliding lights on the terrain.
+Render a 3D landscape that slowly turns from sunrise to night.
+Tek HTML dosyasında hareketli üç boyutlu bir orman sahnesi yaz.
+Üç boyutlu sahnede bir ağaç sallansın, kamera etrafında dolaşsın.
+Animate a lilac ocean scene with a camera that can rotate and pan.
+Develop a browser game scene with perspective hills and cars moving along the track.
+Build a 3D courtyard with one walking robot and responsive mouse-look controls.
+Create a rotating planet with a small moon and show their shadows.
+Render a 3D animation of a gull flying through fog above an island.
+Make a little WebGL garden with different camera views and falling petals.
+Show an interactive 3D animation of balls bouncing across a checkerboard platform.
+Create a 3D anime-style environment where a ferry slowly sails by.
+Build an animated 3D page with a hot air balloon and clouds.
+
+[visual train mechanism]
+Build an interactive mechanism that shows how a lathe's drive turns the workpiece.
+Show the escapement of a mechanical clock in motion, including the pivot and teeth.
+Create a cutaway that demonstrates how a hydraulic pump pushes fluid when its shaft turns.
+Animate a hinge chain for an interactive technical illustration of a robot gripper.
+Show with moving gears how the bike derailleur transfers power between ratios.
+Build a browser animation of how the shutter in a mechanical camera releases.
+Teach how torque transfers between gears using a moving model and a live readout.
+Make an interactive animated cross section of the valve train in an engine.
+How does the bolt cycle in this instructional hand tool? Animate its motion with the parts visible.
+Animate how a rack and pinion converts rotation to translation and label the two parts.
+Show how a thermostat linkage opens in a rotatable interactive figure.
+Dişli kutusunun nasıl çalıştığını etkileşimli hareketli şekille açıkla.
+Bir pompanın çalışmasını gösteren animasyonlu kesit çiz.
+Make a technical explainer where dragging the pendulum drives the gear assembly.
+Visualize the physics of a governor with the linkage opening as shaft speed changes.
+Use an interactive cutaway to explain how the button actuates a switch.
+Develop a working diagram of pulleys transferring force and animate their cable travel.
+Make a browser simulation that illustrates how an orrery gear train moves.
+Model and animate the piston and crank following their measured rotation in the same figure.
+Show a working ratchet with two pawls that visibly engage in a technical animation.
+Animate the moving linkage in a door closer so viewers can turn it by hand.
+
+[visual train reveal]
+Make an exploded 3D view of a headset with labeled detachable assemblies.
+Show the phone's parts in an exploded view and animate them returning to the case.
+Make a product reveal of a fountain pen as the cap and nib separate.
+Build an interactive disassembly animation of a mechanical keyboard.
+Create a 3D animation that opens the portable radio and separates the circuit board from the housing.
+Build a product film where the shoe separates into its layers, rotates, then reassembles.
+Reveal the toaster by having each physical component move apart in sequence.
+Create an exploded animation of how a door lock is assembled, with labels on the components.
+Create a 3D spin with an exploded state showing the camera lens elements detached.
+Use an exploded-view drawing of the bike hub with an animation between its assembly states.
+Saatin parçalarını ayırıp birleştiren üç boyutlu bir ürün animasyonu yap.
+Telefonun patlatılmış görünümünü parçaları etiketleyerek göster.
+Make the watch casing split open by layer and settle into an exploded product presentation.
+Animate the lantern's parts flying into place for an assembly visualization.
+Model the electric toothbrush and reveal its internal battery by separating its outer shells.
+Build an animated parts overview where the headphone cushions and speakers separate.
+Produce a teardown video with the remote's physical parts spaced in 3D.
+Animate an assembly of a kettle, beginning with the lid and handle separated.
+Make a deconstruction sequence of the fan down to the rotor and bearings.
+Model the assembled handheld console and have its parts fan out for inspection.
+Animate the object coming apart into five modules and label their names during the reveal.
+
+[visual train repair]
+Fix the existing Three.js scene. The canvas stays black after loading.
+Patch my WebGL page so the object remains above the ground during its rotation.
+In the supplied 3D HTML file, repair the animation loop so objects move again.
+The current orbit view clips the model when I resize the tab. Fix it in place.
+My animated canvas stopped after I changed the font size. Find the bug in the existing code.
+Fix the camera controls in the current 3D scene without recreating the page.
+The current renderer displays source code on the page instead of the 3D animation. Repair the file.
+Make the existing 3D model stop intersecting the floor plane as it bounces.
+The existing flying characters move twice as fast on a 120 Hz screen. Correct the time step.
+Look at the WebGL HTML we already have. The foreground geometry disappears at one camera angle.
+Mevcut WebGL sahnesinde animasyon takılıyor. Dosyayı bul ve hatayı düzelt.
+Üç boyutlu sayfamın kamerası dönerken modeli kesiyor, var olan kodu düzelt.
+The 3D preview turns blank in Firefox. Reproduce it and fix the project.
+Stop a flicker in the existing 3D animation when its moving parts overlap.
+Diagnose why this stored Three.js page never adds its mesh to the scene.
+Open the current 3D HTML and fix that the materials are drawn behind the background.
+Inspect the current scene. Its camera won't pan after the last patch.
+Change the speed of the rain in the HTML animation we built earlier.
+Fix jumping shadows in the current animated model without touching the surrounding UI.
+The saved 3D file shows a flat block instead of the animated tree. Work on that file.
+The earlier scene still draws the orbit controls but has no world geometry after resize.
+
+[visual train none]
+Make a static CSS animation where the button changes color on hover.
+Create a Python package to compute the area of a triangle.
+How does a vacuum cleaner work? Give me a written explanation, no illustration.
+Tell me about 3D printing materials and their cost.
+Sketch a 2D floor plan with labels for the rooms.
+Summarize the three images I attached.
+Search for a model of a rotor that I can download.
+Create a plain website for a stationery shop.
+Open an existing video and give me its timestamps.
+The gears in these equations are hypothetical. Calculate their speed ratio.
+Tell me how to export a 3D object from my editor. Just give written steps.
+Write a README describing the animation engine already in the repo.
+Create a narrated documentary outline.
+Write just the fragment shader for a radial gradient. No scene.
+Build an HTML form for registering video titles.
+3B yazıcım için şu filament türlerinin farkı nedir?
+Skaler çarpımı hesapla ve bir örnekle göster.
+Bir animasyon dizisi için kısa bir hikâye yaz.
+Analyze the latest changes in the CSS compiler source tree.
+Keep a note with the shed measurements for future projects.
+Remember that I prefer muted color palettes.
+Explain the physics of the flywheel in 100 words.
+Summarize the books about cameras listed in the notes.
+Optimize my WebGL shader in isolation. I only need this shader rewritten.
+Build an ordinary 2D SVG flow chart of the requests in this API.
+Run the existing codebase test suite and report the failing tests.
+Generate a static 3D printable bracket in STL with no motion.
+Look up a tutorial for disassembling this camera. Cite the website.
+Show how sorting works with a few text examples.
+Explain why a person's rendering of this scene looks dark.
+Organize the three design projects and split the tasks between us.
+Create a living note about the parts of a computer.
+Use perspective and transforms on a 2D CSS card to tilt it.
+Find all uses of requestAnimationFrame in the repo. No edits.
+Write a blog post about creating low-poly landscapes in a game engine.
+
+[visual calibrate scene]
+Create an animated web scene of a rotating space station with an orbiting camera.
+Make a new browser 3D rendering of a rainy street. Include falling droplets.
+Build a 3D HTML picture where the snowman turns and the trees move in the wind.
+An interactive WebGL canal scene with boats and waves, please.
+Üç boyutlu bir uzay sahnesi hazırla, yıldızlar yavaşça hareket etsin.
+I want a spatial scene with a viewpoint I can move around a cottage and falling leaves.
+Bring a pop-up book world to life in 3D as a single interactive page.
+
+[visual calibrate mechanism]
+Show how the piston in a small compressor works with an animated cutaway the reader can control.
+Use an interactive 3D model to demonstrate the parts of a bicycle brake squeezing the rim.
+Visualize the mechanical linkage of a windshield wiper and let me move its input.
+Create a motion figure showing the path of the belts in a vehicle transmission.
+Bir saatin dişlilerinin hareketini kontrol edebileceğim mekanik bir gösterim yap.
+Make an interactive working diagram of how an elevator counterweight travels.
+Illustrate a stepper motor using a controllable movement and accurate geometry.
+
+[visual calibrate reveal]
+Create a tool teardown animation where the casing and screws separate in order.
+Make the camera come apart and show each layer of the sensor stack in a 3D animation.
+Display the headphones in exploded and assembled poses and animate the transition.
+Create a short product animation where a graphics card shows each detached part.
+Bir saatin parçalarına ayrılıp tekrar birleştiği üç boyutlu bir animasyon yap.
+Show multiple separable assemblies for a mechanical keyboard with a rewind control.
+Animate the laptop's physical components revealing the motherboard beneath the outside case.
+
+[visual calibrate repair]
+Check my current 3D scene for the bug that shows a blank screen during orbit.
+The WebGL animation we built stopped drawing the birds. Fix the existing program.
+The old 3D page's camera cuts through the model. Patch the HTML I already supplied.
+In my current Three.js renderer, the model falls below the ground while moving.
+Eski üç boyutlu animasyon çalışmıyor, mevcut dosyadaki hatayı bul.
+On the existing animated page the object moves too slowly after resize. Correct it.
+This Three.js file opens on mobile with no movement. Diagnose and repair the file.
+
+[visual calibrate none]
+Write me a Blender tutorial for moving around a scene, no visuals.
+Make the browser's loading spinner work with CSS.
+Find the current warranty for this broken camera.
+Add chart titles to a 2D dashboard using SVG text.
+Üç boyutlu yazıcıların kullandığı malzemeleri karşılaştır.
+What causes sampled data to alias? Give the calculation.
+Help me keep a record of which file I use for animation coding.
+Where is the renderer class defined in this codebase?
+Write Python code to process the supplied parts list.
+Can you find a useful tutorial on lens repairs?
+Coordinate two design reviews and a training session.
+Calculate the mechanical advantage of two blocks and a cable.
+Draw a 2D isometric still life. The objects must be fixed in place.
+
+[visual test scene]
+Create a single browser page with a 3D sea turtle swimming around rolling ocean waves.
+Build a moving 3D Alpine village that I can view from any direction.
+Make a standalone HTML with an interactive toy train cycling around a 3D terrain scene.
+I want an animated WebGL shore with wind driving the reeds and a draggable camera.
+Ay ışığında hareket eden üç boyutlu balıklar ve su yüzeyi olan bir HTML oluştur.
+Create a responsive 3D celebration webpage with bouncing lanterns and an orbitable view.
+Put a moving shepherd and sheep into a WebGL meadow with depth and a fixed camera.
+Author a new 3D starfield simulation with depth and a moving viewpoint.
+Can you build a true 3D animated setup where migrating cranes circle a lake?
+Ufuk çizgisinin üzerinde ilerleyen uçaklarla 3B manzara yap.
+Write code for a brand new 3D page with waving grass, animals and walking controls.
+Build a stylized 3D river scene where logs float away from a dock.
+
+[visual test mechanism]
+Build a manipulable technical cutaway that shows a vacuum pump drawing air as its internal vane rotates.
+Illustrate the chain and cam movement in a driven sprocket assembly. Let me scrub the rotation.
+Teach centrifugal force using a mechanical governor that moves as I adjust the speed.
+Show a motion example of how a rotary indexer locks into each new position.
+Hidrolik krikonun valflerini ve hareketli pistonunu gösteren etkileşimli bir kesit yap.
+An interactive mechanical rendering that explains how a loudspeaker's cone moves when powered.
+Use 3D to show the relationship between the connecting rod pivot and a reciprocating piston.
+Let users turn the input of an accurate gear differential and watch its outputs in motion.
+Animate a radial engine's rods and linkage so I can control shaft angle.
+Bağlantının nasıl hareket ettiğini anlatan mekanik bir animasyonla çift mafsalı göster.
+Develop an interactive diagram of how a powered loom advances the shuttle mechanically.
+Make the rail vehicle's braking mechanism work in a moving cutaway diagram.
+
+[visual test reveal]
+Create a rotatable product view in which the cassette player's shells and boards separate.
+Design a disassembly animation showing where each piece of the multitool starts and ends.
+Reveal the top and internal assemblies of a gas valve in layers, with a control to assemble it again.
+Show an object breakdown by sliding the individual components out from the main case.
+El fenerinin gövdesinden ayrılan parçaları etiketleyen hareketli bir 3B ürün sunumu oluştur.
+I want to see a 3D motor separated into its parts and rejoined with a slider.
+Build a 3D reveal of a solid-state drive showing the housing, board and chips pulling apart.
+Feature the inside of a radio by animating it into its fully disassembled configuration.
+Make a watch product animation of its parts emerging from the case, then return to the assembled pose.
+Saç kurutma makinesinin parçalarının ayrıldığı patlatılmış görünüm için bir animasyon oluştur.
+Produce an animated exploded view of a fountain filter cartridge, with each layer identified.
+Use an animated teardown to show the main layers of a game controller.
+
+[visual test repair]
+Diagnose the existing spinning-mesh page, which fails to run when opened from its saved HTML file.
+In our current 3D scene, the camera jumps every time the first loop ends. Fix it.
+The supplied animated 3D file is clipping at the bottom during playback. Patch that file.
+Please repair the Three.js page I made yesterday. Its controls freeze after switching tabs.
+Sahnenin mevcut WebGL kodunu incele, pencere boyutu değişince karakter görünmüyor.
+Fix the current animation because it bends the 3D object whenever the model rotates.
+The previously written WebGL page does not produce a frame. Find the exception and repair it.
+Look into the existing 3D scene and resolve the inconsistent orbital movement at different frame rates.
+You made a 3D forest, but playing the saved page hides everything after the first frame. Fix this.
+Önceki 3B sahnenin hareketi bozuldu, yeni sayfa yapmadan mevcut dosyayı düzelt.
+Patch the current rendered scene to keep the character visible on a small screen as it moves.
+The old orbital animation can't be started again after visiting another browser tab. Debug it.
+
+[visual test none]
+Create regular CSS motion for the cards on this site.
+Explain why real wind turbines are sometimes positioned in groups.
+Write a proposal for a future 3D animation product.
+Calculate rotational inertia for a solid sphere.
+How do I repair the latch on my broken radio?
+Show me web results for animated icons.
+Write a pure function in TypeScript that emits Euler angles.
+Üç boyutlu baskı için destek malzemesi önerir misin?
+Summarize the papers already in this workspace.
+Keep a short note of my favorite mechanical keyboards.
+Remember I prefer testing camera controls on a phone.
+Build a task list for coding, note taking and research in parallel.
+Oturumda aldığımız fizik notlarını bir araya getir.
+Draft an email about the installer so I can send it to the team.
+Fix the CLI tool that converts 3D meshes to a different file type.
+Generate a static illustration with soft shadows, suitable for printing.
+Find the references to scene builders in this checkout and explain their data flow.
+Can you explain how to use the orbit controls? Give text instructions only.
+Convert the video timestamps into a Markdown table.
+Paint an isometric character portrait with no movement or interaction.
+
+# The first browser run exposed overconfident conflation of a direct path, prior
+# browser state and open-ended lookup. Preserve its former test split as a
+# regression suite. The second test split uses independently written requests.
+
+[browser train lookup]
+Please locate the official passenger accessibility policy and verify the assistance hours.
+Look for recent changes in the town's water rationing schedule and link the regulator's notice.
+Where can I find a current list of approved grant applicants? Search public sources.
+Güncel vize harcını resmi siteden doğrula ve sayfanın adresini paylaş.
+İnternette en güncel doğal gaz tarifesinin kaynağını bul.
+Belediyenin bu hafta için açıkladığı yol kısıtlamalarını online ara.
+Yasayı yayınlayan kurumun son uygulama kılavuzunu internette bul.
+Check the latest official dates for the writing contest on its organiser's site.
+Is this identification card still accepted at public offices? Verify online.
+Trace the current flood risk report back to the responsible agency. I need its release date.
+Look for the first-party posting that confirms the revised hardware launch day.
+Find a current public source for school transport cancellation rules.
+
+[browser train path]
+From the page above, continue straight into the second chapter using its contents index.
+The document listing has a list of references. Navigate into the first report from there.
+Start at the catalogue and move into its Services directory to see the extra options.
+Begin on the overview I linked and continue into the donation policy section.
+From the project homepage, go into the menu branch named Archives and select the March folder.
+Use the publication list on that page to visit its separately linked abstract.
+Arşivin giriş sayfasından 2022 bölümüne ilerle ve ilk yazıyı aç.
+Başlangıç sayfasında üst menüdeki Bize Ulaşın bağlantısını seç.
+Daha önce verdiğim siteden ilk bağlantıya git, ardından Özellikler sayfasına geç.
+Ana sayfadaki listeyi kullanarak Destek bölümünün altındaki Koşullar sayfasına git.
+Girişteki dizinden Belgeler sayfasını aç.
+Go from this directory to the page labeled Handbooks. The path is already on screen.
+From the current public menu, take guides and then API overview. Read its heading.
+Continue from the index into the appendix and tell me what is listed.
+Follow the page number under the listing, then read the newly opened customer feedback page.
+
+[browser train state]
+The link opened its destination in a different tab. Identify the newly created tab and inspect it.
+I manually navigated away from the old address and your link indices refer to a page we left.
+That public app renders its summary after hydration. The initial bare div contains none of the values.
+The server document gives an empty root element but the page browser is displaying ten results.
+I refreshed the browser while you were reading it. Read the current state again.
+A script populates the visible stock list, while the initial response is unhelpful markup.
+Browser just finished opening the target. Now gather the URL and outline you can see.
+The DOM changed while the network call was pending. Update the page snapshot before continuing.
+Son işlemden sonra farklı bir sekme açıldı, lütfen geçerli başlığı yeniden denetle.
+Önceki sayfa kapandı. Ekrandaki açık sekmenin güncel içeriğini incele.
+Yükleme ekranı geçti, tarayıcıdaki yeni listeyi tekrar oku.
+Aktif sekmenin adresi değişti. Gördüğün sayfayı tekrar kontrol et.
+Sayfa JavaScript çalıştıktan sonra veri gösteriyor. Görünen içeriği incele.
+Open tabs no longer match the links you extracted. Check which one holds the document now.
+The web app's server response is an empty mount point. The mounted list is already visible on screen.
+
+[browser train none]
+Open the tab from the example URL in my written tutorial and replace its wording in the tutorial file.
+Teach me how to navigate a browser overlay with keyboard shortcuts, without visiting a website.
+The local fixture has script-generated links. Write a unit test for the parser.
+Make curl examples that show how redirects work. Do not run them.
+Inspect the screenshot of a stale tab and tell me if its labels are aligned.
+Daha önce kaydettiğim tarayıcı notlarını özetle, dışarıdan veri getirme.
+Bir bağlantının hangi renkte olması gerektiğini CSS dosyasında değiştir.
+Resmi sayfayı taklit eden bir demo arayüzü programla.
+Open the public billing portal and authorize monthly payments.
+Show the DOM node markup I provide as a table in this chat.
+Write browser code to set the active tab in the settings view.
+The report uses my bank's public homepage. Open it and change my account limits.
+Tell me how to move server-side rendering into the client in these source files.
+Take this note: start from the university website when researching applications.
+My shell exited with HTTP 404. Fix the unit test that uses a fake URL.
+Help me design an API endpoint for a site to expose the last ten announcements.
+
+[browser calibrate lookup]
+Find the city's newest air-quality report by the office that measured it.
+Verify the tax filing deadline through the publishing authority online.
+Kurumun yayımladığı en son gönüllülük başvuru duyurusunu internetten bul.
+Which public notice announced that this trail reopened? Trace the original notice.
+Look up the agency's most recently published maximum permitted speed.
+Check the updated documentation for this public tool at its actual source.
+Find out on the web whether the court published updated business hours.
+
+[browser calibrate path]
+Jump from the directory index I shared to its contracts list via the menu.
+The first page links a catalogue under available records; use that link and summarize the catalogue.
+Hizmetler menüsünden alt bölümdeki Tarife bağlantısını izle.
+From the publications index, use the entry that opens the technical annex.
+Start at the URL in my last message and go to the first related article.
+In this public portal, open Climate Records by following the navigation element labeled Data.
+Proceed from the product listing to the series guide using the visible chapter box.
+
+[browser calibrate state]
+The UI is showing fetched rows but the bare HTML has only a blank mounting point.
+You've still got the contents of the previous tab even after I navigated to another view.
+There was no visible text before its scripts ran; capture the actual displayed text now.
+Başka sekme açıldı. Şu anda ekranda görünen sayfayı incele.
+The tab changed from a loader to an actual document, so inspect it again.
+I replaced the current page in this browser myself, so check its new address before moving.
+That short code was printed before the client-side redirect. What is loaded now?
+
+[browser calibrate none]
+Use the attached screenshot to position a navigation drawer with CSS.
+Remember the official webpage I pasted as my personal documentation reference.
+A private payment tab is open. Pay this month's invoice using it.
+Print a mock tab bar in the test preview; never visit its links.
+Tarayıcı ekran görüntüsündeki düğmelerin yazı tipini değiştiren CSS kodunu yaz.
+Write an explanation of how a client script populates a web page for someone new to programming.
+Go through the note files on my drive and summarize their URLs from the saved text.
+
+[browser regression-2 lookup]
+Which agency issued the latest drinking water advisory? Find its publication and date.
+Can you confirm the public ticket refund policy with a current page from the venue?
+Look for the published list of accepted identification documents on the election authority's site.
+Araç muayene ücretlerinin güncel resmi metnini internetten doğrula.
+Find the original technical correction for this standard and link the publication.
+Where did the weather service post the current warning for the area? Pull the source online.
+Find the newest guidance for flood clean-up directly from the county health department.
+Is the scholarship competition open to international students this year? Check its original announcement.
+Find the current location of the passport office using an authoritatively published directory.
+Dijital kimlik başvurusunun son koşullarını resmi internet kaynağından öğren.
+Please check an independent online source to verify the newly reported bus route suspension.
+Was the city recycling schedule revised recently? Find the municipal release if so.
+
+[browser regression-2 path]
+Use the opening page I provided, select the reference menu and continue to the product lifecycle page.
+From this dashboard's public directory, go into the listed Partner Handbook and tell me its title.
+Visit https://example.org/portal and follow Privacy from its footer.
+Use the link under the first auction listing to read that item's full public description.
+Katalogdaki Ürün Belgeleri sayfasına menüdeki bağlantıdan geç.
+The literature list has a linked second edition. Open that destination and report the heading.
+From the station page above, go into the tab marked Service Map without leaving that public site.
+The landing page has an item called Press Kit in the sidebar. Read the linked page.
+Continue into the directory branch for Equipment from the public section index.
+Üst menüden Yardım sayfasına git ve açılan sayfanın başlığını söyle.
+Open the Sources page from the visible text link marked Source List.
+Use the link in the acknowledgements to go to the archive's home page.
+
+[browser regression-2 state]
+The page root is empty until JavaScript runs. The real browser already displays the records now.
+The page title is from before I changed tabs. Take a fresh look at the tab that is active.
+Those positions were from another tab. Read the visible result set in this one.
+The content is populated by the client; your raw fetch has the wrong text for the current page.
+A stale view is hiding the newly displayed table. Reinspect the loaded page.
+Önceki sekme artık açık değil, tarayıcıdaki güncel adresi ve bağlantıları kontrol et.
+The second window actually opened to a different article. Confirm which page we are on.
+You're seeing a sign-in-shaped placeholder but a script replaces it with a public schedule. Inspect the rendered page.
+The list refreshed while you were recording the item numbers: verify what is visible before using them.
+Geçerli sekmedeki sonuçlar yükleme bitince değişti, şimdi görüntülenenleri yeniden oku.
+The address changed via history.pushState after your first inspection. Check which page is displayed now.
+I selected a different browser tab. Report the heading and URL you can see at present.
+
+[browser regression-2 none]
+Press the cancellation button on my subscribed account after you visit its public homepage.
+Write instructions about how to fetch metadata from an official program site. Keep them hypothetical.
+Write the HTML and CSS for a browser tab strip in a file.
+Patch the local fixture: the link marked Source List no longer has an href.
+Bu makaleye ait adresi verdiğim metinden çıkar, internete bağlanma.
+Remember the style of URLs I use when naming release notes.
+Improve the code that handles links under virtual scrolling in this checkout.
+Give me text explaining inertia and angular momentum, including the units.
+Assign one person to each of these three parallel jobs.
+Take a note of the official phone number I've written below.
+Work through this quadratic derivation and find the incorrect line.
+My existing local WebGL page renders a blank browser tab. Fix the code file.
+Write a browser automation example that handles stale pages, but don't run it.
+The public-looking calendar below is made up as part of my test. Reformat it.
+Find my locally saved search notes and group the source names.
+Tarayıcı sekmesine benzeyen CSS görünümü yap.
+Here are two saved reports. Compare only the pages in the text I provide.
+Log in to the club's public-facing website and vote for me.
+Make a quiz using famous historical dates from the source material I pasted.
+Prepare a public source comparison spreadsheet template. I will add all entries.
+
+# Third browser screen after adding a browser-domain and account-action guard.
+# The first two evaluation sets are preserved separately above as regressions.
+
+[browser regression-3 lookup]
+Find the latest water shutoff notice online from the provider and give its publication date.
+Check the relevant professional board website for the current minimum course hours.
+Look for the state's latest official warning on trail access. Give the source page.
+Confirm whether the postal service recently updated its prohibited goods list on the web.
+Bölgedeki kar temizleme duyurusunun güncel metnini belediyenin sitesinde bul.
+Find online the actual report cited in the news about a new school construction plan.
+Check the issuing agency's announcement for a revised rule about boat lengths.
+Which authority published today's new price cap? Verify on its official website.
+Find the guidance notice that the hospital network posted online yesterday.
+Bu kütüphanenin yeni kayıt şartları için yayımlanan resmi sayfayı bul.
+
+[browser regression-3 path]
+Use the Help Centre link on the page I provided, then proceed to the linked policy notice.
+Follow the link in the references to its underlying checklist and give its heading.
+Go from this directory into the About the Archives section using the displayed menu.
+Ana sayfadaki Etkinlik Takvimi bağlantısına git ve o bölümü oku.
+Open the linked print view from this public manual and confirm its title.
+Go through Resources, then Legal Notices using the choices on the public landing page.
+Visit https://example.org/start and follow the orange link labeled Access from the resulting page.
+Read the link marked Corrections in the journal navigation and tell me the next heading.
+Ekrandaki sitede üst menüden Belgeler sayfasına ilerle.
+From the earlier public topic page, read the appendix linked beneath the last paragraph.
+
+[browser regression-3 state]
+I visited the archive in the active tab myself. Read its current address and title before continuing.
+The content you fetched was the initial loading screen. It is visible in the browser now.
+Refresh the link indices because the browser changed tabs between the inspection and the request.
+The client replaces the bare HTML with visible search results. Inspect the result list once rendered.
+A second browser tab opened after navigation. Check which tab we are looking at before using those links.
+Sekme değişti, fiziksel tarayıcıda görünen güncel bağlantıları kontrol et.
+This page has live content inserted after mount. Read the actual displayed text instead of the initial div.
+The script sent the browser to a new address after your extraction. Inspect the destination as it is now.
+The public listing looks blank in your plain HTML extract, though a JavaScript-rendered table is on screen.
+Yeni konuma geçtikten sonra tarayıcı sekmesinin başlığını ve adresini yeniden oku.
+
+[browser regression-3 none]
+Is my calculation of the magnetic field correct? Find the algebraic error.
+Open my subscription page and cancel my plan.
+Please update the footnotes for the two books in this folder.
+Explain how JavaScript changes an address bar without refreshing the page.
+Find which source file defines the visible tabs in this dashboard checkout.
+Schedule a reply on my signed-in account and press Submit.
+The report contains a paragraph about an official web page. Improve the paragraph's style only.
+Tarayıcıyı internetten test etmeden yerel HTML örneğini düzelt.
+Calculate the power dissipated by this 2-ohm resistor.
+Please remember I verify release dates against official pages.
+Take a note of the folder where I keep web sources.
+Write a local HTML mock-up of a publisher portal for a design review.
+Log in to this forum and message the group about the new plan.
+Explain browser tabs as a data structure using a toy example.
+Work on the two attached draft reports and show me which examples overlap.
+Create a workflow for several engineers to work on code, research, and notes concurrently.
+In our own browser renderer, change the code that handles client-side list updates.
+The CSS on my animated 3D file causes the browser to stretch it. Patch the file.
+Tell me who studied gravity before Newton without opening a browser, using this excerpt.
+Save a preference to always use our own local research docs.
+
+# Fourth browser screen, held apart from training and threshold selection.
+
+[browser regression-4 lookup]
+Find the accessibility commission's latest published advisory about venue entrances.
+Where does the aviation authority publish its current bird-strike reporting guidance? Look it up on the web.
+Find the newly adopted zoning boundary from the city's published planning map page.
+Please check the official public website for the latest night-bus route change.
+En yeni yangın güvenliği talimatını itfaiyenin resmi sitesinde bul.
+Check online for the public university's complete list of programs eligible for the summer award.
+Find the latest vehicle clearance limits by checking the transit agency's official toll notice.
+Verify the air-quality office's most recent emergency declaration on its own website.
+
+[browser regression-4 path]
+Open the separate version history from the link in the software guide's public sidebar.
+Go to the home page I specified, click through the visible Curriculum link, and report the new heading.
+The article links to a public correction labeled Corrigendum. Open that link and read its heading.
+Listed under resources in the index is the park's visitor map. Follow that visible link.
+Ana menüden Kayıt Kılavuzu bağlantısını aç ve ulaştığın sayfanın başlığını oku.
+Open https://example.org/alpha and follow the visible link to Licenses.
+Use the link in the maintenance portal to read the updated service manual. Keep to the linked document.
+Mevcut sayfadaki Basın Odası bağlantısını izleyip ilk paragrafı oku.
+
+[browser regression-4 state]
+The browser tab now shows a plain document after the client-side redirect; give me its new address.
+The rendered listing has already selected a page, but your HTML extraction only shows the loader.
+Check the new tab opened by the link; the displayed page is different from the one you quoted.
+The website's script replaced the root markup after you inspected it. Read what is rendered now.
+Tıklamadan sonra başka sekme açıldı; ekrandaki başlığı ve bağlantıları tekrar kontrol et.
+The page's underlying HTML is just a mount point. Inspect the populated table in the browser.
+The page changed its heading and URL while you were recording links. Refresh the current snapshot.
+Tarayıcıdaki liste yükleme tamamlanınca değişti. Görünen son listeyi tekrar incele.
+
+[browser regression-4 none]
+Explain why a back-navigation event in a browser can occur without an HTTP request.
+Describe how URL fragments interact with scroll events on a page.
+How does a tab restore its previous focus? I only need a conceptual answer.
+Teach me how the DOM is constructed when a browser reads HTML.
+The example URL is only a string in the CSS fixture. Change the stored fixture.
+Make my local browser mock-up use dropdown menus in the navigation bar.
+Sign in to my provider account and upgrade it to the annual plan.
+Purchase the item by clicking the yellow button on its public listing.
+Geçmiş sekmeleri temsil eden yerel bir HTML demosu oluştur.
+The only source I want you to use is the pasted transaction list. Compute the subtotal.
+Read these two browser logs I attached and explain the HTTP error from the lines shown.
+Find which test stubs the public website response within the repo.
+Add the phrase "open the link in a new tab" to a note for next week.
+Remember the path where I save portal screenshots.
+Write a function that computes the orbital speed of a satellite.
+Generate a task plan for working on a 3D page and a parser in parallel.
+
+# Final navigation-only evaluation. Lookup remains a supervised separable class
+# but is outside the shipped browser advice scope and must therefore abstain.
+
+[browser test path]
+Open the linked diagram labeled Connection Map from the trailer manufacturer's handbook.
+The source I provided has a table of reference documents. Follow the entry labeled Energy Statement.
+Continue from the public home page into the Documents tab using the link marked Browse Records.
+Bu sayfanın altındaki Uygulama Örnekleri bağlantısını aç ve yeni sayfanın başlığını aktar.
+The public repository page has a Releases link. Follow the link and report the release page heading.
+Go through the visitor information to its independently linked directions page.
+Follow the accessible map URL under the current page's Information section.
+Bu adresi açıp sağdaki Kaynakça bağlantısına geç.
+Open the item titled Change Log from the visible navigation menu and inspect the result.
+Take the link under the site's date table to the separate Holiday Services page.
+
+[browser test state]
+The address changed after a redirect and I selected another browser tab. Resolve what page is active now.
+Reinspect the current browser tab; the link list was collected while the old page was still visible.
+The public page is a bare HTML container in your fetch, but the renderer visibly shows a long events table.
+Tarayıcı yeni adresi açtı ama önceki sekmeye bakıyorsun; güncel sekmeyi kontrol et.
+The client script filled the news cards after the initial response. Read the populated list.
+You are using a previous screen capture from before I switched tabs. Check the active tab for its header.
+The new document arrived in a separate window. Confirm its address before following any links.
+Tarayıcıdaki ilk boş görünümden sonra ekrana yeni tablo geldi; şimdi onu incele.
+The page script overrides this route on load. Check the final displayed title and address.
+The stale link references now point into an older section after I hit Back. Recheck what's active.
+
+[browser test lookup]
+Search the web for the latest rail construction updates from the operator.
+Verify the month when the agency's new rule takes effect. Find its public policy announcement.
+I need the citation for the original research paper on the lifting mechanism. Find the source online.
+Güncel hava kirliliği raporunu belediyenin resmi sitesinden bul.
+Check the official voter registration deadline from the election board site.
+Find out online whether the discount card application window has opened.
+Search for the official online announcement of the resort's reopening.
+Find the manufacturer's published specs for this air quality sensor.
+
+[browser test none]
+In the test suite, locate the code that simulates visiting the portal's public start page.
+Write sample CSS to mimic a browser's active tab.
+What causes a page to stay blank until hydration? Explain in text without opening it.
+Build a parser for the source links in these local HTML files.
+Sign in to my account and pay the annual parking invoice.
+Take this note: check the tab title after the address changes.
+Please remember my default branch name contains the word releases.
+Analyze the attached screenshot and tell me why the left border of the active tab disappears.
+Şu yerel dosyalarda sayfa dizinini oluşturan fonksiyonu bul.
+Compare the three contract excerpts in my messages and write down their differences.
+Give each teammate two tasks to finish the notes and browser patch concurrently.
+Explain which velocity term cancels from the equation for orbital power.

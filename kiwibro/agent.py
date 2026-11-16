@@ -12,12 +12,13 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
     adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, pagecheck, pageloop, plan, prompts, reactions, readings, recall, research, safety,
-    sessions, shape, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
+    sessions, shape, specialists, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -56,6 +57,7 @@ TOOLS_SHARE_MAX = 0.35
 USER_MESSAGE_SHARE = 0.4
 # Reply cap while a planned document is still unwritten (thinking + the whole file in one call).
 WRITE_ROUND_MAX_TOKENS = 6144
+WRITE_RETRY_MAX_TOKENS = 2600
 WRITTEN_NOTE_MIN_CHARS = 40  # a reply shorter than this is a remark, not the note that was asked for
 LATE_NOTE_PASSES = 2  # times a turn that is over answers the steering notes that arrived after its last reply
 LATE_NOTE_ROUNDS = 3  # generations one such answer may take (tool calls included)
@@ -362,6 +364,7 @@ class Turn:
     plan: plan.TurnPlan | None = None  # the request's steps, when it has several or names a place
     reply_text: str = ""  # everything the model said this turn (the plan checks answers against it)
     truncated_calls: bool = False  # this round's tool calls were cut off by max_tokens
+    truncated_writes: int = 0  # all write or exec calls refused for incomplete arguments
     text_calls: bool = False  # this round's tool calls were read out of the reply's text
     finished_files: list[str] = field(default_factory=list)  # files of a finished kit written this turn
     kit_called_for: bool = False  # the message asks for something a ready kit makes (components.suggest)
@@ -743,13 +746,6 @@ class AgentManager:
         self._raise_if_aborted(turn)
         turn.facts = self._facts(turn, settings, tool_list, model_info, captured, prepared)
 
-        if self.readiness is not None:
-            # A background warm-up of this very prefix is cheaper to wait for than to repeat.
-            self.readiness.before_turn(
-                model, turn.conversation_id, abort=turn.abort,
-                on_wait=lambda: turn.emit("status", {"phase": "thinking", "label": "Getting the model ready"}),
-            )
-            self._raise_if_aborted(turn)
         model_info = model_info or {}
         turn.page_limit = library.page_limit(prepared.budget)
         # Models without native tool calling use the text protocol: tools are
@@ -763,19 +759,29 @@ class AgentManager:
         if turn.goal:  # a goal keeps working: the top of the allowed range
             max_rounds = config.TOOL_ROUNDS_RANGE[1]
 
-        looked = self._look_first(turn, settings)
+        answered = self._answer_first(turn, model)
+        scene = self._scene_first(turn, model) if not answered else False
+        browsed = self._browser_first(turn) if not (answered or scene) else False
+        looked = self._look_first(turn, settings) if not (answered or scene or browsed) else False
         # A question the computer answers is never also a web search: "today" in a question about the
         # user's own disk is no reason to search the web.
-        searched = False if looked else self._search_first(turn, settings)
-        if searched or looked:
+        searched = self._search_first(turn, settings) if not (answered or scene or browsed or looked) else False
+        if answered or scene or searched or looked or browsed:
             self._raise_if_aborted(turn)
-            if turn.reply_text.strip():  # answered from the results alone
+            if scene == "ended" or (not scene and turn.reply_text.strip()):  # answered without generation
                 max_rounds = 0
                 self._close_plan(turn, model)
             else:
                 prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
                                                turn_context=turn_context)
                 self._emit_context(turn, prepared)
+
+        if max_rounds and self.readiness is not None:
+            self.readiness.before_turn(
+                model, turn.conversation_id, abort=turn.abort,
+                on_wait=lambda: turn.emit("status", {"phase": "thinking", "label": "Getting the model ready"}),
+            )
+            self._raise_if_aborted(turn)
 
         for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
@@ -830,6 +836,8 @@ class AgentManager:
             result = self._ground_reply(turn, model, prepared, tool_list, round_index, result, text_mode)
             self._shape_reply(turn, result)
             self._honest_reply(turn, result)
+            if not result.tool_calls and result.finish_reason not in ("length", "degenerate", "overthinking"):
+                self._act_instead(turn, result, written_note=True)
             self._record_usage(turn, result, prepared)
             assistant_message = None
             if result.content or result.reasoning or result.tool_calls or spoken:
@@ -877,8 +885,18 @@ class AgentManager:
             turn.tool_rounds = round_index + 1
             turn.truncated_calls = result.finish_reason == "length"
             turn.text_calls = result.text_calls
+            refused_before = turn.truncated_writes
             self._handle_tool_calls(turn, result.tool_calls, settings)
             self._raise_if_aborted(turn)
+            if turn.truncated_writes > refused_before:
+                if turn.truncated_writes >= 2:
+                    self._say(turn, model,
+                              "Two tool calls exceeded the output limit and did not run.",
+                              {"checked_by_kiwibro": True}, "output_limit")
+                    self._close_plan(turn, model)
+                    break
+                if not turn.pending_review:
+                    turn.pending_review = prompts.CUT_OFF_RETRY
             if (turn.done_note and turn.acted_instead == "note" and turn.plan is None
                     and turn.pending_review in (prompts.APPENDED_FOR_YOU, prompts.NOTED_FOR_YOU)):
                 # Kiwibro kept the dictated note itself: it says so itself too, in the tool's own words.
@@ -975,7 +993,7 @@ class AgentManager:
         except components.ComponentError:
             made = None
         return pagecheck.Options(
-            moves=bool(made and made.moves) or pagecheck.wants_motion(turn.message),
+            moves=bool(made and made.name != "web/scene-3d" and made.moves) or pagecheck.wants_motion(turn.message),
             phone=bool(turn.goal) or pagecheck.wants_phone(turn.message),
             not_text=made.not_text if made else (),
             goal=turn.goal,
@@ -1024,7 +1042,7 @@ class AgentManager:
         if item["name"] == "component":
             try:
                 kit = components.default_library().get(item["args"].get("name") or "")
-                names = kit.file_paths()
+                names = kit.output_paths(item["args"].get("values") or {})
             except components.ComponentError:
                 return
             for name in names:
@@ -1116,13 +1134,13 @@ class AgentManager:
             page.said = True
             self._say(turn, model, "\n\n".join(filter(None, (prompts.LOOK_BLIND.format(file=page.path, why=why), kit_made or held))),
                       meta if kit_made else {"checked_by_kiwibro": True}, "kit" if kit_made else "look")
-            return "ended"
+            return "more" if self._continue_after_look(turn) else "ended"
         if not found:
             turn.inference["looked"] = "good"
             page.said = True
             self._say(turn, model, "\n\n".join(filter(None, (pageloop.good(look), kit_made or held))),
                       meta if kit_made else {"checked_by_kiwibro": True}, "kit" if kit_made else "look")
-            return "ended"
+            return "more" if self._continue_after_look(turn) else "ended"
         if pages.looks >= limit:
             self._stop_looking(turn, model, page, "", None)
             return "ended"
@@ -1130,6 +1148,13 @@ class AgentManager:
             turn.lifted, turn.finished_files = list(turn.finished_files), []
         turn.said_next = pageloop.verdict(before, found)
         return "more"
+
+    @staticmethod
+    def _continue_after_look(turn: Turn) -> bool:
+        if turn.plan is None or not turn.plan.unmet(turn.reply_text):
+            return False
+        turn.pending_review = turn.plan.progress_line(turn.reply_text)
+        return True
 
     @staticmethod
     def _note_look(turn: Turn, page: pageloop.Page, look: dict[str, Any]) -> None:
@@ -1296,6 +1321,42 @@ class AgentManager:
         if redo is not None:
             turn.redoing = True  # the rejected answer was already set aside when the reaction was read
         return self._run_search_first(turn, settings, query)
+
+    def _browser_first(self, turn: Turn) -> bool:
+        """Start an explicitly requested browser navigation at the URL the user gave."""
+        if turn.facts is None or "browser" not in turn.facts.tools or not connectivity.online():
+            return False
+        found = re.fullmatch(
+            r"\s*(?:please\s+)?(?:browse(?:\s+to)?|navigate\s+to)\s+<?(https?://[^\s<>]+)>?\s*",
+            turn.message, re.I,
+        )
+        if found is None:
+            return False
+        turn.acted_instead = "browser"
+        turn.inference["browser_started"] = True
+        result = self._call_first(turn, "browser", {"action": "open", "url": found[1]})
+        landed = str((result.meta or {}).get("url") or "")
+        if result.ok and landed:
+            said = f"Opened {landed} in the browser."
+        else:
+            said = f"The browser couldn't open the page. {result.preview or result.content}"
+        self._say(turn, str(turn.model), said, {"checked_by_kiwibro": True}, "browser")
+        return True
+
+    def _scene_first(self, turn: Turn, model: str) -> str:
+        """Build a scene when the request fits the component's complete command syntax."""
+        if (turn.facts is None or "component" not in turn.facts.tools
+                or turn.reaction is not None or turn.attachments):
+            return ""
+        values = components.scene_request(turn.message)
+        if values is None or not values.get("filename"):
+            return ""
+        self._call_first(turn, "component", {"action": "use", "name": "web/scene-3d", "values": values})
+        if "component" in turn.tools_ok:
+            turn.kit_called_for = False  # any remaining work starts from the file on disk
+            turn.inference["scene_started"] = True
+            return self._look_or_review(turn, model, self._settings(), "", None) or "continue"
+        return "continue"
 
     def _redo_on_web(self, turn: Turn, reaction: Any) -> bool:
         """Whether doing the request again means searching: it asked for the web or for something
@@ -1861,7 +1922,7 @@ class AgentManager:
             return
         turn.finished_kit = kit.name
         folder = (item["args"].get("path") or "").strip().strip("/")
-        for path in kit.file_paths():
+        for path in kit.output_paths(item["args"].get("values") or {}):
             shown = f"{folder}/{path}" if folder not in ("", ".") else path
             if shown not in turn.finished_files:
                 turn.finished_files.append(shown)
@@ -1987,7 +2048,39 @@ class AgentManager:
         turn.reply_text += "\n" + prompts.NOTHING_DONE
         turn.emit("delta", {"text": "\n\n" + prompts.NOTHING_DONE})
 
-    def _act_instead(self, turn: Turn, result: ChatResult) -> None:
+    def _answer_first(self, turn: Turn, model: str) -> bool:
+        """Answer a standalone calculation or a dictated note without model generation."""
+        if turn.attachments or turn.plan is not None or turn.goal or turn.reaction is not None:
+            return False
+        calculated = compute.direct_answer(turn.message)
+        if calculated:
+            self._say(turn, model, calculated, {"checked_by_kiwibro": True}, "calculate")
+            return True
+        found = self._note_call(turn) if turn.facts is not None else None
+        if found is None:
+            return False
+        name, args, _, _ = found
+        if not name:
+            self._say(turn, model, prompts.NOTHING_TO_NOTE, {"checked_by_kiwibro": True}, "note")
+            return True
+        turn.acted_instead = name
+        turn.inference["acted_instead"] = name
+        self._call_first(turn, name, args)
+        said = turn.done_note or "I couldn't save the note. The tool result gives the reason."
+        self._say(turn, model, said, {"checked_by_kiwibro": True}, "note")
+        return True
+
+    def _call_first(self, turn: Turn, name: str, args: dict[str, Any]) -> ToolResult:
+        """Record and execute an app-selected call through the same gates as a model call."""
+        call = {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
+        message = self.db.add_message(turn.conversation_id, "assistant", "", tool_calls=[call], model=turn.model)
+        turn.last_message_id = message["id"]
+        result = self._handle_tool_call(turn, call, self._settings())
+        self._raise_if_aborted(turn)
+        return result
+
+    def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,
         search the web) and the model replied without having done it, whatever else it
         called: Kiwibro adds the call itself, once per turn. A small model that only talks still gets the work done, and
@@ -1997,7 +2090,8 @@ class AgentManager:
         if turn.facts is None or turn.facts.small_talk:
             return
         try:
-            call = self._note_call(turn) or self._written_note_call(turn, result) or self._search_call(turn)
+            call = (self._written_note_call(turn, result) if written_note else
+                    self._note_call(turn) or self._search_call(turn))
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not act for the model", turn.conversation_id, exc_info=True)
             return
@@ -2028,13 +2122,13 @@ class AgentManager:
         """A `note` call for a note the user dictated, or for "save that as a note"."""
         if "note" not in turn.facts.tools or "note" in turn.tools_ok:
             return None
-        added = re.match(r"\W*(?:please\s+)?(?:add|append|put)\s+(.+?)\s+(?:to|in|into|on)\s+(?:that|the|my|this)\s+"
-                         r"(?:(.+?)\s+)?(?:note|list)\W*$", turn.message.strip(), re.I)
+        added = notes_module.append_request(turn.message)
         if added:  # "add cheese to that note": the note meant is the named one, or the last one used
-            title = (added.group(2) or "").strip() or self._last_note_title(turn)
+            reference, body = added
+            title = reference or self._last_note_reference(turn)
             if not title:
                 return None
-            return "note", {"action": "append", "title": title, "content": added.group(1).strip()}, False, prompts.APPENDED_FOR_YOU
+            return "note", {"action": "append", "title": title, "content": body}, False, prompts.APPENDED_FOR_YOU
         found = notes_module.dictation(turn.message)
         if found is None:
             return None
@@ -2048,12 +2142,19 @@ class AgentManager:
             body = str(earlier[-1]["content"]).strip()
         return "note", {"action": "save", "content": body, **({"title": title} if title else {})}, False, prompts.NOTED_FOR_YOU
 
-    def _last_note_title(self, turn: Turn) -> str:
-        """The title of the note this chat last saved or read ("" if none)."""
+    def _last_note_reference(self, turn: Turn) -> str:
+        """Identify the last successful note operation, using its stored ID when available."""
+        succeeded: set[str] = set()
         for message in reversed(self.db.recent_messages(turn.conversation_id, limit=30)):
+            if message.get("role") == "tool":
+                meta = message.get("meta") or {}
+                if meta.get("note_id"):
+                    return str(meta["note_id"])
+                if meta.get("ok") and message.get("tool_call_id"):
+                    succeeded.add(message["tool_call_id"])
             for call in message.get("tool_calls") or []:
                 function = (call or {}).get("function") or {}
-                if function.get("name") == "note":
+                if function.get("name") == "note" and call.get("id") in succeeded:
                     try:
                         title = str(json.loads(function.get("arguments") or "{}").get("title") or "").strip()
                     except (TypeError, ValueError):
@@ -2396,10 +2497,12 @@ class AgentManager:
         cap is raised (within the window's free room) so thinking plus the file's text fit
         in one tool call; a call cut off mid-content cannot run and costs a whole round."""
         cap = int(settings.get("max_output_tokens", config.DEFAULT_MAX_OUTPUT_TOKENS))
-        if turn.plan is None or not any(step.kind == "write" for step in turn.plan.remaining()):
-            return cap
         room = prepared.context_length - prepared.used - turn.reserve - 256
-        return max(cap, min(WRITE_ROUND_MAX_TOKENS, room))
+        if turn.plan is not None and any(step.kind == "write" for step in turn.plan.remaining()):
+            cap = max(cap, min(WRITE_ROUND_MAX_TOKENS, room))
+        if turn.truncated_writes:
+            return max(1, min(cap, room, WRITE_RETRY_MAX_TOKENS))
+        return cap
 
     @staticmethod
     def _note_round(
@@ -2692,10 +2795,7 @@ class AgentManager:
 
     def _capture_memory(self, turn: Turn, settings: dict[str, Any]) -> dict[str, int]:
         """Facts the user just stated, saved by code before the reply (memory.capture)."""
-        if not settings.get("memory_enabled", True):
-            return {"added": 0, "updated": 0, "removed": 0}
-        if turn.reading is not None and readings.keep_nothing(turn.reading):
-            log.info("turn %s: nothing about the user to keep (%s)", turn.conversation_id, turn.reading.reading.keep)
+        if not settings.get("memory_enabled", True) or notes_module.writes_as_dictated(turn.message):
             return {"added": 0, "updated": 0, "removed": 0}
         try:
             counts = self.memory.capture(turn.message, conversation_id=turn.conversation_id)
@@ -2727,7 +2827,17 @@ class AgentManager:
             plan_kinds=[step.kind for step in steps],
             plan_steps=len(steps),
         ))
-        ready_part = self._ready_part(turn, settings) or self._made_earlier(turn)
+        ready_part = self._ready_part(turn, settings)
+        earlier_part = "" if ready_part else self._made_earlier(turn)
+        tool_names = {
+            name for name in tools.select_tool_names(settings.get("tool_profile"))
+            if tools.permission_mode(settings, name) != "deny"
+        } if settings.get("agent_enabled", True) else set()
+        specialist_part = specialists.note(
+            turn.message,
+            browser="browser" in tool_names and connectivity.online(),
+            visual=not turn.kit_called_for and bool({"component", "write_file"} & tool_names),
+        )
         knowledge_part = "" if ready_part else self._knowledge_part(turn)
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
         worked = prompts.WORKED_OUT.format(
@@ -2745,7 +2855,8 @@ class AgentManager:
             clock, worked, memory_block, self._notes_block(turn), self._earlier_chats_note(turn), session_so_far,
             safemode.context_line(self.db, turn.conversation_id),
             _directives_note(self.db, turn.conversation_id), plan_note, several, readings.note(reading),
-            guidance_note, ready_part, knowledge_part, learned, turn.reaction.note() if turn.reaction is not None else "",
+            guidance_note, ready_part, earlier_part, specialist_part, knowledge_part, learned,
+            turn.reaction.note() if turn.reaction is not None else "",
             prompts.TAKING_OVER if turn.lead else "",
             self._standing_reminders(turn, settings, memory_block),
         ]
@@ -2755,6 +2866,10 @@ class AgentManager:
     def _made_earlier(self, turn: Turn) -> str:
         """How to change the page a finished kit made earlier in this chat. Without it a small model
         answered "make it night" by reading the whole page, patching its title or making a second page."""
+        if not (reactions.reworks(turn.message) or turn.reaction is not None or
+                re.search(r"\b(?:change|fix|update|adjust|edit)\s+(?:the\s+)?(?:sky|ground|scene|page|animation|it)\b",
+                          turn.message, re.I) or re.search(r"\.html?\b", turn.message, re.I)):
+            return ""
         try:
             for message in reversed(self.db.recent_messages(turn.conversation_id, limit=12)):
                 meta = message.get("meta") or {}
@@ -2773,11 +2888,16 @@ class AgentManager:
         a kit or follows a recipe's steps without searching for it first."""
         if not settings.get("agent_enabled", True) or plan.is_small_talk(turn.message):
             return ""
-        if "component" not in tools.select_tool_names(settings.get("tool_profile")):
+        if ("component" not in tools.select_tool_names(settings.get("tool_profile"))
+                or tools.permission_mode(settings, "component") == "deny"):
             return ""
         try:
             fitting = components.suggest(f"make {turn.message}" if turn.goal else turn.message)  # a goal asks for it to be made
-            turn.kit_called_for = fitting is not None and fitting.kind == components.KIT
+            turn.kit_called_for = fitting is not None and fitting.kind == components.KIT and (
+                fitting.name != "web/scene-3d" or components.scene_request(turn.message) is not None
+            )
+            if fitting is not None and fitting.name == "web/scene-3d" and not turn.kit_called_for:
+                return ""  # a generic scene match does not establish that the kit covers the request
             return components.advice(fitting) if fitting is not None else ""
         except Exception:  # a convenience; never break a turn
             log.warning("turn %s: could not pick a component", turn.conversation_id, exc_info=True)
@@ -2809,8 +2929,8 @@ class AgentManager:
             if not found and plan._OWN.search(text) and (text.endswith("?") or plan._QUESTION.match(text)):
                 # "what did I ask you to buy?" shares no word with "Groceries: milk, eggs": a question about
                 # the user's own things is shown the note this chat last kept or read.
-                title = self._last_note_title(turn)
-                last = self.notes.find(title) if title else None
+                reference = self._last_note_reference(turn)
+                last = self.notes.find(reference) if reference else None
                 found = [last] if last else []
             return f"{NOTES_HEADER}\n{Notebook.render_block(found, max_chars=600)}" if found else ""
         except Exception:  # notes must never break a turn
@@ -3168,33 +3288,25 @@ class AgentManager:
 
     # --- tools & approvals -------------------------------------------------
 
-    def _handle_tool_call(self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]) -> None:
+    def _handle_tool_call(self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]) -> ToolResult:
         """Single-call convenience wrapper (see _handle_tool_calls)."""
-        self._handle_tool_calls(turn, [call], settings)
+        return self._handle_tool_calls(turn, [call], settings)[0]
 
     def _handle_tool_calls(
         self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any]
-    ) -> None:
+    ) -> list[ToolResult]:
         """Validate, approve and run one round of tool calls.
 
-        Approvals are always sequential. Independent read-only/web calls then
-        run concurrently; writes/commands run one by one. Results are recorded
+        Approvals are always sequential. Consecutive independent read-only/web calls
+        run concurrently. A write or stateful call is an ordering barrier. Results are recorded
         in the original call order, and an identical call repeated 3+ times in
         a turn is refused (loop guard) instead of re-executed.
         """
         prepared_calls: list[dict[str, Any]] = []
-        for index, call in enumerate(calls):
-            self._raise_if_aborted(turn)
-            # max_tokens can only cut off the last call of a reply.
-            cut_off = turn.truncated_calls and index == len(calls) - 1
-            prepared_calls.append(self._prepare_tool_call(turn, call, settings, cut_off=cut_off))
-            self._raise_if_aborted(turn)
-        runnable = [item for item in prepared_calls if item["result"] is None]
-        searched = any(item["name"] in plan.SEARCH_TOOLS for item in runnable)
-        turn.search_rounds += searched
         outcomes: dict[str, tuple[ToolResult, int]] = {}
+        searched = False
 
-        def run_one(item: dict[str, Any]) -> tuple[str, ToolResult, int]:
+        def run_one(item: dict[str, Any]) -> tuple[ToolResult, int]:
             started = time.monotonic()
             name, args = item["name"], item["args"]
             context = ToolContext(
@@ -3219,28 +3331,83 @@ class AgentManager:
                                              turn.conversation_id)
             with safety.applied(item["decision"], approved_by_user=item["approved"]):
                 result = tools.execute_tool(name, guard.reveal(name, args, turn.safety), context)
-            result = guard.postprocess(name, args, result, turn.safety)
-            result = library.page_output(self._library(), name, result, turn.page_limit)
-            return item["id"], result, int((time.monotonic() - started) * 1000)
+            return result, int((time.monotonic() - started) * 1000)
 
-        parallel_items = [item for item in runnable if tools.is_parallel_safe(item["name"])]
-        serial_items = [item for item in runnable if not tools.is_parallel_safe(item["name"])]
-        if len(parallel_items) > 1:
-            phase, label = tools.phase_for(parallel_items[0]["name"])
-            turn.emit("status", {"phase": phase, "label": label})
-            workers = max(1, min(int(getattr(config, "MAX_PARALLEL_TOOLS", 4) or 4), len(parallel_items)))
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kiwibro-tool") as pool:
-                for call_id, result, duration in pool.map(run_one, parallel_items):
-                    outcomes[call_id] = (result, duration)
-        else:
-            serial_items = parallel_items + serial_items
-        for item in serial_items:
+        def record(item: dict[str, Any], result: ToolResult, duration: int) -> None:
+            result = guard.postprocess(item["name"], item["args"], result, turn.safety)
+            result = library.page_output(self._library(), item["name"], result, turn.page_limit)
+            outcomes[item["id"]] = result, duration
+
+        def prepare(index: int, call: dict[str, Any]) -> dict[str, Any]:
             self._raise_if_aborted(turn)
+            cut_off = turn.truncated_calls and index == len(calls) - 1
+            item = self._prepare_tool_call(turn, call, settings, cut_off=cut_off)
+            prepared_calls.append(item)
+            return item
+
+        def run_serial(item: dict[str, Any]) -> None:
+            self._raise_if_aborted(turn)
+            if item["result"] is not None:
+                return
             phase, label = tools.phase_for(item["name"])
             turn.emit("status", {"phase": phase, "label": label})
-            call_id, result, duration = run_one(item)
-            outcomes[call_id] = (result, duration)
+            result, duration = run_one(item)
+            record(item, result, duration)
             self._raise_if_aborted(turn)
+
+        def parallel(pair: tuple[int, dict[str, Any]]) -> bool:
+            function = pair[1].get("function") if isinstance(pair[1], dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            return isinstance(name, str) and tools.is_parallel_safe(name)
+
+        def run_parallel(item: dict[str, Any]) -> tuple[ToolResult, int] | None:
+            return None if turn.abort.is_set() else run_one(item)
+
+        try:
+            for can_parallel, group in groupby(enumerate(calls), key=parallel):
+                if not can_parallel:
+                    for index, call in group:
+                        item = prepare(index, call)
+                        run_serial(item)
+                        searched |= item["result"] is None and item["name"] in plan.SEARCH_TOOLS
+                    continue
+                batch = [prepare(index, call) for index, call in group]
+                runnable = [item for item in batch if item["result"] is None]
+                searched |= any(item["name"] in plan.SEARCH_TOOLS for item in runnable)
+                if len(runnable) <= 1 or not all(tools.is_parallel_safe(item["name"]) for item in runnable):
+                    for item in runnable:
+                        run_serial(item)
+                    continue
+                phase, label = tools.phase_for(runnable[0]["name"])
+                turn.emit("status", {"phase": phase, "label": label})
+                workers = max(1, min(config.MAX_PARALLEL_TOOLS, len(runnable)))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kiwibro-tool") as pool:
+                    batch_results = list(pool.map(run_parallel, runnable))
+                for item, outcome in zip(runnable, batch_results):
+                    if outcome is not None:
+                        record(item, *outcome)
+                self._raise_if_aborted(turn)
+        except TurnAborted:
+            # The assistant's tool-call message already exists. Complete its transcript even
+            # when a later approval interrupted the round after an earlier mutation ran.
+            if self.db.get_conversation(turn.conversation_id) is not None:
+                cancelled = ToolResult(ok=False, content="Cancelled before execution because the turn stopped.",
+                                       preview="Cancelled before execution")
+                for index, call in enumerate(calls):
+                    if index < len(prepared_calls):
+                        item = prepared_calls[index]
+                        outcome = outcomes.get(item["id"])
+                        result, duration = outcome or (item["result"] or cancelled, 0)
+                        if result.ok:
+                            turn.tools_ok.append(item["name"])
+                        args = item["args"] if result is not cancelled else None
+                        self._record_tool_result(turn, item["id"], item["name"], result, duration, args)
+                    elif isinstance(call, dict) and call.get("id"):
+                        function = call.get("function")
+                        name = str(function.get("name") or "") if isinstance(function, dict) else ""
+                        self._record_tool_result(turn, str(call["id"]), name, cancelled, 0)
+            raise
+        turn.search_rounds += searched
         finished: list[tuple[dict[str, Any], ToolResult, int]] = []
         for item in prepared_calls:
             if item["result"] is not None:
@@ -3303,6 +3470,7 @@ class AgentManager:
             if progress and position == len(finished) - 1:
                 result = replace(result, content=f"{result.content}\n{progress}")
             self._record_tool_result(turn, item["id"], item["name"], result, duration, item.get("args"))
+        return [result for _, result, _ in finished]
 
     def _advance_plan(self, turn: Turn, finished: list[tuple[dict[str, Any], ToolResult, int]]) -> str:
         """Tick off the plan steps this round completed; the progress line ('' if none)."""
@@ -3315,7 +3483,19 @@ class AgentManager:
             written = None
             if ok and item["name"] in plan.WRITE_TOOLS:
                 written = plan.written_path(item["name"], item["args"], item["workspace"] or self._workspace(turn.conversation_id))
-            advanced = turn.plan.observe(item["name"], item["args"], ok, written) or advanced
+            if ok and item["name"] == "component" and item["args"].get("action") == "use":
+                args = item["args"]
+                kit = components.default_library().get(args["name"])
+                if kit.kind != components.KIT:
+                    continue
+                workspace = item["workspace"] or self._workspace(turn.conversation_id)
+                folder = workspace.resolve(args.get("path") or ".")
+                for output in kit.output_paths(args.get("values") or {}):
+                    path = folder / output
+                    if path.is_file():
+                        advanced = turn.plan.observe("write_file", {}, True, path) or advanced
+            else:
+                advanced = turn.plan.observe(item["name"], item["args"], ok, written) or advanced
         if not advanced:
             return ""
         if not turn.plan.remaining() and turn.plan_done_at is None:
@@ -3365,6 +3545,10 @@ class AgentManager:
                                     "requires_approval": False})
             return refuse(content, preview)
 
+        def refuse_truncated(risk: str) -> dict[str, Any]:
+            turn.truncated_writes += 1
+            return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", risk)
+
         # Stop a guessing loop: the tools that kept failing are paused. A tool that has not failed still runs:
         # on 16 Nov 2026 six guesses at a "component" named html paused the write_file that made the page.
         if turn.failure_streak >= FAILURE_PAUSE_AT and name in turn.failing_tools:
@@ -3404,7 +3588,7 @@ class AgentManager:
             if cut_off and spec is not None and spec.risk in ("write", "exec") and not (turn.text_calls and not rescued.damaged):
                 # Arguments missing because the length limit cut the call: "new must be a string" would
                 # have it send the same long call again (16 Nov 2026: twice, three minutes each).
-                return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
+                return refuse_truncated(spec.risk)
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
             return refuse_shown(message, message.splitlines()[0], "read")
@@ -3413,7 +3597,7 @@ class AgentManager:
         # a chat its one right call. A call from the engine may have been closed by the engine, so it stays refused.
         whole = turn.text_calls and not rescued.damaged
         if cut_off and not whole and spec.risk in ("write", "exec"):
-            return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
+            return refuse_truncated(spec.risk)
         finished = self._touches_finished(turn, name, item["args"])
         if finished:
             return refuse_shown(prompts.KIT_FINISHED.format(files=finished), "Already finished", spec.risk)
@@ -3464,7 +3648,7 @@ class AgentManager:
         if decision.mode == "deny":
             preview = "Tool disabled" if decision.source == "permission" else "Blocked by a safety check"
             return refuse(decision.denial_text(), preview)
-        signature = tools.tool_call_signature(name, item["args"])
+        signature = tools.tool_call_signature(name, item["args"], conversation_id=turn.conversation_id)
         seen = turn.tool_signatures.get(signature, 0)
         turn.tool_signatures[signature] = seen + 1
         if seen >= 2:
@@ -3547,10 +3731,11 @@ class AgentManager:
             tools.shape_content(result.content or "", 8000),
             tool_call_id=call_id,
             tool_name=name,
-            meta={"ok": result.ok, "duration_ms": duration_ms},
+            meta={"ok": result.ok, "duration_ms": duration_ms,
+                  **({"note_id": result.meta["note_id"]} if name == "note" and result.meta and result.meta.get("note_id") else {})},
         )
         _keep(ledger.record_tool, self.db, turn.conversation_id, int((stored or {}).get("seq") or 0), name,
-              arguments or {}, result.ok, result.content or "")
+              arguments or {}, result.ok, result.content or "", result.meta)
         turn.emit(
             "tool_result",
             {

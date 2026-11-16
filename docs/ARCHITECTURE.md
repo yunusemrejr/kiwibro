@@ -1015,6 +1015,12 @@ loaded for the call and unloaded after it). Persistent terminals (`terminal_sess
 `task_board` and the multi-tab `browser` ride on `kiwibro/tasks.py` / `kiwibro/browser.py`.
 Optional plug-ins register through `kiwibro/extensions.py` into the same catalog.
 
+Browser tabs are scoped to a chat and kept in memory. `follow` uses the link number from the
+current page, `navigate` accepts a URL in an existing tab and `back` restores the previous
+observation without a new request. The default mode reads HTTP first and runs Chrome for an
+empty JavaScript shell. The `headless` mode uses a temporary Chrome profile, disables direct
+browser networking and brokers bounded public GET and HEAD requests through `browser_render.py`.
+
 Efficiency rules of the loop:
 
 - **Tool profiles** (`tool_profile` setting: auto/full/minimal/coding/research/

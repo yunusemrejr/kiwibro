@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 pick() {
-  if python3 -c 'import flask, requests, bs4' >/dev/null 2>&1; then
+  if python3 -c 'import flask, requests, bs4, websocket, PIL' >/dev/null 2>&1; then
     command -v python3
     return
   fi
@@ -16,7 +16,7 @@ pick() {
     echo "Kiwibro: creating local virtualenv and installing dependencies…" >&2
     python3 -m venv "$venv" >&2
   fi
-  if ! "$venv/bin/python" -c 'import flask, requests, bs4' >/dev/null 2>&1; then
+  if ! "$venv/bin/python" -c 'import flask, requests, bs4, websocket, PIL' >/dev/null 2>&1; then
     "$venv/bin/pip" install --disable-pip-version-check -q -r "$ROOT/requirements.txt" >&2
   fi
   echo "$venv/bin/python"

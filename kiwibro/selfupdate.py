@@ -36,7 +36,7 @@ _ROOT_FILES = ("app.py", "requirements.txt")
 _TREES = ("kiwibro", "templates", "static")
 _UI_TREES = ("templates", "static")  # what an open page has loaded
 _SUFFIXES = {
-    ".py", ".html", ".js", ".mjs", ".wasm", ".css", ".json", ".svg", ".png", ".ico", ".woff2", ".txt",
+    ".py", ".html", ".js", ".mjs", ".wasm", ".css", ".json", ".svg", ".png", ".ico", ".woff2", ".txt", ".gz",
 }
 
 

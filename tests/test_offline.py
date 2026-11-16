@@ -218,12 +218,10 @@ def test_a_search_answered_from_the_cache_is_still_served_offline(probe, monkeyp
     assert str(raised.value) == connectivity.OFFLINE_ERROR
 
 
-def test_the_browser_extension_does_not_hide_the_offline_sentence(offline, context):
-    from kiwibro import browser
-
-    with pytest.raises(SearchError) as raised:
-        browser._exec_browser_inspect({"action": "inspect", "url": "https://example.org/kiwi"}, context)
-    assert str(raised.value) == connectivity.OFFLINE_ERROR
+def test_the_browser_tool_preserves_the_offline_sentence(offline, context):
+    args = tools.validate_args("browser", {"action": "inspect", "url": "https://example.org/kiwi"})
+    result = tools.execute_tool("browser", args, context)
+    assert not result.ok and result.content == OFFLINE_RESULT
 
 
 def test_a_search_whose_providers_cannot_connect_reports_offline(probe, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

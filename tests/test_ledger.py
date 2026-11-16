@@ -149,6 +149,8 @@ def test_page_and_search_tools_record_what_was_read(db: Database, chat: str) -> 
     ledger.record_tool(db, chat, 27, "web_search", {"query": "repair a bike tyre"}, True, "results")
     ledger.record_tool(db, chat, 28, "multi_search", {"queries": ["harbour tides", "moon phase"]}, True, "results")
     ledger.record_tool(db, chat, 29, "web_research", {"query": "tide tables"}, True, "report")
+    ledger.record_tool(db, chat, 30, "browser", {"action": "follow", "link_number": 1}, True, "untrusted page body",
+                       {"url": "https://d.test/observed"})
     assert _rows(db, chat) == [
         (22, "page", "https://example.org/docs", "read"),
         (23, "page", "https://a.test", "read"),
@@ -159,6 +161,7 @@ def test_page_and_search_tools_record_what_was_read(db: Database, chat: str) -> 
         (28, "page", '"harbour tides"', "searched"),
         (28, "page", '"moon phase"', "searched"),
         (29, "page", '"tide tables"', "searched"),
+        (30, "page", "https://d.test/observed", "read"),
     ]
 
 

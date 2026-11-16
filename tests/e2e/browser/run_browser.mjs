@@ -682,6 +682,14 @@ async function flowLibrary(page, outDir, options) {
 async function flowHow(page, outDir, options) {
   await openPlace(page, SEL.placeHow, SEL.howSheet, "svg");
   const file = await shot(page, outDir, "how", options.settle);
+  const sheet = page.locator(SEL.howSheet);
+  await sheet.getByRole("button", { name: /Kiwi Mind/ }).click();
+  await sheet.getByText(/kiwimind-trunk\.gguf/).waitFor({ state: "visible" });
+  await sheet.getByRole("button", { name: /Kiwi Sense/ }).click();
+  await sheet.getByText(/specialists-v1\.json\.gz/).waitFor({ state: "visible" });
+  await sheet.getByText(/17 of 20 supported requests/).waitFor({ state: "visible" });
+  await sheet.getByRole("button", { name: /Memory and notes/ }).click();
+  await sheet.getByText(/note text stays out of automatic memory extraction/).waitFor({ state: "visible" });
   await closePanel(page);
   return file;
 }

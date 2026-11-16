@@ -106,6 +106,11 @@ CUT_OFF_CALL = (
     "did not run (a truncated file would have been saved). Make the call again with shorter content: "
     "keep the file concise, or write the first part now and add the rest with a second call."
 )
+CUT_OFF_RETRY = (
+    "The last tool call did not run. Use a relevant component if it satisfies the request. Otherwise make one "
+    "small complete change that fits in the next call, then add the remaining parts using targeted patches. "
+    "Keep the required file names and format. Do not recreate the oversized call."
+)
 DAMAGED_CALL = (
     "this call was damaged ({reason}), so it did not run and nothing was changed. Make the call again, with the "
     "arguments as valid JSON."

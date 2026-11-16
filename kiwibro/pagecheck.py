@@ -52,27 +52,28 @@ _LOCK = threading.Lock()  # one render at a time: each takes about 230 MB
 _PLACEHOLDER = re.compile(r"\{\{\s*[A-Za-z_][\w.-]*\s*\}\}")
 _MOTION = re.compile(
     r"\b(?:animat\w*|mov(?:e|es|ed|ing)|slid\w*|bounc\w*|spin\w*|rotat\w*|orbit\w*|puls\w*|blink\w*|drift\w*|swing\w*"
-    r"|flies|flying|walks|walking|falls|falling|forever|3-?d|game|simulation)\b", re.IGNORECASE)
+    r"|danc(?:e|es|ed|ing)|hug(?:s|ging)?|walk(?:s|ing)?|runs|running|fl(?:y|ies|ying)|driv(?:e|es|ing)|hop(?:s|ping)?|falls|falling|forever|game|simulation)\b",
+    re.IGNORECASE)
 _PHONE = re.compile(r"\b(?:phones?|mobile|responsive|smartphone)\b", re.IGNORECASE)
 _ANSWER = re.compile(r"^\W*(yes|no)\b[\W]*", re.IGNORECASE)
 
 # Runs before any page script: records what goes wrong and what moves, then reports once near the end of the time budget.
-_PROBE = """(function(){var P="@PREFIX@",E=[],F=[],C=[],raf=0,sent=false;
+_PROBE = """(function(){var P="@PREFIX@",E=[],F=[],C=[],sent=false;
 function s(v){return String(v==null?"":v).slice(0,300)}
 addEventListener("error",function(e){var t=e.target;
 if(t&&t!==window&&(t.src||t.href)){F.push({u:String(t.src||t.href),m:t.type==="module"})}
 else{E.push({m:s(e.message),l:e.lineno||0})}},true);
 addEventListener("unhandledrejection",function(e){var r=e.reason;E.push({m:s(r&&r.message||r),l:0})});
 var ce=console.error;console.error=function(){try{C.push(s([].map.call(arguments,function(a){return a&&a.message||a}).join(" ")))}catch(x){}return ce.apply(console,arguments)};
-var ra=window.requestAnimationFrame;window.requestAnimationFrame=function(f){return ra.call(window,function(t){raf++;return f(t)})};
 function seen(n){var r=n.getBoundingClientRect();return r.width>0&&r.height>0}
 function visibleText(b){var out=[],w=document.createTreeWalker(b,NodeFilter.SHOW_TEXT,null,false),n;while(n=w.nextNode()){var p=n.parentElement;if(p&&!p.closest("pre,code,kbd,samp,textarea,script,style,noscript,template")&&p.getClientRects().length)out.push(n.nodeValue)}return out.join("")}
 function report(){if(sent)return;sent=true;var b=document.body,t=b?b.innerText:"",d=document.documentElement,vis=b?visibleText(b):"";
 var cv=[].filter.call(document.querySelectorAll("canvas"),seen).length;
 var md=[].filter.call(document.querySelectorAll("img,svg,video"),seen).length;
 var el=b?[].filter.call(b.querySelectorAll("*"),function(n){return !/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(n.tagName)}).length:0;
-var an=document.getAnimations?document.getAnimations().filter(function(a){return a.playState==="running"}).length:0;
-console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),raf:raf,an:an,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
+var scene=window.sceneReport&&window.sceneReport.motion;
+var motion=scene&&{planned:scene.planned===true,observed:scene.observed===true,rendered:Number(scene.rendered)||0,waiting:scene.waiting===true};
+console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),motion:motion,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
 setTimeout(report,@MS@);})();""".replace("\n", "")  # one line: the page's own line numbers stay what they were
 
 
@@ -121,7 +122,7 @@ class Look:
 
     def report(self) -> str:
         """The tool result: what was done, what was seen, then the problems or what was confirmed."""
-        if self.could_not:
+        if self.could_not and not self.picture:
             done = f"Looked at {self.page} without a browser." if self.findings else f"Could not look at {self.page}: {self.could_not}."
         else:
             done = f"Looked at {self.page} at {self.sizes[0]}" + (", and again 2 seconds later" if self.again else "")
@@ -136,7 +137,8 @@ class Look:
         if self.findings:
             lines += ["Problems:", *(f"- {finding.text}" for finding in self.findings), f"Fix each of these in {self.page}."]
         elif self.could_not:
-            lines.append("This is not a problem with the page. Nothing more is to be done.")
+            lines.append(f"Could not complete all checks because {self.could_not}."
+                         if self.picture else "The render check did not finish.")
         else:
             lines.append(f"No problems found: {join_words(self.confirmed)}. Nothing more is to be done."
                          if self.confirmed else "No problems found. Nothing more is to be done.")
@@ -202,7 +204,10 @@ def missing_file(name: str, *, local: bool = True, module: bool = False) -> Find
 FLAT = Finding("flat", "The picture is one flat colour, so nothing is drawn.",
               "the picture is one flat colour, so nothing is drawn", "it draws now")
 EMPTY = Finding("empty", "The page has no visible content.", "the page has no visible content", "it has content now")
-STILL = Finding("still", "Nothing moves: two pictures two seconds apart are the same.", "nothing moves", "it moves now")
+STILL = Finding("still", "The two pictures show the same frame. Check the animation's visible motion.",
+                "the two sampled frames show no visible motion", "the pictures show motion now")
+SCENE_STILL = Finding("still", "The 3D scene rendered, but its subjects did not move. Check the action lines or their timing.",
+                      "the 3D subjects did not move", "the 3D subjects move now")
 WIDE = Finding("wide", "At phone width (360 px) the page is wider than the screen.",
               "at phone width the page is wider than the screen", "it fits the phone screen now")
 
@@ -498,7 +503,9 @@ def look(
         raise SandboxError(f"{workspace.public(target)} is too large to look at")
     shown = workspace.public(target)
     result = Look(page=shown, sizes=(f"{DESKTOP[0]}x{DESKTOP[1]}",))
-    result.findings = static_findings(target, target.read_text(encoding="utf-8", errors="replace"))
+    source = target.read_text(encoding="utf-8", errors="replace")
+    result.findings = static_findings(target, source)
+    scene_kit = 'id="scene"' in source and "motion: { planned:" in source
     kept = workspace.resolve(f"{PICTURE_DIR}/look-{_slug(shown)}.png")
     with _LOCK, tempfile.TemporaryDirectory(prefix="kiwibro-look-") as scratch:
         first = Path(scratch) / "first.png"
@@ -507,29 +514,55 @@ def look(
             result.could_not = main.error
             return result
         picture, report = first, main.report
+        motion = (report or {}).get("motion") if scene_kit else None
+        blocking = {"script", "logged", "missing", "module", "empty", "flat", "notice", "markup", "unfilled"}
         flat = _flat(first)
-        if options.moves:
+        problems = _from_report(report, target, flat) if report else ([EMPTY] if flat else [])
+        problems += _notices(report or {}, options.not_text)
+        can_check_motion = options.moves and not any(f.code in blocking for f in [*result.findings, *problems])
+        if can_check_motion and (motion is None or (motion["planned"] and not motion["observed"])):
             later = Path(scratch) / "later.png"
             again = render(target, later, *DESKTOP, BUDGET_MS + LATER_MS)
             if not again.error:
                 result.again, picture = True, later
                 report = again.report or report
-        problems = _from_report(report, target, flat) if report else ([EMPTY] if flat else [])
-        problems += _notices(report or {}, options.not_text)
+                if scene_kit:
+                    motion = (report or {}).get("motion")
+                flat = _flat(picture)
+                problems += _from_report(report, target, flat) if report else ([EMPTY] if flat else [])
+                problems += _notices(report or {}, options.not_text)
+            else:
+                result.could_not = f"the motion check failed ({again.error})"
         offline = next((f["u"] for f in (report or {}).get("f") or () if not f["u"].startswith("file:")), "")
         if offline and not connectivity.online():
             result.could_not = f"the page loads {urlsplit(offline).netloc or offline} from the internet and there is no connection"
             return result
-        result.findings += [found for found in problems if found.short not in {f.short for f in result.findings}]
-        same = _same(first, picture) if result.again else None
-        if same and report and not report.get("raf") and not report.get("an"):
-            result.findings.append(STILL)
+        result.findings = list({finding.short: finding for finding in [*result.findings, *problems]}.values())
+        same = _same(first, picture) if result.again and not scene_kit else None
+        moved = options.moves and ((motion is not None and motion["observed"]) if scene_kit else same is False)
+        if can_check_motion and not moved and not any(f.code in blocking for f in result.findings):
+            if scene_kit:
+                if motion is None or not motion["rendered"] or motion["waiting"]:
+                    result.could_not = result.could_not or "the 3D subjects could not be sampled while moving"
+                elif motion["rendered"] > 2 or not motion["planned"]:
+                    result.findings.append(SCENE_STILL)
+                else:
+                    result.could_not = result.could_not or "the 3D render yielded too few frames to measure motion"
+            elif same is True:
+                result.findings.append(STILL)
+            elif same is None:
+                result.could_not = result.could_not or "the motion frames could not be compared"
+        phone_fits = False
         if options.phone:
             small = render(target, Path(scratch) / "phone.png", *PHONE, BUDGET_MS)
-            result.sizes += (f"{PHONE[0]}x{PHONE[1]}",)
             narrow = small.report or {}
-            if not small.error and narrow.get("w") == PHONE[0] and int(narrow.get("sw") or 0) > PHONE[0]:
-                result.findings.append(WIDE)
+            if not small.error and narrow.get("w") == PHONE[0] and narrow.get("sw"):
+                result.sizes += (f"{PHONE[0]}x{PHONE[1]}",)
+                phone_fits = int(narrow["sw"]) <= PHONE[0]
+                if not phone_fits:
+                    result.findings.append(WIDE)
+            else:
+                result.could_not = result.could_not or "the phone viewport could not be checked"
         kept.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(picture, kept)
         result.picture = workspace.public(kept)
@@ -539,9 +572,9 @@ def look(
                 result.confirmed.append("it loads without errors")
             if flat is False and not any(f.code in ("flat", "empty") for f in result.findings):
                 result.confirmed.append("it draws")
-            if same is False:
+            if moved and not any(f.code in blocking for f in result.findings):
                 result.confirmed.append("it moves")
-            if options.phone and not any(f.code == "wide" for f in result.findings) and len(result.sizes) > 1:
+            if phone_fits:
                 result.confirmed.append("it fits a phone screen")
     _see(result, options, eyes)
     return result

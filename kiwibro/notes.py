@@ -59,6 +59,22 @@ _POINTED = tuple(re.compile(rf"^\s*{_POLITE}{pattern}[\s.!]*$", re.I) for patter
     rf"(?:note|jot)\s+{_THAT}\s+down(?:\s+(?:please|for\s+me))?",
     rf"(?:make|take|save|create|keep)\s+(?:a\s+)?note\s+of\s+{_THAT}(?:\s+(?:please|for\s+me))?",
 ))
+_APPEND = re.compile(
+    r"\W*(?:please\s+)?(?:add|append|put)\s+(.+?)\s+(?:to|in|into|on)\s+(?:that|the|my|this)\s+"
+    r"(?:(.+?)\s+)?(?:note|list)\W*$", re.I | re.S,
+)
+
+
+def append_request(message: str) -> tuple[str, str] | None:
+    """Return the named note and dictated addition. An empty name points back to the last note."""
+    found = _APPEND.fullmatch((message or "").strip())
+    if found is None:
+        return None
+    return (found[2] or "").strip(), found[1].strip()
+
+
+def writes_as_dictated(message: str) -> bool:
+    return dictation(message) is not None or append_request(message) is not None
 
 
 # A note the user asks to have written ("make a note about the meeting", "summarise this and
@@ -106,7 +122,8 @@ def dictation(message: str) -> tuple[str, str] | None:
         found = pattern.match(text)
         if found:
             body = _dictated_body(found.group("text"), text)
-            return ("", body) if len(body.split()) >= 2 else None
+            labeled = text[:found.start("text")].rstrip().endswith((":", "-", "–", "—"))
+            return ("", body) if body and (labeled or len(body.split()) >= 2) else None
     return None
 
 
@@ -247,8 +264,7 @@ class Notebook:
         note = self.find(reference)
         if note is None:
             return None
-        body = clean_body(f"{note['body']}\n\n{clean_body(text)}")
-        return self.db.update_note(note["id"], body=body)
+        return self.db.append_note(note["id"], clean_body(text), max_chars=MAX_BODY)
 
     def find(self, reference: str) -> dict[str, Any] | None:
         """The note a user or the model means: by id, else exact title, else the best

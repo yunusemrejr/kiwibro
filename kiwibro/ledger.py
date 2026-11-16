@@ -70,13 +70,15 @@ def record_tool(
     arguments: Any,
     ok: Any,
     result: Any,
+    result_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """The ledger rows one finished tool call earned, from its name and arguments.
 
     Odd arguments (missing keys, wrong types) never raise: the call is recorded as far as
     it can be read, and an unreadable one leaves the ledger as it was."""
     try:
-        rows = _rows_for(str(name or ""), arguments if isinstance(arguments, dict) else {}, bool(ok), result)
+        rows = _rows_for(str(name or ""), arguments if isinstance(arguments, dict) else {}, bool(ok), result,
+                         result_meta if isinstance(result_meta, dict) else {})
     except Exception:  # a ledger row is never worth failing a tool call over
         log.warning("ledger: could not record %s", name, exc_info=True)
         return []
@@ -91,7 +93,7 @@ def _row(kind: str, key: str, detail: str) -> list[tuple[str, str, str]]:
     return [(kind, key, detail)] if key else []
 
 
-def _rows_for(name: str, args: dict[str, Any], ok: bool, result: Any) -> list[tuple[str, str, str]]:
+def _rows_for(name: str, args: dict[str, Any], ok: bool, result: Any, meta: dict[str, Any]) -> list[tuple[str, str, str]]:
     text = result if isinstance(result, str) else _flat(result)
     if name in ("write_file", "replace_in_file", "apply_patch", "convert_document", "undo_changes",
                 "file_manage", "component"):
@@ -102,6 +104,10 @@ def _rows_for(name: str, args: dict[str, Any], ok: bool, result: Any) -> list[tu
     if name == "multi_command":
         return _multi_command_rows(args.get("commands"), text, ok)
     if name in ("fetch_page", "browse_page", "fetch_pages", "browser"):
+        if name == "browser" and ok:
+            landed = meta.get("url")
+            if isinstance(landed, str) and landed.startswith(("http://", "https://")):
+                return [_page(landed, "read", True)]
         return _page_rows(name, args, ok)
     if name in ("web_search", "web_research", "multi_search"):
         return _search_rows(name, args, ok)
@@ -186,7 +192,7 @@ def _page_rows(name: str, args: dict[str, Any], ok: bool) -> list[tuple[str, str
     if name == "fetch_pages":
         urls = args.get("urls")
         return [_page(url, "read", ok) for url in (urls if isinstance(urls, list) else [])]
-    if name == "browser" and _flat(args.get("action")) != "open":
+    if name == "browser" and _flat(args.get("action")) not in ("open", "navigate", "inspect"):
         return []
     return [_page(args.get("url"), "read", ok)]
 

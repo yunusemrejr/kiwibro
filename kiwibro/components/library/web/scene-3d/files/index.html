@@ -10,16 +10,18 @@
   body.dark { color: #eef3ff; }
   #view { display: block; width: 100%; height: 100%; touch-action: none; }
   h1 { position: fixed; left: 16px; top: 12px; right: 16px; margin: 0; font-size: 1.05rem; font-weight: 600; pointer-events: none; }
-  #replay {
-    position: fixed; left: 16px; bottom: 16px; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+  #transport { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; }
+  #transport[hidden] { display: none; }
+  #transport button {
+    min-height: 44px; padding: 8px 14px; border-radius: 10px; cursor: pointer;
     font: inherit; font-weight: 600; color: inherit; background: rgb(255 255 255 / 0.55); border: 1px solid currentColor;
   }
-  body.dark #replay { background: rgb(10 18 44 / 0.55); }
-  #replay:hover { background: rgb(255 255 255 / 0.85); }
-  body.dark #replay:hover { background: rgb(10 18 44 / 0.85); }
-  #replay:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+  body.dark #transport button { background: rgb(10 18 44 / 0.65); }
+  #transport button:hover { background: rgb(255 255 255 / 0.85); }
+  body.dark #transport button:hover { background: rgb(10 18 44 / 0.85); }
+  #transport button:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
   #notice {
-    position: fixed; right: 16px; bottom: 16px; max-width: min(360px, calc(100% - 150px)); margin: 0; padding: 8px 12px;
+    position: fixed; right: 16px; bottom: 72px; max-width: min(360px, calc(100% - 56px)); margin: 0; padding: 8px 12px;
     border-radius: 10px; font-size: 0.85rem; white-space: pre-line; color: #3b1d05; background: #ffe2bd;
   }
 </style>
@@ -29,7 +31,7 @@
   Things:   tree at 4 0  |  red car at -6 2  |  3 rocks  |  big house near tree  |  dog named rex
             (the two numbers are left-right and back-front, about -10 to 10; leave them out to be placed for you)
   Actions:  kiwi walks to tree  |  dog runs to house  |  bird flies to tree  |  car drives to 6 2  |  kiwi hugs tree
-            rabbit hops to rock |  cat follows dog    |  plane orbits tower   |  ball spins  |  dog waits 2  |  dog walks home
+            rabbit hops to rock |  cat follows dog    |  plane orbits tower   |  ball spins  |  dog waits 2  |  kiwi dances
             (actions of one thing run in the order written; "slowly" or "fast" changes the speed)
   Setting:  sky is day, dawn, sunset or night, or any colour (sky purple, sky #6b3fa0); ground is grass, sand, snow, water, stone, dirt or moon
             camera follows kiwi      repeat
@@ -45,7 +47,10 @@ ground {{ground}}
 
 <canvas id="view" aria-label="{{title}}"></canvas>
 <h1>{{title}}</h1>
-<button id="replay" type="button">Replay</button>
+<div id="transport" role="group" aria-label="Animation controls" hidden>
+  <button id="pause" type="button">Pause</button>
+  <button id="replay" type="button">Replay</button>
+</div>
 <p id="notice" hidden></p>
 
 <script type="importmap">
@@ -112,7 +117,7 @@ const VERBS = {
   fly: "fly", soar: "fly", glide: "fly", flap: "fly",
   hop: "hop", jump: "hop", leap: "hop", bounce: "hop",
   drive: "glide", ride: "glide", sail: "glide", roll: "glide", swim: "glide", slide: "glide", float: "glide", drift: "glide",
-  hug: "hug", embrace: "hug", follow: "follow", orbit: "orbit", circle: "orbit", spin: "spin", rotate: "spin", twirl: "spin",
+  dance: "dance", hug: "hug", embrace: "hug", follow: "follow", orbit: "orbit", circle: "orbit", spin: "spin", rotate: "spin", twirl: "spin",
   wait: "wait", pause: "wait", rest: "wait", sleep: "wait", sit: "wait", stand: "wait",
   stop: "stop", stay: "stop", arrive: "stop", halt: "stop", look: "face", face: "face", turn: "face",
 };
@@ -276,13 +281,22 @@ function readScene(text, KINDS) {
         act.type = "orbit";
       }
       if (numbers.length >= 2) act.point = numbers.length >= 3 ? [numbers[0], numbers[2]] : numbers;
-      else if (!act.home && !["wait", "stop", "spin"].includes(act.type)) {
-        const pronoun = act.type === "hug" && part.words.some((word) => PRONOUNS.has(word));
+      else if (!act.home && !["wait", "stop", "spin", "dance"].includes(act.type)) {
+        const pronoun = part.words.some((word) => PRONOUNS.has(word));
         act.to = pronoun && target ? target : refer(part.words, false);
       }
-      // a hug walks up to the thing first, then presses against it
-      const steps = act.type === "hug" ? [{ ...act, type: "walk" }, act] : [act];
-      for (const thing of who) for (const step of steps) if (step.to !== thing) thing.acts.push({ ...step });
+      if (act.type === "hug" && !act.to) {
+        problems.push('Not understood: "hug" needs a target, such as "kiwi hugs tree".');
+        continue;
+      }
+      for (const thing of who) {
+        if (act.to === thing) continue;
+        const previous = thing.acts.at(-1);
+        if (act.type === "hug" && !(previous?.to === act.to && ["walk", "run", "hop"].includes(previous.type))) {
+          thing.acts.push({ type: "walk", to: act.to, pace: act.pace });
+        }
+        thing.acts.push({ ...act });
+      }
       if (act.to) target = act.to;
     }
     last = who;
@@ -388,8 +402,7 @@ function readScene(text, KINDS) {
 
 let THREE, OrbitControls;
 try {
-  THREE = await import("three");
-  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+  [THREE, { OrbitControls }] = await Promise.all([import("three"), import("three/addons/controls/OrbitControls.js")]);
 } catch (error) {
   tell(["This scene needs three.js from cdn.jsdelivr.net. Connect to the internet and reload."]);
   throw error;
@@ -462,7 +475,7 @@ function bird(o) {
     pivot.userData.side = side;
     return pivot;
   });
-  whole.userData = { legs, swing: [0, Math.PI], body, baseY: body.position.y, head, wings, peck: o.peck };
+  whole.userData = { legs, swing: [0, Math.PI], body, baseY: body.position.y, head, headZ: head.position.z, wings, peck: o.peck };
   return whole;
 }
 
@@ -576,7 +589,7 @@ function house(rng, color, roof = "#b3513e") {
 
 // Every thing the scene lines can name: how it is built, how much room it takes (r) and how it moves.
 const KINDS = {
-  kiwi: { r: 0.55, make: (_rng, c) => bird({ r: 0.44, c: c || "#7a5237", c2: c || "#8b6347", head: 0.5, headY: 0.42, beak: 0.62, beakR: 0.045, beakTilt: 0.42, beakC: "#eadcbd", leg: 0.36, legR: 0.11, legC: "#b9966d", peck: 0.45 }) },
+  kiwi: { r: 0.55, hugReach: 0.57, make: (_rng, c) => bird({ r: 0.44, c: c || "#7a5237", c2: c || "#8b6347", head: 0.5, headY: 0.42, beak: 0.62, beakR: 0.045, beakTilt: 0.34, beakC: "#eadcbd", leg: 0.36, legR: 0.11, legC: "#b9966d", peck: 0.45 }) },
   bird: { r: 0.4, gait: "fly", make: (_rng, c) => bird({ r: 0.3, c: c || "#4a8cd4", belly: "#f4f2ec", wings: true, tail: true, leg: 0.22, peck: 0.3 }) },
   duck: { r: 0.45, make: (_rng, c) => bird({ r: 0.36, c: c || "#f4f2ec", flat: true, beak: 0.22, beakC: "#e88a3a", leg: 0.2, legC: "#e88a3a", wings: true, tail: true, peck: 0.3 }) },
   chicken: { r: 0.4, make: (_rng, c) => bird({ r: 0.33, c: c || "#f4f2ec", comb: true, beak: 0.12, leg: 0.26, tail: true, peck: 0.5 }) },
@@ -680,21 +693,28 @@ const KINDS = {
     for (const [x, z] of [[0.22, 0.22], [-0.22, 0.22], [0.22, -0.22], [-0.22, -0.22]]) part(whole, cyl(0.012, 0.012, 1.0, 3), "#3a3028", x, 1.15, z);
     return whole;
   } },
-  tree: { r: 0.7, vary: true, make: (rng, c) => {
+  tree: { r: 0.7, contactRadius: 0.22, vary: true, make: (rng, c) => {
     const whole = group(), green = c || pick(rng, ["#4f9a4a", "#5aa652", "#468c45", "#62ad56"]);
-    part(whole, cyl(0.16, 0.26, 1.7, 7), "#7a5234", 0, 0.85, 0);
+    part(whole, cyl(0.16, 0.26, 1.7, 9), "#7a5234", 0, 0.85, 0);
+    for (let branch = 0; branch < 4; branch++) {
+      const pivot = group();
+      pivot.position.y = 1.1 + branch * 0.16;
+      pivot.rotation.y = branch * Math.PI * 0.54;
+      part(pivot, cyl(0.04, 0.1, 0.82, 6), branch % 2 ? "#886041" : "#704a33", 0.2, 0.29, 0).rotation.z = -0.52;
+      whole.add(pivot);
+    }
     for (const [x, y, z, r] of [[0, 2.45, 0, 1.15], [0.6, 1.95, 0.25, 0.8], [-0.55, 2.05, -0.3, 0.85], [0.1, 3.2, -0.05, 0.72]]) {
       part(whole, ico(r * (0.9 + rng() * 0.2), 1), green, x, y, z).rotation.set(rng() * 3, rng() * 3, 0);
     }
     return whole;
   } },
-  pine: { r: 0.7, vary: true, make: (rng, c) => {
+  pine: { r: 0.7, contactRadius: 0.16, vary: true, make: (rng, c) => {
     const whole = group(), green = c || pick(rng, ["#2f6f4f", "#35785a", "#2a6648"]);
     part(whole, cyl(0.13, 0.19, 1.0, 6), "#6b4a2f", 0, 0.5, 0);
     for (const [r, h, y] of [[1.1, 1.5, 1.55], [0.85, 1.3, 2.45], [0.55, 1.15, 3.3]]) part(whole, cone(r, h, 7), green, 0, y, 0).rotation.y = rng() * 3;
     return whole;
   } },
-  palm: { r: 0.6, vary: true, make: (rng, c) => {
+  palm: { r: 0.6, contactRadius: 0.16, vary: true, make: (rng, c) => {
     const whole = group();
     for (let piece = 0; piece < 5; piece++) part(whole, cyl(0.13, 0.16, 0.75, 6), "#a98458", piece * piece * 0.035, 0.36 + piece * 0.68, 0).rotation.z = -piece * 0.07;
     const crown = group();
@@ -960,7 +980,7 @@ const SPEEDS = { walk: 1.5, run: 3.6, fly: 3.2, hop: 2.0, glide: 3.2 };
 const sceneText = el("scene").textContent;
 const { setup, specs, problems } = readScene(sceneText, KINDS);
 const rng = seeded(sceneText);
-const report = (window.sceneReport = { things: [], problems, done: false });
+const report = (window.sceneReport = { things: [], problems, done: false, motion: { planned: false, rendered: 0, observed: false } });
 
 // A count ("3 rocks") becomes that many things; the first keeps the name the lines use.
 const things = [];
@@ -971,7 +991,9 @@ for (const spec of specs) {
     things.push({ spec, copy, kind, id: copy ? `${spec.id}-${copy + 1}` : spec.id, size, r: kind.r * size, acts: spec.acts.map((act) => ({ ...act })), x: null, z: null, y: 0 });
   }
 }
-const first = (spec) => things.find((thing) => thing.spec === spec && thing.copy === 0);
+const leads = things.filter((thing) => thing.copy === 0);
+const primary = new Map(leads.map((thing) => [thing.spec, thing]));
+const first = (spec) => primary.get(spec);
 const taken = [];
 const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(x - tx, z - tz) > r + tr + 0.4);
 function settle(thing, x, z) {
@@ -998,7 +1020,7 @@ const SPOTS = {
   target: [[5, -0.5], [7, 3.6], [6.5, -4.6], [9.5, 0.5]],
   other: [[0.5, -4.6], [-1.6, 4.6], [2.6, 5.6], [-3.2, -6.6], [3.2, -7.6], [-4.4, 7.2], [0, 0.4]],
 };
-const leads = things.filter((thing) => thing.copy === 0);
+const pair = leads.length === 2 && leads.some((thing) => thing.acts.some((act) => act.type === "hug"));
 for (const thing of leads) {
   const { spec, kind } = thing;
   if (spec.at) { settle(thing, spec.at[0], spec.at[2]); thing.y = spec.at[1]; }
@@ -1008,7 +1030,8 @@ for (const thing of leads) {
 }
 for (const thing of leads) {
   if (thing.x !== null || thing.spec.near) continue;
-  const list = SPOTS[targets.has(thing) && !movers.has(thing) ? "target" : movers.has(thing) ? "mover" : "other"];
+  const role = targets.has(thing) && !movers.has(thing) ? "target" : movers.has(thing) ? "mover" : "other";
+  const list = pair && role !== "other" ? [[role === "mover" ? -2.4 : 2.1, 0], ...SPOTS[role]] : SPOTS[role];
   const spot = list.find(([x, z]) => clear(x, z, thing.r));
   if (spot) settle(thing, spot[0], spot[1]);
   else around(thing, 0, 0, 4);
@@ -1030,12 +1053,12 @@ for (const thing of things) {
 const view = el("view");
 let renderer;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: view, antialias: true });
+  renderer = new THREE.WebGLRenderer({ canvas: view, antialias: true, alpha: true });
 } catch (error) {
   tell(["This scene needs WebGL, which this browser does not offer."]);
   throw error;
 }
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1043,22 +1066,9 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 const sky = setup.skyHue ? skyPalette(SKIES[setup.sky], setup.skyHue) : SKIES[setup.sky];
 document.body.classList.toggle("dark", Boolean(sky.dark) || setup.sky === "sunset" || Boolean(setup.skyHue && brightness(sky.top) < 0.5));
 const scene = new THREE.Scene();
-let skyLine = 0.62, backdrop = null;
-// The sky behind everything: the top colour down to the horizon line (a fraction of the screen height from the top).
-// A coloured sky ends its gradient at the horizon, where the fog and the far ground already have the same colour.
+let skyLine = 0.62;
 function paintSky(line) {
-  const wash = document.createElement("canvas");
-  wash.width = 4; wash.height = 256;
-  const brush = wash.getContext("2d"), fade = brush.createLinearGradient(0, 0, 0, 256);
-  fade.addColorStop(0, sky.top);
-  fade.addColorStop(line, sky.low);
-  fade.addColorStop(1, sky.low);
-  brush.fillStyle = fade;
-  brush.fillRect(0, 0, 4, 256);
-  backdrop?.dispose();
-  backdrop = new THREE.CanvasTexture(wash);
-  backdrop.colorSpace = THREE.SRGBColorSpace;
-  scene.background = backdrop;
+  document.body.style.background = "linear-gradient(" + sky.top + ", " + sky.low + " " + (line * 100) + "%)";
   skyLine = line;
 }
 paintSky(0.62);
@@ -1069,9 +1079,10 @@ const ground = new THREE.Mesh(new THREE.CircleGeometry(170, 48).rotateX(-Math.PI
 ground.receiveShadow = true;
 scene.add(ground);
 scene.add(new THREE.HemisphereLight(sky.low, groundColor, sky.fill));
+scene.add(new THREE.AmbientLight(0xffffff, sky.dark ? 0.12 : 0.35));
 const sun = new THREE.DirectionalLight(sky.sun, sky.power);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.04;
 scene.add(sun, sun.target);
@@ -1110,16 +1121,21 @@ if (!setup.plain) {
   const scatter = (count, geometry, colors, low, high, reach) => {
     const mesh = new THREE.InstancedMesh(geometry, new THREE.MeshStandardMaterial({ flatShading: true, roughness: 1 }), count);
     const place = new THREE.Object3D(), tint = new THREE.Color();
-    for (let index = 0; index < count; index++) {
+    let placed = 0;
+    for (let index = 0; index < count * 4 && placed < count; index++) {
       let x, z;
-      do { x = (rng() - 0.5) * reach; z = (rng() - 0.5) * reach; } while (!clear(x, z, 0.2));
+      x = (rng() - 0.5) * reach;
+      z = (rng() - 0.5) * reach;
+      if (!clear(x, z, 0.2)) continue;
       place.position.set(x, 0, z);
       place.rotation.y = rng() * 6;
       place.scale.setScalar(low + rng() * (high - low));
       place.updateMatrix();
-      mesh.setMatrixAt(index, place.matrix);
-      mesh.setColorAt(index, tint.set(pick(rng, colors)));
+      mesh.setMatrixAt(placed, place.matrix);
+      mesh.setColorAt(placed, tint.set(pick(rng, colors)));
+      placed++;
     }
+    mesh.count = placed;
     mesh.receiveShadow = true;
     scene.add(mesh);
   };
@@ -1147,7 +1163,6 @@ if (!setup.plain) {
       cloud.position.set(rng() * 70 - 35, 11 + rng() * 5, -12 - rng() * 30);
       cloud.scale.setScalar(1.2 + rng() * 1.4);
       scene.add(cloud);
-      things.push({ extra: true, mesh: cloud, data: cloud.userData, x: cloud.position.x, z: cloud.position.z, y: cloud.position.y, acts: [], yaw: 0, kind: KINDS.cloud, home: {} });
     }
   }
 }
@@ -1160,13 +1175,10 @@ controls.enableDamping = true;
 controls.maxPolarAngle = Math.PI / 2 - 0.04;
 controls.minDistance = 3;
 controls.maxDistance = 70;
-const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-controls.autoRotate = !still;
-controls.autoRotateSpeed = 0.35;
-controls.addEventListener("start", () => { controls.autoRotate = false; });
-let framed = false;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+let adjustedCamera = false;
 function frameAll() {
-  const stage = things.filter((thing) => !thing.extra && !thing.kind.sky && !thing.kind.far);
+  const stage = things.filter((thing) => !thing.kind.sky && !thing.kind.far);
   const xs = [], zs = [];
   for (const thing of stage) {
     xs.push(thing.home.x - thing.r, thing.home.x + thing.r);
@@ -1175,13 +1187,14 @@ function frameAll() {
   }
   if (!xs.length) { xs.push(-4, 4); zs.push(-4, 4); }
   const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cz = (Math.min(...zs) + Math.max(...zs)) / 2;
-  const reach = Math.max(3.5, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2 + 1.5);
+  const solo = stage.length === 1 && stage[0].acts.some(({ type }) => type === "dance");
+  const reach = Math.max(solo ? 1.4 : 3.5, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2 + (solo ? 0.95 : 1.5));
   camera.fov = camera.aspect < 1 ? 52 : 38; // a tall phone screen gets a wider lens, so things stay large
   camera.updateProjectionMatrix();
   const half = THREE.MathUtils.degToRad(camera.fov) / 2;
   const distance = reach / Math.tan(Math.min(half * 1.25, Math.atan(Math.tan(half) * camera.aspect)));
   controls.target.set(cx, 1.1, cz);
-  camera.position.set(cx + Math.sin(0.3) * distance * 0.95, 1.1 + distance * 0.27, cz + Math.cos(0.3) * distance * 0.95);
+  camera.position.set(cx + Math.sin(0.3) * distance * 0.95, 1.1 + distance * 0.17, cz + Math.cos(0.3) * distance * 0.95);
   scene.fog.near = distance * 1.6;
   scene.fog.far = distance * 1.6 + 70;
   sun.target.position.set(cx, 0, cz);
@@ -1194,27 +1207,24 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  if (!framed || controls.autoRotate) frameAll();
-  framed = true;
-  if (setup.skyHue) paintSky(horizonLine());
+  if (!adjustedCamera) frameAll();
+  controls.update();
+  draw();
 }
 // Where the horizon sits on screen: a far point on the ground, straight ahead of the camera.
+const horizonPoint = new THREE.Vector3();
 function horizonLine() {
-  const ahead = new THREE.Vector3().subVectors(controls.target, camera.position).setY(0).setLength(170).add(controls.target).setY(0);
-  camera.lookAt(controls.target);
+  horizonPoint.subVectors(controls.target, camera.position).setY(0).setLength(170).add(controls.target).setY(0);
   camera.updateMatrixWorld();
-  return THREE.MathUtils.clamp((1 - ahead.project(camera).y) / 2, 0.02, 0.9);
+  return THREE.MathUtils.clamp((1 - horizonPoint.project(camera).y) / 2, 0.02, 0.9);
 }
-addEventListener("resize", resize);
-controls.addEventListener("start", () => { framed = true; });
-resize();
 
 // ---------------------------------------------------------------- motion
 
 function reset() {
   for (const thing of things) {
-    if (thing.extra) continue;
-    Object.assign(thing, { x: thing.home.x, z: thing.home.z, yaw: thing.home.yaw, turnTo: thing.home.yaw, step: 0, clock: 0, speed: 0, air: 0, hop: 0, phase: 0, swingBy: 0, went: 0, lean: 0 });
+    Object.assign(thing, { x: thing.home.x, z: thing.home.z, yaw: thing.home.yaw, turnTo: thing.home.yaw, step: 0, clock: 0, speed: 0, air: 0, hop: 0, phase: 0, swingBy: 0, went: 0, lean: 0, hug: 0, dance: 0, sway: 0 });
+    pose(thing, false, 0, 0);
   }
   report.done = false;
   ended = -1;
@@ -1225,6 +1235,7 @@ function next(thing) {
   thing.speed = 0;
 }
 const near = (from, to) => { const gap = Math.atan2(Math.sin(to - from), Math.cos(to - from)); return gap; };
+const ease = (t) => t * t * (3 - 2 * t);
 
 function act(thing, dt) {
   const now = thing.acts[thing.step];
@@ -1233,20 +1244,42 @@ function act(thing, dt) {
   thing.clock += dt;
   const other = now.to && first(now.to);
   const type = now.type;
-  if (type !== "hug") thing.lean = 0;
+  if (type !== "hug") thing.lean = thing.hug = 0;
+  if (type !== "dance") thing.dance = thing.sway = 0;
+  if (type === "dance") {
+    if (begins) now.from = [thing.x, thing.z, thing.yaw];
+    const [x, z, yaw] = now.from;
+    const length = Math.max(0.35, now.seconds ?? 5.4);
+    const beat = thing.clock * (now.pace ?? 1) * 2 * Math.PI / 0.62;
+    const cycle = now.forever ? (thing.clock % length) / length : Math.min(thing.clock / length, 1);
+    const envelope = Math.min(1, cycle / 0.1, (1 - cycle) / 0.1);
+    const turn = ease(THREE.MathUtils.clamp((cycle - 0.37) / 0.32, 0, 1));
+    const step = Math.sin(beat * 0.5) * 0.46 * envelope * thing.size;
+    thing.x = x + Math.cos(yaw) * step;
+    thing.z = z - Math.sin(yaw) * step;
+    thing.turnTo = yaw + turn * Math.PI * 2 + Math.sin(beat * 0.5) * 0.28 * envelope;
+    thing.dance = Math.sin(beat * 0.5) * envelope;
+    thing.sway = Math.max(0, Math.sin(beat)) * envelope;
+    if (!now.forever && cycle === 1) next(thing);
+    return false;
+  }
   if (type === "hug") {
-    // pressed against the thing: lean in over 0.6 s, hold, then go on
+    // Hugging is illustrative: the kiwi leans its cheek along the trunk, with its bill turned aside.
     if (begins) now.from = [thing.x, thing.z];
-    const press = Math.min(1, thing.clock / 0.6);
-    thing.lean = 0.38 * press;
+    const press = ease(Math.min(1, thing.clock / 0.85));
+    thing.hug = press;
+    thing.lean = (thing.spec.kind === "kiwi" ? 0.16 : 0.24) * press;
     if (other) {
       const [fx, fz] = now.from, dx = other.x - fx, dz = other.z - fz, away = Math.hypot(dx, dz) || 1;
-      thing.x = fx + dx / away * 0.12 * press;
-      thing.z = fz + dz / away * 0.12 * press;
+      const radius = (other.kind.contactRadius ?? other.kind.r) * other.size;
+      const reach = (thing.kind.hugReach ?? thing.kind.r) * thing.size;
+      const approach = Math.max(0, away - radius - reach) * press;
+      thing.x = fx + dx / away * approach;
+      thing.z = fz + dz / away * approach;
       thing.turnTo = Math.atan2(dx, dz);
     }
     thing.speed = thing.aim = 0;
-    if (thing.clock > 2.5) next(thing);
+    if (!now.forever && thing.clock >= (now.seconds ?? 2.5)) next(thing);
     return false;
   }
   if (type === "stop") { next(thing); return false; }
@@ -1264,8 +1297,9 @@ function act(thing, dt) {
     return false;
   }
   const pace = (SPEEDS[type] ?? (thing.gait === "fly" ? SPEEDS.fly : thing.gait === "glide" ? SPEEDS.glide : SPEEDS.walk)) * (now.pace ?? 1) * (thing.kind.pace ?? 1) * Math.sqrt(thing.size);
-  thing.flying = type === "fly" || thing.gait === "fly";
-  thing.hopping = type === "hop" || thing.gait === "hop";
+  const freeGait = type === "follow" || type === "orbit";
+  thing.flying = type === "fly" || freeGait && thing.gait === "fly";
+  thing.hopping = type === "hop" || freeGait && thing.gait === "hop";
   const still = !now.home && !now.point && !now.way && !other;
   if (type === "hop" && still) {
     thing.hop = Math.abs(Math.sin(thing.clock * 5)) * 0.7 * thing.size;
@@ -1329,42 +1363,43 @@ function pose(thing, moving, dt, time) {
   const airborne = moving && thing.flying ? Math.min(thing.lift, (thing.aim ?? 9) * 0.9, 0.3 + thing.went * 0.9) : 0;
   thing.air += (airborne - thing.air) * Math.min(1, dt * 3);
   const bounce = moving && thing.hopping && !thing.flying ? Math.abs(Math.sin(thing.phase * 0.55)) * 0.45 * thing.size : thing.hop;
-  mesh.position.set(thing.x, thing.y + thing.air + bounce, thing.z);
+  mesh.position.set(thing.x, thing.y + thing.air + bounce + thing.sway * 0.14 * thing.size, thing.z);
   mesh.rotation.y = thing.yaw;
   mesh.rotation.x = thing.lean ?? 0;
+  mesh.rotation.z = 0.22 * thing.dance;
   const walking = thing.air < 0.15 ? thing.swingBy : 0;
-  if (data.legs) data.legs.forEach((leg, index) => { leg.rotation.x = Math.sin(thing.phase + data.swing[index]) * 0.62 * walking; });
+  if (data.legs) data.legs.forEach((leg, index) => {
+    leg.rotation.x = Math.sin(thing.phase + data.swing[index]) * 0.62 * walking + thing.dance * (index % 2 ? -0.53 : 0.53);
+  });
   if (data.body) {
-    const idle = !moving && thing.step >= thing.acts.length && data.peck ? Math.max(0, Math.sin(time * 1.3 + thing.seed)) ** 6 * data.peck : 0;
-    data.body.position.y = data.baseY + Math.abs(Math.sin(thing.phase)) * 0.045 * walking + Math.sin(time * 2 + thing.seed) * 0.008;
-    data.body.rotation.x = idle;
-    if (data.head) data.head.position.z += (Math.sin(thing.phase * 2) * 0.012 * walking);
+    data.body.position.y = data.baseY + Math.abs(Math.sin(thing.phase)) * 0.045 * walking;
+    data.body.rotation.x = thing.sway * 0.18;
+    if (data.head && data.headZ !== undefined) {
+      data.head.position.z = data.headZ + Math.sin(thing.phase * 2) * 0.025 * walking;
+      data.head.rotation.y = thing.spec.kind === "kiwi" ? -0.73 * thing.hug : 0.15 * thing.dance;
+    }
   }
   if (data.wings) for (const wing of data.wings) {
     const flap = data.always || thing.air > 0.15 ? Math.sin(time * (data.always ? 22 : 13) + thing.seed) * 0.75 : -1.15;
     wing.rotation.z = wing.userData.side * flap;
   }
-  if (data.wheels) for (const wheel of data.wheels) wheel.rotation.x += travel / data.wheelR / thing.size;
-  if (data.roll) data.roll.rotation.x += travel / data.rollR / thing.size;
+  if (data.wheels) for (const wheel of data.wheels) wheel.rotation.x = thing.went / data.wheelR / thing.size;
+  if (data.roll) data.roll.rotation.x = thing.went / data.rollR / thing.size;
 }
 
-let ended = -1;
-const clock = new THREE.Clock();
-reset();
-let playing = !still;
-if (still) {
-  el("replay").textContent = "Play";
-  for (const thing of things) if (!thing.extra) pose(thing, false, 0, 0);
-}
-el("replay").addEventListener("click", () => {
-  reset();
-  playing = true;
-  el("replay").textContent = "Replay";
-});
-tell(problems.slice(0, 3));
+const intrinsic = things.filter(({ data }) => data.spin || data.flicker || data.drift || data.always);
+const scripted = things.filter(({ acts }) => acts.some(({ type }) => !["wait", "stop"].includes(type)));
+const subjects = [...new Set([...scripted, ...intrinsic])];
+const focusPoint = new THREE.Vector3();
+let ended = -1, time = 0, previous = null, playing = false;
+report.motion.planned = subjects.length > 0;
+Object.defineProperty(report, "sample", { get: () => scripted.map((thing) => ({
+  id: thing.id, action: thing.acts[thing.step]?.type ?? null, x: thing.x, y: thing.mesh.position.y, z: thing.z,
+  yaw: thing.mesh.rotation.y, tilt: thing.mesh.rotation.z, hug: thing.hug,
+})) });
 
-renderer.setAnimationLoop(() => {
-  const dt = Math.min(clock.getDelta(), 0.05), time = clock.elapsedTime;
+function advance(dt) {
+  time += dt;
   let busy = false;
   for (const thing of things) {
     const { data, mesh } = thing;
@@ -1372,25 +1407,83 @@ renderer.setAnimationLoop(() => {
     if (data.flicker) data.flicker.forEach((flame, index) => { flame.scale.set(1 + Math.sin(time * 9 + index) * 0.12, 1 + Math.sin(time * 13 + index * 2) * 0.2, 1 + Math.cos(time * 8 + index) * 0.12); });
     if (data.drift) {
       thing.x = thing.x > 60 ? -60 : thing.x + data.drift * dt;
-      if (thing.extra) mesh.position.x = thing.x;
+      mesh.position.x = thing.x;
     }
-    if (thing.extra) continue;
-    const moving = playing && act(thing, dt);
-    const open = thing.acts[thing.step];
-    if (open && !(open.forever || ["follow", "orbit", "spin"].includes(open.type) && !open.seconds || open.type === "fly" && !open.to && !open.point && !open.home && !open.way)) busy = true;
+    const moving = act(thing, dt);
+    if (thing.acts[thing.step]) busy = true;
     pose(thing, moving, dt, time);
   }
-  if (playing && !busy && !report.done) { report.done = true; ended = time; }
-  if (setup.loop && report.done && time - ended > 2) reset();
+  if (!busy && !report.done) { report.done = true; ended = time; }
+  if (setup.loop && scripted.length && report.done && time - ended > 1.5) reset();
   if (setup.follow) {
     const lead = first(setup.follow);
-    controls.target.lerp(new THREE.Vector3(lead.x, 1, lead.z), Math.min(1, dt * 2.5));
+    if (lead) controls.target.lerp(focusPoint.set(lead.x, 1, lead.z), Math.min(1, dt * 2.5));
   }
-  controls.update();
-  // the camera may have turned: keep the horizon and the sky meeting
-  if (setup.skyHue) { const line = horizonLine(); if (Math.abs(line - skyLine) > 0.002) paintSky(line); }
+}
+
+function subjectPose({ mesh, data }) {
+  const points = [mesh.position, mesh.rotation, ...(data.legs || []).map((part) => part.rotation),
+    ...(data.wings || []).map((part) => part.rotation), ...(data.flicker || []).map((part) => part.scale),
+    ...(data.spin || []).map(([part]) => part.rotation)];
+  return points.flatMap(({ x, y, z }) => [x, y, z]);
+}
+
+let opening = null;
+function draw() {
+  // Keep the far ground and the CSS sky meeting while the user orbits.
+  const line = horizonLine();
+  if (Math.abs(line - skyLine) > 0.002) paintSky(line);
   renderer.render(scene, camera);
+  report.motion.rendered++;
+  if (!opening) opening = subjects.map(subjectPose);
+  else if (!report.motion.observed) {
+    report.motion.observed = subjects.some((thing, index) => {
+      focusPoint.copy(thing.mesh.position).project(camera);
+      return Math.abs(focusPoint.x) < 1.08 && Math.abs(focusPoint.y) < 1.08 && focusPoint.z < 1 &&
+        subjectPose(thing).some((value, part) => Math.abs(value - opening[index][part]) > 0.018);
+    });
+  }
+  report.motion.waiting = scripted.length > 0 && scripted.every((thing) => thing.acts[thing.step]?.type === "wait");
+}
+
+function tick(ms) {
+  const dt = previous === null ? 0 : Math.min((ms - previous) / 1000, 0.2);
+  previous = ms;
+  if (dt > 0) {
+    const steps = Math.ceil(dt / 0.04);
+    for (let i = 0; i < steps; i++) advance(dt / steps);
+  }
+  controls.update(dt);
+  draw();
+  if (report.done && intrinsic.length === 0 && (!setup.loop || !scripted.length)) setPlaying(false);
+}
+
+function setPlaying(active) {
+  previous = null;
+  playing = active;
+  controls.enableDamping = active;
+  el("pause").textContent = active ? "Pause" : "Play";
+  renderer.setAnimationLoop(active ? tick : null);
+}
+
+controls.addEventListener("start", () => { adjustedCamera = true; });
+controls.addEventListener("change", () => { if (!playing) draw(); });
+addEventListener("resize", resize);
+reduced.addEventListener("change", () => { if (reduced.matches && playing) setPlaying(false); });
+el("transport").hidden = !report.motion.planned;
+el("pause").addEventListener("click", () => {
+  if (!playing && report.done) reset();
+  setPlaying(!playing);
 });
+el("replay").addEventListener("click", () => {
+  reset();
+  draw();
+  setPlaying(true);
+});
+reset();
+resize();
+setPlaying(report.motion.planned && !reduced.matches);
+tell(problems.slice(0, 3));
 </script>
 </body>
 </html>

@@ -4,6 +4,14 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-11-16
+
+- Added browser navigation with real tab history, numbered links, destination checks, and guarded Chrome rendering for public JavaScript pages.
+- Fixed the low-poly Three.js scene's dance and walk-to-hug choreography. Supported prompts with a named HTML file can write and check it directly. Render checks verify actor motion for these scenes.
+- Bounded recovery from truncated writes, kept dependent tool calls in order, and added direct execution for standalone calculations and dictated notes.
+- Grounded automatic memories in user messages and made note appends transactional. Expanded physics references with sourced free-fall and uncertainty-principle entries.
+- Bundled two advisory classifiers trained on Colab CPU runtimes. They suggest browser navigation and 3D workflows and run locally without a model server. Updated **How it works** with their scope and evaluation, the model lineage, and the active runtimes and artifacts.
+
 ### Added
 
 - **A small helper model for the background work.** Memory notes are now written by Qwen3 0.6B

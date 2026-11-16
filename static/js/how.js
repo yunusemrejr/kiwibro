@@ -836,7 +836,7 @@ function kiwiMind(root) {
 // Counts from the pack's own record of its training (manifest.json of Kiwi Mind 3.0.0).
 const LESSONS = { total: 6673, written: 3673, judged: 3000, trunk: 6130, held: 543 };
 const LOSS = { base: 1.4563, trained: 0.7386, quantized: 0.9898, layered: 0.9514, steps: 205 };
-const PACK = { gb: 2.6, layerMb: 41, ctx: 16384, minutes: 50, route: 93, calls: 93, pictures: 12000 };
+const PACK = { gb: 2.6, layerMb: 41, ctx: 16384, trunkMinutes: 17.1, route: 93, act: 93, named: 76, valid: 92, pictures: 12000 };
 const fmt = (value) => value.toLocaleString("en");
 const about = (value) => fmt(Math.round(value / 100) * 100);
 
@@ -969,13 +969,13 @@ const STOPS = [
     question: "What happens when you press Enter?",
     lines:
       "Your message never reaches the model alone. Kiwibro first adds what it knows (the [[context]]), the model writes, and a small reader called [[Kiwi Sense]] checks the draft. If the model asks for a [[tool]], Kiwibro runs it and the model continues with the result.",
-    fact: "The model and your data stay on this computer. Only web lookups go online.",
+    fact: "Local inference, notes and memory run on this computer. Web tools make network requests when used.",
     tech: {
       model: [["Kiwi Mind", "A 4-billion-parameter transformer (Spark X2.6 4B, fine-tuned) with eight LoRA skills and a vision layer, run by llama.cpp."]],
       app: [
         ["Local server", "Flask on 127.0.0.1. The reply is streamed to the window as server-sent events (SSE)."],
         ["One database", "Chats, memory and notes are in a single SQLite file on this computer."],
-        ["Agent loop", "Look first, write, check: up to 16 tool rounds for one message."],
+        ["Agent loop", "App code plans and checks work, and the model handles decisions that need language. Independent reads can run together. File writes and stateful calls run in order."],
       ],
     },
     build: bigPicture,
@@ -989,15 +989,16 @@ const STOPS = [
     tech: {
       model: [
         ["Full fine-tune, then IQ2_M", "Every weight of the base model was trained on Kiwibro's conversations. The result is stored as a GGUF file at IQ2_M, about 3.2 bits per weight, and the skills were trained on that squeezed file, so they fit exactly what runs here."],
-        ["Activated LoRA per turn", "Each skill is a low-rank adapter of rank 16 on layers 24 to 35 that switches on only where its turn's route ends. Everything before that point is read by the shared model alone, so a change of skill recomputes nothing."],
-        ["Route", "A ninth adapter writes the route in the model's thinking channel, for example \"code light act\", and a grammar holds it to that form. How strongly it leans to \"heavy\" decides whether the helper is asked."],
+        ["Eight skills", "Chat, web, code, terminal, computer, tools, write and see. Each is a rank-16 activated LoRA adapter on layers 24–35. The part of the prompt before activation uses the shared trunk and can stay in the cache across skill changes."],
+        ["Route", "A ninth adapter writes a short route such as \"code light act\". The first generation chooses the skill and weighs difficulty. Later steps reuse both and decide whether to speak or act."],
         ["Tool calls", "When the route says act, the reply opens as a tool call and a grammar holds it to the tools on offer and to valid JSON."],
         ["Vision", "A CLIP ViT-L/14 image encoder and a two-layer projector turn a picture into 256 tokens that the model reads like words."],
       ],
       app: [
-        ["llama.cpp", "Kiwi Mind runs on the same llama.cpp server as the helper models, on the graphics chip when there is one."],
-        ["Conductor", "Asks for the route, switches the skill on for the reply, and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
-        ["Little helper", "Qwen3 0.6B on two processor cores writes memory notes. It starts with the first note, ends after five idle minutes, and a memory note waits until no reply is being written. Without its file, Kiwi Mind writes them."],
+        ["Current pack", "llama.cpp loads kiwimind-trunk.gguf at IQ2_M and selects from route.gguf and eight skill GGUF files. vision.gguf supplies the image encoder and projector. manifest.json describes the files and their hashes."],
+        ["Optional answer model", "The helper you choose can write a heavy answer after Kiwi Mind has gathered evidence. It can also take over a turn when the app detects repeated failures."],
+        ["Little helper", "The optional Qwen3-0.6B Q8_0 from Qwen runs on two CPU threads. It handles background memory extraction and eligible summaries and unloads after five idle minutes. Memory extraction yields to active chat."],
+        ["Earlier Kiwi Mind", "The 2.x packs started from Qwen3-0.6B and used a 4-bit trunk, seven skill adapters and a custom C/WebAssembly engine. The bundled Kiwi Mind Wasm binaries support those packs. The current Spark-based pack runs with llama.cpp."],
       ],
     },
     build: kiwiMind,
@@ -1027,7 +1028,7 @@ const STOPS = [
     question: "How was Kiwi Mind trained?",
     lines:
       "Kiwi Mind did not start from nothing. Its base is [[Spark X2.6 4B]], an open model that already knows language. Training shows it a practice conversation, lets it guess each next word, and nudges its numbers a little toward the right one, over and over. Here all four billion of its numbers were free to move, which is called a full fine-tune. The result is then squeezed to about 3 bits per number ([[IQ2_M]]) so that it fits a laptop, and that costs some accuracy. So last, with the squeezed model frozen, eight thin [[skills]] and the layer that writes the [[route]] are trained on top of it.",
-    fact: `The training itself takes about ${PACK.minutes} minutes on one cloud graphics card.`,
+    fact: `The release manifest records ${PACK.trunkMinutes} minutes for the trunk fine-tune. Quantization, adapter training, vision training and evaluation are separate stages.`,
     tech: {
       model: [
         ["Base", "Spark X2.6 4B: 36 layers, each 2,560 numbers wide, with a vocabulary of 131,072 tokens. Some layers look at the whole conversation, the others at a sliding window of it."],
@@ -1035,12 +1036,12 @@ const STOPS = [
         ["What it gained", `Loss on the held-back conversations, lower is better: ${LOSS.base.toFixed(2)} as downloaded, ${LOSS.trained.toFixed(2)} after training, ${LOSS.quantized.toFixed(2)} once squeezed to IQ2_M, ${LOSS.layered.toFixed(2)} with the skill layers on.`],
         ["Squeezing", "The trained weights are converted to GGUF and quantized to IQ2_M with an importance matrix measured on the training conversations: the weights that matter most for them are stored most exactly."],
         ["Eight skills and the route", "With the squeezed trunk frozen, each one is an activated LoRA adapter of rank 16 on layers 24 to 35, trained on the very weights the file holds."],
-        ["Route", `On the held-back conversations the route names the right skill ${PACK.route}% of the time and opens a tool call where one is due ${PACK.calls}% of the time.`],
+        ["Held-out route accuracy", `The manifest reports ${PACK.route}% skill accuracy and ${PACK.act}% speak-or-act accuracy. In the tool-call evaluation, ${PACK.named}% named the expected tool and ${PACK.valid}% were valid calls. These measures describe the model outputs on the evaluation set.`],
         ["Vision", "The CLIP image encoder stays as it is. The projector behind it learns on 8,000 captioned photographs, then together with the see skill on 4,000 conversations about photographs."],
       ],
       app: [
         ["One script", "Train the trunk, squeeze it, train the layers, measure on the held-back set, export the pack."],
-        ["Parity check", "Before a pack is used, llama.cpp on this computer and the training code must name the same next token on 32 prompts."],
+        ["Parity check", "The training scripts can compare next-token behavior in llama.cpp with the training runtime. The app checks file hashes when accepting the pack."],
       ],
     },
     build: training,
@@ -1104,7 +1105,9 @@ const STOPS = [
       model: [["Function calling", "The model writes a tool's name and inputs as JSON between tool-call tags. Kiwi Mind was trained on Kiwibro's own tool list."]],
       app: [
         ["Risk grades", "Every call is graded safe, low, medium, high or critical. Risky ones ask you first. Critical ones never run."],
-        ["Sandbox", "Commands run inside bubblewrap in a systemd scope: the system is read-only, only the workspace can be written, memory is capped."],
+        ["Browser tools", "Open and inspect a tab, follow links returned by the page, switch tabs or use back history. An explicitly requested URL can open before generation. Results name the current destination and go through the same tool and evidence checks."],
+        ["Recovery and limits", "Malformed calls get a correction. A write cut off at the output limit is refused, then the next round asks for a smaller complete change. Repeated truncated writes stop the turn with the remaining work visible."],
+        ["Sandbox", "Commands can run inside bubblewrap in a systemd scope with writable paths, network access and resource limits governed by app settings and tool policy."],
         ["Safe copy", "Work happens in a copy tracked by git. The real folder changes only after you have seen the diff and an undo command that was tried first."],
       ],
     },
@@ -1120,9 +1123,10 @@ const STOPS = [
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["47 kits", "Web pages, 3D scenes, music, dashboards, tables, charts, flowcharts, servers, terminal apps, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
-        ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
-        ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
+        ["47 kits", "Web pages, 3D scenes, music, dashboards, tables, charts, flowcharts, servers, terminal apps, command-line tools, scripts, tests and Ubuntu apps. Files pass the same safety checks as other writes."],
+        ["30 recipes", "For code, the browser, the terminal, documents and data. The steps use Kiwibro's tools and arrive with the message."],
+        ["3D and animation", "The scene kit handles supported actors, movement, sky and ground. Requests outside that set use a custom scene. Page checks look for load errors, layout and visible motion. The 3D kit exposes actor motion separately from camera movement."],
+        ["Exact answers", "Standalone arithmetic and unit conversions use the calculator directly. Longer problems can include code-computed values in context. The physics reference supplies formulas and assumptions for supported topics."],
       ],
     },
     build: readyParts,
@@ -1155,7 +1159,7 @@ const STOPS = [
       model: [["Reading, not recalling", "A small model half-remembers a date, a formula or a command flag. With the entry in front of it, it reads the fact instead of guessing it."]],
       app: [
         ["Matching by code", "Rare words weigh most. Everything specific in the question has to be in the entry, and its subject in the entry's title. A word the reference has never seen means no match."],
-        ["Which questions", "Only questions about a subject: what is, who was, when did, how do I. Your files, this chat and today's news are left to the tools and the web."],
+        ["What goes into context", "A strong topic match provides a short passage. Physics entries can give the formula, units, approximation and source. Live facts and details of the current workspace come from tools."],
         ["Size", "Half a megabyte of plain text today, with a hard limit of 200 MB. Nothing writes to it while Kiwibro runs."],
       ],
     },
@@ -1187,13 +1191,16 @@ const STOPS = [
     fact: "Kiwi Sense is 25 KB of WebAssembly with 5.5 MB of data, and it works the same with every model. It reads English.",
     tech: {
       model: [
-        ["Static embeddings", "29,528 word pieces with 64 numbers each, distilled from the embedding model potion-base-2M and stored in 8 bits."],
+        ["Static embeddings", "29,528 word pieces with 64 numbers each, distilled from the embedding model potion-base-2M and stored in 8 bits in sense.bin."],
         ["Probe", "A six-class classifier on the sentence embedding that spots drift."],
-        ["Five helpers", "Hashed text features into one hidden layer each: language, intent, time phrases, topic change, memory relevance."],
+        ["Five helpers", "Small classifiers inside sense.bin read language, intent, time phrases, topic changes and memory relevance. Their outputs help the app choose what context to include."],
+        ["Two Colab-trained specialists", "Quantized classifiers recognize browser navigation and 3D workflows. The browser hint can suggest how to inspect state and verify a destination. The 3D hint can suggest how to frame, animate, or verify a scene. A low-confidence result adds no instructions."],
       ],
       app: [
         ["Steering", "When the probe fires, the draft is stopped and asked again with a short note."],
-        ["One file, two places", "25 KB of C compiled to WebAssembly. The same file runs in the window and on the server."],
+        ["Runtime", "The C reader compiles to the bundled sense.wasm binary. The browser runs that binary. The server uses it with wasmtime when available, or uses the Python implementation."],
+        ["Specialist bundle", "specialists-v1.json.gz holds both classifiers in about 32 KB. They run in Python on the CPU and share short hints with Kiwi Mind or the selected helper. The tool layer still checks actions. Both together took 1.76 ms at the 95th percentile on the development device."],
+        ["Held-out requests", "The browser specialist gave the right hint on 17 of 20 supported requests. The 3D specialist did so on 28 of 48. Both abstained on all 20 out-of-scope requests in their respective final evaluations."],
       ],
     },
     build: kiwiSense,
@@ -1210,7 +1217,8 @@ const STOPS = [
       app: [
         ["Full-text search (SQLite FTS5)", "The words of your message are matched against an index of memories and notes."],
         ["Embedding fallback", "When no word matches, Kiwi Sense picks the closest memory by cosine similarity."],
-        ["Extraction", "After a reply, new facts are saved as add, update or delete steps, five at most. Near-duplicates are merged."],
+        ["Direct capture", "Code saves clear statements about you and handles dictated notes in the notebook. Explicit note text stays out of automatic memory extraction."],
+        ["Extraction", "After a reply, a background job can propose up to five memory operations. User statements supply the evidence, numeric details must appear in those statements and near-duplicates are merged."],
       ],
     },
     build: memoryNotes,

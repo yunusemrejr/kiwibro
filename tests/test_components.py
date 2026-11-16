@@ -157,7 +157,7 @@ def test_library_matches_the_reference_catalog(train):
 def test_the_library_loads_the_3d_scene_kit():
     scene = components.Library(LIBRARY).get("web/scene-3d")
     assert scene.kind == components.KIT
-    assert list(scene.blanks) == ["title", "scene", "sky", "ground"]
+    assert list(scene.blanks) == ["title", "scene", "sky", "ground", "filename"]
     assert scene.file_paths() == ["index.html"]
 
 
@@ -193,6 +193,8 @@ def test_kit_files_survive_their_defaults(tmp_path: Path):
         source_root = path.parent / "files"
         out = tmp_path / data["name"].replace("/", "-")
         max_lines, max_bytes = (BIG_LINES, BIG_BYTES) if data["name"] in BIG_KITS else (LINES, BYTES)
+        if data["name"] == "web/scene-3d":
+            max_lines, max_bytes = 1550, 86 * 1024  # includes choreography and playback controls
         for relative in kit_files(source_root):
             source = source_root / relative
             name = HOLDER.sub(lambda match: defaults[match.group(1)], relative)
@@ -655,6 +657,36 @@ def test_the_scene_kit_without_values_writes_its_default_scene(tmp_path: Path):
     components.use("web/scene-3d", workspace=ws)
     page = (ws.root / "index.html").read_text(encoding="utf-8")
     assert "dog walks to house" in page
+
+
+def test_a_supported_scene_uses_the_requested_file_name(tmp_path: Path):
+    ws = Workspace(tmp_path)
+    values = components.scene_request(
+        "Create a single HTML file named dance.htm with a three.js animation of a penguin dancing. "
+        "Make sure it works and looks good. Sky should be purple."
+    )
+    assert values == {
+        "filename": "dance.htm", "title": "Penguin dancing", "scene": "penguin dances\nrepeat", "sky": "purple"
+    }
+    output = components.use("web/scene-3d", values, workspace=ws)
+    assert "dance.htm" in output
+    assert "penguin dances\nrepeat" in (ws.root / "dance.htm").read_text(encoding="utf-8")
+    assert not (ws.root / "index.html").exists()
+    with pytest.raises(components.ComponentError, match="single .html or .htm file name"):
+        components.use("web/scene-3d", {**values, "filename": "../oops.html"}, workspace=ws)
+    with pytest.raises(components.ComponentError, match="already exists"):
+        components.use("web/scene-3d", values, workspace=ws)
+
+
+@pytest.mark.parametrize("message", [
+    "Make a 3D animation of a fox walking to a house with sound.",
+    "Make an offline page with a kiwi dancing.",
+    "Create a hand-drawn animation of a bird flying to a tree.",
+    "Make a 3D animation of a toy walking to a custom shader.",
+    "Create ../scene.html of a bird flying to a tree.",
+])
+def test_other_scene_requests_are_left_to_the_build_turn(message):
+    assert components.scene_request(message) is None
 
 
 def test_the_scene_kit_advice_explains_its_blanks():

@@ -2,15 +2,15 @@
   "name": "web/scene-3d",
   "kind": "kit",
   "title": "3D scene",
-  "summary": "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, hugs, follows, orbits), with a sky in any colour.",
-  "when": "Use when the user wants something in 3D, a three.js or WebGL page, a 3D simulation, or an animated scene of things that walk, drive, fly or hug, with a sky of any colour.",
+  "summary": "One HTML file with a low-poly three.js scene of familiar objects and actions: walk, run, fly, drive, dance, hug, follow or orbit. Uses a pinned three.js CDN.",
+  "when": "Use for scenes built from the kit's shapes and actions. For a bespoke visual style, a custom model or shader, or an offline deliverable, choose a recipe or an implementation that supports those requirements.",
   "blanks": {
     "title": {
       "about": "A short name for the scene, shown in the browser tab and on the page.",
       "default": "A dog comes home"
     },
     "scene": {
-      "about": "What happens in the scene, in plain words, no code. The user's own sentence works: \"a dog walks to a house and stops\", or \"a kiwi walking towards a tree and hugging it\" (it walks up and leans in against the tree). More lines, separated by \\n, add things and actions: \"tree at 4 0\", \"bird flies to tree\", \"car drives to house\".",
+      "about": "One known object or action per line. Examples: \"dog walks to house and stops\", \"kiwi walks to tree and hugs it\", \"kiwi dances\", \"tree at 4 0\". A line with \"repeat\" replays finite actions.",
       "default": "house at 5 -1\ntree at -2 -4\ndog at -7 2\ndog walks to house"
     },
     "sky": {
@@ -20,9 +20,13 @@
     "ground": {
       "about": "The ground: grass, sand, snow, water, stone, dirt or moon.",
       "default": "grass"
+    },
+    "filename": {
+      "about": "The requested file name in the output folder, such as scene.html.",
+      "default": "index.html"
     }
   },
-  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the scene shows. Only when the user asks for a change: edit the plain lines inside <script id=\"scene\"> in index.html with replace_in_file, for example the line \"sky day\" (the comment above them lists every thing and action).",
+  "next": "Use look_at_page to check rendering and motion. If the scene needs repair, update the plain lines inside <script id=\"scene\"> in the written file. Report what the checks confirmed.",
   "match": [
     "3d",
     "3d scene",
@@ -46,13 +50,26 @@
     "flies to",
     "drives to",
     "hugs",
-    "hugging"
+    "hugging",
+    "dances",
+    "dancing",
+    "three js animation"
   ],
   "unless": [
     "3d printer",
     "3d printing",
     "3d print",
-    "3d printed"
+    "3d printed",
+    "hand drawn",
+    "offline",
+    "custom shader",
+    "glb",
+    "gltf",
+    "sound effects",
+    "with sound",
+    "anatomy",
+    "cutaway",
+    "exploded view"
   ],
   "finished": true,
   "change": "Make one call per change: replace_in_file(path=\"{file}\", old=\"sky day\", new=\"sky night\") changes the sky (day, dawn, sunset, night); old=\"ground grass\" changes the ground (grass, sand, snow, water, stone, dirt, moon). To add a thing or an action, put it after the ground line: old=\"ground grass\", new=\"ground grass\\nbird flies to tree\".",
