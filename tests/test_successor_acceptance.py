@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import base64
+from collections import Counter
 import hashlib
 import io
 import json
@@ -38,7 +39,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 import pytest
@@ -151,6 +152,7 @@ def acceptance(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pyte
 def turn(
     env: Env, prompt: str, allowed: set[str], *, allowed_paths: set[str] | None = None,
     command: tuple[str, str] | None = None, attachments: list[dict] | None = None,
+    conversation_id: str | None = None, observer: Callable[[dict], None] | None = None,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
     # Keep generated code in scratch space. The test driver may approve only
     # the predeclared test invocation and edits to the requested fixture file.
@@ -158,36 +160,70 @@ def turn(
     permissions = {name: ("ask" if name in writes | {"run_command"} else "auto") if name in allowed else "deny"
                    for name in tools.tool_names()}
     env.settings_patch({"autonomy": "supervised", "memory_enabled": False, "temperature": 0,
-                        "tool_profile": "full", "max_tool_rounds": 16, "reasoning": "off",
+                        "tool_profile": "full", "max_tool_rounds": 16,
+                        "reasoning": os.environ.get("KIWIBRO_ACCEPTANCE_REASONING", "off"),
                         "permissions": permissions})
     payload: dict[str, Any] = {"message": prompt}
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
     if attachments:
         payload["attachments"] = attachments
     native = env.fake is None and bool(os.environ.get(NATIVE_DATA))
     if env.fake is None:
         payload["model"] = KIWIMIND if native else os.environ["KIWIBRO_ACCEPTANCE_MODEL"]
+    started = time.monotonic()
     response = env.client.post("/api/chat", json=payload, buffered=False)
     assert response.status_code == 200, response.get_data(as_text=True)
     stream = SSEStream(response).start()
-    timeout = 45 if env.fake else 300
-    deadline = time.monotonic() + timeout
+    timeout = float(os.environ.get("KIWIBRO_ACCEPTANCE_TURN_TIMEOUT", 45 if env.fake else 300))
+    deadline = started + timeout
     handled = set()
-    while not stream.done.wait(0.04):
-        if time.monotonic() > deadline:
-            meta = next((data for event, data in stream.events if event == "meta"), {})
-            env.new_client().post("/api/chat/stop", json={"conversation_id": meta.get("conversation_id")})
-            pytest.fail(f"Acceptance timeout; events={stream.names()}")
+    timed_out = False
+    try:
+        while not stream.done.wait(0.04):
+            if time.monotonic() >= deadline:
+                timed_out = True
+                pytest.fail(f"Acceptance timeout; events={stream.names()}")
+            with stream._lock:
+                approvals = [data for event, data in stream.events
+                             if event == "approval" and data["approval_id"] not in handled]
+            for approval in approvals:
+                identity, name, args = approval["approval_id"], approval["tool"], approval["args"]
+                permitted = name in writes and args.get("path") in (allowed_paths or set())
+                if name == "run_command" and command:
+                    permitted = (args.get("command"), args.get("cwd")) == command and simple_policy(env.workspace)
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    pytest.fail("Acceptance timeout before a tool approval")
+                result = env.new_client().post(
+                    f"/api/approvals/{identity}", json={"decision": "allow" if permitted else "deny"},
+                )
+                assert result.status_code == 200
+                handled.add(identity)
+        events = stream.finish(timeout=timeout)
+        if time.monotonic() >= deadline:
+            timed_out = True
+            pytest.fail("Acceptance timeout waiting for the terminal event")
+    finally:
         with stream._lock:
-            approvals = [data for event, data in stream.events if event == "approval" and data["approval_id"] not in handled]
-        for approval in approvals:
-            identity, name, args = approval["approval_id"], approval["tool"], approval["args"]
-            permitted = name in writes and args.get("path") in (allowed_paths or set())
-            if name == "run_command" and command:
-                permitted = (args.get("command"), args.get("cwd")) == command and simple_policy(env.workspace)
-            result = env.new_client().post(f"/api/approvals/{identity}", json={"decision": "allow" if permitted else "deny"})
-            assert result.status_code == 200
-            handled.add(identity)
-    events = stream.finish(timeout=timeout)
+            observed = list(stream.events)
+        meta = next((data for event, data in observed if event == "meta"), {})
+        if not stream.done.is_set():
+            if active := meta.get("conversation_id"):
+                env.new_client().post("/api/chat/stop", json={"conversation_id": active})
+            stream.done.wait(3)
+        if observer:
+            done = next((data for event, data in observed if event == "done"), {})
+            observer({
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+                "timed_out": timed_out, "context": {key: value for key, value in meta.get("context", {}).items()
+                                                     if key in {"used", "budget", "percent"}},
+                "usage": done.get("usage"), "same_chat": not conversation_id or meta.get("conversation_id") == conversation_id,
+                "successful_tools": dict(Counter(data["name"] for event, data in observed
+                                                 if event == "tool_result" and data["ok"] and data["name"] in allowed)),
+                "failed_tools": dict(Counter(data["name"] for event, data in observed
+                                             if event == "tool_result" and not data["ok"] and data["name"] in allowed)),
+            })
     assert events[0][0] == "meta"
     assert events[-1][0] == "done", [(name, data) for name, data in events if name == "error"]
     assert not events[-1][1]["aborted"]
@@ -195,7 +231,8 @@ def turn(
         assert events[0][1]["model"] == events[-1][1]["model"] == KIWIMIND
         assert any(event == "brain" and data["brain"] == KIWIMIND for event, data in events)
     conversation = events[0][1]["conversation_id"]
-    detail = env.client.get(f"/api/conversations/{conversation}")
+    assert not conversation_id or conversation == conversation_id
+    detail = env.client.get(f"/api/conversations/{conversation}?warm=0")
     assert detail.status_code == 200
     return events, detail.get_json()["messages"]
 
@@ -373,7 +410,9 @@ document.addEventListener("DOMContentLoaded", () => {
     assert result.report["w"] == 360 and result.report["sw"] <= 360
 
 
-def test_attachment_to_interactive_rendered_artifact(acceptance: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attachment_to_interactive_rendered_artifact(
+    acceptance: Env, monkeypatch: pytest.MonkeyPatch, offline_chrome: Path,
+) -> None:
     env = acceptance
     if not pagecheck.find_chrome():
         pytest.skip("Chrome is required to measure the artifact and the control state.")
