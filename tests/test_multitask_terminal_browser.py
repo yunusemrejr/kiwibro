@@ -77,6 +77,28 @@ def test_workspace_grep_files(workspace: Workspace):
     assert len(ci_results["matches"]) == 2
 
 
+def test_workspace_grep_resolves_internal_aliases_and_skips_cycles(workspace: Workspace):
+    root = workspace.root
+    workspace.write_file("src/code.txt", "above\nneedle\nbelow")
+    workspace.write_file(".hidden/code.py", "needle")
+    (root / "alias.py").symlink_to(root / "src/code.txt")
+    (root / "src/back").symlink_to(root, target_is_directory=True)
+    outside = root.parent / "outside.py"
+    outside.write_text("needle secret")
+    (root / "escape.py").symlink_to(outside)
+    (root / "escape-directory").symlink_to(outside.parent, target_is_directory=True)
+    (root / "binary.py").write_bytes(b"needle\x00")
+
+    result = workspace.grep_files("needle", glob="*.py", context_lines=1)
+
+    assert result["files_searched"] == 1
+    assert result["matches"] == [{
+        "path": "src/code.txt", "line": 2, "text": "needle",
+        "context": ["1- above", "2: needle", "3- below"],
+    }]
+    assert workspace.grep_files("needle", path="src/code.txt", max_results=1)["truncated"]
+
+
 def test_workspace_batch_read_file(workspace: Workspace):
     workspace.write_file("doc1.txt", "First doc line 1\nFirst doc line 2")
     workspace.write_file("doc2.txt", "Second doc line 1")

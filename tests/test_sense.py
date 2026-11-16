@@ -58,6 +58,12 @@ def test_normalize_puts_cjk_characters_apart():
     assert sense.normalize("日本") == "日 本"
 
 
+def test_ascii_normalize_matches_the_unicode_path_for_every_ascii_character():
+    for codepoint in range(128):
+        sample = f"A{chr(codepoint)}B"
+        assert sense.normalize(sample) == sense.normalize(f"{sample} 日本").removesuffix(" 日 本")
+
+
 def test_prose_drops_code_and_markup():
     text = "## Title\nUse `rm -rf` **carefully**.\n```sh\nI am ChatGPT\n```\nSee [docs](http://x.y)."
     cleaned = sense.prose(text)

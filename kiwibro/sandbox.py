@@ -9,14 +9,16 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import config, safety
 
@@ -180,6 +182,96 @@ def _iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_SEARCH_FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+
+
+def _open_descendant(root_fd: int, relative: str, flags: int) -> int:
+    """Open a validated workspace-relative path without following replacement links."""
+    parts = relative.split("/")
+    parent_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            child_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = child_fd
+        return os.open(parts[-1], flags, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _search_files(root: Path, target: Path, glob: str | None) -> Iterator[tuple[str, bytes]]:
+    """Yield canonical workspace-relative paths and bounded file contents in search order."""
+    def wanted(name: str, relative: str) -> bool:
+        return not glob or fnmatch.fnmatch(name, glob) or fnmatch.fnmatch(relative, glob)
+
+    def read(fd: int) -> bytes | None:
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_READ_BYTES:
+                data = source.read(MAX_READ_BYTES + 1)
+                if len(data) <= MAX_READ_BYTES and b"\x00" not in data[:2048]:
+                    return data
+        return None
+
+    initial = target.relative_to(root).as_posix()
+    try:
+        root_fd = os.open(root, _DIRECTORY_FLAGS)
+    except OSError:
+        return
+    try:
+        if target.is_file():
+            if wanted(target.name, initial):
+                try:
+                    data = read(_open_descendant(root_fd, initial, _SEARCH_FILE_FLAGS))
+                except OSError:
+                    return
+                if data is not None:
+                    yield initial, data
+            return
+        stack: list[tuple[str, frozenset[str]]] = [(initial, frozenset())]
+        while stack:
+            directory, ancestors = stack.pop()
+            if directory in ancestors:
+                continue  # an internal symlink points back to a directory we just walked
+            try:
+                directory_fd = _open_descendant(root_fd, directory, _DIRECTORY_FLAGS)
+            except OSError:
+                continue
+            try:
+                lineage = ancestors | {directory}
+                with os.scandir(directory_fd) as entries:
+                    children = sorted(entries, key=lambda entry: entry.name.lower())
+                for child in children:
+                    name = child.name
+                    if name.startswith(".") or name in PRUNED_DIRS:
+                        continue
+                    relative = name if directory == "." else f"{directory}/{name}"
+                    try:
+                        linked = child.is_symlink()
+                        if linked:
+                            try:
+                                relative = (root / relative).resolve(strict=True).relative_to(root).as_posix()
+                            except (ValueError, RuntimeError):
+                                continue  # an escaping or cyclic symlink
+                        if child.is_dir():
+                            stack.append((relative, lineage))
+                        elif child.is_file() and wanted(name, relative):
+                            fd = (_open_descendant(root_fd, relative, _SEARCH_FILE_FLAGS) if linked else
+                                  os.open(name, _SEARCH_FILE_FLAGS, dir_fd=directory_fd))
+                            data = read(fd)
+                            if data is not None:
+                                yield relative, data
+                    except OSError:
+                        continue  # vanished or inaccessible entry
+            except OSError:
+                continue
+            finally:
+                os.close(directory_fd)
+    finally:
+        os.close(root_fd)
+
+
 class Workspace:
     """A root directory every file/command tool is confined to."""
 
@@ -328,67 +420,30 @@ class Workspace:
         files_searched = 0
         truncated = False
 
-        def candidate_files(target: Path):
-            if target.is_file():
-                yield target
-                return
-            stack = [target]
-            while stack:
-                current = stack.pop()
-                try:
-                    children = sorted(current.iterdir(), key=lambda item: item.name.lower())
-                except OSError:
-                    continue
-                for child in children:
-                    if child.name.startswith(".") or child.name in PRUNED_DIRS:
-                        continue
-                    try:
-                        resolved_child = child.resolve()
-                        if resolved_child != root and not resolved_child.is_relative_to(root):
-                            continue
-                    except OSError:
-                        continue
-                    if child.is_dir():
-                        stack.append(child)
-                    elif child.is_file():
-                        yield child
-
-        for file_path in candidate_files(resolved):
-            rel = self.public(file_path)
-            if glob and not (fnmatch.fnmatch(file_path.name, glob) or fnmatch.fnmatch(rel, glob)):
-                continue
-            try:
-                stat = file_path.stat()
-                if stat.st_size > MAX_READ_BYTES or stat.st_size == 0:
-                    continue
-                raw = file_path.read_bytes()
-            except OSError:
-                continue
-            if b"\x00" in raw[:2048]:
-                continue
-            files_searched += 1
-            text = raw.decode("utf-8", errors="replace")
-            lines = text.splitlines()
-            for idx, line in enumerate(lines):
-                if compiled.search(line):
-                    entry: dict[str, Any] = {
-                        "path": rel,
-                        "line": idx + 1,
-                        "text": line[:400],
-                    }
-                    if context_lines > 0:
-                        lo = max(0, idx - context_lines)
-                        hi = min(len(lines), idx + context_lines + 1)
-                        entry["context"] = [
-                            f"{line_no + 1}{':' if line_no == idx else '-'} {lines[line_no][:300]}"
-                            for line_no in range(lo, hi)
-                        ]
-                    matches.append(entry)
-                    if len(matches) >= max_results:
-                        truncated = True
-                        break
-            if truncated:
-                break
+        with closing(_search_files(root, resolved, glob)) as candidates:
+            for rel, raw in candidates:
+                files_searched += 1
+                lines = raw.decode("utf-8", errors="replace").splitlines()
+                for idx, line in enumerate(lines):
+                    if compiled.search(line):
+                        entry: dict[str, Any] = {
+                            "path": rel,
+                            "line": idx + 1,
+                            "text": line[:400],
+                        }
+                        if context_lines > 0:
+                            lo = max(0, idx - context_lines)
+                            hi = min(len(lines), idx + context_lines + 1)
+                            entry["context"] = [
+                                f"{line_no + 1}{':' if line_no == idx else '-'} {lines[line_no][:300]}"
+                                for line_no in range(lo, hi)
+                            ]
+                        matches.append(entry)
+                        if len(matches) >= max_results:
+                            truncated = True
+                            break
+                if truncated:
+                    break
 
         return {
             "pattern": pattern,

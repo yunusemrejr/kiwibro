@@ -38,6 +38,11 @@ CACHE_SIZE = 1024
 MEANING_MATCH = 0.42
 
 _ASCII_PUNCT = frozenset(range(33, 48)) | frozenset(range(58, 65)) | frozenset(range(91, 97)) | frozenset(range(123, 127))
+_ASCII_NORMALIZE = {
+    **dict.fromkeys((*range(32), 127)),
+    **dict.fromkeys((9, 10, 13), " "),
+    **{code: f" {chr(code)} " for code in _ASCII_PUNCT},
+}
 _CJK_RANGES = (
     (0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF), (0x2A700, 0x2B73F),
     (0x2B740, 0x2B81F), (0x2B820, 0x2CEAF), (0xF900, 0xFAFF), (0x2F800, 0x2FA1F),
@@ -54,8 +59,11 @@ def normalize(text: str) -> str:
 
     This is the text form the core expects (it matches the tokenizer the embeddings
     were made with)."""
+    text = text[:MAX_CHARS].lower()
+    if text.isascii():
+        return " ".join(text.translate(_ASCII_NORMALIZE).split())
     out: list[str] = []
-    for ch in unicodedata.normalize("NFD", text[:MAX_CHARS].lower()):
+    for ch in unicodedata.normalize("NFD", text):
         category = unicodedata.category(ch)
         if category == "Mn":
             continue
