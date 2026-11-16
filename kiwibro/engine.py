@@ -53,6 +53,7 @@ LMSTUDIO_ROOTS = ("~/.lmstudio", "~/.var/app/ai.lmstudio.lm-studio/.lmstudio")
 EXTRA_MODEL_DIRS = ("~/.cache/lm-studio/models", "~/.cache/llama.cpp")
 # Where a model file lives: only Kiwibro's own can be deleted from the app.
 SOURCE_OWN, SOURCE_FOLDER, SOURCE_LMSTUDIO, SOURCE_SHARED = "kiwibro", "folder", "lmstudio", "shared"
+SOURCE_MIND = "kiwimind"
 SOURCE_LABELS = {
     SOURCE_OWN: "Kiwibro", SOURCE_FOLDER: "Your folder", SOURCE_LMSTUDIO: "LM Studio", SOURCE_SHARED: "This computer",
 }
@@ -714,8 +715,8 @@ def server_args(
         args.append("--jinja")  # the model's own template: tool calls and the thinking switch
     if has("--flash-attn"):
         args += ["--flash-attn", "auto"]
-    if has("--reasoning-format"):
-        args += ["--reasoning-format", "deepseek"]  # thinking arrives as reasoning_content
+    if has("--reasoning-format") and model.source != SOURCE_MIND:
+        args += ["--reasoning-format", "deepseek"]  # managed models use template auto-detection
     if has("--cache-reuse"):
         args += ["--cache-reuse", str(CACHE_REUSE_CHUNK)]
     if cache_ram_mb is not None and has("--cache-ram"):
@@ -748,8 +749,12 @@ def server_args(
 class DirectEngine:
     """Runs one llama-server child per loaded model; thread-safe."""
 
-    def __init__(self, settings_provider: Callable[[], dict[str, Any]], data_dir: str | Path | None = None) -> None:
+    def __init__(
+        self, settings_provider: Callable[[], dict[str, Any]], data_dir: str | Path | None = None, *,
+        managed: dict[str, Callable[[], LocalModel | None]] | None = None,
+    ) -> None:
         self._settings = settings_provider
+        self._managed = dict(managed or {})
         self._data_dir = Path(data_dir).expanduser() if data_dir else None
         self.api_key = secrets.token_urlsafe(24)
         self._scanner = ModelScanner()
@@ -866,6 +871,8 @@ class DirectEngine:
         if not model_id:
             return None
         wanted = str(model_id).strip().lower()
+        if wanted in self._managed:
+            return self._managed[wanted]()
         models = self.models()
         for model in models:
             if model.id == wanted:
@@ -986,7 +993,8 @@ class DirectEngine:
             with self._lock:
                 server = self._servers.get(model.id)
                 wanted_ctx = self._window(model, context_length or (server.context_length if server else None))
-                wanted_par = 1 if model.embeddings else int(parallel or (server.parallel if server else DEFAULT_PARALLEL))
+                default_parallel = 2 if model.id in self._managed else DEFAULT_PARALLEL
+                wanted_par = 1 if model.embeddings else int(parallel or (server.parallel if server else default_parallel))
                 if server and server.alive() and (context_length is None or server.context_length == wanted_ctx) \
                         and (parallel is None or server.parallel == wanted_par):
                     return server
@@ -1037,7 +1045,7 @@ class DirectEngine:
         self._make_room(model)
         last: EngineError | None = None
         attempts = [(runtime, spec) for runtime in runtimes[:RUNTIME_TRIES] for spec in (True, False)]
-        loras = self.adapters_for(model)
+        loras = () if model.id in self._managed else self.adapters_for(model)
         if loras:  # an adapter that does not fit must never keep the model from starting
             attempts.insert(1, (attempts[0][0], attempts[0][1]))
         for index, (runtime, speculative) in enumerate(attempts):

@@ -9,15 +9,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from ..engine import DirectEngine, LocalModel
 from ..llm import ChatResult, Completion, LLMError, TurnAborted
 from . import KIWIMIND
 from .client import MindClient
 from .conductor import Conductor, Settings, has_images
 from .conductor3 import Conductor3
-from .host import MindHost, find_node
+from .host import MindHost, _rss, find_node
 from .little import Little
 from .llama import NO_RUNTIME, LlamaClient, LlamaHost, LlamaRuntime
-from .pack import LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, TRUNK, Pack
+from .native_generic import NATIVE_FORMAT, NATIVE_MODEL, NativeChatClient, NativeConductor, describe_pack
+from .pack import LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, TRUNK, TRUNK3, Pack, PackError
 
 log = logging.getLogger(__name__)
 
@@ -36,10 +38,14 @@ class Mind:
         self, data_dir: str | Path | None, *, helper: Callable[[], dict[str, Any] | None],
         helper_stream: Callable[..., ChatResult], base_url: str | None = None, node: str | None = None,
         runtime: Callable[[], LlamaRuntime | None] | None = None,
+        native_engine: Callable[[], DirectEngine] | None = None,
     ) -> None:
         self.enabled = data_dir is not None
         folder = data_dir if data_dir is not None else Path("/nonexistent-kiwibro")
         self.pack = Pack(folder, base_url=base_url)
+        self.candidate_pack = Pack(folder, base_url=base_url, subdir="candidate", prefix="candidate", entry=TRUNK3,
+                                   expected={"engine": "llama", "format": NATIVE_FORMAT})
+        self._native = NativeChatClient(native_engine) if native_engine is not None else None
         self.legacy_pack = Pack(folder, base_url=base_url, subdir="legacy", revision=LEGACY_REVISION, entry=TRUNK,
                                 expected={"base": "Qwen/Qwen3-0.6B"})
         self.memory_pack = Pack(folder, base_url=base_url, subdir="experts", prefix="experts",
@@ -66,6 +72,7 @@ class Mind:
         self.memory_expert = Little(data_dir, self.runtime, self._chat_busy, model_file=self._memory_file,
                                     model_name="Kiwi Mind Memory Expert", log_name="memory-expert.log")
         self.pack.on_installed = self._installed
+        self.candidate_pack.on_installed = self._candidate_installed
         self.legacy_pack.on_installed = self.legacy_host.stop
         self.memory_pack.on_installed = self.memory_expert.stop
         atexit.register(self.stop)
@@ -90,8 +97,48 @@ class Mind:
         if self.pack.engine() != self.engine:
             self._build()
 
+    @property
+    def native_mode(self) -> bool:
+        return self._native is not None
+
     def download_pack(self, target: str) -> Pack | None:
+        if target == "candidate" or (self.native_mode and target == "primary"):
+            return self.candidate_pack
+        if self.native_mode:
+            return None
         return {"primary": self.pack, "legacy": self.legacy_pack, "memory": self.memory_pack}.get(target)
+
+    def _candidate_installed(self) -> None:
+        if self._native is not None:
+            self._native.unload()
+
+    def managed_native_model(self) -> LocalModel | None:
+        if self._native is None:
+            return None
+        try:
+            return describe_pack(self.candidate_pack).model
+        except PackError:
+            return None
+
+    def _candidate_conductor(self) -> NativeConductor:
+        assert self._native is not None
+        try:
+            candidate = describe_pack(self.candidate_pack)
+        except PackError as exc:
+            raise LLMError("engine", str(exc)) from exc
+        return NativeConductor(self._native, candidate)
+
+    def _candidate_reason(self) -> str:
+        if not self.enabled:
+            return "Kiwi Mind is not available here."
+        state = self.candidate_pack.check()
+        if not state.ok:
+            return state.reason
+        try:
+            describe_pack(self.candidate_pack)
+        except PackError as exc:
+            return str(exc)
+        return "" if self.runtime() is not None else NO_RUNTIME
 
     def _memory_file(self) -> Path | None:
         return self.memory_pack.path(MEMORY_FILE) if self.enabled and self.memory_pack.check().ok else None
@@ -102,7 +149,7 @@ class Mind:
     # --- is it usable --------------------------------------------------------------
 
     def ctx(self) -> int:
-        return self._ctx(self.pack)
+        return self._ctx(self.candidate_pack if self.native_mode else self.pack)
 
     @staticmethod
     def _ctx(pack: Pack) -> int:
@@ -127,6 +174,9 @@ class Mind:
 
     def sees(self) -> bool:
         """Whether the installed pack has vision layers, and the skill that reads what they pass on."""
+        if self.native_mode:
+            model = self.managed_native_model()
+            return bool(model and model.projector)
         return not self._legacy_active() and self._primary_sees()
 
     def _primary_sees(self) -> bool:
@@ -187,7 +237,9 @@ class Mind:
         return bool(self.primary_reason()) and self._legacy_ready()
 
     def reason(self) -> str:
-        """Why Kiwi Mind cannot be used right now ("" when either pack can run)."""
+        """Why the selected Kiwi Mind runtime cannot be used right now."""
+        if self.native_mode:
+            return self._candidate_reason()
         why = self.primary_reason()
         return "" if not why or self._legacy_ready() else why
 
@@ -196,6 +248,20 @@ class Mind:
 
     def model_info(self) -> dict[str, Any]:
         """Kiwi Mind as a model record: the agent talks to it with native tool lists and plain answers."""
+        if self.native_mode:
+            native = self._candidate_conductor().candidate.model
+            manifest = self.candidate_pack.manifest() or {}
+            ctx = native.context_length or DEFAULT_CTX
+            vision = bool(native.projector)
+            return {
+                "id": KIWIMIND, "name": native.name, "type": native.kind, "state": "loaded",
+                "context": ctx, "max_context": ctx, "tools": True, "vision": vision,
+                "capabilities": ["tool_use", "vision"] if vision else ["tool_use"],
+                "reasoning": {"allowed_options": ["off", "on"], "default": "off"} if native.thinking else False,
+                "publisher": native.publisher, "quantization": native.quantization, "params": native.params,
+                "arch": native.arch, "size_bytes": native.size_bytes, "version": manifest.get("version"),
+                "engine": NATIVE_FORMAT,
+            }
         legacy = self._legacy_active()
         pack = self.legacy_pack if legacy else self.pack
         manifest = pack.manifest() or {}
@@ -253,6 +319,9 @@ class Mind:
             return call(self.legacy_conductor)
 
     def stream(self, **kwargs: Any) -> ChatResult:
+        if self.native_mode:
+            kwargs.pop("conversation", None)
+            return self._candidate_conductor().stream(**kwargs)
         callback, events = kwargs.get("on_delta"), kwargs.get("events")
         has_picture = has_images(kwargs["messages"])
         showed_text = False
@@ -275,18 +344,40 @@ class Mind:
 
     def complete(
         self, messages: list[dict[str, Any]], *, max_tokens: int, temperature: float,
-        abort: threading.Event | None = None,
+        abort: threading.Event | None = None, response_format: dict[str, Any] | None = None,
     ) -> Completion:
+        if self.native_mode:
+            return self._candidate_conductor().complete(
+                messages, max_tokens=max_tokens, temperature=temperature, abort=abort, response_format=response_format,
+            )
         return self._execute(lambda conductor: conductor.complete(
             messages, max_tokens=max_tokens, temperature=temperature, abort=abort,
         ), abort=abort, allow_legacy=not has_images(messages))
 
-    def warm(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, slot: str | None) -> None:
+    def warm(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, slot: str | None, **options: Any,
+    ) -> None:
+        if self.native_mode:
+            self._candidate_conductor().warm(messages, tools, **options)
+            return
         self._execute(lambda conductor: conductor.warm(messages, tools, slot), retry=lambda: not has_images(messages))
 
     # --- state for the API -------------------------------------------------------------
 
+    def _native_health(self) -> dict[str, Any]:
+        assert self._native is not None
+        why = self._candidate_reason()
+        server = None if why else self._native.direct_engine().loaded(NATIVE_MODEL)
+        return {"usable": not why, "running": server is not None, "pid": server.process.pid if server else None,
+                "reason": why, "engine": NATIVE_FORMAT}
+
     def describe(self) -> dict[str, Any]:
+        if self.native_mode:
+            status = self._native_health()
+            pack = self.candidate_pack.describe()
+            return {**pack, **status, "active": "candidate" if status["usable"] else None, "vision": self.sees(),
+                    "node": None, "rss_bytes": _rss(status["pid"]) if status["pid"] else None,
+                    "helper": None, "download": self.candidate_pack.download_state()}
         why = self.primary_reason()  # builds the parts for a pack that was put in place by hand
         legacy = self.legacy_pack.describe()
         using_legacy = bool(why) and legacy["ok"] and self.node()[0] is not None
@@ -320,6 +411,8 @@ class Mind:
         }
 
     def health(self) -> dict[str, Any]:
+        if self.native_mode:
+            return self._native_health()
         why = self.primary_reason()
         using_legacy = bool(why) and self._legacy_ready()
         host = (self.legacy_host if using_legacy else self.host).describe()
@@ -336,18 +429,24 @@ class Mind:
 
     def start_background(self) -> None:
         """Start the host without making anyone wait, then read the shared start of a conversation into it."""
-        if self.primary_reason():
+        why = self._candidate_reason() if self.native_mode else self.primary_reason()
+        if why:
             return
         threading.Thread(target=self._start, name="kiwibro-mind-start", daemon=True).start()
 
     def _start(self) -> None:
         try:
-            self.host.ensure()
+            if self._native is not None:
+                self._native.direct_engine().ensure(NATIVE_MODEL)
+            else:
+                self.host.ensure()
         except Exception as exc:  # noqa: BLE001 - starting early is only an optimisation
             log.info("Kiwi Mind did not start in the background: %s", exc)
 
     def stop(self) -> None:
         self.pack.shutdown()
+        self.candidate_pack.shutdown()
+        self._candidate_installed()
         self.legacy_pack.shutdown()
         self.memory_pack.shutdown()
         self.host.stop()

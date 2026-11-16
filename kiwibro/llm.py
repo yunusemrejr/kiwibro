@@ -329,8 +329,12 @@ class LLMClient:
         with self._direct_lock:
             if self._direct is None:
                 from .engine import DirectEngine
+                from .mind.native_generic import NATIVE_MODEL
 
-                self._direct = DirectEngine(self._settings, self._data_dir)
+                self._direct = DirectEngine(
+                    self._settings, self._data_dir,
+                    managed={NATIVE_MODEL: lambda: self.mind().managed_native_model()},
+                )
             return self._direct
 
     def mind(self) -> Any:
@@ -339,8 +343,9 @@ class LLMClient:
             if self._mind is None:
                 from .mind.service import Mind
 
+                candidate = os.environ.get("KIWIMIND_CANDIDATE") == "1"
                 self._mind = Mind(self._data_dir, helper=self.helper, helper_stream=self.stream_chat,
-                                  runtime=self._mind_runtime)
+                                  runtime=self._mind_runtime, native_engine=self.direct_engine if candidate else None)
             return self._mind
 
     def _mind_runtime(self) -> Any:
@@ -492,8 +497,11 @@ class LLMClient:
         return models[0]["id"] if models else None
 
     def resolve_model(self, requested: str | None = None) -> str:
-        if self.mind().usable():  # Kiwi Mind always leads; the selected model is its helper
+        mind = self.mind()
+        if mind.usable():  # Kiwi Mind always leads; the selected model is its helper
             return KIWIMIND
+        if mind.native_mode:
+            raise LLMError("no_model", mind.reason())
         ok, models, error = self.models_status()
         if not ok:
             if self.direct_on():
@@ -591,9 +599,11 @@ class LLMClient:
     ) -> ChatResult:
         conversation, events = _take_turn()
         if model == KIWIMIND:  # open_call is Kiwi Mind's: other models ignore it
-            return self.mind().stream(
+            mind = self.mind()
+            native = {"extra": extra, "on_reasoning": on_reasoning, "on_rewrite": on_rewrite} if mind.native_mode else {}
+            return mind.stream(
                 messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens, on_delta=on_delta,
-                abort=abort, conversation=conversation, events=events, open_call=open_call,
+                abort=abort, conversation=conversation, events=events, open_call=open_call, **native,
             )
         if events is not None:
             self._announce_helper(model, events)
@@ -705,7 +715,9 @@ class LLMClient:
         the request mid-prefill."""
         conversation, _events = _take_turn()
         if model == KIWIMIND:
-            self.mind().warm(messages, tools, conversation)
+            mind = self.mind()
+            native = {"extra": extra, "abort": abort} if mind.native_mode else {}
+            mind.warm(messages, tools, conversation, **native)
             return
         with self._serving(model) as base:
             payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
@@ -869,6 +881,17 @@ class LLMClient:
         extra: Mapping[str, Any] | None = None,
         abort: threading.Event | None = None,
     ) -> Completion:
+        if model in ("", KIWIMIND):
+            mind = self.mind()
+            if mind.native_mode:
+                from .mind.little import current_job
+                from .mind.native_generic import MEMORY_RESPONSE_FORMAT
+
+                job = current_job()
+                if job is not None and job.kind == "memory" and response_format is None:
+                    response_format = MEMORY_RESPONSE_FORMAT
+                return mind.complete(messages, max_tokens=max_tokens, temperature=temperature, abort=abort,
+                                     response_format=response_format)
         if model in ("", KIWIMIND) and self.mind().usable():
             # Utility work goes to the selected helper when there is one, else to Kiwi Mind itself. A picture
             # put to Kiwi Mind by name is its own to look at when its pack has vision layers.

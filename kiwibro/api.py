@@ -326,7 +326,7 @@ def _mind_download_pack() -> Any:
         raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
     pack = mind.download_pack(request.args.get("target", "primary"))
     if pack is None:
-        raise ApiError("invalid_target", "Choose primary, legacy, or memory.")
+        raise ApiError("invalid_target", "Unknown Kiwi Mind download target.")
     return pack
 
 
