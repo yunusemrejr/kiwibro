@@ -1,0 +1,64 @@
+{
+  "name": "web/particles-3d",
+  "kind": "kit",
+  "title": "3D particles",
+  "summary": "One HTML file with a moving 3D field of particles: stars, snow, rain, fireflies, a turning galaxy or confetti. It can be turned and zoomed with the mouse or a finger.",
+  "when": "Use when the user wants a moving field of particles in 3D: a starfield, falling snow or rain, fireflies, a galaxy, confetti, or a particle animation they can turn with the mouse.",
+  "blanks": {
+    "title": {
+      "about": "A short name for the page, shown in the browser tab and at the top left.",
+      "default": "Starfield"
+    },
+    "kind": {
+      "about": "What the particles do, in plain words: stars, snow, rain, fireflies, galaxy or confetti. A whole sentence works; the page takes the first of these words it finds.",
+      "default": "stars"
+    },
+    "color": {
+      "about": "The color of the particles: a CSS color name or a hex code. The word own keeps each kind's own color.",
+      "is": "color",
+      "default": "own"
+    },
+    "count": {
+      "about": "How many particles, a number from 100 to 6000. The word own keeps the kind's own count.",
+      "default": "own"
+    }
+  },
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the page shows. Only when the user asks for a change: edit the settings lines inside <script type=\"text/plain\" id=\"settings\"> in index.html with replace_in_file.",
+  "match": [
+    "particle animation",
+    "particles",
+    "particle field",
+    "particles 3d",
+    "starfield",
+    "star field",
+    "falling snow animation",
+    "snow animation",
+    "snowfall",
+    "rain animation",
+    "galaxy 3d",
+    "fireflies",
+    "confetti",
+    "3d snow"
+  ],
+  "unless": [
+    "3d scene",
+    "scene with",
+    "story",
+    "3d object",
+    "single object",
+    "3d chart",
+    "chart",
+    "bouncing",
+    "flat animation",
+    "2d animation"
+  ],
+  "finished": true,
+  "change": "Make one call per change: replace_in_file(path=\"{file}\", old=\"kind stars\", new=\"kind snow\") changes the kind (stars, snow, rain, fireflies, galaxy, confetti); the color and count lines work the same way, for example old=\"count 2000\", new=\"count 3500\". Only the three lines inside <script type=\"text/plain\" id=\"settings\"> near the top of index.html are edited; nothing else changes.",
+  "check": {
+    "moves": true,
+    "not_text": [
+      "Kind not understood, showing stars. Known kinds: stars, snow, rain, fireflies, galaxy, confetti.",
+      "Color not understood, using the kind's own color."
+    ]
+  }
+}

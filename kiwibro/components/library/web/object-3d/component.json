@@ -1,0 +1,61 @@
+{
+  "name": "web/object-3d",
+  "kind": "kit",
+  "title": "3D object",
+  "summary": "One 3D shape (cube, sphere, ring, gem, star and more) that turns slowly on the page and can be turned with the mouse or a finger.",
+  "when": "Use when the user wants one 3D object on a page, such as a cube, a sphere, a donut, a gem or a star, that turns slowly and that the viewer can turn with the mouse or a finger.",
+  "blanks": {
+    "title": {
+      "about": "The name of the object, shown at the top left of the page and in the browser tab. A few plain words.",
+      "default": "Spinning cube"
+    },
+    "shape": {
+      "about": "The shape: one of cube, sphere, cone, cylinder, ring, knot, gem, pyramid, capsule or star. A whole sentence works; the first of these words in it is used.",
+      "default": "cube"
+    },
+    "color": {
+      "about": "The colour of the object: a colour name or a hex code, for example #c0392b.",
+      "is": "color",
+      "default": "#e76f51"
+    },
+    "background": {
+      "about": "The colour of the page behind the object: a colour name or a hex code.",
+      "is": "color",
+      "default": "#dff1fb"
+    }
+  },
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the object is. Only when the user asks for a change: edit the lines inside <script id=\"settings\"> in index.html with replace_in_file, for example the line \"shape cube\", and nothing else.",
+  "match": [
+    "3d cube",
+    "3d object",
+    "3d shape",
+    "3d model viewer",
+    "spinning 3d object",
+    "spinning cube",
+    "rotating sphere",
+    "rotating 3d",
+    "3d donut",
+    "3d gem"
+  ],
+  "unless": [
+    "3d scene",
+    "scene",
+    "several",
+    "story",
+    "particles",
+    "stars",
+    "snow",
+    "chart",
+    "graph"
+  ],
+  "finished": true,
+  "change": "Only when the user asks for a change: replace_in_file(path=\"{file}\", old=\"shape cube\", new=\"shape gem\") changes the shape; the same way for the title, color and background lines inside <script id=\"settings\"> near the top of index.html. Only those four lines are edited.",
+  "check": {
+    "moves": true,
+    "not_text": [
+      "Shape not understood, so a cube is shown. Known shapes: cube, sphere, cone, cylinder, ring, knot, gem, pyramid, capsule, star.",
+      "Colour not understood, so the default colour is used. Try a colour name or a hex code such as #c0392b.",
+      "Background not understood, so the default background is used. Try a colour name or a hex code such as #dff1fb."
+    ]
+  }
+}

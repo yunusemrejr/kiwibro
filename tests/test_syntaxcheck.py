@@ -107,3 +107,8 @@ def test_the_two_lines_read_plainly_without_a_line_number() -> None:
     problem = Problem("data.json", 0, "the file is not UTF-8 text")
     assert problem.for_tool() == "Syntax error in data.json: the file is not UTF-8 text. Fix the file before you say it is done."
     assert problem.for_reply() == "Checked by Kiwibro: `data.json` has a syntax error (the file is not UTF-8 text)."
+
+
+def test_a_file_type_it_cannot_read_has_no_verdict(tmp_path):
+    assert syntaxcheck.can_check(tmp_path / "a.py") and syntaxcheck.can_check(tmp_path / "a.json")
+    assert not syntaxcheck.can_check(tmp_path / "notes.txt") and not syntaxcheck.can_check(tmp_path / "a.png")

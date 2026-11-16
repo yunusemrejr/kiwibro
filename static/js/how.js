@@ -366,7 +366,7 @@ function readyParts(root) {
     root.append(tile);
     return tile;
   });
-  text(root, 240, 216, "70 ready parts", "hw-t-tan");
+  text(root, 240, 216, "75 ready parts", "hw-t-tan");
   const chosen = text(root, 240, 236, "picked by code, not by the model");
   const model = box(root, 420, 152, 88, 96, "Model", "", 152);
   const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
@@ -1113,13 +1113,13 @@ const STOPS = [
     title: "Ready parts",
     question: "Why does it not start from a blank page?",
     lines:
-      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 70 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 75 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
     fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
     tech: {
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["41 kits", "Web pages, 3D scenes, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
+        ["45 kits", "Web pages, 3D scenes, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
         ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
         ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
       ],
@@ -1138,6 +1138,7 @@ const STOPS = [
         ["What is shown", "Pages, SVG drawings, pictures, video and sound that a turn wrote, or named in the output of a command it ran."],
         ["Sealed frame", "A sandboxed frame with an origin of its own. Its content security policy lets scripts run and load from the page's folder and four public script libraries, and from nowhere else."],
         ["Kept light", "A preview loads when it scrolls into view, nothing plays by itself, and a file over 5 MB is listed instead of shown."],
+        ["Looked at first", "Before a reply about a page is final, Kiwibro opens the page in Chrome and has what is wrong fixed. A message that starts with /goal looks harder."],
         ["Safe copy", "In a safe copy the folder line says so, and opening on the desktop is switched off."],
       ],
     },

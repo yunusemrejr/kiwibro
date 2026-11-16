@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dff1fb; }
+  body { font: 15px/1.4 system-ui, sans-serif; color: #16324a; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; }
+  h1 { position: fixed; left: 16px; top: 12px; right: 16px; margin: 0; font-size: 1.05rem; font-weight: 600; pointer-events: none; }
+  #replay {
+    position: fixed; left: 16px; bottom: 16px; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+    font: inherit; font-weight: 600; color: inherit; background: rgb(255 255 255 / 0.55); border: 1px solid currentColor;
+  }
+  #replay:hover { background: rgb(255 255 255 / 0.85); }
+  #replay:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+  #notice {
+    position: fixed; right: 16px; bottom: 16px; max-width: min(360px, calc(100% - 150px)); margin: 0; padding: 8px 12px;
+    border-radius: 10px; font-size: 0.85rem; white-space: pre-line; color: #3b1d05; background: #ffe2bd;
+  }
+  #labels { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+  #labels span { position: absolute; left: 0; top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .name { font-size: 12px; font-weight: 500; transform-origin: 100% 0; }
+  .num { font-weight: 600; }
+  .tick { font-size: 11px; color: #4e6b82; }
+  @media (max-width: 480px) { .name { font-size: 11px; } }
+</style>
+</head>
+<body>
+<!-- KIWIBRO: the chart is the three plain texts below.
+  data:  one label and number per bar, "apples 4, pears 7" or one pair per line; up to 12 bars, in the order written
+         (numbers may have a thousands comma, a decimal point or a sign such as % or $, which is shown as written)
+  color: one CSS colour name or hex for the bars (the tallest bar gets a stronger tone)
+  unit:  text printed after each value, or none -->
+<script type="text/plain" id="data">{{data}}</script>
+<script type="text/plain" id="color">{{color}}</script>
+<script type="text/plain" id="unit">{{unit}}</script>
+
+<canvas id="view"></canvas>
+<div id="labels" aria-hidden="true"></div>
+<h1>{{title}}</h1>
+<button id="replay" type="button">Replay</button>
+<p id="notice" hidden></p>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+const el = (id) => document.getElementById(id);
+function tell(lines) {
+  el("notice").textContent = lines.join("\n");
+  el("notice").hidden = lines.length === 0;
+}
+
+// ---------------------------------------------------------------- reading the three texts
+
+const DEFAULT_COLOR = "#5ba453", MAX_BARS = 12, SLOT = 1.6, FLOOR_DEPTH = 3.4, WALL_Z = -1.6;
+const problems = [];
+// a label, then a number that may carry a thousands comma, a decimal point and a sign such as % or $
+const PAIR = /^(.*?)[\s:=]*([-−]?[$€£]?\d[\d,]*(?:\.\d+)?\s?[%$€£]?)\s*$/;
+
+function readData(source) {
+  const found = [];
+  for (const piece of source.split(/\n|;|\||,(?!\d{3}(?!\d))/)) {
+    const line = piece.trim();
+    if (!line) continue;
+    const pair = PAIR.exec(line);
+    const value = pair && Number(pair[2].replace(/[^\d.\-−]/g, "").replace("−", "-"));
+    if (!Number.isFinite(value)) { problems.push(`Not understood: "${line.slice(0, 40)}"`); continue; }
+    found.push({ name: pair[1].replace(/[\s:=\-–—]+$/, "") || String(found.length + 1), raw: pair[2].trim(), value });
+  }
+  return found;
+}
+
+const pen = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+function cssColor(text) {
+  if (!text || !CSS.supports("color", text)) return null;
+  pen.clearRect(0, 0, 1, 1);
+  pen.fillStyle = text;
+  pen.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = pen.getImageData(0, 0, 1, 1).data;
+  return a === 255 ? [r, g, b] : null;
+}
+
+let bars = readData(el("data").textContent);
+if (!bars.length) problems.unshift("No numbers were understood. Write one label and number per line, like: Mon 12");
+if (bars.length > MAX_BARS) {
+  problems.push(`Only the first ${MAX_BARS} are shown; ${bars.length - MAX_BARS} more were left out.`);
+  bars = bars.slice(0, MAX_BARS);
+}
+let unit = el("unit").textContent.trim();
+if (/^(none|no|n\/a|-)$/i.test(unit)) unit = "";
+function withUnit(raw, unit) {
+  if (/^[$€£¥₺]$/.test(unit)) return /[$€£¥₺]/.test(raw) ? raw : raw.replace(/^[-−]?/, (sign) => sign + unit);
+  return !unit || raw.endsWith(unit) ? raw : raw + (/^[^\w\s]$/.test(unit) ? "" : " ") + unit;
+}
+for (const bar of bars) bar.shown = withUnit(bar.raw, unit);
+const asked = el("color").textContent.trim();
+let rgb = cssColor(asked);
+if (!rgb) {
+  rgb = cssColor(DEFAULT_COLOR);
+  if (asked) problems.push("The colour was not understood; the default colour is used.");
+}
+
+// ---------------------------------------------------------------- three.js
+
+let THREE, OrbitControls;
+try {
+  THREE = await import("three");
+  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+} catch (error) {
+  tell(["This chart needs three.js from cdn.jsdelivr.net. Connect to the internet and reload."]);
+  throw error;
+}
+const view = el("view");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: view, antialias: true });
+} catch (error) {
+  tell(["This chart needs WebGL, which this browser does not offer."]);
+  throw error;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+view.setAttribute("aria-label", `${document.title}: ${bars.map((bar) => `${bar.name} ${bar.shown}`).join(", ")}`);
+
+// Heights: one scale for every bar, from a zero base. The wall lines sit at round values.
+const high = Math.max(0, ...bars.map((bar) => bar.value)), low = Math.min(0, ...bars.map((bar) => bar.value));
+const rough = (high - low) / 4 || 1, size = 10 ** Math.floor(Math.log10(rough)), lead = rough / size;
+const step = (lead <= 1 ? 1 : lead <= 2 ? 2 : lead <= 5 ? 5 : 10) * size;
+let top = Math.ceil(high / step - 1e-9) * step, bottom = Math.floor(low / step + 1e-9) * step;
+if (top === bottom) top += step;
+const HEIGHT = innerWidth < innerHeight ? 9 : 5, per = HEIGHT / (top - bottom);
+const places = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+const SPAN = Math.max(bars.length, 4) * SLOT + 0.4, GUTTER = 1.1, WIDTH = SPAN + GUTTER, CENTER = GUTTER / 2;  // the gutter holds the wall values
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color("#dff1fb");
+scene.add(new THREE.HemisphereLight("#ffffff", "#c4dcea", 2.3));
+const sun = new THREE.DirectionalLight("#fffaf0", 1.8);
+sun.position.set(CENTER - 6, 15, 5);
+sun.target.position.set(CENTER, 0, 0);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.03;
+sun.shadow.radius = 5;
+Object.assign(sun.shadow.camera, { left: -WIDTH / 2 - 2, right: WIDTH / 2 + 2, top: 10, bottom: -10, near: 1, far: 40 });
+scene.add(sun, sun.target);
+
+const floorZ = WALL_Z + FLOOR_DEPTH / 2, negative = bottom < 0;
+const floor = new THREE.Mesh(
+  negative ? new THREE.PlaneGeometry(WIDTH, FLOOR_DEPTH).rotateX(-Math.PI / 2) : new THREE.BoxGeometry(WIDTH, 0.3, FLOOR_DEPTH),
+  new THREE.MeshStandardMaterial({ color: "#e9f1f7", roughness: 1, transparent: negative, opacity: negative ? 0.25 : 1, depthWrite: !negative }));
+floor.position.set(CENTER, negative ? 0 : -0.15, floorZ);
+floor.receiveShadow = true;
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(WIDTH, HEIGHT), new THREE.MeshBasicMaterial({ color: "#eef7fc" }));
+wall.position.set(CENTER, (top + bottom) * per / 2, WALL_Z);
+scene.add(floor, wall);
+
+const labels = el("labels");
+function tag(kind, text) {
+  const node = document.createElement("span");
+  node.className = kind;
+  node.textContent = text;
+  labels.append(node);
+  return node;
+}
+const ticks = [], lines = [];
+if (bars.length) {
+  for (let index = Math.round(bottom / step); index <= Math.round(top / step); index++) {
+    const value = +(index * step).toFixed(places);
+    ticks.push({ y: value * per, node: tag("tick", value.toLocaleString("en", { maximumFractionDigits: places })) });
+    lines.push(CENTER - WIDTH / 2, value * per, WALL_Z + 0.01, CENTER + WIDTH / 2, value * per, WALL_Z + 0.01);
+  }
+  scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(lines, 3)),
+    new THREE.LineBasicMaterial({ color: "#9fbdd1" })));
+}
+
+const base = new THREE.Color().setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace), hsl = base.getHSL({}, THREE.SRGBColorSpace);
+const plain = new THREE.MeshStandardMaterial({ color: base, roughness: 0.65 });
+const strong = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.1 + 0.05), hsl.l * 0.72, THREE.SRGBColorSpace), roughness: 0.65 });
+const longest = Math.max(0, ...bars.map((bar) => Math.abs(bar.value))), box = new THREE.BoxGeometry(1, 1, 1);
+bars.forEach((bar, index) => {
+  bar.x = (index - (bars.length - 1) / 2) * SLOT;
+  bar.mesh = new THREE.Mesh(box, longest && Math.abs(bar.value) === longest ? strong : plain);
+  bar.mesh.castShadow = bar.mesh.receiveShadow = true;
+  bar.nameTag = tag("name", bar.name);
+  bar.valueTag = tag("num", bar.shown);
+  scene.add(bar.mesh);
+});
+
+// ---------------------------------------------------------------- camera
+
+const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
+const controls = new OrbitControls(camera, view);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minPolarAngle = 0.25;
+controls.maxPolarAngle = Math.PI / 2 - 0.05;
+controls.minAzimuthAngle = -1.2;
+controls.maxAzimuthAngle = 1.2;
+let touched = false;
+controls.addEventListener("start", () => { touched = true; });
+const corners = [];
+for (const x of [-SPAN / 2, SPAN / 2 + GUTTER]) {
+  for (const z of [WALL_Z, WALL_Z + FLOOR_DEPTH]) corners.push(new THREE.Vector3(x, negative ? 0 : -0.3, z));
+  for (const y of [bottom * per, top * per]) corners.push(new THREE.Vector3(x, y, WALL_Z));
+}
+function put(target, dir, distance) {
+  camera.position.copy(target).addScaledVector(dir, distance);
+  camera.lookAt(target);
+  camera.updateMatrixWorld();
+  const s = corners.map((p) => p.clone().project(camera));
+  const xs = s.map((p) => (p.x + 1) * innerWidth / 2), ys = s.map((p) => (1 - p.y) * innerHeight / 2);
+  return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+}
+function fit() {
+  const rp = el("replay").getBoundingClientRect();
+  const a = { x0: innerWidth * 0.06, x1: innerWidth * 0.94, y0: Math.max(innerHeight * 0.12, document.querySelector("h1").getBoundingClientRect().bottom + 8), y1: Math.min(innerHeight * 0.88, rp.top - 8) };
+  const dir = touched ? camera.position.clone().sub(controls.target).normalize() : new THREE.Vector3(0.44, 0.39, 0.81);
+  const target = new THREE.Vector3(CENTER, (top + bottom) * per / 2, WALL_Z + FLOOR_DEPTH / 2);
+  let distance = 30;
+  for (let i = 0; i < 12; i++) {
+    const b = put(target, dir, distance), px = innerHeight / (2 * distance * Math.tan(camera.fov * Math.PI / 360)), e = camera.matrixWorld.elements;
+    target.addScaledVector(new THREE.Vector3(...e.slice(0, 3)), (b.x0 + b.x1 - a.x0 - a.x1) / 2 / px).addScaledVector(new THREE.Vector3(...e.slice(4, 7)), -(b.y0 + b.y1 - a.y0 - a.y1) / 2 / px);
+    distance *= Math.max((b.x1 - b.x0) / (a.x1 - a.x0), (b.y1 - b.y0) / (a.y1 - a.y0));
+  }
+  put(target, dir, distance);
+  controls.target.copy(target);
+  controls.minDistance = distance * 0.45;
+  controls.maxDistance = distance * 1.6;
+}
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  const aspect = innerWidth / innerHeight, wide = aspect < 1 ? 50 : 36;
+  Object.assign(camera, { aspect, fov: wide });
+  camera.updateProjectionMatrix();
+  fit();
+}
+addEventListener("resize", resize);
+resize();
+
+// ---------------------------------------------------------------- growing and labels
+
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const spot = new THREE.Vector3();
+let age = still ? 9 : 0, last = null;
+if (still) el("replay").textContent = "Play";
+el("replay").addEventListener("click", () => { age = 0; el("replay").textContent = "Replay"; });
+
+function pin(node, x, y, z, dx, dy, turn = "") {
+  spot.set(x, y, z).project(camera);
+  node.style.transform = `translate(${((spot.x + 1) / 2 * innerWidth).toFixed(1)}px,${((1 - spot.y) / 2 * innerHeight).toFixed(1)}px) translate(${dx},${dy})${turn}`;
+  return (spot.x + 1) / 2 * innerWidth;
+}
+function place() {
+  const at = (bar) => pin(bar.nameTag, bar.x, 0, 0.5, "-50%", "4px");
+  const slot = bars.length > 1 ? Math.abs(at(bars.at(-1)) - at(bars[0])) / (bars.length - 1) : 120;
+  for (const bar of bars) {
+    const turn = bar.nameTag.scrollWidth > slot - 4;
+    pin(bar.nameTag, bar.x, Math.min(bar.h, 0), 0.5, turn ? "-100%" : "-50%", "4px", turn ? " rotate(-45deg)" : "");
+    bar.nameTag.style.maxWidth = turn ? "none" : `${Math.round(Math.max(20, slot - 4))}px`;
+    pin(bar.valueTag, bar.x, Math.max(bar.h, 0), -0.5, "-50%", "calc(-100% - 3px)");
+    const room = (text) => slot * 1.1 / (text.length * 0.6), text = room(bar.shown) < 10 ? bar.raw : bar.shown;  // too narrow for the unit: the number alone
+    if (bar.valueTag.textContent !== text) bar.valueTag.textContent = text;
+    bar.valueTag.style.fontSize = `${Math.round(Math.min(14, Math.max(9, room(text))))}px`;
+    bar.valueTag.style.opacity = bar.e;
+  }
+  for (const tick of ticks) pin(tick.node, SPAN / 2 + 0.15, tick.y, WALL_Z, "0", "-105%");
+}
+function loop(now) {
+  if (last !== null) age += Math.min((now - last) / 1000, 0.25);
+  last = now;
+  bars.forEach((bar, index) => {
+    const t = Math.min(Math.max((age - index * 0.03) / 0.8, 0), 1);
+    bar.e = 1 - (1 - t) ** 3;
+    bar.h = bar.value * per * bar.e;
+    bar.mesh.scale.set(1, Math.max(Math.abs(bar.h), 0.0004), 1);
+    bar.mesh.position.set(bar.x, bar.h / 2, 0);
+  });
+  controls.update();
+  renderer.render(scene, camera);
+  place();
+}
+renderer.setAnimationLoop(loop);
+document.addEventListener("visibilitychange", () => {
+  last = null;
+  renderer.setAnimationLoop(document.hidden ? null : loop);
+});
+tell(problems.slice(0, 3));
+</script>
+</body>
+</html>

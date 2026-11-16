@@ -1275,7 +1275,7 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 70 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+- **Areas.** 75 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
   service, 3D scene), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
   gallery, and a UI review recipe), `code/` (Python CLI and package, Node CLI and server, C
   program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
@@ -1305,6 +1305,37 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Adding one.** A new folder with a `component.json` is enough; `tests/test_components.py`
   checks every component in the library (fields, blanks, that a kit's files fill in and its
   Python compiles).
+
+### Looking at a page (`pagecheck.py`, `pageloop.py`, `agent._looking`)
+
+A page that Kiwi Mind wrote and called finished was often broken: a script error, a flat black
+picture, a kit notice left on the screen. Code now looks before the turn ends.
+
+- **The look.** `pagecheck.look` opens the page in headless Chrome (`--headless=new`, a fresh
+  profile, software GL, a virtual-time budget so CSS and canvas animations advance, never
+  `--no-sandbox`), one run at a time. A small script placed first in a copy of the page, on one
+  line so the page's own line numbers stay what they were, records uncaught errors, failed
+  files, `console.error` and animation frames, and reports once through the console. Findings are
+  plain sentences with no example values; the picture is compared with a second one two seconds
+  later; in goal mode a phone-width render and a yes/no question to the vision model are added.
+  Without Chrome the look says so and is not counted against the page.
+- **The loop.** `_look_or_review` runs at the point where a turn would end. `Pages` (in
+  `pageloop.py`) holds the pages the turn wrote; a stylesheet or script next to one makes it due
+  again. A page that is due is looked at; Kiwibro says its own constant lines (`prompts.LOOK_*`)
+  around the look; with problems, the verdict opens the model's next message, so the prompt keeps
+  ending in the tool result. With no change after a verdict, or after the limit, the turn ends on
+  "I stopped" and what is still wrong. A finished kit that passes ends with the "good now" line and
+  the kit line; one that fails has the "finished" refusal lifted and is told to call `component` again with the
+  same name and folder and other values, with the lines it keeps its settings in. That one call may
+  overwrite the page the kit wrote in this turn (`components.use(replace=...)`); any other existing file
+  is never overwritten. A kit blank marked `"is": "color"` takes a hex code, an `rgb()`/`hsl()` form or a
+  CSS colour name; anything else is replaced by the blank's default, with one line in the result.
+- **`/goal`.** `pageloop.parse_goal` reads the command in `start_chat`; the same loop runs with
+  eight looks, the phone render and the vision question, and a limit of 32 rounds. Work that is
+  not a page is parsed again and the model is asked to check it against the goal up to three
+  times (`prompts.GOAL_REVIEW`, never stored). `_goal_line` ends the turn with what a check showed
+  and no earlier line of the turn said: a page already reported by "It is good now" or "I stopped" is
+  left out, and with nothing left there is no goal line.
 
 ### Knowledge base (`knowledge.py`, `knowledge/base/`)
 

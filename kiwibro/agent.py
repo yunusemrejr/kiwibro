@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import (
-    adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, plan, prompts, reactions, readings, recall, research, safety,
+    adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, pagecheck, pageloop, plan, prompts, reactions, readings, recall, research, safety,
     sessions, shape, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
 )
 from .context import (
@@ -413,6 +413,12 @@ class Turn:
     prompt_changed: bool = False  # earlier replies were set aside: the history is cut again before the next request
     repeats_set_aside: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # (message id, its meta) of replies hidden from this turn's new attempt
     steering_open: bool = True  # a steering note can still be queued; false once the turn has read its last one
+    goal: str = ""  # goal mode (the message started with /goal): the goal, which is also the message the model sees
+    goal_help: bool = False  # a bare /goal: answered by Kiwibro itself, no model is asked
+    pages: pageloop.Pages = field(default_factory=pageloop.Pages)  # the HTML pages this turn wrote, and their looks
+    said_next: str = ""  # Kiwibro's line after a look: it opens the model's next message
+    lifted: list[str] = field(default_factory=list)  # files of a finished kit that failed its look and may be changed again
+    reviews: int = 0  # goal reviews of work that is not a page sent so far
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
@@ -486,9 +492,10 @@ class AgentManager:
             raise BusyError(conversation_id)
         self._turn_activity_at = time.monotonic()
         self._cancel_memory_extraction()  # a live reply gets the whole CPU
+        is_goal, goal = pageloop.parse_goal(message)
         turn = Turn(
-            conversation_id=conversation_id, message=message, requested_model=model,
-            attachments=list(attachments or []),
+            conversation_id=conversation_id, message=goal if is_goal and goal else message, requested_model=model,
+            attachments=list(attachments or []), goal=goal, goal_help=is_goal and not goal,
         )
         with self._locks_guard:
             self._turns[conversation_id] = turn
@@ -659,7 +666,7 @@ class AgentManager:
         repeated = self._unanswered_repeat(turn)
         user_message = repeated or self.db.add_message(
             turn.conversation_id, "user", turn.message,
-            meta={"attachments": turn.attachments} if turn.attachments else None,
+            meta={**({"attachments": turn.attachments} if turn.attachments else {}), **({"goal": True} if turn.goal else {})} or None,
         )
         if not repeated:
             _keep(ledger.record_user, self.db, turn.conversation_id, int(user_message.get("seq") or 0), turn.message)
@@ -681,6 +688,9 @@ class AgentManager:
                 self.db.update_conversation(turn.conversation_id, model=model, touch=False) or conversation
             )
         self._raise_if_aborted(turn)
+        if turn.goal_help:
+            self._say_alone(turn, conversation, settings, model, prompts.GOAL_USAGE, {"goal_help": True})
+            return
         if self._english_only(turn, conversation, settings, model):
             return
         turn.reading = self._read_message(turn, settings)
@@ -749,6 +759,8 @@ class AgentManager:
         except (TypeError, ValueError):
             max_rounds = config.MAX_TOOL_ROUNDS
         max_rounds = max(config.TOOL_ROUNDS_RANGE[0], min(max_rounds, config.TOOL_ROUNDS_RANGE[1]))
+        if turn.goal:  # a goal keeps working: the top of the allowed range
+            max_rounds = config.TOOL_ROUNDS_RANGE[1]
 
         looked = self._look_first(turn, settings)
         # A question the computer answers is never also a web search: "today" in a question about the
@@ -783,6 +795,7 @@ class AgentManager:
             )
             turn.partial_text = ""
             turn.partial_reasoning = ""
+            spoken = self._speak_next(turn)
             review, turn.pending_review = turn.pending_review, ""
             # The message asks for something a kit makes: Kiwi Mind's first reply is opened as a tool call.
             # Left to choose, it sometimes answered a "make a 3D scene" message with code pasted into the chat.
@@ -818,11 +831,11 @@ class AgentManager:
             self._honest_reply(turn, result)
             self._record_usage(turn, result, prepared)
             assistant_message = None
-            if result.content or result.reasoning or result.tool_calls:
+            if result.content or result.reasoning or result.tool_calls or spoken:
                 assistant_message = self.db.add_message(
                     turn.conversation_id,
                     "assistant",
-                    result.content,
+                    f"{spoken}\n\n{result.content}" if spoken and result.content else spoken + result.content,
                     reasoning=result.reasoning,
                     tool_calls=result.tool_calls or None,
                     model=turn.model,
@@ -836,6 +849,13 @@ class AgentManager:
             if result.content:
                 turn.reply_text += "\n" + result.content
             if not result.tool_calls:
+                if round_index < max_rounds - 1:
+                    outcome = self._look_or_review(turn, model, settings, result.content, assistant_message)
+                    if outcome == "more":
+                        continue
+                    if outcome == "ended":
+                        self._close_plan(turn, model)
+                        break
                 self._retract_repeats(turn, result.content)
                 last_round = round_index >= max_rounds - 1
                 if last_round:
@@ -869,6 +889,12 @@ class AgentManager:
                 turn.reply_text += "\n" + turn.done_note
                 turn.inference["said_by_kiwibro"] = "note"
                 break
+            if turn.finished_files and turn.plan is None:
+                outcome = self._look_or_review(turn, model, settings, "", None) if round_index < max_rounds - 1 else ""
+                if outcome == "more":
+                    continue
+                if outcome == "ended":
+                    break
             if turn.finished_files and turn.plan is None:
                 # A finished kit is the whole job. Kiwibro says so itself: a small model asked to go on
                 # read, patched and ran the finished page for fourteen minutes and then described it wrongly.
@@ -904,6 +930,7 @@ class AgentManager:
         self._show_bulletin(turn, model)
         self._report_broken_files(turn, model)
         self._report_nothing_done(turn, model)
+        self._goal_line(turn, model)
 
         # Final answer phase. Title is deterministic-first so `done` stays fast; memory
         # extraction runs in a daemon thread after `done` (the stream closes immediately,
@@ -936,6 +963,256 @@ class AgentManager:
                 **({"plan": turn.plan.statuses()} if turn.plan is not None else {}),
             },
         )
+
+    # --- looking at the pages a turn made ----------------------------------------------------
+
+    def _look_options(self, turn: Turn, kit: str = "") -> pagecheck.Options:
+        """What this request expects of a page: the kit's own checks, what the message names, and in goal mode
+        the phone look and the goal itself."""
+        try:
+            made = components.default_library().get(kit) if kit else None
+        except components.ComponentError:
+            made = None
+        return pagecheck.Options(
+            moves=bool(made and made.moves) or pagecheck.wants_motion(turn.message),
+            phone=bool(turn.goal) or pagecheck.wants_phone(turn.message),
+            not_text=made.not_text if made else (),
+            goal=turn.goal,
+        )
+
+    @staticmethod
+    def _speak_next(turn: Turn) -> str:
+        """Kiwibro's line after a look opens the model's next message: shown first, stored with it."""
+        line, turn.said_next = turn.said_next, ""
+        if line:
+            turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + line + "\n\n"})
+            turn.reply_text += "\n" + line
+        return line
+
+    def _say(self, turn: Turn, model: str, text: str, meta: dict[str, Any], kind: str) -> None:
+        """A line Kiwibro says itself, as its own message."""
+        said = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta=meta)
+        turn.last_message_id = said["id"]
+        turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + text})
+        turn.reply_text += "\n" + text
+        turn.inference["said_by_kiwibro"] = kind
+
+    def _say_alone(self, turn: Turn, conversation: dict[str, Any], settings: dict[str, Any], model: str,
+                   text: str, meta: dict[str, Any]) -> None:
+        """A whole turn answered by code: no model is asked."""
+        self._emit_meta(turn, conversation, settings, model=model)
+        reply = self.db.add_message(turn.conversation_id, "assistant", text, model=model,
+                                    meta={"checked_by_kiwibro": True, **meta})
+        turn.last_message_id = reply["id"]
+        turn.reply_text = text
+        turn.inference["said_by_kiwibro"] = "goal"
+        turn.emit("delta", {"text": text})
+        turn.emit("done", {
+            "message_id": reply["id"], "aborted": False, "model": model, "usage": self._usage_payload(turn),
+            "stats": {"tool_calls": 0, "tool_rounds": 0,
+                      "duration_ms": int((time.monotonic() - turn.started_at) * 1000)},
+            "inference": turn.inference,
+        })
+
+    @staticmethod
+    def _note_page(turn: Turn, item: dict[str, Any], workspace: Workspace, target: Path) -> None:
+        """A write put an HTML page, or a stylesheet or script beside one, in the workspace: it is looked at
+        when the turn would end."""
+        if item["location"]:  # a folder the user named, outside the workspace
+            return
+        if item["name"] == "component":
+            try:
+                kit = components.default_library().get(item["args"].get("name") or "")
+                names = kit.file_paths()
+            except components.ComponentError:
+                return
+            for name in names:
+                if name.lower().endswith(pagecheck.HTML_SUFFIXES):
+                    turn.pages.note_html(workspace, target / name, kit.name)
+        elif target.suffix.lower() in pagecheck.HTML_SUFFIXES:
+            turn.pages.note_html(workspace, target)
+        else:
+            turn.pages.note_changed(target)
+
+    def _look_or_review(self, turn: Turn, model: str, settings: dict[str, Any], content: str,
+                        message: dict[str, Any] | None) -> str:
+        """The turn would end here. A page it wrote or changed is looked at first, and a goal turn checks its other
+        work. "more": the model gets another round; "ended": Kiwibro has said the last line; "": nothing to do."""
+        if turn.abort.is_set():
+            return ""
+        try:
+            return self._looking(turn, model, content, message)
+        except TurnAborted:
+            raise
+        except Exception:  # a check must never break a turn
+            log.warning("turn %s: the look at the page failed", turn.conversation_id, exc_info=True)
+            return ""
+
+    def _looking(self, turn: Turn, model: str, content: str, message: dict[str, Any] | None) -> str:
+        pages = turn.pages
+        limit = pageloop.GOAL_LOOKS if turn.goal else pageloop.LOOKS
+        page = pages.due()
+        if page is None:
+            stuck = pages.unfinished() if message is not None else None
+            if stuck is not None:  # the problems were named and nothing was changed: more looks would say the same
+                self._stop_looking(turn, model, stuck, content, message)
+                return "ended"
+            return self._review_goal(turn, content, message)
+        if pages.looks >= limit:
+            if not page.findings:
+                return ""
+            self._stop_looking(turn, model, page, content, message)
+            return "ended"
+        line = prompts.LOOK_FIRST.format(file=page.path) if page.looks == 0 else prompts.LOOK_AGAIN
+        args = {"path": page.path}
+        call = {"id": f"call_{uuid.uuid4().hex[:24]}", "type": "function",
+                "function": {"name": "look_at_page", "arguments": json.dumps(args)}}
+        phase, label = tools.phase_for("look_at_page")
+        turn.emit("status", {"phase": phase, "label": label})
+        context = ToolContext(
+            workspace=page.workspace, memory=self.memory, search=self.search, conversation_id=turn.conversation_id,
+            llm=self.llm, current_model=turn.model, notes=self.notes, settings=self._settings(),
+            look=self._look_options(turn, page.kit),
+        )
+        started = time.monotonic()
+        result = tools.execute_tool("look_at_page", args, context)  # nothing is stored before it has run
+        duration = int((time.monotonic() - started) * 1000)
+        self._raise_if_aborted(turn)
+        # What the user sees: the line, then the look. A reply that already claimed the page was done is taken back.
+        held = content if message is not None and content.strip() else ""
+        if message is not None:
+            lead = message["content"].removesuffix(content)
+            self.db.update_message(message["id"], content=f"{lead.rstrip()}\n\n{line}".strip(), tool_calls=[call])
+            turn.last_message_id = message["id"]
+            if held:
+                turn.emit("retract", {"text": held, "now": True})
+        else:
+            turn.last_message_id = self.db.add_message(
+                turn.conversation_id, "assistant", line, tool_calls=[call], model=turn.model)["id"]
+        turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + line})
+        turn.reply_text += "\n" + line
+        turn.emit("tool_call", {"id": call["id"], "name": "look_at_page", "args": args, "risk": "read",
+                                "requires_approval": False})
+        turn.tool_calls_made += 1
+        if result.ok:
+            turn.tools_ok.append("look_at_page")
+        look = (result.meta or {}).get("look") or {}
+        found = list(look.get("findings") or [])
+        before = list(page.findings) if page.looks else None
+        self._note_look(turn, page, look if result.ok else {})
+        if found and page.kit:  # a kit page is made again by the kit, with other values
+            folder = page.workspace.public(page.folder)
+            fix = prompts.LOOK_KIT_FIX.format(kit=page.kit, folder=folder or ".", file=page.path,
+                                              lines=pageloop.settings_lines(page))
+            result = replace(result, content=f"{result.content}\n{fix}".rstrip())
+        self._record_tool_result(turn, call["id"], "look_at_page", result, duration, args)
+        files = ", ".join(turn.finished_files or turn.lifted)
+        kit_made = prompts.KIT_MADE.format(files=files) if page.kit and files else ""
+        meta = {"done_for_you": True, "kit": turn.finished_kit, "files": list(turn.finished_files or turn.lifted)}
+        if not result.ok or (look.get("could_not") and not found):  # no verdict: the page is left as it is
+            why = str(look.get("could_not") or result.content.removeprefix("Error:")).strip().rstrip(".")
+            turn.inference["looked"] = "could not"
+            page.said = True
+            self._say(turn, model, "\n\n".join(filter(None, (prompts.LOOK_BLIND.format(file=page.path, why=why), kit_made or held))),
+                      meta if kit_made else {"checked_by_kiwibro": True}, "kit" if kit_made else "look")
+            return "ended"
+        if not found:
+            turn.inference["looked"] = "good"
+            page.said = True
+            self._say(turn, model, "\n\n".join(filter(None, (pageloop.good(look), kit_made or held))),
+                      meta if kit_made else {"checked_by_kiwibro": True}, "kit" if kit_made else "look")
+            return "ended"
+        if pages.looks >= limit:
+            self._stop_looking(turn, model, page, "", None)
+            return "ended"
+        if turn.finished_files:  # a finished kit that failed its look may be changed again
+            turn.lifted, turn.finished_files = list(turn.finished_files), []
+        turn.said_next = pageloop.verdict(before, found)
+        return "more"
+
+    @staticmethod
+    def _note_look(turn: Turn, page: pageloop.Page, look: dict[str, Any]) -> None:
+        page.dirty = False
+        page.said = False
+        page.looks += 1
+        turn.pages.looks += 1
+        page.findings = list(look.get("findings") or [])
+        page.confirmed = list(look.get("confirmed") or [])
+
+    def _stop_looking(self, turn: Turn, model: str, page: pageloop.Page, content: str,
+                      message: dict[str, Any] | None) -> None:
+        """Kiwibro stops and says what is still wrong, in place of the reply that claimed the page was done."""
+        n = turn.pages.looks
+        line = prompts.LOOK_STOPPED.format(tries=f"{n} try" if n == 1 else f"{n} tries",
+                                           problems="; ".join(item["short"] for item in page.findings))
+        turn.inference["looked"] = "stopped"
+        page.said = True
+        if message is None or not content.strip():
+            self._say(turn, model, line, {"checked_by_kiwibro": True}, "look")
+            return
+        lead = message["content"].removesuffix(content)
+        self.db.update_message(message["id"], content=f"{lead.rstrip()}\n\n{line}".strip())
+        turn.emit("retract", {"text": content, "now": True})
+        turn.emit("delta", {"text": ("\n\n" if turn.reply_text.strip() else "") + line})
+        turn.reply_text += "\n" + line
+        turn.inference["said_by_kiwibro"] = "look"
+
+    def _review_goal(self, turn: Turn, content: str, message: dict[str, Any] | None) -> str:
+        """A goal turn that made no page: the written files are checked again, and the model is asked to check
+        its work against the goal, up to three times."""
+        if not turn.goal or turn.pages.pages or not turn.tool_calls_made or message is None:
+            return ""
+        if turn.reviews and re.fullmatch(r"\W*done\W*", content, re.IGNORECASE):  # it says all of it is done
+            self.db.update_message(message["id"], content="")
+            turn.emit("retract", {"text": content, "now": True})
+            return ""
+        if turn.reviews >= pageloop.GOAL_REVIEWS:
+            return ""
+        turn.reviews += 1
+        broken = []
+        for target, (_, root) in list(turn.syntax.items()):
+            shown = Path(target).name
+            try:
+                problem = syntaxcheck.check(Path(target), shown, confine=self._confiner(root))
+            except Exception:  # a check must never break a turn
+                continue
+            turn.syntax[target] = (problem, root)
+            if problem is not None:
+                broken.append(problem.for_tool())
+        turn.pending_review = "\n".join([*broken, prompts.GOAL_REVIEW.format(goal=turn.goal)])
+        turn.emit("status", {"phase": "thinking", "label": "Checking the work against the goal"})
+        return "more"
+
+    def _goal_line(self, turn: Turn, model: str) -> None:
+        """The last line of a goal turn: what was checked and passed, what still fails. Only what a check showed."""
+        if not turn.goal or turn.abort.is_set():
+            return
+        passed, failing, unlooked = [], [], []  # (what the check showed, whether an earlier line said it)
+        for page in turn.pages.pages.values():
+            if page.looks == 0 or page.dirty:
+                unlooked.append(page.path)
+            elif page.findings:
+                failing.append((f"{page.path}: " + "; ".join(item["short"] for item in page.findings), page.said))
+            else:
+                passed.append((f"{page.path}: " + (pagecheck.join_words(page.confirmed) if page.confirmed
+                                                    else "no problems were found"), page.said))
+        parsed = []
+        for target, (problem, root) in turn.syntax.items():
+            if problem is None and syntaxcheck.can_check(Path(target)):
+                parsed.append(Path(target).name)
+            elif problem is not None and not turn.inference.get("broken_files"):
+                failing.append((problem.for_reply(), False))
+        turn.inference["goal_checked"] = {"passed": len(passed) + len(parsed), "failing": len(failing)}
+        parts = [f"Checked {item}." for item, said in passed if not said]
+        if parsed:
+            parts.append(prompts.GOAL_CHECKED.format(files=", ".join(parsed)))
+        if unlooked:
+            parts.append(prompts.GOAL_UNLOOKED.format(files=", ".join(unlooked)))
+        if any(not said for _, said in failing):
+            parts.append(prompts.GOAL_FAILING.format(problems=" ".join(item for item, said in failing if not said)))
+        if not parts and (passed or failing):
+            return  # every page was reported by an earlier line of this turn
+        self._say(turn, model, " ".join(parts) or prompts.GOAL_UNCHECKED, {"checked_by_kiwibro": True, "goal": True}, "goal")
 
     def _english_only(self, turn: Turn, conversation: dict[str, Any], settings: dict[str, Any], model: str) -> bool:
         """A message that is not in English gets one fixed reply asking for English, written by
@@ -1589,6 +1866,21 @@ class AgentManager:
                 turn.finished_files.append(shown)
 
     @staticmethod
+    def _replaceable(turn: Turn, name: str, args: dict[str, Any], workspace: Workspace) -> frozenset[str]:
+        """The pages a component call may write again: the kit and the folder are the same as when the page was
+        made in this turn, and the look at it found problems. Any other existing file stays refused."""
+        if name != "component" or args.get("action") != "use":
+            return frozenset()
+        try:
+            kit = components.default_library().get(args.get("name") or "").name
+            folder = workspace.resolve(args.get("path") or ".")
+        except (components.ComponentError, SandboxError):
+            return frozenset()
+        return frozenset(page.path for page in turn.pages.pages.values()
+                         if page.kit == kit and page.findings and not page.dirty
+                         and (page.folder == folder or folder in page.folder.parents))
+
+    @staticmethod
     def _touches_finished(turn: Turn, name: str, args: dict[str, Any]) -> str:
         """The finished file a call is about, or ""."""
         if not turn.finished_files:
@@ -1621,6 +1913,7 @@ class AgentManager:
         shown = item["location"] or workspace.public(target)
         if shown not in turn.changed_files:
             turn.changed_files.append(shown)
+        self._note_page(turn, item, workspace, target)
 
     def _check_written(self, turn: Turn, item: dict[str, Any], result: ToolResult) -> ToolResult:
         """After a file was written: does it parse? A file that does not gets one plain line in the tool result,
@@ -2481,7 +2774,7 @@ class AgentManager:
         if "component" not in tools.select_tool_names(settings.get("tool_profile")):
             return ""
         try:
-            fitting = components.suggest(turn.message)
+            fitting = components.suggest(f"make {turn.message}" if turn.goal else turn.message)  # a goal asks for it to be made
             turn.kit_called_for = fitting is not None and fitting.kind == components.KIT
             return components.advice(fitting) if fitting is not None else ""
         except Exception:  # a convenience; never break a turn
@@ -2914,6 +3207,8 @@ class AgentManager:
                 must_mention=turn.must_mention,
                 deep=turn.own_search,
                 settings=self._settings(),
+                look=self._look_options(turn, turn.finished_kit) if name == "look_at_page" else None,
+                replace=self._replaceable(turn, name, args, item["workspace"] or self._workspace(turn.conversation_id)),
             )
             if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
@@ -2974,6 +3269,11 @@ class AgentManager:
                         turn.web_offline += 1
                     else:
                         turn.web_failed += 1
+            if item["name"] == "look_at_page" and result.ok:  # its own look counts as the page's look
+                looked = (result.meta or {}).get("look") or {}
+                page = turn.pages.pages.get(looked.get("page") or "")
+                if page is not None:
+                    self._note_look(turn, page, looked)
             if result.ok and (item["name"] in plan.WRITE_TOOLS or item["name"] == "component"):
                 self._note_changed(turn, item)
                 if item["name"] in plan.WRITE_TOOLS and item["name"] != "convert_document":

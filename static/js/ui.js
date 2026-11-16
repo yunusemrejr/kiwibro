@@ -412,6 +412,7 @@ const TOOL_META = {
   model_info: { label: "Local models", icon: "cube" },
   delegate: { label: "Helper model", icon: "cube" },
   describe_image: { label: "Describe image", icon: "image" },
+  look_at_page: { label: "Look at page", icon: "image" },
   study_file: { label: "Study file", icon: "file" },
   task_board: { label: "Task board", icon: "check" },
   recall: { label: "Recall", icon: "bookmark" },
@@ -466,6 +467,7 @@ export function toolSummary(name, args) {
     case "apply_patch":
     case "file_manage":
     case "describe_image":
+    case "look_at_page":
     case "study_file":
       return args.path || "";
     case "read_files":

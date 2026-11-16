@@ -67,6 +67,7 @@ const ASSISTANT_PHRASE = {
   model_info: "list your local models",
   delegate: "ask another local model",
   describe_image: "look at an image with a vision model",
+  look_at_page: "look at a page it made in a browser",
   study_file: "study a long file with a helper model",
   task_board: "update the task board",
   recall: "search memory",
@@ -630,13 +631,19 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     scrollIfPinned();
   }
 
+  /** A message that starts with /goal is shown as the goal, marked: the command is not part of what was asked. */
+  function userBubble(text, goal) {
+    const sent = /^\/goal\s+([\s\S]+)$/i.exec(text);
+    if (!goal && !sent) return el("div", { class: "bubble", text });
+    return el("div", { class: "bubble" }, [el("span", { class: "bubble-goal", text: "Goal" }), el("span", { text: sent ? sent[1] : text })]);
+  }
+
   function startUser(text, attachments = []) {
     if (empty) empty.hidden = true;
     root.classList.remove("is-empty");
     current = null;
     lastUserAt = Date.now();
-    const bubble = el("div", { class: "bubble", text });
-    root.append(el("div", { class: "msg msg-user" }, [bubble, attachmentChips(attachments)]));
+    root.append(el("div", { class: "msg msg-user" }, [userBubble(text, false), attachmentChips(attachments)]));
     pinned = true;
     scrollToBottom();
   }
@@ -742,7 +749,7 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         startTurn(message);
         root.append(
           el("div", { class: "msg msg-user" }, [
-            el("div", { class: "bubble", text: message.content || "" }),
+            userBubble(message.content || "", message.meta?.goal === true),
             attachmentChips(message.meta?.attachments),
           ]),
         );
@@ -892,11 +899,14 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
         scheduleRender(turn);
       }
     },
-    retractText(text) {
-      // The final reply says again what was written before a tool call: keep it once.
+    retractText(text, now) {
+      // The final reply says again what was written before a tool call: keep it once. "now": the text being
+      // written is taken back (Kiwibro looked at the page and it was not done).
       const turn = ensureTurn();
-      const repeated = turn.texts.find((part) => part !== turn.segment && part.text.trim() === text.trim());
-      if (repeated) repeated.element.remove();
+      const repeated = turn.texts.find((part) => (now || part !== turn.segment) && part.text.trim() === text.trim());
+      if (!repeated) return;
+      repeated.element.remove();
+      if (repeated === turn.segment) turn.segment = null;
     },
     appendDelta(text) {
       const turn = ensureTurn();

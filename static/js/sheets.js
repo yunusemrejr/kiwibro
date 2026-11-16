@@ -49,6 +49,7 @@ const PERMISSION_ORDER = [
   "model_info",
   "delegate",
   "describe_image",
+  "look_at_page",
   "study_file",
   "task_board",
   "recall",

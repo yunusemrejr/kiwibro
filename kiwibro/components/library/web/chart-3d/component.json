@@ -1,0 +1,65 @@
+{
+  "name": "web/chart-3d",
+  "kind": "kit",
+  "title": "3D bar chart",
+  "summary": "One HTML file with a three.js 3D bar chart of the user's numbers: bars grow from zero on a floor, turn with mouse or finger, each with its label and value, a few reference lines on a back wall.",
+  "when": "Use when the user wants their own numbers drawn as a 3D bar chart or 3D graph that can be turned and looked at from other sides.",
+  "blanks": {
+    "title": {
+      "about": "A short name for the chart, shown in the browser tab and on the page.",
+      "default": "Orders per weekday"
+    },
+    "data": {
+      "about": "The user's own numbers, one label and one number per bar, in the order given, up to 12 bars: \"apples 4, pears 7\". One pair per line (separated by \\n) works too. Keep numbers as the user wrote them, a sign such as % or $ may stay.",
+      "default": "Mon 12, Tue 19, Wed 7, Thu 23, Fri 15"
+    },
+    "color": {
+      "about": "The colour of the bars, one CSS colour name or hex such as #5ba453. The tallest bar is drawn in a stronger tone of it.",
+      "is": "color",
+      "default": "#5ba453"
+    },
+    "unit": {
+      "about": "Text printed after each value, such as \"orders\". Write none when the numbers have no unit.",
+      "default": "none"
+    }
+  },
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the chart shows. Only when the user asks for a change: edit the three plain texts near the top of index.html (the script tags with id data, color and unit) with replace_in_file.",
+  "match": [
+    "3d bar chart",
+    "3d bar graph",
+    "3d chart",
+    "3d graph of",
+    "3d graph",
+    "3d barchart",
+    "chart in 3d",
+    "graph in 3d",
+    "three dimensional chart",
+    "three js chart",
+    "threejs chart",
+    "webgl chart"
+  ],
+  "unless": [
+    "line chart",
+    "pie chart",
+    "svg chart",
+    "flat chart",
+    "2d chart",
+    "chart component",
+    "dashboard",
+    "3d scene",
+    "3d printer",
+    "3d printing",
+    "3d print",
+    "3d printed"
+  ],
+  "finished": true,
+  "change": "Only the three texts near the top of index.html are edited, one call per change: replace_in_file(path=\"{file}\", old=\"<the data text as it is now>\", new=\"<the new numbers>\") changes the bars; the same with the text inside <script type=\"text/plain\" id=\"color\"> changes the colour (a CSS name or hex) and inside id=\"unit\" the text after each value (none for no unit). Do not touch the script below them.",
+  "check": {
+    "moves": true,
+    "not_text": [
+      "No numbers were understood. Write one label and number per line, like: Mon 12",
+      "The colour was not understood; the default colour is used.",
+      "Not understood: \""
+    ]
+  }
+}

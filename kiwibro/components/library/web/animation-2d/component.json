@@ -1,0 +1,70 @@
+{
+  "name": "web/animation-2d",
+  "kind": "kit",
+  "title": "2D animation",
+  "summary": "One HTML page with one animation drawn on a plain 2D canvas, with no library and no internet: bouncing balls, sea waves, planets around a sun, fireworks, rain or an analogue clock.",
+  "when": "Use when the user wants a 2D animation or moving picture for the browser: bouncing balls, waves, planets, fireworks, rain or a clock. Not for anything in 3D.",
+  "blanks": {
+    "title": {
+      "about": "The name of the animation, shown at the top left and in the browser tab.",
+      "default": "Bouncing balls"
+    },
+    "kind": {
+      "about": "What moves: balls (bouncing balls under gravity), waves, orbits (planets around a sun), fireworks, rain or clock. A whole sentence works; the first of these words found is used.",
+      "default": "bouncing balls"
+    },
+    "color": {
+      "about": "The main color of the animation, as a CSS color name or a hex code; leaving it own lets the animation choose a color that fits it.",
+      "is": "color",
+      "default": "own"
+    },
+    "count": {
+      "about": "How many things are drawn (balls, wave layers, planets, rockets or raindrops), as a plain number. The clock ignores it.",
+      "default": "12"
+    },
+    "background": {
+      "about": "The background of the page, as a CSS color name or a hex code; leaving it own lets the animation choose a background that fits it.",
+      "is": "color",
+      "default": "own"
+    }
+  },
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the animation shows. Only when the user asks for a change: edit the plain lines at the top of index.html inside <script type=\"text/plain\" id=\"settings\"> with replace_in_file, one line per call.",
+  "match": [
+    "2d animation",
+    "2d html animation",
+    "bouncing ball",
+    "bouncing balls",
+    "bouncing ball animation",
+    "animation of a bouncing ball",
+    "html animation",
+    "canvas animation",
+    "fireworks animation",
+    "animated fireworks",
+    "animated waves",
+    "wave animation",
+    "planets animation",
+    "orbit animation",
+    "rain animation",
+    "animated clock",
+    "clock animation"
+  ],
+  "unless": [
+    "3d",
+    "three js",
+    "threejs",
+    "webgl",
+    "particles",
+    "chart",
+    "graph"
+  ],
+  "finished": true,
+  "change": "Only the four lines at the top of index.html, inside <script type=\"text/plain\" id=\"settings\">, are edited: kind, color, count, background. One call per change, copying the old line exactly: replace_in_file(path=\"{file}\", old=\"color #5fd3c4\", new=\"color teal\").",
+  "check": {
+    "moves": true,
+    "not_text": [
+      "Not a known kind, so bouncing balls are shown. Known kinds: balls, waves, orbits, fireworks, rain, clock.",
+      "Not a color the page knows, so the default color is used.",
+      "Not a background color the page knows, so the background of that kind is used."
+    ]
+  }
+}

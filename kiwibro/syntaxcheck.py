@@ -69,6 +69,14 @@ def check(path: Path, shown: str, *, confine: Confine | None = None) -> Problem 
     return None
 
 
+def can_check(path: Path) -> bool:
+    """Does ``check`` give a real answer for this file? No answer for a type it cannot read is not "no problem"."""
+    suffix = path.suffix.lower()
+    if suffix == ".py" or suffix == ".json" or (suffix == ".toml" and tomllib is not None):
+        return True
+    return bool(shutil.which(SHELL_SUFFIXES.get(suffix, "node"))) if suffix in SHELL_SUFFIXES or suffix in NODE_SUFFIXES else False
+
+
 def _read(path: Path) -> bytes | None:
     try:
         if not path.is_file() or path.stat().st_size > MAX_BYTES:

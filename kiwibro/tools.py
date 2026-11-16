@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import codebase, components, config, delegate, desktop, knowledge, prompts, research, safety
+from . import codebase, components, config, delegate, desktop, knowledge, pagecheck, prompts, research, safety
 from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LLMClient
@@ -43,6 +43,8 @@ class ToolContext:
     shown_before: str = ""  # an answer the user turned down: a new search lists what was not in it first
     must_mention: tuple[str, ...] = ()  # the subject of the request being done again: results stay on it
     settings: dict[str, Any] | None = None  # the app's settings when the tool ran (the workspace tool reads the folder mode)
+    look: pagecheck.Options | None = None  # what the request expects of a page looked at (look_at_page)
+    replace: frozenset[str] = frozenset()  # kit pages of this turn that failed their look: a component call may write them again
 
 
 @dataclass
@@ -842,6 +844,19 @@ _SPECS: tuple[ToolSpec, ...] = (
         phase="tool",
         label="Looking at an image",
         summary=lambda args: f"Describe {args.get('path', '')}",
+        category="desktop",
+    ),
+    ToolSpec(
+        name="look_at_page",
+        description=(
+            "Open a workspace HTML page in a browser, take a picture and check it: script errors, missing files, "
+            "a blank picture, unfilled text, and whether it moves when it should. Returns the picture's path and a list of problems."
+        ),
+        parameters=_schema({"path": _str("Workspace-relative path of the HTML file")}, ["path"]),
+        risk="read",
+        phase="tool",
+        label="Looking at a page",
+        summary=lambda args: f"Look at {args.get('path', '')}",
         category="desktop",
     ),
     ToolSpec(
@@ -1771,6 +1786,12 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         )
         content = f"[vision model: {result['model']}]\n{result['text']}"
         return ToolResult(ok=True, content=content, preview=_preview(result["text"]), meta=result)
+    if name == "look_at_page":
+        llm = ctx.llm
+        eyes = None if llm is None else lambda picture, question: delegate.describe_image(
+            llm, ctx.workspace, picture, question, current_model=ctx.current_model, max_tokens=120)["text"]
+        looked = pagecheck.look(ctx.workspace, args["path"], ctx.look, eyes=eyes)
+        return ToolResult(ok=True, content=looked.report(), preview=looked.report(), meta={"look": looked.as_dict()})
     if name == "study_file":
         llm = _require_llm(ctx)
         result = delegate.study_file(
@@ -1820,6 +1841,7 @@ def _execute_component(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             workspace=ctx.workspace,
             path=args.get("path"),
             conversation_id=ctx.conversation_id,
+            replace=ctx.replace,
         )
     return ToolResult(ok=True, content=content, preview=_preview(content))
 

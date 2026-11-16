@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+html,body{ margin:0; height:100%; overflow:hidden; background:#12283d}
+body{ font:15px/1.4 system-ui,sans-serif; color:#16324a} body.dark{ color:#eef3ff}
+#view{ display:block; width:100%; height:100%; touch-action:none}
+h1{ position:fixed; left:16px; top:12px; right:16px; margin:0; font-size:1.05rem; font-weight:600; pointer-events:none}
+#replay{ position:fixed; left:16px; bottom:16px; padding:9px 16px; border:1px solid currentColor; border-radius:10px; font:inherit; font-weight:600; color:inherit; background:rgb(255 255 255 / .55); cursor:pointer}
+body.dark #replay{ background:rgb(10 18 44 / .55)} #replay:focus-visible{ outline:3px solid currentColor; outline-offset:2px}
+#notice{ position:fixed; right:16px; bottom:16px; max-width:min(360px,calc(100% - 150px)); margin:0; padding:8px 12px; border-radius:10px; font-size:.85rem; white-space:pre-line; color:#3b1d05; background:#ffe2bd}
+</style>
+</head>
+<body>
+<!-- KIWIBRO: only the four lines in settings are edited. -->
+<script type="text/plain" id="settings">
+kind {{kind}}
+color {{color}}
+count {{count}}
+background {{background}}
+</script>
+<canvas id="view" aria-label="{{title}}"></canvas>
+<h1>{{title}}</h1>
+<button id="replay" type="button">Replay</button>
+<p id="notice" hidden></p>
+<script>
+const el = (id) => document.getElementById(id), canvas = el("view"), g = canvas.getContext("2d");
+const TAU = Math.PI * 2, WHITE=[255,255,255], BLACK=[0,0,0];
+function rgb(v) { // any CSS colour as RGB
+ if (!v || !CSS.supports("color", v)) return null;
+ g.fillStyle = v;
+ const s = g.fillStyle;
+ return s[0] === "#" ? [1,3,5].map((i) => parseInt(s.slice(i, i + 2), 16)) : s.match(/[\d.]+/g).slice(0, 3).map(Number);
+}
+const css = (c, a = 1) => `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})`, mix = (c, to, t) => c.map((v, i) => Math.round(v + (to[i] - v) * t));
+const clamp = (v) => Math.min(1, Math.max(0, v));
+const KINDS = {balls:{words:"ball balls bouncing bounce bounces",count:[12,1,30],bg:"#f6e2c3",main:"#d94f3d",ground:"#dcbc8c",set:"#d94f3d #2f6fc0 #e8a721 #3f8f5a #a94f8e"},waves:{words:"wave waves sea ocean",count:[5,4,5],bg:"#252348",main:"#c08a92",sky:"#252348 #5f4270 #c8704e",sun:"#f2a35c",set:"#c08a92 #8a7aa6 #625f92 #424a76 #272e50"},orbits:{words:"orbit orbits planet planets solar sun",count:[5,1,6],bg:"#0a0d22",main:"#f6a63c",orbit:"#39456f",sun:"#f6a63c",core:"#ffe09a",set:"#6fa8e8 #d9835f #8fd9b8 #c39ae0 #e8d39a #e06f8f"},fireworks:{words:"firework fireworks rocket rockets",count:[3,1,6],bg:"#151030",main:"#ff5d8a",rocket:"#ffe6b8",set:"#ff5d8a #ffc247 #4fd6ff #a6e85a #b98cff #ff8a4c"},rain:{words:"rain rainy raindrop raindrops drizzle",count:[260,160,460],bg:"#3a4854",main:"#c7d6e3",ground:"#2c3844",set:"#8fa3b8 #b4c6d6 #dfe9f2"},clock:{words:"clock clocks watch analogue analog",count:[0,0,0],bg:"#e8ecf0",main:"#c8443c",rim:"#c3ccd4",dial:"#f7f9fb",mark:"#3a4652",hand:"#202b36"},
+};
+for (const k of Object.values(KINDS)) for (const key in k) { const l = k[key].split && k[key].split(" ").map((s) => rgb(s) || s); if (l) k[key] = l.length > 1 ? l : l[0]; }
+const KIND_OF = new Map(Object.entries(KINDS).flatMap(([name, k]) => k.words.map((w) => [w, name])));
+const NUMBERS = "one two three four five six seven eight nine ten eleven twelve".split(" ");
+const set = {};
+for (const line of el("settings").textContent.split("\n")) { const m = line.trim().match(/^(\w+)\s+(.+)$/); if (m) set[m[1]] = m[2]; }
+const words = (text) => (text || "").toLowerCase().match(/[a-z]+/g) || [], bad = [];
+let kindName = words(set.kind).map((w) => KIND_OF.get(w)).find(Boolean);
+if (!kindName) { kindName = "balls"; bad.push("Not a known kind, so bouncing balls are shown. Known kinds: balls, waves, orbits, fireworks, rain, clock."); }
+const K = KINDS[kindName], [dN, mN, xN] = K.count;
+const digits = (set.count || "").match(/\d+/), spelled = words(set.count).find((w) => NUMBERS.includes(w));
+const typed = digits ? Number(digits[0]) : spelled ? NUMBERS.indexOf(spelled) + 1 : null;
+const count = typed === null ? dN : Math.min(xN, Math.max(mN, typed));
+const own = (v) => /^$|^own$/i.test((v || "").trim());
+const user = own(set.color) ? null : rgb(set.color), bgUser = own(set.background) ? null : rgb(set.background);
+if (!own(set.color) && !user) bad.push("Not a color the page knows, so the default color is used.");
+if (!own(set.background) && !bgUser) bad.push("Not a background color the page knows, so the background of that kind is used.");
+const bg = bgUser || K.bg, base = user || K.main;
+const TONE = [mix(base, WHITE, 0.45), base, mix(base, BLACK, 0.3), mix(base, BLACK, 0.6)];
+document.body.classList.toggle("dark", bg[0] * 0.299 + bg[1] * 0.587 + bg[2] * 0.114 < 128);
+document.body.style.background = css(bg);
+el("notice").textContent = bad.join("\n");
+el("notice").hidden = bad.length === 0;
+let W = 0, H = 0, S = 0, time = 0, seed = 7, world = null, rings = [];
+let running = false, raf = 0, last = 0, played = false;
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const floor = () => H - Math.max(S * 0.16, 64);
+const disc = (x, y, rx, ry=rx) => { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, TAU); g.fill(); };
+const ring = (x, y, rx, ry=rx) => { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, TAU); g.stroke(); };
+const seg = (x1, y1, x2, y2) => { g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); };
+function paint(a=1) { g.globalAlpha = a; g.fillStyle = css(bg); g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+const WORLDS = {
+ balls(n) {
+  const bs = [], set = user ? [TONE[1], TONE[0], TONE[2], TONE[3], mix(base, WHITE, 0.7)] : K.set;
+  const add = (x, y) => bs.push({ x, y, vx: (rnd() - 0.5) * S * 0.6, vy: 0, sq: 0, sv: 0, rest: 0, c: set[bs.length % set.length] });
+  for (let i = 0; i < n; i++) add(S * 0.05 + rnd() * (W - S * 0.1), H * (0.1 + 0.4 * rnd()));
+  return {
+   step(dt) {
+    const r = S * 0.045, pull = H * 2.4, F = floor();
+    for (const b of bs) {
+     b.sv += (-b.sq * 160 - b.sv * 9) * dt; b.sq += b.sv * dt;
+     if (b.rest > 0) { if ((b.rest -= dt) <= 0) b.vy = -Math.sqrt(2 * pull * H * (0.35 + 0.3 * rnd())); continue; }
+     b.vy += pull * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+     if (b.x < r) { b.x = r; b.vx = Math.abs(b.vx) * 0.9; } else if (b.x > W - r) { b.x = W - r; b.vx = -Math.abs(b.vx) * 0.9; }
+     if (b.y + r >= F && b.vy > 0) {
+      const v = b.vy;
+      b.y = F - r; b.sq = Math.min(0.3, v / (H * 3)); b.sv = 0; b.vx *= 0.97;
+      if (v * 0.8 < H * 0.06) { b.vy = 0; b.rest = 0.6 + rnd() * 0.9; } else b.vy = -v * 0.8;
+     }
+    }
+    for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+     const a = bs[i], b = bs[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+     if (d === 0 || d >= 2 * r) continue;
+     const k = (2 * r - d) / 2 / d, nx = dx * k, ny = dy * k;
+     a.x -= nx; a.y -= ny; b.x += nx; b.y += ny;
+    }
+    for (const b of bs) b.y = Math.min(b.y, F - r);
+   },
+   draw() {
+    paint();
+    const r = S * 0.045, F = floor(), G = bgUser ? mix(bg, WHITE, 0.14) : K.ground;
+    g.fillStyle = css(G); g.fillRect(0, F, W, H - F); g.fillStyle = css(mix(G, BLACK, 0.16)); g.fillRect(0, F + (H - F) * 0.55, W, H);
+    g.fillStyle = css(mix(G, BLACK, 0.42)); g.fillRect(0, F, W, Math.max(2, S * 0.004));
+    for (const b of bs) {
+     const low = clamp((F - r - b.y) / (H * 0.45)), sr = r * (1.3 - 0.55 * low);
+     g.fillStyle = `rgba(52, 32, 12, ${0.13 + 0.42 * (1 - low)})`; disc(b.x, F + S * 0.01, sr, sr * 0.22);
+     const rx = r * (1 + b.sq * 0.6), ry = r * (1 - b.sq), cy = b.y + r - ry;
+     g.fillStyle = css(b.c); disc(b.x, cy, rx, ry); g.fillStyle = css(mix(b.c, WHITE, 0.6), 0.85); disc(b.x - rx * 0.34, cy - ry * 0.36, rx * 0.24, ry * 0.24);
+    }
+   },
+   tap(x, y) { add(x, y); if (bs.length > 60) bs.shift(); },
+  };
+ },
+ waves(n) {
+  return {
+   step() {}, tap() {},
+   draw() {
+    const hz = H * 0.46, span = H - hz, sx = W * 0.7;
+    const sky = g.createLinearGradient(0, 0, 0, hz), glow = g.createRadialGradient(sx, hz, 0, sx, hz, S * 0.2);
+    sky.addColorStop(0, css(K.sky[0])); sky.addColorStop(0.6, css(K.sky[1])); sky.addColorStop(1, css(K.sky[2]));
+    g.fillStyle = sky; g.fillRect(0, 0, W, hz + span * 0.05 + S * 0.06);
+    glow.addColorStop(0, css(K.sun, 0.5)); glow.addColorStop(0.35, css(K.sun, 0.18)); glow.addColorStop(1, css(K.sun, 0));
+    g.fillStyle = glow; g.fillRect(sx - S * 0.2, hz - S * 0.2, S * 0.4, S * 0.4);
+    g.fillStyle = css(K.sun); disc(sx, hz, S * 0.055);
+    const set = user ? [mix(base, WHITE, 0.55), mix(base, WHITE, 0.28), base, mix(base, BLACK, 0.3), mix(base, BLACK, 0.56)] : K.set;
+    for (let i = 0; i < n; i++) {
+     const f = n === 1 ? 1 : i / (n - 1);
+     const y0 = hz + span * (0.05 + 0.91 * f), amp = S * (0.016 + 0.032 * f), k = TAU / (S * (1.1 + 0.9 * (1 - f)));
+     const drift = S * (0.04 + 0.13 * f) * time;
+     g.fillStyle = css(set[Math.round(f * (set.length - 1))]);
+     g.beginPath(); g.moveTo(0, H);
+     for (let x = 0; x <= W + 8; x += 8) { const p = x - drift; g.lineTo(x, y0 + amp * (Math.sin(k * p) + 0.35 * Math.sin(2.1 * k * p + i))); }
+     g.lineTo(W + 8, H); g.closePath(); g.fill();
+    }
+    g.fillStyle = css(K.sun, 0.4);
+    for (let j = 0; j < 4; j++) g.fillRect(sx - S * 0.05 + (j * 0.03 + j % 2 * 0.01) * S, hz + span * (0.1 + j * 0.06) + Math.sin(time + j) * S * 0.004, S * 0.02, S * 0.0025 + 0.5);
+   },
+  };
+ },
+ orbits(n) {
+  const pl = [], sizes = [0.012,0.026,0.018,0.034,0.014,0.022], ro = (f) => S * (0.16 + 0.3 * f), st = [];
+  for (let i = 0; i < 64; i++) st.push({ x: rnd() * W, y: rnd() * H * 0.88, r: S * (0.0008 + rnd() * 0.0018), a: 0.2 + rnd() * 0.55 });
+  const add = (f, ang, i = pl.length) => pl.push({ f, ang, size: sizes[i % 6], c: user ? TONE[[0, 2, 1, 3][i % 4]] : K.set[i % K.set.length] });
+  for (let i = 0; i < n; i++) add(n === 1 ? 0.6 : 0.1 + (0.9 * i) / (n - 1), rnd() * TAU, i);
+  return {
+   step(dt) { for (const q of pl) q.ang += 1.6 * Math.pow(0.16 / (0.16 + 0.3 * q.f), 1.5) * dt; },
+   draw() {
+    paint();
+    const cx = W / 2, cy = H / 2;
+    g.fillStyle = css(mix(bg, WHITE, 0.55));
+    for (const s of st) { g.globalAlpha = s.a; disc(s.x, s.y, s.r); }
+    g.globalAlpha = 1; g.lineWidth = 1; g.strokeStyle = css(K.orbit, 0.6);
+    for (const q of pl) ring(cx, cy, ro(q.f));
+    g.fillStyle = css(K.sun, 0.16); disc(cx, cy, S * 0.13);
+    g.fillStyle = css(K.sun); disc(cx, cy, S * 0.072);
+    g.fillStyle = css(K.core); disc(cx - S * 0.01, cy - S * 0.01, S * 0.042);
+    for (const q of pl) { g.fillStyle = css(q.c); disc(cx + Math.cos(q.ang) * ro(q.f), cy + Math.sin(q.ang) * ro(q.f), S * q.size); }
+   },
+   tap(x, y) { add(clamp((Math.hypot(x - W / 2, y - H / 2) / S - 0.16) / 0.3), Math.atan2(y - H / 2, x - W / 2)); if (pl.length > 12) pl.shift(); },
+  };
+ },
+ fireworks(n) {
+  const rk = [], sk = [], G = H * 3, set = user ? [TONE[0], TONE[1], TONE[2], TONE[3]] : K.set, up = (h) => -Math.sqrt(2 * G * H * h);
+  let timer = 0.5, ci = 0;
+  const launch = (y, vy) => rk.push({ x: W * (0.16 + 0.68 * rnd()), y, vy, c: set[ci++ % set.length] });
+  const burst = (x, y, c) => { for (let i = 34 + (rnd() * 20 | 0); i > 0; i--) { const a = rnd() * TAU, v = S * (0.16 + 0.4 * rnd()); sk.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, age: 0, life: 1.1 + rnd() * 0.7, c }); } };
+  launch(H, up(0.6));
+  burst(W * 0.36, H * 0.26, set[ci++ % set.length]);
+  for (const s of sk) { const t = 0.12 + rnd() * 0.32; s.x += s.vx * t; s.y += s.vy * t; s.age = t; }
+  return {
+   step(dt) {
+    if ((timer -= dt) <= 0 && rk.length < n) { launch(H, up(0.55 + 0.15 * rnd())); timer = 0.35 + rnd() * 0.5; }
+    for (const r of rk) { r.vy += G * dt; r.y += r.vy * dt; }
+    for (let i = rk.length - 1; i >= 0; i--) if (rk[i].vy >= 0) { burst(rk[i].x, rk[i].y, rk[i].c); rk.splice(i, 1); }
+    for (const s of sk) { s.age += dt; const k = Math.exp(-1.9 * dt); s.vx *= k; s.vy = s.vy * k + H * 0.22 * dt; s.x += s.vx * dt; s.y += s.vy * dt; }
+    for (let i = sk.length - 1; i >= 0; i--) if (sk[i].age > sk[i].life) sk.splice(i, 1);
+   },
+   draw() {
+    paint(0.22);
+    g.lineCap = "round";
+    for (const s of sk) {
+     const k = Math.max(0, 1 - s.age / s.life);
+     g.strokeStyle = css(mix(s.c, WHITE, 0.3), k); g.lineWidth = Math.max(1.8, S * 0.006); seg(s.x, s.y, s.x - s.vx * 0.07, s.y - s.vy * 0.07);
+    }
+    for (const r of rk) {
+     g.strokeStyle = css(K.rocket, 0.55); g.lineWidth = Math.max(2, S * 0.006); seg(r.x, r.y, r.x, r.y + S * 0.05);
+     g.fillStyle = css(K.rocket); disc(r.x, r.y, Math.max(2, S * 0.009));
+    }
+   },
+   tap(x, y) { burst(x, y, set[ci++ % set.length]); },
+  };
+ },
+ rain(n) {
+  const dr = [], sp = [], set = user ? [mix(base, BLACK, 0.45), base, mix(base, WHITE, 0.35)] : K.set;
+  const gy = H - Math.max(40, S * 0.08);
+  const drop = (y) => { const d = (rnd() * 3 | 0); return { x: rnd() * W * 1.2 - W * 0.1, y, d, v: S * (0.7 + 0.45 * d) * (0.85 + 0.3 * rnd()), len: S * (0.03 + 0.018 * d) * (0.8 + 0.4 * rnd()) }; };
+  for (let i = 0; i < n; i++) dr.push(drop(rnd() * H));
+  return {
+   step(dt) {
+    for (const d of dr) { d.y += d.v * dt; d.x += d.v * 0.13 * dt; if (d.y > gy) { sp.push({ x: d.x, a: 0, d: d.d }); Object.assign(d, drop(-d.len)); } }
+    for (const s of sp) s.a += dt / 0.4;
+    for (let i = sp.length - 1; i >= 0; i--) if (sp[i].a >= 1) sp.splice(i, 1);
+   },
+   draw() {
+    paint();
+    const G = bgUser ? mix(bg, BLACK, 0.22) : K.ground;
+    g.fillStyle = css(G); g.fillRect(0, gy, W, H - gy);
+    g.fillStyle = css(mix(G, BLACK, 0.3)); g.fillRect(0, gy + (H - gy) * 0.5, W, H);
+    g.lineCap = "round";
+    for (const s of sp) { g.strokeStyle = css(set[2], (1 - s.a) * (0.3 + 0.22 * s.d)); g.lineWidth = Math.max(1, S * 0.0025); ring(s.x, gy, S * (0.012 + 0.03 * s.a), S * 0.005); }
+    for (let k = 0; k < 3; k++) for (const d of dr) if (d.d === k) {
+     g.strokeStyle = css(set[k], 0.3 + 0.24 * k); g.lineWidth = Math.max(1, S * (0.002 + 0.0012 * k));
+     seg(d.x, d.y, d.x - d.len * 0.13, d.y - d.len);
+    }
+   },
+   tap(x) { sp.push({ x, a: 0, d: 2 }); },
+  };
+ },
+ clock() {
+  return {
+   step() {}, tap() {},
+   draw() {
+    paint();
+    const now = new Date(), cx = W / 2, cy = H / 2, R = S * 0.36, s = now.getSeconds() + now.getMilliseconds() / 1000, mn = now.getMinutes() + s / 60, hr = (now.getHours() % 12) + mn / 60;
+    g.fillStyle = css(mix(bg, BLACK, 0.12)); disc(cx, cy + S * 0.012, R + S * 0.024);
+    g.fillStyle = css(K.rim); disc(cx, cy, R + S * 0.01); g.fillStyle = css(K.dial); disc(cx, cy, R);
+    g.lineCap = "round";
+    for (let i = 0; i < 60; i++) {
+     const a = i / 60 * TAU, sx = Math.sin(a), sy = -Math.cos(a), big = i % 5 === 0, r0 = R * (big ? 0.84 : 0.9);
+     g.strokeStyle = css(K.mark, big ? 0.9 : 0.35); g.lineWidth = S * (big ? 0.011 : 0.004);
+     seg(cx + sx * r0, cy + sy * r0, cx + sx * R * 0.94, cy + sy * R * 0.94);
+    }
+    const hand = (turn, len, width, c) => { const a = turn * TAU; g.strokeStyle = css(c); g.lineWidth = width; seg(cx, cy, cx + Math.sin(a) * R * len, cy - Math.cos(a) * R * len); };
+    hand(hr / 12, 0.5, S * 0.024, K.hand); hand(mn / 60, 0.76, S * 0.015, K.hand); hand(s / 60, 0.9, S * 0.006, base);
+    g.fillStyle = css(K.hand); disc(cx, cy, S * 0.014); g.fillStyle = css(base); disc(cx, cy, S * 0.006);
+   },
+  };
+ },
+};
+function reset() { seed = 7; time = 0; rings = []; world = WORLDS[kindName](count); }
+function advance(dt) { time += dt; world.step(dt); for (const r of rings) r.a += dt / 0.9; rings = rings.filter((r) => r.a < 1); }
+function draw() {
+ world.draw();
+ for (const r of rings) { g.strokeStyle = css(TONE[0], 1 - r.a); g.lineWidth = 2; ring(r.x, r.y, S * (0.02 + 0.12 * r.a)); }
+}
+function frame(now) {
+ advance(Math.min(0.05, Math.max(0, (now - last) / 1000)));
+ last = now;
+ draw();
+ raf = requestAnimationFrame(frame);
+}
+function play() { cancelAnimationFrame(raf); running = true; last = performance.now(); raf = requestAnimationFrame(frame); }
+function fit() {
+ const d = Math.min(devicePixelRatio || 1, 2);
+ W = innerWidth; H = innerHeight; S = Math.min(W, H);
+ canvas.width = Math.round(W * d); canvas.height = Math.round(H * d);
+ g.setTransform(d, 0, 0, d, 0, 0);
+}
+canvas.addEventListener("pointerdown", (e) => { world.tap(e.clientX, e.clientY); rings.push({ x: e.clientX, y: e.clientY, a: 0 }); if (!running) draw(); });
+el("replay").addEventListener("click", () => { if (played) reset(); played = true; el("replay").textContent = "Replay"; play(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) cancelAnimationFrame(raf); else if (running) play(); });
+addEventListener("resize", () => { fit(); draw(); });
+fit();
+reset();
+if (still) { for (let i = 0; i < 48; i++) advance(1 / 30); draw(); el("replay").textContent = "Play"; }
+else { played = true; play(); }
+</script>
+</body>
+</html>

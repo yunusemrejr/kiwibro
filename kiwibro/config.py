@@ -70,6 +70,7 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "model_info": "auto",
     "delegate": "auto",
     "describe_image": "auto",
+    "look_at_page": "auto",
     "study_file": "auto",
     "run_python": "ask",
     "run_javascript": "ask",

@@ -232,8 +232,19 @@ export function createShowFiles({ api, getConversationId, getSettings, onFolderC
     return bar;
   }
 
+  /** The picture look_at_page took: the path is on the "Picture:" line of its result. */
+  function lookPicture(args, result) {
+    const id = getConversationId();
+    const path = /^Picture: (\S+)$/m.exec(result?.preview || "")?.[1];
+    if (!id || !path) return null;
+    const url = `/api/preview/${id}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const image = el("img", { class: "rich-image rich-photo", alt: `${args?.path || "The page"}, as it looks`, loading: "lazy", decoding: "async", src: url });
+    return el("div", { class: "rich-preview rich-media" }, [image]);
+  }
+
   /** What a file tool card shows first: the folder, and for a file tool the file with its buttons. */
   function toolHeader(name, args, result) {
+    if (name === "look_at_page") return lookPicture(args, result);
     if (!usesWorkspace(name, args)) return null;
     const box = el("div", { class: "tool-where", hidden: true });
     info().then((data) => {

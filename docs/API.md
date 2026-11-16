@@ -410,6 +410,11 @@ Body:
   token) is stored in the document library; the model reads its start, its end and the handle
   to read the rest (`doc_read` / `doc_search`). The transcript keeps the full text.
 
+- A message that starts with `/goal ` (any case) is a goal: the stored user message is the goal
+  without the command and has `meta.goal: true`, and the turn keeps working and checking
+  (below). A bare `/goal` is answered by Kiwibro itself with one line on how to use it, and no
+  model is asked.
+
 SSE frames use `event: <type>\ndata: <json>\n\n`.
 
 | event | data | when |
@@ -420,7 +425,7 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `delta` | `{text}` | streaming assistant text |
 | `reasoning` | `{text}` | streaming reasoning fragment |
 | `rewrite` | `{text, reasoning}` | the model wrote reasoning as plain text ending in `</think>`, or a reply was corrected: replace the reply text so far with `text` and show `reasoning` as reasoning |
-| `retract` | `{text}` | text shown earlier in this turn says the same as the final answer: remove that piece |
+| `retract` | `{text, now?}` | text shown earlier in this turn says the same as the final answer: remove that piece. With `now: true` it is the text just written that is taken back: Kiwibro looked at the page and it was not done |
 | `tool_call` | `{id, name, args, risk, requires_approval}` | before approval/execution |
 | `approval` | `{approval_id, tool, args, summary, risk, timeout_s, always_scope: "tool"\|"chat", level, reasons}` | user action needed |
 | `tool_result` | `{id, name, ok, duration_ms, preview}` | after execution; `preview` ≤ 400 chars |
@@ -454,6 +459,33 @@ and whether the model thought (`thinking`).
 - `adapters_turned_down`: task adapters that the turn's replies were judged to spoil, as
   `{name, trouble, strength}`; `trouble` counts such replies and `strength` is the share of
   the adapter's scale it keeps now (`1.0`, `0.5` or `0.0`). Present only when one was.
+
+- `looked`: `good`, `stopped` or `could not`, when the turn looked at a page it made with
+  `look_at_page` (below) and ended on that look. `said_by_kiwibro` is then `look` (or `kit`).
+- `goal_checked`: `{passed, failing}`, the counts in the last line of a `/goal` turn.
+
+**Looking at a page.** Before a turn ends, Kiwibro opens each HTML page the turn wrote or changed
+in a headless Chrome and checks it: script errors, files that are not there, a blank or flat
+picture, text left unfilled, and for a request that names motion, whether two pictures taken two
+seconds apart differ. It says what it found in its own lines (a `delta` before and after the
+`tool_call` and `tool_result` of a `look_at_page` call), gives the model a round to fix the
+problems, and looks again, three times at most. A reply that claimed the page was done before the
+first look is taken back with `retract` (`now: true`). The result's second line, `Picture:
+screenshots/look-<page>.png`, names the picture the look saved in the workspace; it is served by
+`GET /api/preview/<chat_id>/<path>` and shown in the tool's details. The model may also call
+`look_at_page(path)` itself (permission `auto`, risk `read`).
+
+A `/goal` turn is looked at harder: up to eight looks, each also at 360 px wide, and the picture is
+asked whether it shows the goal (a "no" is a problem). For work that is not a page, files written
+are parsed again at every point the turn would end and the model is asked up to three times to
+check its work against the goal. The turn ends with one line saying what was checked and passed
+and what still fails, leaving out a page that an earlier line of the turn already reported (with
+nothing left to report, no such line is sent).
+
+A page made by a kit that fails its look may be made again: a `component` call with the same kit and
+folder writes over it, once the look has named the problems. Kit blanks for colours take a hex code, an
+`rgb()`/`hsl()` form or a CSS colour name; the result of `component use` names each value that was
+replaced by the blank's default.
 
 Tool-call loop happens inside this one stream: after each tool result the model is
 called again; assistant messages produced along the way are persisted and the final

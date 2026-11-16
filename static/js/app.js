@@ -1369,7 +1369,7 @@ function handleStreamEvent(event, data, activeStream) {
       if (typeof data.text === "string") chatView.rewriteText(data.text, data.reasoning || "");
       break;
     case "retract":
-      if (typeof data.text === "string") chatView.retractText(data.text);
+      if (typeof data.text === "string") chatView.retractText(data.text, data.now === true);
       break;
     case "tool_call":
       chatView.addToolCall(data);
@@ -1928,12 +1928,31 @@ function initSheets() {
 }
 
 function initComposer() {
+  // Typing "/" offers the one command there is: Tab or a click completes it.
+  const hint = $("#composer-hint");
+  const hintFits = () => /^\/[a-z]*$/i.test(els.input.value) && "/goal".startsWith(els.input.value.toLowerCase());
+  const completeCommand = () => {
+    els.input.value = "/goal ";
+    hint.hidden = true;
+    autosize();
+    updateSendEnabled();
+    els.input.focus();
+  };
+  hint.addEventListener("mousedown", (event) => event.preventDefault());
+  hint.addEventListener("click", completeCommand);
+
   els.input.addEventListener("input", () => {
+    hint.hidden = !hintFits();
     autosize();
     updateSendEnabled();
   });
 
   els.input.addEventListener("keydown", (event) => {
+    if (event.key === "Tab" && !event.shiftKey && !hint.hidden) {
+      event.preventDefault();
+      completeCommand();
+      return;
+    }
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
     if (!els.sendBtn.disabled) sendMessage(els.input.value);

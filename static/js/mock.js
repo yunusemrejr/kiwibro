@@ -117,6 +117,7 @@ const DEFAULT_PERMISSIONS = {
   model_info: "auto",
   delegate: "auto",
   describe_image: "auto",
+  look_at_page: "auto",
   study_file: "auto",
   task_board: "auto",
   recall: "auto",

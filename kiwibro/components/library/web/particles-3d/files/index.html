@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { font: 15px/1.4 system-ui, sans-serif; color: #16324a; } body.dark { color: #eef3ff; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; }
+  h1 { position: fixed; left: 16px; top: 12px; right: 16px; margin: 0; font-size: 1.05rem; font-weight: 600; pointer-events: none; }
+  #reset { position: fixed; left: 16px; bottom: 16px; padding: 9px 16px; border-radius: 10px; cursor: pointer; font: inherit; font-weight: 600; color: inherit; background: rgb(255 255 255 / 0.55); border: 1px solid currentColor; }
+  body.dark #reset { background: rgb(10 18 44 / 0.55); }
+  #reset:hover { background: rgb(255 255 255 / 0.85); } body.dark #reset:hover { background: rgb(10 18 44 / 0.85); }
+  #reset:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+  #notice { position: fixed; right: 16px; bottom: 16px; max-width: min(360px, calc(100% - 150px)); margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 0.85rem; white-space: pre-line; color: #3b1d05; background: #ffe2bd; }
+</style>
+</head>
+<body>
+<!-- KIWIBRO: the settings are the three plain lines inside the settings script; edit only those.
+  kind: stars, snow, rain, fireflies, galaxy or confetti (the first of these words found is used)
+  color: a CSS color name or hex code, or own for the kind's own color   count: 100 to 6000, or own -->
+<script type="text/plain" id="settings">
+kind {{kind}}
+color {{color}}
+count {{count}}
+</script>
+<canvas id="view" aria-label="{{title}}"></canvas>
+<h1>{{title}}</h1>
+<button id="reset" type="button">Reset view</button>
+<p id="notice" hidden></p>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/" } }
+</script>
+<script type="module">
+const el = (id) => document.getElementById(id);
+const tell = (lines) => { el("notice").textContent = lines.join("\n"); el("notice").hidden = lines.length === 0; };
+// The kinds: background, the kind's own color and count, point size (world units), additive light, light text.
+const KIND = {
+  stars: { bg: "#070b1f", color: "#fff4dc", count: 3200, size: 0.09, add: true, dark: true, box: 18 },
+  snow: { bg: "#566b7e", color: "#ffffff", count: 6000, size: 0.16, add: false, dark: true },
+  rain: { bg: "#2b3a4a", color: "#cfe6f5", count: 6000, size: 0.5, add: false, dark: true },
+  fireflies: { bg: "#0d1f1c", color: "#ffc857", count: 6000, size: 0.22, add: true, dark: true },
+  galaxy: { bg: "#07081c", color: "#bcd4ff", count: 3000, size: 0.08, add: true, dark: true, tilt: -0.9, lift: 1.8 },
+  confetti: { bg: "#f7ecd9", color: "#e4572e", count: 2000, size: 0.21, add: false, dark: false, box: 18 },
+};
+const PIECES = ["#e4572e", "#f3b43f", "#17a398", "#e84f8a", "#3b6fb6", "#f08a4b"];
+const WORDS = { stars: "stars", star: "stars", starfield: "stars", snow: "snow", snowflake: "snow", snowflakes: "snow", snowfall: "snow",
+  rain: "rain", raindrop: "rain", raindrops: "rain", fireflies: "fireflies", firefly: "fireflies", galaxy: "galaxy", galaxies: "galaxy", confetti: "confetti" };
+const WORD = new RegExp(`\\b(${Object.keys(WORDS).join("|")})\\b`);
+// A CSS color (name or hex) as [r, g, b] from 0 to 1, or null when the browser does not know it.
+function cssRgb(text) {
+  const probe = document.createElement("span"); probe.style.color = text;
+  if (!probe.style.color) return null;
+  document.body.append(probe);
+  const parts = getComputedStyle(probe).color.match(/[\d.]+/g);
+  probe.remove();
+  return parts.slice(0, 3).map((part) => Number(part) / 255);
+}
+
+const settings = Object.fromEntries(el("settings").textContent.trim().split("\n").map((line) => { const [key, ...rest] = line.trim().split(" "); return [key, rest.join(" ").trim()]; }));
+const found = (settings.kind || "").toLowerCase().match(WORD);
+const name = found ? WORDS[found[1]] : "stars";
+const spec = KIND[name];
+const given = settings.color && settings.color !== "own";
+const tint = given ? cssRgb(settings.color) : null;
+const notes = [];
+if (!found) notes.push("Kind not understood, showing stars. Known kinds: stars, snow, rain, fireflies, galaxy, confetti.");
+if (given && !tint) notes.push("Color not understood, using the kind's own color.");
+const digits = (settings.count || "").match(/\d[\d,]*/)?.[0].replace(/,/g, "");
+const count = Math.min(6000, Math.max(100, Number(digits) || spec.count));
+document.body.classList.toggle("dark", spec.dark);
+document.documentElement.style.background = spec.bg;
+tell(notes);
+
+let THREE, OrbitControls;
+try {
+  THREE = await import("three");
+  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+} catch (error) {
+  tell(["This scene needs three.js from cdn.jsdelivr.net. Connect to the internet and reload."]);
+  throw error;
+}
+
+// Positions, sizes and colors are worked out on the GPU from the time, so the loop only sends one number.
+const VERT = `
+attribute vec4 aSeed; attribute vec3 aColor; attribute float aSize;
+uniform float uTime, uKind, uSize, uPxPerUnit, uBox;
+varying vec3 vColor; varying float vAlpha, vSpin;
+float wrap(float v) { return mod(v + uBox, 2.0 * uBox) - uBox; }
+float fadeEdge(float v) { return smoothstep(-uBox, -uBox + 1.5, v) * (1.0 - smoothstep(uBox - 1.5, uBox, v)); }
+void main() {
+  vec3 p = position;
+  float t = uTime, alpha = 1.0, size = aSize * uSize, spin = 0.0;
+  if (uKind < 0.5) {                                     // stars drift toward the viewer, a few shine brighter
+    p.z = wrap(p.z + t * (0.6 + aSeed.x * 0.6)); p.x = wrap(p.x + t * 0.15);
+    float edge = fadeEdge(p.x) * fadeEdge(p.y) * fadeEdge(p.z);
+    alpha = (0.55 + 0.45 * sin(t * (1.0 + aSeed.y * 2.0) + aSeed.z * 6.283)) * edge;
+    if (aSeed.w < 0.07) { size *= 2.4; alpha = edge; }
+  } else if (uKind < 1.5) {                              // snow falls and sways
+    p.y = wrap(p.y - t * (0.5 + aSeed.x * 0.4)); p.x += sin(t * (0.6 + aSeed.y) + aSeed.z * 6.283) * 0.7; alpha = fadeEdge(p.y);
+  } else if (uKind < 2.5) {                              // rain falls fast
+    p.y = wrap(p.y - t * (12.0 + aSeed.x * 6.0)); alpha = (0.4 + 0.6 * aSeed.y) * fadeEdge(p.y);
+  } else if (uKind < 3.5) {                              // fireflies wander and pulse
+    p += vec3(sin(t * (0.35 + aSeed.x * 0.3) + aSeed.y * 6.283), 0.6 * sin(t * (0.25 + aSeed.z * 0.3) + aSeed.w * 6.283),
+              cos(t * (0.3 + aSeed.y * 0.3) + aSeed.x * 6.283)) * 2.2;
+    float pulse = 0.5 + 0.5 * sin(t * (0.9 + aSeed.z) + aSeed.w * 6.283); alpha = pulse * pulse;
+  } else if (uKind < 4.5) {                              // galaxy turns, the inner arms faster
+    float r = length(p.xy), a = atan(p.y, p.x) + t * 0.35 / (0.4 + 0.12 * r);
+    p.xy = r * vec2(cos(a), sin(a)); float core = exp(-r * r * 0.3);
+    alpha = 0.3 + 0.4 * core; size *= 1.0 + 0.8 * core;
+  } else {                                               // confetti falls and tumbles
+    p.y = wrap(p.y - t * (1.0 + aSeed.x * 0.8)); p.x += sin(t * (0.7 + aSeed.y) + aSeed.z * 6.283) * 0.8;
+    spin = t * (2.5 + aSeed.w * 4.0) + aSeed.z * 6.283; alpha = fadeEdge(p.y) * fadeEdge(p.x) * fadeEdge(p.z);
+  }
+  vec4 mv = modelViewMatrix * vec4(p, 1.0); float depth = -mv.z;
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = min(size * uPxPerUnit / max(depth, 0.1), 96.0);
+  vColor = aColor; vAlpha = alpha * smoothstep(2.0, 7.0, depth) * (1.0 - smoothstep(26.0, 40.0, depth)); vSpin = spin;
+}`;
+const FRAG = `
+uniform float uKind;
+varying vec3 vColor; varying float vAlpha, vSpin;
+void main() {
+  vec2 c = gl_PointCoord - 0.5; float a;
+  if (abs(uKind - 2.0) < 0.5) {                          // rain: a thin streak, brightest at its head
+    a = (1.0 - smoothstep(0.03, 0.08, abs(c.x))) * smoothstep(-0.5, 0.5, c.y);
+  } else if (uKind > 4.5) {                              // confetti: a small piece that flips as it turns
+    vec2 q = mat2(cos(vSpin), -sin(vSpin), sin(vSpin), cos(vSpin)) * c;
+    q.x /= max(abs(cos(vSpin * 0.7)), 0.15);
+    a = 1.0 - smoothstep(0.8, 1.0, max(abs(q.x) / 0.2, abs(q.y) / 0.36));
+  } else {                                               // soft round dot
+    a = 1.0 - smoothstep(0.25, 1.0, length(c) * 2.0);
+  }
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(vColor, a * vAlpha);
+}`;
+
+const canvas = el("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(spec.bg);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+camera.position.set(0, 3, 22);
+const controls = Object.assign(new OrbitControls(camera, canvas), { enableDamping: true, enablePan: false, minDistance: 12, maxDistance: 40 });
+el("reset").addEventListener("click", () => controls.reset());
+
+const R = spec.box ?? 36, own = cssRgb(spec.color), pieces = PIECES.map(cssRgb), rnd = Math.random;
+const position = new Float32Array(count * 3), seed = new Float32Array(count * 4);
+const colour = new Float32Array(count * 3), size = new Float32Array(count);
+for (let i = 0; i < count; i++) {
+  if (name === "galaxy") {
+    const r = rnd() < 0.12 ? rnd() * 1.4 : 0.8 + 8.2 * rnd() ** 1.2;
+    const a = (i % 2) * Math.PI + Math.log(1 + r) * 3.4 + (rnd() - 0.5) * 0.9;
+    position.set([r * Math.cos(a), r * Math.sin(a), (rnd() - 0.5) * 0.8], i * 3);
+  } else {
+    position.set([0, 1, 2].map(() => (rnd() * 2 - 1) * R), i * 3);
+  }
+  seed.set([rnd(), rnd(), rnd(), rnd()], i * 4);
+  size[i] = 0.6 + 0.8 * rnd();
+  const tone = rnd(), starTone = [0.8 + 0.2 * tone, 0.88 + 0.04 * tone, 1 - 0.25 * tone];  // stars run from cool white to warm white
+  const base = tint || (name === "confetti" ? pieces[Math.floor(rnd() * pieces.length)] : name === "stars" ? starTone : own);
+  const shade = 0.8 + 0.2 * rnd(); colour.set(base.map((channel) => channel * shade), i * 3);
+}
+const geometry = new THREE.BufferGeometry();
+for (const [attr, array, itemSize] of [["position", position, 3], ["aSeed", seed, 4], ["aColor", colour, 3], ["aSize", size, 1]]) geometry.setAttribute(attr, new THREE.BufferAttribute(array, itemSize));
+const uniforms = { uTime: { value: 0 }, uKind: { value: Object.keys(KIND).indexOf(name) }, uSize: { value: spec.size }, uPxPerUnit: { value: 1 }, uBox: { value: R } };
+const material = new THREE.ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false,
+  blending: spec.add ? THREE.AdditiveBlending : THREE.NormalBlending });
+const points = new THREE.Points(geometry, material);
+points.rotation.x = spec.tilt ?? 0; points.position.y = spec.lift ?? 0;
+scene.add(points);
+
+function resize() {
+  const width = window.innerWidth, height = window.innerHeight;
+  camera.fov = width / height < 1 ? 72 : 55;
+  camera.aspect = width / height;
+  if (name === "galaxy") { const portrait = width / height < 1; points.scale.setScalar(portrait ? 1.45 : 1); points.position.y = portrait ? 3.6 : spec.lift; }
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height, false);
+  uniforms.uPxPerUnit.value = renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+}
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)"); let time = 0, last = performance.now();
+function frame() {
+  const now = performance.now();
+  time += ((now - last) / 1000) * (reduced.matches ? 0.03 : 1); last = now;
+  uniforms.uTime.value = time;
+  controls.update();
+  renderer.render(scene, camera);
+}
+function start() { last = performance.now(); renderer.setAnimationLoop(frame); }
+document.addEventListener("visibilitychange", () => (document.hidden ? renderer.setAnimationLoop(null) : start()));
+addEventListener("resize", resize);
+resize();
+if (!document.hidden) start();
+</script>
+</body>
+</html>

@@ -6,6 +6,27 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **Kiwibro looks at the page it made, and `/goal` keeps going until it is right.** Before a
+  turn that wrote or changed an HTML page ends, the page is opened in headless Chrome and
+  checked: script errors (with the page's own line number), files that are not there, a blank
+  or one-colour picture, text left unfilled, a kit's "not understood" notice, and for a request
+  that names motion whether two pictures two seconds apart differ. Kiwibro says what it found in
+  its own words, the model gets a round to fix it, and the page is looked at again, three looks
+  at most. A reply that claimed the page was done before the look is taken back. A finished kit
+  that passes ends with "It is good now" and the kit line; one that fails is made again by a
+  second `component` call with the same name and folder, which may overwrite that page (no other
+  existing file is ever overwritten). Colour blanks of the four new kits are checked when the kit
+  is used: a hex code, an `rgb()`/`hsl()` form or a CSS colour name is kept, anything else
+  ("sky", "dark") is replaced by the blank's default and the result says so.
+  A page written by hand in a turn that made a plan ("write a file box.html yourself…") is
+  looked at too. The new tool `look_at_page` saves the picture to `screenshots/` and shows it in the step.
+  A message starting with `/goal` allows eight looks, adds a phone-width render and asks the
+  vision model whether the picture shows the goal; for work that is not a page it parses the
+  files again and asks the model to check against the goal up to three times; the turn ends
+  with one line of what was checked and what still fails, leaving out a page an earlier line already reported. Typing `/` in the message box offers
+  the command (Tab or a click completes it) and the message shows a Goal mark. Four more kits
+  (`web/object-3d`, `particles-3d`, `chart-3d`, `animation-2d`), a three.js page recipe and
+  a three.js knowledge file went in with it: 75 components, 49 tools.
 - **Kiwi Mind 3.0: an eighth skill, see, and vision layers.** A picture in a message is
   answered under the see skill. Kiwi Mind reads pictures itself through an image encoder
   (CLIP ViT-L/14) that ships in the pack, so no separate vision helper is needed.

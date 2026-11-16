@@ -121,6 +121,7 @@ def describe_image(
     question: str = "",
     *,
     current_model: str | None = None,
+    max_tokens: int = 800,
 ) -> dict[str, Any]:
     """Describe/answer about a workspace image with the smallest vision model."""
     data_url, public = image_data_url(workspace, path)
@@ -136,7 +137,7 @@ def describe_image(
             ],
         }
     ]
-    result = run_helper(llm, "vision", messages, current_model=current_model, max_tokens=800)
+    result = run_helper(llm, "vision", messages, current_model=current_model, max_tokens=max_tokens)
     return {**result, "path": public, "question": prompt}
 
 

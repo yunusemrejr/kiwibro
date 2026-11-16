@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,8 @@ class Component:
     unless: tuple[str, ...] = ()  # phrases that rule it out: "3d printer" is not "3d scene"
     finished: bool = False  # the kit's files are the finished result: nothing to read, run or adapt
     change: str = ""  # a finished kit: how a later message changes what it made ({file} is the file)
+    moves: bool = False  # the page is expected to move (the look at the page raises "nothing moves" only then)
+    not_text: tuple[str, ...] = ()  # texts the page must not show, matched as "the visible text contains this"
 
     @property
     def area(self) -> str:
@@ -130,6 +133,8 @@ class Library:
                     unless=tuple(str(phrase) for phrase in data.get("unless") or ()),
                     finished=data.get("finished") is True,
                     change=str(data.get("change") or ""),
+                    moves=(data.get("check") or {}).get("moves") is True,
+                    not_text=tuple(str(text) for text in (data.get("check") or {}).get("not_text") or ()),
                 )
             )
         return sorted(components, key=lambda component: component.name)
@@ -360,14 +365,58 @@ def _folder(workspace: Workspace, path: str | None) -> Path:
         raise ComponentError(str(exc)) from exc
 
 
-def _blank_values(component: Component, values: dict[str, str]) -> tuple[dict[str, str], list[str]]:
-    """The kit's blanks with the given values over the defaults, and the given keys it has no blank for.
+_COLOR_NAMES = frozenset("""
+aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood
+cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray
+darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue
+firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew
+hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray
+lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue
+mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred
+midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid
+palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple
+rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue
+slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white
+whitesmoke yellow yellowgreen
+""".split())
+_HEX_COLOR = re.compile(r"#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})", re.IGNORECASE)
+_FUNCTION_COLOR = re.compile(
+    r"(?:rgb|hsl)a?\(\s*[\d.]+(?:deg|%)?(?:\s*[,\s/]\s*[\d.]+%?){2,3}\s*\)", re.IGNORECASE
+)
+
+
+def _color(value: str) -> str:
+    """The value as a colour a page can use, or "": a hex code, an rgb()/hsl() form, or a CSS colour name
+    ("Sky Blue" becomes "skyblue")."""
+    text = value.strip()
+    if _HEX_COLOR.fullmatch(text) or _FUNCTION_COLOR.fullmatch(text):
+        return text
+    name = re.sub(r"[\s_-]+", "", text.lower())
+    return name if name in _COLOR_NAMES else ""
+
+
+def _blank_values(component: Component, values: dict[str, str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """The kit's blanks with the given values over the defaults, the given keys it has no blank for, and one
+    line for each colour value that is not a colour (the blank's default is used for it).
 
     An extra key does not stop the kit: a small model that adds one would otherwise give up on a
     kit that fits. The result of ``use`` names what was left out."""
     filled = {key: str(blank.get("default", "")) for key, blank in component.blanks.items()}
     filled.update({key: str(value) for key, value in values.items() if key in component.blanks})
-    return filled, [key for key in values if key not in component.blanks]
+    notes = []
+    for key, blank in component.blanks.items():
+        if blank.get("is") != "color" or filled[key].strip() in ("", str(blank.get("default", ""))):
+            continue
+        fixed = _color(filled[key])
+        if fixed:
+            filled[key] = fixed
+        else:
+            default = str(blank.get("default", ""))
+            notes.append(f'{key} "{filled[key].strip()}" is not a colour, so {default} was used.')
+            filled[key] = default
+    return filled, [key for key in values if key not in component.blanks], notes
 
 
 def _kit_plan(
@@ -417,16 +466,18 @@ def use(
     library: Library | None = None,
     conversation_id: str | None = None,
     data_dir: str | Path | None = None,
+    replace: Collection[str] = (),
 ) -> str:
     """A recipe's steps, or a kit's files written into the workspace folder ``path``.
 
     Every target is checked before the first byte is written, so a kit is never
-    left half-written and an existing file is never overwritten."""
+    left half-written. An existing file is never overwritten, except a path named in ``replace``
+    (the page this kit wrote earlier in the turn and that failed its look)."""
     wanted = (name or "").strip()
     if not wanted:
         raise ComponentError("use needs name.")
     component = (library or default_library()).get(wanted)
-    filled, extra = _blank_values(component, values or {})
+    filled, extra, notes = _blank_values(component, values or {})
     if component.kind != KIT:
         return _describe(component)
     folder = _folder(workspace, path)
@@ -434,7 +485,7 @@ def use(
         raise ComponentError(f"{workspace.public(folder)} is a file, not a folder.")
     plan = _kit_plan(component, filled, folder, workspace)
     for _source, target, _text in plan:
-        if target.exists():
+        if target.exists() and workspace.public(target) not in replace:
             raise ComponentError(f"{workspace.public(target)} already exists. {_UNSET}")
     _checkpoint(plan, workspace, conversation_id, data_dir)
     written = []
@@ -451,6 +502,7 @@ def use(
     return "\n".join([
         f"Used {component.name} in {where}: {count} file{'s' if count != 1 else ''} written",
         *(f"{shown} ({number} lines)" for shown, number in written),
+        *notes,
         *([_left_out(component, extra)] if extra else []),
         f"Next: {component.next}",
     ])

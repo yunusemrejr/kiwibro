@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dff1fb; }
+  body { font: 15px/1.4 system-ui, sans-serif; color: #16324a; }
+  body.dark { color: #eef3ff; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; }
+  h1 { position: fixed; left: 16px; top: 12px; right: 16px; margin: 0; font-size: 1.05rem; font-weight: 600; pointer-events: none; }
+  #turn {
+    position: fixed; left: 16px; bottom: 16px; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+    font: inherit; font-weight: 600; color: inherit; background: rgb(255 255 255 / 0.55); border: 1px solid currentColor;
+  }
+  body.dark #turn { background: rgb(10 18 44 / 0.55); }
+  #turn:hover { background: rgb(255 255 255 / 0.85); }
+  body.dark #turn:hover { background: rgb(10 18 44 / 0.85); }
+  #turn:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+  #notice {
+    position: fixed; right: 16px; bottom: 16px; max-width: min(360px, calc(100% - 150px)); margin: 0; padding: 8px 12px;
+    border-radius: 10px; font-size: 0.85rem; white-space: pre-line; color: #3b1d05; background: #ffe2bd;
+  }
+  @media (max-width: 480px) { #notice { left: 16px; right: 16px; max-width: none; bottom: 72px; } }
+</style>
+</head>
+<body>
+<!-- KIWIBRO: the page's values are the four lines inside <script id="settings">: title, shape, color, background.
+  Shapes: cube, sphere, cone, cylinder, ring, knot, gem, pyramid, capsule, star. Colours: a name or a hex code. -->
+<script type="text/plain" id="settings">
+title {{title}}
+shape {{shape}}
+color {{color}}
+background {{background}}
+</script>
+
+<canvas id="view"></canvas>
+<h1 id="heading">{{title}}</h1>
+<button id="turn" type="button">Stop turning</button>
+<p id="notice" hidden></p>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+const el = (id) => document.getElementById(id);
+const DEFAULT_COLOUR = "#e76f51", DEFAULT_BACKGROUND = "#dff1fb";
+const SHAPE_NOTE = "Shape not understood, so a cube is shown. Known shapes: cube, sphere, cone, cylinder, ring, knot, gem, pyramid, capsule, star.";
+const COLOUR_NOTE = "Colour not understood, so the default colour is used. Try a colour name or a hex code such as #c0392b.";
+const BACKGROUND_NOTE = "Background not understood, so the default background is used. Try a colour name or a hex code such as #dff1fb.";
+const tell = (lines) => { el("notice").textContent = lines.join("\n"); el("notice").hidden = lines.length === 0; };
+
+// ---------------------------------------------------------------- reading the settings
+
+// Forgiving: lower case; commas, underscores and quotes count as spaces.
+const plain = (text) => text.toLowerCase().replace(/[,_"'“”‘’]/g, " ").replace(/\s+/g, " ").trim();
+const values = {};
+for (const line of el("settings").textContent.split("\n")) {
+  const found = line.trim().match(/^(title|shape|color|background)\s+(.*)$/i);
+  if (found) values[found[1].toLowerCase()] = found[2].trim();
+}
+// The first known shape word anywhere in the value wins ("a shiny red donut" is a ring).
+function shapeOf(text) {
+  for (const word of plain(text).split(" ")) {
+    const found = SHAPES.find(([names]) => names.includes(word) || names.includes(word.replace(/s$/, "")));
+    if (found) return found;
+  }
+  return null;
+}
+// A colour name or a hex code, checked by the browser. Spaces inside a name do not count ("dark red").
+function colourOf(text) {
+  const name = plain(text).replace(/ /g, "");
+  const value = /^[0-9a-f]{6}$/.test(name) ? `#${name}` : name;
+  return CSS.supports("color", value) ? value : null;
+}
+// ---------------------------------------------------------------- three.js
+
+let THREE, OrbitControls, RoundedBoxGeometry;
+try {
+  THREE = await import("three");
+  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+  ({ RoundedBoxGeometry } = await import("three/addons/geometries/RoundedBoxGeometry.js"));
+} catch (error) {
+  tell(["This scene needs three.js from cdn.jsdelivr.net. Connect to the internet and reload."]);
+  throw error;
+}
+function star() {
+  const outline = new THREE.Shape();
+  for (let point = 0; point < 10; point++) {
+    const reach = point % 2 ? 0.4 : 0.85, angle = Math.PI / 2 + (point * Math.PI) / 5;
+    outline[point ? "lineTo" : "moveTo"](Math.cos(angle) * reach, Math.sin(angle) * reach);
+  }
+  return new THREE.ExtrudeGeometry(outline, { depth: 0.3, bevelEnabled: true, bevelSize: 0.08, bevelThickness: 0.08, bevelSegments: 2 });
+}
+// Each shape: its words, its geometry, and whether its faces are flat (true for facets).
+const SHAPES = [
+  [["cube", "box"], () => new RoundedBoxGeometry(1, 1, 1, 4, 0.12)],
+  [["sphere", "ball"], () => new THREE.SphereGeometry(0.7, 64, 32)],
+  [["cone"], () => new THREE.ConeGeometry(0.7, 1.4, 64)],
+  [["cylinder"], () => new THREE.CylinderGeometry(0.6, 0.6, 1.3, 64)],
+  [["ring", "torus", "donut"], () => new THREE.TorusGeometry(0.6, 0.25, 32, 96)],
+  [["knot"], () => new THREE.TorusKnotGeometry(0.5, 0.18, 200, 32)],
+  [["gem", "diamond"], () => new THREE.OctahedronGeometry(0.8).scale(1, 1.35, 1), true],
+  [["pyramid"], () => new THREE.ConeGeometry(0.85, 1.4, 4).rotateY(Math.PI / 4), true],
+  [["capsule"], () => new THREE.CapsuleGeometry(0.45, 0.8, 16, 48)],
+  [["star"], star, true],
+];
+const notes = [];
+const shape = shapeOf(values.shape ?? "");
+const colour = colourOf(values.color ?? "");
+const background = colourOf(values.background ?? "");
+if (!shape) notes.push(SHAPE_NOTE);
+if (!colour) notes.push(COLOUR_NOTE);
+if (!background) notes.push(BACKGROUND_NOTE);
+
+document.body.style.background = background ?? DEFAULT_BACKGROUND;
+const backdrop = new THREE.Color(background ?? DEFAULT_BACKGROUND);
+const { r, g, b } = backdrop.getRGB({}, THREE.SRGBColorSpace);
+document.body.classList.toggle("dark", 0.299 * r + 0.587 * g + 0.114 * b < 0.5);
+el("heading").textContent = document.title = values.title ?? "";
+const view = el("view");
+view.setAttribute("aria-label", values.title ?? "");
+tell(notes);
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: view, antialias: true, alpha: true });
+} catch (error) {
+  tell(["This scene needs WebGL, which this browser does not offer."]);
+  throw error;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
+camera.position.set(0, 1.2, 6.5);
+const controls = new OrbitControls(camera, view);
+Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: false, minDistance: 3.5, maxDistance: 10, maxPolarAngle: Math.PI / 2 - 0.05 });
+
+scene.add(new THREE.HemisphereLight("#ffffff", "#b7c7d3", 1.5));
+const sun = new THREE.DirectionalLight("#ffffff", 2.4);
+Object.assign(sun, { castShadow: true });
+sun.position.set(3, 5, 3);
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.radius = 5;
+sun.shadow.bias = -0.0005;
+Object.assign(sun.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 1, far: 15 });
+sun.shadow.camera.updateProjectionMatrix();
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.CircleGeometry(2.6, 96).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: backdrop, roughness: 1 }));
+const tint = backdrop.getHSL({ h: 0, s: 0, l: 0 }); ground.material.color.setHSL(tint.h, Math.min(1, tint.s + 0.1), tint.l * 0.72);
+ground.receiveShadow = true, ground.position.y = -1.2;
+scene.add(ground);
+
+const [, build, flat] = shape ?? SHAPES[0];
+const geometry = build();
+geometry.center();
+geometry.computeBoundingSphere();
+const solid = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: colour ?? DEFAULT_COLOUR, roughness: 0.35, metalness: 0.05, flatShading: Boolean(flat) }));
+solid.scale.setScalar(1.15 / geometry.boundingSphere.radius);
+Object.assign(solid, { castShadow: true });
+solid.rotation.x = 0.35;
+const stage = new THREE.Group();
+stage.position.y = 0.25;
+stage.add(solid);
+scene.add(stage);
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  // On a narrow phone screen the lens widens, so the whole object stays in view.
+  camera.fov = Math.max(35, THREE.MathUtils.radToDeg(2 * Math.atan(1.6 / (camera.position.length() * camera.aspect))));
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize), resize();
+// The object turns by itself unless the viewer prefers reduced motion or stops it.
+const turnButton = el("turn");
+let turning = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+const labelTurn = () => { turnButton.textContent = turning ? "Stop turning" : "Start turning"; };
+labelTurn();
+turnButton.onclick = () => { turning = !turning; labelTurn(); };
+
+const clock = new THREE.Clock();
+function draw() {
+  const step = Math.min(clock.getDelta(), 0.05);
+  if (turning) stage.rotation.y += step * 0.45;
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(draw);
+// The loop pauses while the tab is hidden.
+document.addEventListener("visibilitychange", () => renderer.setAnimationLoop(document.hidden ? null : draw));
+</script>
+</body>
+</html>

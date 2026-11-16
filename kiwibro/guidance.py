@@ -61,7 +61,8 @@ SNIPPETS: dict[str, str] = {
     "visual": (
         "Rich output: the chat renders markdown tables, ```csv blocks as tables, and one self-contained "
         "```html or ```svg block (inline CSS/JS, no external links) as a live preview — use it for a "
-        "chart, diagram or small UI."
+        "chart, diagram or small UI. 3D scenes, 3D objects, particle fields, 3D charts and canvas "
+        "animations have kits (component search/use)."
     ),
     "attachments": (
         "Attached files: the message starts with a note per file (its workspace path and a description by "

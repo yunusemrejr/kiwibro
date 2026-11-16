@@ -65,9 +65,10 @@ RESEARCH_NEXT = ("The final answer must state the answer in plain sentences with
 LIST_HINT = 'To use one: component(action="use", name="<name>", path="<folder>", values={...})'
 # A kit is usually a handful of small starter files. A whole engine in one page is the
 # exception: a three.js scene that draws itself from plain lines cannot be split without
-# stopping being one file. The kits listed here answer to the wide ceiling instead, and
-# nothing else in the library may join the list without a test of its own.
-BIG_KITS = {"web/scene-3d"}
+# stopping being one file, and the 3D chart and the 2D animation are single finished pages
+# by design too. The kits listed here answer to the wide ceiling instead, and nothing else
+# in the library may join the list without a test of its own.
+BIG_KITS = {"web/scene-3d", "web/chart-3d", "web/animation-2d"}
 LINES = 200
 BYTES = 16 * 1024
 BIG_LINES = 1400
@@ -120,7 +121,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 70
+    assert len(MANIFESTS) == 75
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):
@@ -132,7 +133,7 @@ def test_every_manifest_loads_with_the_required_keys():
             assert kit_files(path.parent / "files"), f"{path} is a kit without files"
             assert data["blanks"], f"{path} is a kit without blanks"
             for key, blank in data["blanks"].items():
-                assert set(blank) == {"about", "default"}, f"{path}: {key}"
+                assert set(blank) - {"is"} == {"about", "default"} and blank.get("is", "color") == "color", f"{path}: {key}"
                 assert blank["about"] and blank["default"], f"{path}: {key}"
         else:
             assert data["blanks"] == {}, path
@@ -157,6 +158,16 @@ def test_the_library_loads_the_3d_scene_kit():
     assert scene.kind == components.KIT
     assert list(scene.blanks) == ["title", "scene", "sky", "ground"]
     assert scene.file_paths() == ["index.html"]
+
+
+def test_the_five_moving_kits_declare_what_to_check():
+    checked = ("web/scene-3d", "web/object-3d", "web/particles-3d", "web/chart-3d", "web/animation-2d")
+    library = components.Library(LIBRARY)
+    for name in checked:
+        kit = library.get(name)
+        assert kit.moves is True, name
+        assert kit.not_text, name
+    assert all(kit.moves is False and kit.not_text == () for kit in library.all() if kit.name not in checked)
 
 
 def test_kit_placeholders_are_declared_blanks():
@@ -206,8 +217,9 @@ def test_kit_files_survive_their_defaults(tmp_path: Path):
 
 
 def test_library_stays_small():
-    size = sum(item.stat().st_size for item in LIBRARY.rglob("*") if item.is_file())
-    assert size < 400 * 1024, f"the library is {size} bytes"
+    size = sum(item.stat().st_size for item in LIBRARY.rglob("*") if item.is_file()
+               and "__pycache__" not in item.parts and item.suffix != ".pyc")
+    assert size < 512 * 1024, f"the library is {size} bytes"
 
 
 def test_no_kit_file_removes_anything():
@@ -377,7 +389,8 @@ def test_an_unknown_component_names_its_closest():
     with pytest.raises(components.ComponentError) as caught:
         components.default_library().get("web/pag")
     assert str(caught.value) == (
-        'there is no component named "web/pag". Closest: web/page, web/pwa. component(action="list") shows all.')
+        'there is no component named "web/pag". Closest: web/page, web/pwa, web/threejs-page. '
+        'component(action="list") shows all.')
 
 
 def test_an_unknown_blank_is_left_out_and_named(tmp_path: Path):
@@ -586,6 +599,18 @@ def test_a_message_that_only_looks_like_a_3d_scene_calls_for_nothing_of_it(messa
     assert found is None or found.name != "web/scene-3d"
 
 
+@pytest.mark.parametrize("message, name", [
+    ("make a page with a spinning 3d cube that I can turn with the mouse", "web/object-3d"),
+    ("make a falling snow animation", "web/particles-3d"),
+    ("I want a 3d bar chart of my sales", "web/chart-3d"),
+    ("make an html page with an animation of a bouncing ball", "web/animation-2d"),
+    ("make a 3d scene where a kiwi walks to a tree", "web/scene-3d"),
+])
+def test_a_message_for_a_moving_kit_gets_the_kit_it_names(message: str, name: str):
+    found = components.suggest(message)
+    assert found is not None and found.name == name
+
+
 def test_an_unless_phrase_skips_the_kit_that_says_it(tmp_path: Path):
     """The real kit lists "3d printer" under unless; without that key the same message would pick it."""
     message = "make a 3d printer stand for my desk"
@@ -689,3 +714,54 @@ def test_bytecode_left_in_a_kit_is_not_part_of_it(tmp_path: Path):
     ws = Workspace(tmp_path / "ws")
     out = components.use("web/page", workspace=ws, library=components.Library(root))
     assert "pyc" not in out and not list(ws.root.rglob("*.pyc"))
+
+
+def test_a_colour_blank_takes_a_colour_and_replaces_anything_else(tmp_path: Path):
+    assert len(components._COLOR_NAMES) == 148 and isinstance(components._COLOR_NAMES, frozenset)
+    ws = Workspace(tmp_path / "ws")
+    text = components.use(
+        "web/animation-2d", {"color": "Sky Blue", "background": "dark", "count": "3"}, workspace=ws, path="a",
+    )
+    page = (ws.root / "a" / "index.html").read_text(encoding="utf-8")
+    assert "color skyblue\n" in page and "background own\n" in page  # a name is written as one word; "dark" is no colour
+    assert 'background "dark" is not a colour, so own was used.' in text and "color \"" not in text
+    kept = components.use(
+        "web/animation-2d", {"color": "#5fd3c4", "background": "rgb(10 20 30 / .5)"}, workspace=ws, path="b",
+    )
+    assert "not a colour" not in kept
+    page = (ws.root / "b" / "index.html").read_text(encoding="utf-8")
+    assert "color #5fd3c4\n" in page and "background rgb(10 20 30 / .5)\n" in page
+
+
+def test_a_colour_blank_falls_back_to_its_own_default(tmp_path: Path):
+    ws = Workspace(tmp_path / "ws")
+    text = components.use("web/object-3d", {"color": "sky", "background": "own"}, workspace=ws, path="c")
+    page = (ws.root / "c" / "index.html").read_text(encoding="utf-8")
+    assert 'color "sky" is not a colour, so #e76f51 was used.' in text and 'background "own" is not a colour, so #dff1fb was used.' in text
+    assert "#e76f51" in page and "#dff1fb" in page
+
+
+@pytest.mark.parametrize("value, fixed", [
+    ("#abc", "#abc"), ("#AABBCCDD", "#AABBCCDD"), ("#abcd", "#abcd"), ("#abcde", ""), ("Dark_Slate-Grey", "darkslategrey"),
+    ("hsla(120, 50%, 50%, .5)", "hsla(120, 50%, 50%, .5)"), ("rgb(1,2)", ""), ("sky", ""), ("rgb(red)", ""),
+])
+def test_what_counts_as_a_colour(value: str, fixed: str):
+    assert components._color(value) == fixed
+
+
+def test_a_kit_page_may_be_written_again_only_where_the_caller_names_it(tmp_path: Path):
+    ws = Workspace(tmp_path / "ws")
+    components.use("web/animation-2d", {"title": "First"}, workspace=ws, path="a")
+    with pytest.raises(components.ComponentError, match="already exists"):
+        components.use("web/animation-2d", {"title": "Second"}, workspace=ws, path="a", replace={"a/other.html"})
+    components.use("web/animation-2d", {"title": "Second"}, workspace=ws, path="a", replace={"a/index.html"})
+    assert "Second" in (ws.root / "a" / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_colour_blanks_of_the_kits_are_marked():
+    marked = {kit.name: sorted(key for key, blank in kit.blanks.items() if blank.get("is") == "color")
+              for kit in components.Library(LIBRARY).all()}
+    assert {name: keys for name, keys in marked.items() if keys} == {
+        "web/object-3d": ["background", "color"], "web/particles-3d": ["color"],
+        "web/chart-3d": ["color"], "web/animation-2d": ["background", "color"],
+    }

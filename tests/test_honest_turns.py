@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from test_backend import Env, chat_events, tool_call_result
 
-from kiwibro import connectivity, prompts
+from kiwibro import connectivity, pagecheck, prompts
 from kiwibro.agent import Turn
 from kiwibro.llm import ChatResult
 
@@ -293,7 +293,10 @@ def test_the_step_limit_note_lists_six_files_and_counts_the_rest(env: Env) -> No
 # --- a finished kit is left alone -------------------------------------------------------------
 
 
-def test_a_finished_kit_ends_the_turn_and_kiwibro_says_what_was_made(env: Env) -> None:
+def test_a_finished_kit_ends_the_turn_and_kiwibro_says_what_was_made(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_pagecheck import Fake
+
+    monkeypatch.setattr(pagecheck, "chrome_render", Fake())  # the page is looked at before the turn ends
     use = {"action": "use", "name": "web/scene-3d", "path": "fox", "values": {"scene": "fox walks to campfire"}}
     env.fake.stream_script = [
         tool_call_result("component", use, "call_1"),
@@ -302,7 +305,7 @@ def test_a_finished_kit_ends_the_turn_and_kiwibro_says_what_was_made(env: Env) -
     chat_events(env, "make a 3d scene where a fox walks to a campfire")
     assert len(env.fake.stream_calls) == 1
     assert [m["content"] for m in _messages(env, "tool")][0].startswith("Used web/scene-3d in fox: 1 file written")
-    assert _messages(env, "assistant")[-1]["content"] == prompts.KIT_MADE.format(files="fox/index.html")
+    assert _messages(env, "assistant")[-1]["content"].endswith(prompts.KIT_MADE.format(files="fox/index.html"))
     assert (env.workspace / "fox" / "index.html").exists()
     # the next message is told how to change that page instead of reading or remaking it
     night = {"path": "fox/index.html", "old": "sky day", "new": "sky night"}

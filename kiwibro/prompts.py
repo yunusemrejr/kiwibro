@@ -51,6 +51,28 @@ MADE_EARLIER = (
     "do not read it, rewrite it or make a new one. {change}"
 )
 KIT_MADE = "Done: {files} is made and shown here. Tell me what to change and I will edit it."
+# What Kiwibro says itself while it looks at a page that was made in this turn (pageloop.py, agent.py).
+LOOK_FIRST = "First draft of {file} is written. Looking at it."
+LOOK_AGAIN = "Edited. Looking again."
+LOOK_BAD = "Not good enough yet: {problems}"
+LOOK_BETTER = "Better: {fixed}. Still wrong: {problems}"
+LOOK_SAME = "Still not right: {problems}"
+LOOK_WORSE = "That made it worse: {problems}"
+LOOK_GOOD = "It is good now: {confirmed}."
+LOOK_GOOD_PLAIN = "It is good now: no problems were found in {file}."
+LOOK_STOPPED = "I stopped after {tries}. Still wrong: {problems}"
+LOOK_KIT_FIX = ("Call component again with name {kit} and path {folder}, and other values for the blanks. "
+                "The lines at the top of {file} now read:\n{lines}")
+LOOK_BLIND = "I could not look at {file}: {why}."
+# /goal: the same loop, harder.
+GOAL_USAGE = ("Write what you want after /goal, for example: /goal a page with a bouncing ball. "
+              "I keep working and checking until it is right.")
+GOAL_REVIEW = ("Goal: {goal}. Check your work against it part by part. If anything is missing or wrong, fix it now. "
+               "Reply DONE only when all of it is done.")
+GOAL_CHECKED = "Checked: {files} parse without errors."
+GOAL_FAILING = "Still failing: {problems}."
+GOAL_UNLOOKED = "Not looked at: {files}."
+GOAL_UNCHECKED = "Nothing that was made can be checked by a program, so whether the goal is met is for you to judge."
 WORKSPACE_TEMP_BLOCK = (
     "\n## Workspace\nYour file and command tools work inside a temporary folder that belongs to this chat. "
     "Use paths relative to it: `.` is its top level, e.g. `src/app.py`. Paths outside it are refused.\n"
