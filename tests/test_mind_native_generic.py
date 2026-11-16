@@ -267,3 +267,11 @@ def test_candidate_status_exposes_only_validated_architecture_counts(
     status = mind.describe()
     assert not status["usable"] and not status["vision"]
     assert "expert_bank" not in status and "base" not in status
+
+
+def test_candidate_reserves_one_full_local_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    pack_at(tmp_path, base="google/gemma-4-26B-A4B-it", effort=False)
+    engine = LLMClient(lambda: {}, data_dir=tmp_path).direct_engine()
+    monkeypatch.setattr(engine, "_start", lambda model, context, slots: (model.id, context, slots))
+    assert engine.ensure(NATIVE_MODEL) == (NATIVE_MODEL, engine.find(NATIVE_MODEL).context_length, 1)

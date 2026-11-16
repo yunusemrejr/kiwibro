@@ -993,7 +993,9 @@ class DirectEngine:
             with self._lock:
                 server = self._servers.get(model.id)
                 wanted_ctx = self._window(model, context_length or (server.context_length if server else None))
-                default_parallel = 2 if model.id in self._managed else DEFAULT_PARALLEL
+                # The managed laptop pack budgets one full context for its
+                # active turn. More slots divide that window or add cache pressure.
+                default_parallel = 1 if model.id in self._managed else DEFAULT_PARALLEL
                 wanted_par = 1 if model.embeddings else int(parallel or (server.parallel if server else default_parallel))
                 if server and server.alive() and (context_length is None or server.context_length == wanted_ctx) \
                         and (parallel is None or server.parallel == wanted_par):
