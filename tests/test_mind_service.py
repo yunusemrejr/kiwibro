@@ -23,7 +23,7 @@ from kiwibro.llm import ChatResult, ContextLimitError, LLMClient, LLMError, Turn
 from kiwibro.mind import KIWIMIND, render
 from kiwibro.mind.client import HostGone, MindRequestError
 from kiwibro.mind.conductor import Conductor, Holdback, Settings
-from kiwibro.mind.pack import LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, Pack
+from kiwibro.mind.pack import LEGACY_REVISION, MANIFEST, MEMORY_FILE, MEMORY_REVISION, TOKENIZER, TRUNK, Pack
 
 needs_node = pytest.mark.skipif(node_path() is None, reason="node is not installed")
 
@@ -481,6 +481,55 @@ def test_download_installs_a_checked_pack_and_resumes(tmp_path: Path, monkeypatc
         assert state["state"] == "done" and state["done_bytes"] == state["total_bytes"] > 0
         assert any(r and r.startswith("bytes=") for r in hub.ranges)  # it asked for the rest, not everything
         assert Pack(target).check().ok
+    finally:
+        hub.close()
+
+
+@pytest.mark.parametrize("outcome", ["error", "cancelled"])
+def test_interrupted_update_keeps_installed_pack_until_resume(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    monkeypatch.setattr("kiwibro.mind.pack.CHUNK", 4_096)
+    old = {TRUNK: b"a" * 24_576, TOKENIZER: b"original vocab"}
+    new = {TRUNK: b"b" * 24_576, TOKENIZER: b"updated vocab"}
+
+    def manifest(version: int, files: dict[str, bytes]) -> bytes:
+        return json.dumps({"version": version, "files": {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in files.items()
+        }}).encode()
+
+    hub = FakeHub({MANIFEST: manifest(2, new), **new}, break_after=9_000 if outcome == "error" else None)
+    try:
+        pack = Pack(tmp_path, base_url=hub.url)
+        pack.dir.mkdir()
+        for name, data in {MANIFEST: manifest(1, old), **old}.items():
+            pack.path(name).write_bytes(data)
+        assert pack.check().ok
+
+        get = pack._get
+
+        def cancel_on_trunk(name, offset):
+            if name == TRUNK:
+                assert pack.cancel_download()
+            return get(name, offset)
+
+        with monkeypatch.context() as interrupted:
+            if outcome == "cancelled":
+                interrupted.setattr(pack, "_get", cancel_on_trunk)
+            pack.start_download()
+            assert wait_download(pack)["state"] == outcome
+
+        assert pack.manifest()["version"] == 1 and Pack(tmp_path).check().ok
+        assert {name: pack.path(name).read_bytes() for name in old} == old
+        hub.break_after = None
+        pack.start_download()
+        state = wait_download(pack)
+        assert state["state"] == "done" and state["done_bytes"] == state["total_bytes"]
+        assert sum(path.endswith(f"/{TOKENIZER}") for path in hub.paths) == 1
+        if outcome == "error":
+            assert any(r and r.startswith("bytes=") for r in hub.ranges)
+        assert pack.manifest()["version"] == 2 and Pack(tmp_path).check().ok
+        assert {name: pack.path(name).read_bytes() for name in new} == new
     finally:
         hub.close()
 

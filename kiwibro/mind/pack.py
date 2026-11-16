@@ -143,10 +143,10 @@ class Pack:
     def check(self) -> PackState:
         """Whether the installed pack is complete and intact. Cheap after the first time: a file is only hashed
         again when its size or modification time changed."""
-        manifest = self.manifest()
-        if manifest is None:
-            return PackState(False, False, "Kiwi Mind is not installed.")
         with self._lock:
+            manifest = self.manifest()
+            if manifest is None:
+                return PackState(False, False, "Kiwi Mind is not installed.")
             try:
                 signature = self._signature(manifest)
             except OSError:
@@ -305,7 +305,10 @@ class _Download:
                for size, digest in files.values()) or {MANIFEST, pending.name, CHECK_CACHE} & files.keys():
             raise PackError("The pack lists invalid file metadata.")
         self._set(total=sum(size for size, _digest in files.values()))
+        staged = []
         for name, (size, digest) in sorted(files.items(), key=lambda item: item[0] != TOKENIZER):
+            if self.stop.is_set():
+                raise _Cancelled
             target = pack.path(name)
             if target.exists() and target.stat().st_size == size:
                 try:  # a retrained pack has files of the same size and other content
@@ -316,33 +319,40 @@ class _Download:
                     with self.lock:
                         self.done += size
                     continue
-            self._fetch(name, size, digest)
-        if self.stop.is_set():
-            raise _Cancelled
-        os.replace(pending, pack.path(MANIFEST))
+            staged.append((self._fetch(name, size, digest), target))
+        with pack._lock:
+            if self.stop.is_set():
+                raise _Cancelled
+            # Keep the current manifest and files usable throughout transfer and verification.
+            for part, target in staged:
+                os.replace(part, target)
+            os.replace(pending, pack.path(MANIFEST))
+            pack._memo = None
 
-    def _fetch(self, name: str, size: int | None, digest: str | None, *, count: bool = True) -> None:
+    def _fetch(self, name: str, size: int, digest: str) -> Path:
         pack = self.pack
         target = pack.path(name)
         part = target.with_name(target.name + ".part")
         target.parent.mkdir(parents=True, exist_ok=True)
         offset = part.stat().st_size if part.exists() else 0
-        if size is not None and offset > size:
+        if offset > size:
             part.unlink()
             offset = 0
-        if size is None or offset < size:
-            self._transfer(name, part, offset, size, count)
-        if size is not None and part.stat().st_size != size:
+        if offset < size:
+            self._transfer(name, part, offset, size, True)
+        else:
+            with self.lock:
+                self.done += size
+        if part.stat().st_size != size:
             raise PackError("The download stopped early. Start it again to resume.")
-        if digest is not None:
-            try:
-                ok = _sha256(part, self.stop) == digest
-            except PackError as exc:
-                raise _Cancelled from exc
-            if not ok:
-                part.unlink(missing_ok=True)
-                raise PackError(f"The downloaded file {name} did not match its checksum. Start it again.")
-        os.replace(part, target)
+        try:
+            ok = _sha256(part, self.stop) == digest
+        except PackError as exc:
+            raise _Cancelled from exc
+        if not ok:
+            part.unlink(missing_ok=True)
+            raise PackError(f"The downloaded file {name} did not match its checksum. Start it again.")
+        return part
 
     def _transfer(self, name: str, part: Path, offset: int, size: int | None, count: bool) -> None:
         response = self.pack._get(name, offset)
