@@ -97,6 +97,41 @@ build b12443 (commit `301db6337`) for a matching converter, quantizer and replay
 Retrain the routing and recovery helpers on the new model's traces with the
 [Colab calibration workflow](../scripts/mind/STEERING_CALIBRATION.md).
 
+### 300-step Colab run
+
+The 300-step candidate continued the 28-step adapter for 112 steps on the
+original curriculum. It then trained for 96 steps and 64 steps on 84 sampled
+original episodes and 40 new episodes. Twenty of the supplementary episodes
+included native reasoning targets. The model retained 80 experts per layer,
+six active per token and a width of 704 per expert. Build the mixed input
+with the [supplement recipe](../scripts/mind/AGENT_SUPPLEMENT.md#colab-mixture).
+
+Run these commands on a Colab L4 after the pilot above. Set
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` as part of the Colab fit
+environment.
+
+```bash
+python3 -m scripts.mind.fit_gemma4 compact corpus/train.jsonl continued \
+  --mode l4-lora --init-adapter adapted --steps 112 --per-family 16 \
+  --max-tokens 3072 --seed 4081 --lr 2e-5
+python3 -m scripts.mind.merge_gemma4 compact continued continued-merged
+python3 -m scripts.mind.fit_gemma4 continued-merged corpus/mixed-train.jsonl mixed-96 \
+  --mode l4-lora --steps 96 --per-family 96 --max-tokens 3072 --seed 5511 --lr 1.5e-5
+python3 -m scripts.mind.fit_gemma4 continued-merged corpus/mixed-train.jsonl mixed-160 \
+  --mode l4-lora --init-adapter mixed-96 --steps 64 --per-family 96 \
+  --max-tokens 3072 --seed 5513 --lr 1e-5
+python3 -m scripts.mind.merge_gemma4 continued-merged mixed-160 mixed-merged
+python3 llama.cpp/convert_hf_to_gguf.py mixed-merged --outtype bf16 --outfile mixed-bf16.gguf
+llama-quantize mixed-bf16.gguf kiwi-mind-gemma4-mixed-q4_k_m.gguf Q4_K_M
+llama-quantize --tensor-type '^blk\.[0-9]+\.ffn_down_exps\.weight$=q4_0' \
+  mixed-bf16.gguf kiwi-mind-gemma4-mixed-q4-down.gguf Q4_K_M
+```
+
+Compare both exports and the stock base with the same projector, held-out
+probes, reasoning settings and token budget. The next-action replay and the
+[native app acceptance suite](MIND-FINALIST-ACCEPTANCE.md) measure different
+parts of the workflow.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts

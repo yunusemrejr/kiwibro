@@ -39,3 +39,30 @@ repaired phone preview and the button. The training trajectory records the
 app's preview alongside the edit result. The delegate, web and memory
 observations are authored. All domains are fictional, and the build accesses
 local synthetic files.
+
+## Colab mixture
+
+The 300-step run sampled six episodes per original family at seed 5511 and
+appended all 40 supplementary episodes. With the original corpus in
+`corpus/` and the default supplement in `supplement/`, write the merged
+training input next to the original image directory.
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+from scripts.mind.calibrate_gemma4 import rows
+
+base = rows(Path("corpus/train.jsonl"), 6, 5511)
+supplement = Path("supplement/train.jsonl").read_text(encoding="utf-8").splitlines()
+with Path("corpus/mixed-train.jsonl").open("x", encoding="utf-8") as destination:
+    for row in [*base, *map(json.loads, supplement)]:
+        destination.write(json.dumps(row, ensure_ascii=False) + "\n")
+PY
+sha256sum corpus/mixed-train.jsonl
+```
+
+The fit recorded SHA-256
+`6b132f1f367b0512ef2452160941f96328df911a5849da31104bee8c4bcb47e2`
+for the 124-row mixture.
