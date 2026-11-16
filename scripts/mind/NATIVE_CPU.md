@@ -44,3 +44,18 @@ Gemma 4 26B A4B UD-IQ3_XXS on a Ryzen 5 7530U with six threads and 256 tokens of
 | Flash attention | 8.88 ms | 4.4% |
 
 Two AVX2 experiments had bit-for-bit parity on sampled weights from this GGUF. The IQ2_S gather rewrite took 10.56 ms against 10.10 ms per row sweep. The Q6_K scale shuffle rewrite took 11.52 ms against 10.80 ms. These single-thread comparisons use medians of 12 paired trials with alternating execution order. The samples contained 33,792 expert rows and 49,152 vocabulary rows respectively, with 13 seeded activations including warmup.
+
+## Wide matrix-vector scheduling experiment
+
+In `ggml_compute_forward_mul_mat()`, the experiment raised the dynamic chunk size from 64 to 256 rows when `nr1 == 1`, `nr0 >= 32768` and the weight type is quantized. With six threads, 49,152 real Q6_K vocabulary rows agreed bit for bit on all 25 seeded input vectors. The median paired time gain was 12.3% in the unpinned row benchmark and 1.8% when pinned to one logical CPU per physical core.
+
+For the whole model, both backends used the same b12443 build configuration, with the profiling patch removed. The benchmark used the command above with `-r 2` and two runs per backend. Each row reports both warm decode samples in order. CPU pressure is Linux's `some avg10` from `/proc/pressure/cpu` before the arm started.
+
+| Arm | Warm decode samples | CPU pressure at start |
+| --- | ---: | ---: |
+| Stock chunks | 3.665, 3.451 tok/s | 5.84% |
+| 256-row chunks | 2.435, 1.418 tok/s | 20.87% |
+| 256-row chunks | 3.185, 3.391 tok/s | 41.91% |
+| Stock chunks | 4.982, 4.868 tok/s | 28.17% |
+
+The experiment did not establish a full-model speedup under that desktop load. KiwiBro retains stock CPU kernels. These measurements cover the stock IQ3 GGUF and CPU-only inference. Compact Q4 and Vulkan runs require their own measurements.
