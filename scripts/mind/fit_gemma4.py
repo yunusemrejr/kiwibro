@@ -94,9 +94,21 @@ def fit(args: argparse.Namespace) -> None:
         raise ValueError("Training requires positive steps and a usable token budget.")
     if args.output.exists():
         raise FileExistsError(args.output)
-    architecture = json.loads((args.checkpoint / "architecture.json").read_text())
+    architecture_path = args.checkpoint / "architecture.json"
+    architecture = json.loads(architecture_path.read_text())
     if architecture.get("base_revision") != BASE_REVISION:
         raise ValueError("Missing or mismatched compact architecture calibration.")
+    initial_steps = 0
+    if args.init_adapter:
+        prior = json.loads((args.init_adapter / "training.json").read_text())
+        initial_steps = prior.get("total_steps", prior.get("steps"))
+        if (
+            args.mode != "l4-lora" or prior.get("mode") != args.mode
+            or prior.get("base_revision") != BASE_REVISION
+            or type(initial_steps) is not int or initial_steps < 1
+            or (args.init_adapter / "architecture.json").read_bytes() != architecture_path.read_bytes()
+        ):
+            raise ValueError("The initial adapter must come from the same compact L4 checkpoint.")
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
     processor = AutoProcessor.from_pretrained(args.checkpoint)
@@ -115,13 +127,16 @@ def fit(args: argparse.Namespace) -> None:
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     if args.mode != "full":
-        from peft import LoraConfig, get_peft_model
+        from peft import LoraConfig, PeftModel, get_peft_model
 
-        model = get_peft_model(model, LoraConfig(
-            r=16, lora_alpha=32,
-            target_modules=r"model\.language_model\.layers\.\d+\.(self_attn\.(q_proj|v_proj|o_proj)|router\.proj)",
-            lora_dropout=0.04, task_type="CAUSAL_LM",
-        ))
+        if args.init_adapter:
+            model = PeftModel.from_pretrained(model, args.init_adapter, is_trainable=True)
+        else:
+            model = get_peft_model(model, LoraConfig(
+                r=16, lora_alpha=32,
+                target_modules=r"model\.language_model\.layers\.\d+\.(self_attn\.(q_proj|v_proj|o_proj)|router\.proj)",
+                lora_dropout=0.04, task_type="CAUSAL_LM",
+            ))
         model.enable_input_require_grads()
 
     trainable = [p for p in model.parameters() if p.requires_grad]
@@ -194,12 +209,13 @@ def fit(args: argparse.Namespace) -> None:
     args.output.mkdir(parents=True)
     model.save_pretrained(args.output, max_shard_size="4GB")
     processor.save_pretrained(args.output)
-    (args.output / "architecture.json").write_text(json.dumps(architecture, indent=2) + "\n")
+    (args.output / "architecture.json").write_bytes(architecture_path.read_bytes())
     with args.corpus.open("rb") as handle:
         digest = file_digest(handle, "sha256").hexdigest()
     report = {
         "base_revision": BASE_REVISION, "mode": args.mode, "parameters_tuned": parameter_count,
         "seed": args.seed, "learning_rate": args.lr, "steps": len(losses), "max_tokens": args.max_tokens,
+        "initial_training_steps": initial_steps, "total_steps": initial_steps + len(losses),
         "projection_chunk_tokens": PROJECTION_CHUNK,
         "corpus_sha256": digest, "workflow_steps": dict(coverage),
         "device": torch.cuda.get_device_name(), "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
@@ -217,6 +233,7 @@ def main() -> None:
     parser.add_argument("corpus", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--mode", choices=["full", "lora", "l4-lora"], default="full")
+    parser.add_argument("--init-adapter", type=Path, help="Start an L4 fit from a prior adapter using fresh optimizer state.")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--per-family", type=int, default=64)

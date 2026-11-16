@@ -63,11 +63,15 @@ def stage(
             or experts > bank["experts_before"]
         ):
             raise ValueError("Expert report disagrees with the exported GGUF.")
-    if training is not None and (
-        architecture is None or training.get("base_revision") != BASE_REVISION
-        or type(training.get("steps")) is not int or training["steps"] < 1
-    ):
-        raise ValueError("Training metadata is inconsistent with the compact checkpoint.")
+    if training is not None:
+        steps = training.get("steps")
+        total_steps = training.get("total_steps", steps)
+        if (
+            architecture is None or training.get("base_revision") != BASE_REVISION
+            or type(steps) is not int or type(total_steps) is not int
+            or not 1 <= steps <= total_steps
+        ):
+            raise ValueError("Training metadata is inconsistent with the compact checkpoint.")
 
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
@@ -79,7 +83,8 @@ def stage(
         "capabilities": {"tools": True, "thinking": hints["thinking"]}, "expert_bank": bank, "files": files,
     }
     if training is not None:
-        manifest["training"] = {key: training[key] for key in ("mode", "steps", "corpus_sha256") if key in training}
+        manifest["training"] = {key: training[key] for key in ("mode", "steps", "total_steps", "corpus_sha256")
+                                if key in training}
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".native-pack-") as folder:

@@ -51,6 +51,40 @@ supply `--training path/to/training.json` from the completed Colab run. Staging
 checks the expert report against the actual GGUF. How it works reads the checked
 expert counts, file sizes and context from this pack.
 
+## Train and export on Colab
+
+Build the [KiwiBro curriculum](../scripts/mind/agent_corpus.py) with
+`python3 -m scripts.mind.agent_corpus build corpus --verify-fixtures`. The training
+input is `corpus/train.jsonl` with its referenced images. Keep the held-out conversations and
+next-action probes outside the training input.
+
+The L4 recipe uses the [pinned Gemma checkpoint](https://huggingface.co/google/gemma-4-26B-A4B-it/tree/4d7ae4984b7db7de8f8457170b3f1a419ee76d52)
+in `reference/`, a BF16-capable Colab CUDA runtime, Transformers 5.23.0, Accelerate,
+Safetensors and PEFT 0.21.3. The fit stores frozen expert weights in FP8 on the GPU and
+uses BF16 for their computation. It projects the answer into the vocabulary 16 tokens
+at a time to bound memory during backward.
+
+```bash
+python3 -m scripts.mind.calibrate_gemma4 corpus/train.jsonl router-profile.json \
+  --checkpoint reference --device auto --gpu-budget 18GiB --per-family 2
+python3 -m scripts.mind.prune_gemma4 reference router-profile.json compact \
+  --retain 80 --top-k 6
+python3 -m scripts.mind.fit_gemma4 compact corpus/train.jsonl adapted \
+  --mode l4-lora --steps 28 --per-family 2 --max-tokens 3072 --lr 3e-5
+python3 -m scripts.mind.merge_gemma4 compact adapted merged
+python3 llama.cpp/convert_hf_to_gguf.py merged --outtype bf16 --outfile merged-bf16.gguf
+llama-quantize merged-bf16.gguf kiwimind-q4_k_m.gguf Q4_K_M
+sha256sum kiwimind-q4_k_m.gguf
+```
+
+The 28-step fit checks that all 14 workflow families can train and export. To extend that
+fit, pass `--init-adapter adapted` with a fresh output directory, step count and seed.
+Each continuation starts with the prior adapter weights and a fresh optimizer.
+The merge uses the compact BF16 checkpoint and the fitted adapter. Use llama.cpp
+build b12443 (commit `301db6337`) for a matching converter, quantizer and replay server.
+Retrain the routing and recovery helpers on the new model's traces with the
+[Colab calibration workflow](../scripts/mind/STEERING_CALIBRATION.md).
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
