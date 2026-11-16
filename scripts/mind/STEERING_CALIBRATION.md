@@ -10,7 +10,7 @@ the packaged model or helpers.
 
 Generate the separate recovery and steering collection with
 `python -m scripts.mind.calibration_traces build OUT`. It creates 72 training,
-24 calibration, and 36 blind probes across missing paths, stale browser state,
+24 calibration, and 36 original test probes across missing paths, stale browser state,
 blocked calls, missing dependencies, untrusted observations, and successful
 controls. Each split has a distinct scenario for each kind. Names and numbers
 vary within that scenario and count as correlated observations.
@@ -30,12 +30,16 @@ artifact_digest=$(sha256sum "$artifact")
 artifact_sha=${artifact_digest%% *}
 endpoint=http://127.0.0.1:8080
 
-python -m scripts.mind.agent_corpus build "$work/corpus"
-python -m scripts.mind.calibration_traces build "$work/probes"
-for split in train calibrate; do
-  python -m scripts.mind.replay_successor "$work/probes/$split.jsonl" "$work/baseline/$split.jsonl" \
+replay() {
+  python -m scripts.mind.replay_successor "$1" "$2" \
     --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
     --thinking off --max-tokens 320 --timeout 180
+}
+
+python -m scripts.mind.agent_corpus build "$work/corpus"
+python -m scripts.mind.calibration_traces build "$work/probes" --fresh-blind
+for split in train calibrate; do
+  replay "$work/probes/$split.jsonl" "$work/baseline/$split.jsonl"
 done
 python -m scripts.mind.train_workflows prepare "$work/corpus" "$work/fit.py" \
   --probes-dir "$work/probes" --replays-dir "$work/baseline"
@@ -54,22 +58,43 @@ job is skipped. The job receives the frozen blind probe digest and keeps the
 blind text, labels and answers out of the uploaded bundle. The workflow head
 still fits on the authored data.
 
-Freeze the Colab candidate before running the two test arms. Hint generation
-uses only the current tool observation and the fitted head. It adds fixed
-guidance text when the classifier fires. The oracle and the baseline decision
-are used later for scoring.
+## Freeze useful guidance on calibration
+
+Replay the candidate's unfiltered guidance on the 24 calibration probes.
+Reuse the exact no-guidance calibration replay recorded by the Colab job.
+Hint generation uses the current tool observation and the fitted head. The
+oracle and the baseline decision are used later for scoring.
 
 ```sh
-python -m scripts.mind.workflow_replay hint "$work/candidate.json.gz" "$work/probes/test.jsonl" \
-  "$work/hinted.jsonl" > "$work/hint-plan.json"
-python -m scripts.mind.replay_successor "$work/probes/test.jsonl" "$work/baseline/test.jsonl" \
-  --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
-  --thinking off --max-tokens 320 --timeout 180
-python -m scripts.mind.replay_successor "$work/hinted.jsonl" "$work/assisted.jsonl" \
-  --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
-  --thinking off --max-tokens 320 --timeout 180
-python -m scripts.mind.workflow_replay compare "$work/candidate.json.gz" "$work/probes/test.jsonl" \
-  "$work/baseline/test.jsonl" "$work/hinted.jsonl" "$work/assisted.jsonl" > "$work/paired-report.json"
+python -m scripts.mind.workflow_replay hint "$work/candidate.json.gz" "$work/probes/calibrate.jsonl" \
+  "$work/calibrate-hinted.jsonl" --split calibrate > "$work/calibrate-plan.json"
+replay "$work/calibrate-hinted.jsonl" "$work/calibrate-assisted.jsonl"
+python -m scripts.mind.workflow_replay freeze "$work/candidate.json.gz" "$work/probes/calibrate.jsonl" \
+  "$work/baseline/calibrate.jsonl" "$work/calibrate-hinted.jsonl" "$work/calibrate-assisted.jsonl" \
+  "$work/probes/blind.jsonl" > "$work/recovery-policy.json"
+```
+
+The policy retains each hint label with at least one corrected decision and
+zero regressions, incomplete hinted pairs or hints on successful and
+untrusted controls. It binds the choices to the pack, model, runtime,
+guidance text and fresh blind probe digest. An empty `labels` list selects
+abstention. Keep this file fixed before collecting either blind arm.
+
+## Run the fresh blind comparison
+
+The optional `blind.jsonl` has 36 new probes. Its six scenario shapes differ
+from the original `test.jsonl` and its sibling fixtures in the training and
+calibration splits. Keep the original test files for historical reproduction
+with the default `hint` and `compare` commands.
+
+```sh
+python -m scripts.mind.workflow_replay hint "$work/candidate.json.gz" "$work/probes/blind.jsonl" \
+  "$work/blind-hinted.jsonl" --policy "$work/recovery-policy.json" > "$work/blind-plan.json"
+replay "$work/probes/blind.jsonl" "$work/baseline/blind.jsonl"
+replay "$work/blind-hinted.jsonl" "$work/blind-assisted.jsonl"
+python -m scripts.mind.workflow_replay compare "$work/candidate.json.gz" "$work/probes/blind.jsonl" \
+  "$work/baseline/blind.jsonl" "$work/blind-hinted.jsonl" "$work/blind-assisted.jsonl" \
+  --policy "$work/recovery-policy.json" > "$work/paired-report.json"
 ```
 
 Look at recovered and regressed decisions in the hinted cases and at changes

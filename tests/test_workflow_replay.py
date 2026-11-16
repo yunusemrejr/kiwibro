@@ -152,3 +152,67 @@ def test_candidate_advice_is_blind_and_pair_scores_gain_regression_and_incomplet
     scripted_replay(hinted, after, profile={**PROFILE, "max_tokens": 640})
     with pytest.raises(ValueError, match="model and runtime profile"):
         workflow_replay.compare(pack, test, base, hinted, after)
+
+
+def test_calibration_freezes_only_helpful_labels_for_fresh_blind_pair(tmp_path, traces):
+    probes, replays = traces
+    legacy = {split: (probes / f"{split}.jsonl").read_bytes() for split in calibration_traces.NAMES}
+    calibration_traces.build(probes, fresh_blind=True)
+    assert all((probes / f"{split}.jsonl").read_bytes() == old for split, old in legacy.items())
+    calibration = probes / "calibrate.jsonl"
+    baseline = replays / "calibrate.jsonl"
+    calibration_misses = {
+        "calibrate-missing_path-holly", "calibrate-blocked-holly", "calibrate-stale_browser-holly",
+    }
+    scripted_replay(calibration, baseline, misses=calibration_misses)
+    provenance = workflow_replay.prepare_observations(probes, replays, {})["provenance"]
+    pack = tmp_path / "candidate.json.gz"
+    pack.write_bytes(gzip.compress(json.dumps({
+        "origin": "google-colab", "report": {"successor_recovery": provenance},
+        "heads": {"recovery": {
+            "bias": [0, 0, 0, 0, 512], "labels": ["location", "boundary", "dependency", "render", "none"],
+            "advice_labels": ["location", "boundary", "dependency", "render"],
+            "weights": {
+                "w:open": [2048, 0, 0, 0, 0], "w:refused": [0, 2048, 0, 0, 0],
+                "w:absent": [0, 0, 2048, 0, 0], "w:mount": [0, 0, 0, 2048, 0],
+            },
+            "thresholds": [0.5, 0.1],
+        }},
+    }).encode()))
+
+    cal_hinted, cal_assisted = tmp_path / "cal-hinted.jsonl", tmp_path / "cal-assisted.jsonl"
+    workflow_replay.hint_probes(pack, calibration, cal_hinted, split="calibrate")
+    scripted_replay(cal_hinted, cal_assisted, misses={"calibrate-blocked-rowan"},
+                    incomplete={"calibrate-stale_browser-rowan"})
+    blind = probes / "blind.jsonl"
+    with pytest.raises(ValueError, match="unchanged frozen recovery probes"):
+        workflow_replay.freeze(pack, calibration, baseline, cal_hinted, cal_assisted, probes / "test.jsonl")
+    policy = workflow_replay.freeze(pack, calibration, baseline, cal_hinted, cal_assisted, blind)
+    assert policy["labels"] == ["location"]
+    assert policy["per_hint"]["location"]["gain"] == 1
+    assert policy["per_hint"]["boundary"]["gain"] == policy["per_hint"]["boundary"]["regression"] == 1
+    assert policy["per_hint"]["dependency"]["hints"] == 4 and policy["per_hint"]["dependency"]["gain"] == 0
+    assert policy["per_hint"]["render"]["incomplete_pair"] == 1
+
+    hinted = tmp_path / "blind-hinted.jsonl"
+    plan = workflow_replay.hint_probes(pack, blind, hinted, policy=policy)
+    assert plan["selected"] == {f"blind-missing_path-{name}": "location" for name in calibration_traces.BLIND_NAMES}
+    with pytest.raises(ValueError, match="qualified labels"):
+        workflow_replay.hint_probes(pack, blind, hinted, policy={**policy, "labels": ["boundary", "location"]})
+    blind_baseline, blind_assisted = tmp_path / "blind-base.jsonl", tmp_path / "blind-assisted.jsonl"
+    scripted_replay(blind, blind_baseline, misses={"blind-missing_path-apricot"})
+    scripted_replay(hinted, blind_assisted)
+    report = workflow_replay.compare(pack, blind, blind_baseline, hinted, blind_assisted, policy=policy)
+    assert report["split"] == "blind" and report["frozen_labels"] == ["location"]
+    assert report["policy_sha256"] == workflow_replay.object_digest(policy)
+    assert report["outcomes"]["gain"] == 1 and report["outcomes"]["hints"] == 6
+
+    scripted_replay(cal_hinted, cal_assisted, misses=calibration_misses)
+    abstain = workflow_replay.freeze(pack, calibration, baseline, cal_hinted, cal_assisted, blind)
+    assert abstain["labels"] == []
+    assert not workflow_replay.hint_probes(pack, blind, hinted, policy=abstain)["selected"]
+    assert hinted.read_bytes() == blind.read_bytes()
+
+    baseline.write_bytes(baseline.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="exact calibration baseline"):
+        workflow_replay.freeze(pack, calibration, baseline, cal_hinted, cal_assisted, blind)
