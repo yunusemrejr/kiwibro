@@ -59,3 +59,53 @@ For the whole model, both backends used the same b12443 build configuration, wit
 | Stock chunks | 4.982, 4.868 tok/s | 28.17% |
 
 The experiment did not establish a full-model speedup under that desktop load. KiwiBro retains stock CPU kernels. These measurements cover the stock IQ3 GGUF and CPU-only inference. Compact Q4 and Vulkan runs require their own measurements.
+
+## Expert channel compaction experiment
+
+The 80-expert pilot keeps six active experts and all 30 layers. The first Q4_K_M pilot header has 30 fused gate/up matrices in Q4_K, 16 down matrices in Q5_0 and 14 down matrices in Q8_0. The original 704-wide down rows cannot use 256-element K-quant blocks. llama.cpp b12443 falls back from Q4_K to Q5_0 and from Q6_K to Q8_0 for those rows. [Pinned quantization fallback](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/src/llama-quant.cpp#L458)
+
+| Expert width | Gate/up weights | Down weights | Estimated full GGUF | Expert MACs per token |
+| --- | ---: | ---: | ---: | ---: |
+| 704, pilot | 5,104.69 MiB | 3,913.59 MiB | 10.34 GiB | 1.071 billion |
+| 512, selected | 3,712.50 MiB | 2,253.28 MiB | 7.36 GiB | 0.779 billion |
+| 768, zero padded | 5,568.75 MiB | 3,379.92 MiB | 10.28 GiB | 1.168 billion |
+
+Estimates keep every non-expert tensor unchanged and assume the 16 down tensors use Q4_K and the other 14 use Q6_K at the aligned widths. MACs count gate, up and down projections only. Whole-model speed depends on the measured fraction of time in these projections, memory pressure and kernel behavior. The Radeon Renoir device reports no integer-dot or matrix-core support. b12443 supplies dequantizing expert kernels for both the original fallback types and the aligned types. [Pinned Vulkan dispatch](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L6069)
+
+The 512 experiment selects a fixed number of channels independently per expert. It ranks them by the product of squared L2 norms from the gate row, up row and down column. It copies the corresponding BF16 entries in ascending original channel order and preserves router scales, expert IDs, top-k, vision, attention and tokenizer assets. The export processes one expert at a time and writes a new safetensors checkpoint with the selected masks in its architecture report.
+
+Static salience uses weights only. Its retained score share is a diagnostic, with task accuracy measured separately. Activation calibration can collect routed, family-stratified channel energies from `GELU(gate) * up` and weight them by each down column's norm. Evaluate a fresh Colab adapter on the resulting checkpoint if the width change needs recovery. The existing fit wrapper accepts the new architecture report and packs experts from their resulting shapes. A 768-wide control can pad both halves of the fused gate/up matrix and the corresponding down columns with zeros. That preserves the original expert function before quantization while the new quantization blocks can change numerical results.
+
+### Paired export and evaluation
+
+Start from the same merged BF16 checkpoint for both arms. The checkpoint must carry the pinned base revision in `architecture.json`. Run from the KiwiBro checkout with NumPy and the pinned llama.cpp conversion dependencies:
+
+```sh
+python3 -m scripts.mind.compact_gemma4_channels "$bf16_704" "$bf16_512"
+for width in 704 512; do
+  if [ "$width" = 704 ]; then checkpoint="$bf16_704"; else checkpoint="$bf16_512"; fi
+  python3 "$llama_source/convert_hf_to_gguf.py" "$checkpoint" \
+    --outtype bf16 --outfile "$results/gemma-${width}-bf16.gguf"
+  "$llama_release/llama-quantize" "$results/gemma-${width}-bf16.gguf" \
+    "$results/gemma-${width}-q4_k_m.gguf" Q4_K_M 4
+done
+```
+
+Compare the BF16 sources or identical frozen-expert storage in Colab to isolate channel removal. Then compare default Q4_K_M on the target laptop to measure the combined width and format effect. An additional 512 arm can pass `--tensor-type-file` to keep the original per-layer down formats. Build the type file with one exact regex per down weight, such as `^blk\.0\.ffn_down_exps\.weight$=q5_0`, using the verified 704 GGUF header to choose each type. Use fresh width-specific statistics if applying an importance matrix.
+
+Run only one server at a time. Use the same runtime, backend, context, one slot, projector, sampler, token budget, prompts and held-out probes for both GGUFs. Bind the model and runtime identities to the result. Run `scripts.mind.replay_successor` on the same frozen probes at seed 7530 and `scripts.mind.bench_successor` for uncached and cached TTFT, decode rate and peak RAM. Check exact tool calls, visual fixtures, retrieval, and full workspace episodes before choosing a candidate. The table above is a footprint estimate. The 512 candidate has no full-model quality or latency measurements yet.
+
+### Tied projection Vulkan experiment
+
+This matched test changes the placement of the 577.5 MiB tied Q6_K embedding/projection tensor on the existing pilot. It uses no GPU layer or KV offload. Begin with at least 14 GiB host memory available and 2 GiB unused GTT, then monitor both during the run. These are conservative admission values based on observed host pressure and the tensor size. The split runtime's total peak memory needs live verification.
+
+```bash
+# Both variables point to verified local artifacts.
+args=(--device Vulkan0 -m "$gguf" -ngl 0 -nkvo 1 -nopo 1
+      -b 128 -ub 128 -t 6 -fa on -p 0 -n 24 -d 256 -r 2 -o json)
+overrides=(-ot '^token_embd\.weight$=Vulkan0')
+LD_LIBRARY_PATH="$llama_release" "$llama_release/llama-bench" "${args[@]}" > cpu-head.json
+LD_LIBRARY_PATH="$llama_release" "$llama_release/llama-bench" "${args[@]}" "${overrides[@]}" > vulkan-head.json
+```
+
+Repeat in reverse order. A short separate probe with `GGML_SCHED_DEBUG=2` and `llama-bench -v` can verify that the logits multiply follows the tied weight onto Vulkan. Run the timed trials with scheduler debugging disabled. Compare decoded outputs and native tool behavior as well as timing, since the CPU and Vulkan implementations can differ in floating-point accumulation. This specific placement has yet to be benchmarked.
