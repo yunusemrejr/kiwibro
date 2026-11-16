@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -84,6 +85,78 @@ class Holdback:
             return ""
         out, self.sent = self.text[self.sent:], len(self.text)
         return out
+
+
+_CALL_NAME = re.compile(r'"name"\s*:\s*"([A-Za-z_][\w.-]*)"')
+_CALL_PATH = re.compile(r'"(?:path|file|filename)"\s*:\s*"((?:[^"\\]|\\.){1,200})"')
+_CALL_BODY = re.compile(r'"(?:content|text|code|command|old|new|replacement)"\s*:\s*"')
+_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "/": "/", "r": ""}
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+NEAR_LOOP_LINES = 40  # this many lines in a row that differ only in their numbers: the call is circling
+
+
+def _unescape(text: str) -> str:
+    """The JSON string the model is still writing, readable: ``\\n`` as a new line, ``\\"`` as a quote."""
+    return re.sub(r"\\(.)", lambda m: _ESCAPES.get(m.group(1), m.group(1)), text)
+
+
+class CallWatch:
+    """A tool call is held back from the chat while it is written, sometimes for minutes (a whole page of
+    code). This says on the status line what is being written and how far it got, and stops a call whose
+    text has started repeating itself: the agent's loop guard only sees text that reaches the chat."""
+
+    EVERY = 1.0  # seconds between status updates and loop checks
+
+    def __init__(self, emit: Events) -> None:
+        self.emit = emit
+        self.last = 0.0
+        self.label = ""
+
+    def see(self, held: str) -> None:
+        now = time.monotonic()
+        if now - self.last < self.EVERY:
+            return
+        self.last = now
+        body = _CALL_BODY.search(held)
+        written = _unescape(held[body.end():]) if body else ""
+        if written:
+            self._guard(written)
+        label = self._label(held, written)
+        if label != self.label:
+            self.label = label
+            self.emit("status", {"phase": "writing" if body else "tool", "label": label})
+
+    @staticmethod
+    def _guard(written: str) -> None:
+        from ..inference import DegenerateOutput, is_degenerate  # the agent's own loop test
+
+        tail = written[-3000:]
+        if is_degenerate(tail):
+            raise DegenerateOutput(circling=True)
+        lines = [_NUMBER.sub("#", line.strip()) for line in tail.splitlines()[:-1]]
+        lines = [line for line in lines if sum(ch.isalnum() for ch in line) >= 3]
+        recent = lines[-NEAR_LOOP_LINES:]
+        if len(recent) == NEAR_LOOP_LINES and len(set(recent)) <= 3:
+            raise DegenerateOutput(circling=True)
+
+    @staticmethod
+    def _label(held: str, written: str) -> str:
+        from .. import tools
+
+        found = _CALL_NAME.search(held)
+        name = found.group(1) if found else ""
+        place = _CALL_PATH.search(held)
+        target = os.path.basename(_unescape(place.group(1)).rstrip("/")) if place else ""
+        if name in ("write_file", "create_file"):
+            label = f"Writing {target}" if target else "Writing a file"
+        elif name in ("replace_in_file", "apply_patch", "edit_file"):
+            label = f"Editing {target}" if target else "Editing a file"
+        elif name:
+            label = tools.phase_for(name)[1]
+        else:
+            label = "Choosing a tool"
+        lines = written.count("\n") + 1 if written else 0
+        return f"{label} · {lines} lines" if lines >= 5 else label
 
 
 def opens_call(text: str) -> bool:
@@ -275,6 +348,7 @@ class Conductor:
     ) -> ChatResult:
         """``extra``: what the request carries beside the conductor's own fields (the pictures of a prompt)."""
         hold = Holdback()
+        watch = CallWatch(emit)
         if opened:  # the reply starts with this text: the model continues it
             prompt += opened
             hold.feed(opened)
@@ -292,6 +366,8 @@ class Conductor:
                 piece = str(event.get("text") or "")
                 seen += 1
                 shown = hold.feed(piece)
+                if hold.blocked and not peeking:
+                    watch.see(hold.text[hold.text.find(CALL_OPEN):])
                 if peeking:
                     pending += shown
                     if seen < HANDOFF_PEEK:

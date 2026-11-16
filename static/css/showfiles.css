@@ -143,6 +143,41 @@
   background: var(--bg);
 }
 
+/* The folders other chats worked in: the same rows, with the parent path after the name. */
+.folder-recent {
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.folder-recent + .folder-list {
+  height: min(160px, 24vh);
+}
+
+.folder-recent .menu-item-body {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.folder-recent .menu-item-name {
+  flex: 0 0 auto;
+  max-width: 70%;
+  color: var(--text);
+}
+
+.folder-parent {
+  flex: 1 1 auto;
+  min-width: 40px;
+  overflow: hidden;
+  color: var(--faint);
+  direction: rtl; /* a long path loses its beginning, not the folder it ends in */
+  font-size: 10.8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .folder-row:focus-visible {
   outline-offset: -2px;
 }

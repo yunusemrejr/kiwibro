@@ -193,6 +193,7 @@ export function createShowFiles({ api, getConversationId, getSettings, onFolderC
     openFolderPicker({
       anchor: badge,
       api,
+      conversationId: getConversationId(),
       path: data.temp ? "" : data.abs,
       temp: data.temp,
       onUse: (path) => change({ path }),

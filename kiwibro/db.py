@@ -439,6 +439,16 @@ class Database:
             ).fetchall()
         return [self._conversation(row) for row in rows]
 
+    def recent_workspaces(self, limit: int = 6) -> list[str]:
+        """The folders chats are bound to, the one a chat used most lately first."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT workspace FROM conversations WHERE workspace IS NOT NULL AND workspace != '' "
+                "GROUP BY workspace ORDER BY MAX(updated_at) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [row["workspace"] for row in rows]
+
     def update_conversation(self, conversation_id: str, touch: bool = True, **fields: Any) -> dict[str, Any] | None:
         allowed = {
             "title", "title_auto", "model", "summary", "summary_through_seq",

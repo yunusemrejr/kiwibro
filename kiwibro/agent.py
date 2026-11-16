@@ -340,6 +340,7 @@ class Turn:
     tool_signatures: dict[str, int] = field(default_factory=dict)
     tool_calls_made: int = 0
     failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
+    failing_tools: set[str] = field(default_factory=set)  # the tools that failed in that streak
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -2360,6 +2361,7 @@ class AgentManager:
                 collapsed, kept = True, clean
                 turn.partial_text = f"{clean}\n\n" if clean else ""
                 turn.emit("rewrite", {"text": turn.partial_text, "reasoning": ""})
+                turn.emit("status", {"phase": "thinking", "label": "It started repeating itself. Trying again"})
             except ContextLimitError:
                 attempts += 1
                 if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
@@ -3285,6 +3287,10 @@ class AgentManager:
             if item["name"] in ("web_search", "multi_search") and result.ok:
                 result = replace(result, content=research.drop_seen_snippets(result.content, turn.seen_urls))
             turn.failure_streak = 0 if result.ok else turn.failure_streak + 1
+            if result.ok:
+                turn.failing_tools.clear()
+            else:
+                turn.failing_tools.add(item["name"])
             if turn.failure_streak == FAILURE_COACH_AT:
                 result = replace(result, content=f"{result.content}\n{prompts.FAILURE_COACH.format(count=FAILURE_COACH_AT)}")
             finished.append((item, result, duration))
@@ -3359,8 +3365,11 @@ class AgentManager:
                                     "requires_approval": False})
             return refuse(content, preview)
 
-        if turn.failure_streak >= FAILURE_PAUSE_AT:  # stop a guessing loop; make the model answer
-            return refuse(prompts.TOOLS_PAUSED, "Tools paused after repeated failures")
+        # Stop a guessing loop: the tools that kept failing are paused. A tool that has not failed still runs:
+        # on 16 Nov 2026 six guesses at a "component" named html paused the write_file that made the page.
+        if turn.failure_streak >= FAILURE_PAUSE_AT and name in turn.failing_tools:
+            return refuse(prompts.TOOLS_PAUSED.format(tools=", ".join(sorted(turn.failing_tools))),
+                          "Tools paused after repeated failures")
         spec = tools.TOOL_SPECS.get(name)
         if rescued.damaged and spec is not None and not cut_off:  # a guess is never written, run or searched for
             # A read is the exception: stray characters after complete arguments only cost a look,
@@ -3381,6 +3390,10 @@ class AgentManager:
             item["args"] = tools.validate_args(name, rescued.args)
             self._anchor_searches(turn, item)
         except ValueError as exc:
+            if cut_off and spec is not None and spec.risk in ("write", "exec") and not (turn.text_calls and not rescued.damaged):
+                # Arguments missing because the length limit cut the call: "new must be a string" would
+                # have it send the same long call again (16 Nov 2026: twice, three minutes each).
+                return refuse_shown(prompts.CUT_OFF_CALL, "Call cut off by the reply length limit", spec.risk)
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
             return refuse_shown(message, message.splitlines()[0], "read")

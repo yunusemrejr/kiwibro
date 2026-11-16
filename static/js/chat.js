@@ -502,6 +502,23 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     turn.raf = window.setTimeout(run, delay);
   }
 
+  // Seconds on the current step, from the fifth on: a long step reads as working, not stuck.
+  function startActivityClock(turn) {
+    if (turn.activityClock) return;
+    const tick = () => {
+      if (turn.activity.hidden || !turn.activity.isConnected) {
+        window.clearInterval(turn.activityClock);
+        turn.activityClock = 0;
+        turn.activitySince = 0;
+        turn.activityTime.textContent = "";
+        return;
+      }
+      const seconds = Math.floor((performance.now() - turn.activitySince) / 1000);
+      turn.activityTime.textContent = seconds >= 5 ? `${seconds} s` : "";
+    };
+    turn.activityClock = window.setInterval(tick, 1000);
+  }
+
   function createTurnShell() {
     if (empty) empty.hidden = true;
     root.classList.remove("is-empty");
@@ -525,9 +542,11 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     ]);
 
     const activityLabel = el("span", { class: "activity-label", text: "" });
+    const activityTime = el("span", { class: "activity-time", text: "" });
     const activity = el("div", { class: "activity", hidden: true }, [
       el("span", { class: "spinner" }),
       activityLabel,
+      activityTime,
     ]);
 
     const flow = el("div", { class: "assistant-flow" });
@@ -547,6 +566,9 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
       reasoningExpanded: false,
       activity,
       activityLabel,
+      activityTime,
+      activitySince: 0,
+      activityClock: 0,
       segment: null,
       texts: [],
       tools: new Map(),
@@ -924,9 +946,14 @@ export function createChatView({ root, transcript, resolveApproval, onRetry, onS
     setStatus(label) {
       if (!label) return;
       const turn = ensureTurn();
+      const step = (text) => text.split(" · ")[0]; // "Writing page.html · 84 lines" is one step as it grows
+      if (!turn.activitySince || step(turn.activityLabel.textContent) !== step(label)) {
+        turn.activitySince = performance.now();
+      }
       turn.activityLabel.textContent = label;
       turn.activity.hidden = false;
       turn.flow.append(turn.activity);
+      startActivityClock(turn);
       scrollIfPinned();
     },
     addToolCall(data) {

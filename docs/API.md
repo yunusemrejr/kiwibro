@@ -799,6 +799,15 @@ be listed. Only the home folder and Kiwibro's temporary folder are listed (`403 
 otherwise); a link that leads out of them is left out. `400 bad_request` for a relative path or a
 folder that is not there.
 
+### `GET /api/workspace/recent?conversation_id=`
+The folders chats worked in lately, for the top of the folder picker:
+`{"ok": true, "folders": [{"path": "/home/you/Desktop/app", "name": "app", "parent": "~/Desktop"}]}`.
+Newest first by the latest activity of a chat that uses the folder, at most 5. A folder that is no
+longer there, one a chat may not work in, a temporary chat folder and the folder the given chat
+already uses are left out; the Settings workspace comes last when it is not in the list yet.
+`conversation_id` is optional (a chat that is not made yet has none); `404 not_found` for an
+unknown chat.
+
 ---
 
 ## Tooling notes for implementers

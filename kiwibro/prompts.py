@@ -158,7 +158,8 @@ SEARCH_SPENT = (
 )
 SMALL_TALK_NO_TOOLS = "Not run: this message needs no tools. Just reply to the user in a sentence or two."
 TOOLS_PAUSED = (
-    "Tool use is paused for the rest of this turn after repeated failures. Answer the user now: say "
+    "Tool use is paused for the rest of this turn after repeated failures of {tools}. Do the step with a "
+    "different tool if one fits (write_file writes a page by hand); otherwise answer the user now: say "
     "briefly what you tried, what went wrong and what you need from them."
 )
 # Kiwi Sense corrections (steer.py) and the last-resort answer (agent.py): transient or shown as-is.

@@ -258,6 +258,20 @@ def test_a_cut_off_write_never_saves_a_truncated_file(env: Env, home: Path, web:
     assert (home / "Desktop" / "goal" / "raspberry.md").read_text() == DOC
 
 
+def test_a_cut_off_patch_is_told_it_was_cut_off_not_that_its_arguments_are_wrong(env: Env, home: Path, web: list[str]) -> None:
+    """16 Nov 2026: an apply_patch whose "old" text ran to the length limit, so "new" never came. Told
+    "each edit's new must be a string", Kiwi Mind sent the same three-minute call again."""
+    page = home / "Desktop" / "goal" / "page.html"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("<p>hi</p>\n")
+    cut = tool_call_result("apply_patch", {"path": str(page), "edits": [{"old": "<p>hi</p>"}]})
+    cut.finish_reason = "length"
+    env.fake.stream_script = [cut, ChatResult(content="The edit was too long; the page is unchanged.")]
+    chat_events(env, f"fix the greeting in {page}")
+    assert _tool_messages(env)[0]["content"] == prompts.CUT_OFF_CALL
+    assert page.read_text() == "<p>hi</p>\n"
+
+
 def test_near_repeat_searches_and_endless_research_are_cut_short(env: Env, home: Path, web: list[str]) -> None:
     def search(query: str, call_id: str) -> ChatResult:
         return tool_call_result("web_search", {"query": query}, call_id)

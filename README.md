@@ -269,7 +269,8 @@ Ask / Deny choice per tool.
 
 Every new chat works in a temporary folder of its own, so its files stay apart. The
 system clears temporary folders when the computer restarts, so move what you want to
-keep. "Work on ~/Desktop/my-app" switches that chat to the folder. Chats made before
+keep. "Work on ~/Desktop/my-app" switches that chat to the folder, or click the folder name
+under the chat: the list shows the folders you used lately first, one tap to choose. Chats made before
 this existed keep working in the Settings folder (`~/Kiwibro` by default), and a
 Settings choice can make every new chat use that folder too.
 

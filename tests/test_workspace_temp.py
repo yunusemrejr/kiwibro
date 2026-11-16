@@ -317,6 +317,52 @@ def test_list_marks_what_a_chat_may_not_use(temp_env: Env) -> None:
     assert _folders(temp_env, path="~/.ssh").get_json()["allowed"] is False
 
 
+# --- the recent folders ---------------------------------------------------------------------------------
+
+
+def _recent(env: Env, chat_id: str | None = None) -> list[dict]:
+    query = {"conversation_id": chat_id} if chat_id else {}
+    response = env.client.get("/api/workspace/recent", query_string=query)
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()["folders"]
+
+
+def test_recent_folders_newest_first_without_the_asking_chats_own(temp_env: Env) -> None:
+    site, apple = _home() / "Desktop" / "site", _home() / "Desktop" / "Apple"
+    first, second = _new_chat(temp_env), _new_chat(temp_env)
+    assert _set(temp_env, first["id"], path=str(site)).status_code == 200
+    assert _set(temp_env, second["id"], path=str(apple)).status_code == 200
+    entry = {"path": str(site), "name": "site", "parent": "~/Desktop"}
+    # the newest chat's folder first; the Settings folder last; the chats' temporary folders never
+    assert [f["name"] for f in _recent(temp_env)] == ["Apple", "site", "Kiwibro"]
+    assert entry in _recent(temp_env)
+    assert [f["name"] for f in _recent(temp_env, first["id"])] == ["Apple", "Kiwibro"]  # not the folder it is in
+    assert [f["name"] for f in _recent(temp_env, second["id"])] == ["site", "Kiwibro"]
+    temp_env.svc.db.update_conversation(first["id"], title="Used again")  # newest activity wins
+    assert [f["name"] for f in _recent(temp_env)] == ["site", "Apple", "Kiwibro"]
+    assert temp_env.client.get("/api/workspace/recent", query_string={"conversation_id": "c_nope"}).status_code == 404
+
+
+def test_recent_folders_drop_what_is_gone_temporary_or_a_repeat(temp_env: Env) -> None:
+    gone, site = _home() / "Desktop" / "banana", _home() / "Desktop" / "site"
+    temp_chat, gone_chat, site_chat, again_chat, default_chat = (_new_chat(temp_env) for _ in range(5))
+    for chat, folder in ((gone_chat, gone), (site_chat, site), (again_chat, site), (default_chat, temp_env.workspace)):
+        assert _set(temp_env, chat["id"], path=str(folder)).status_code == 200
+    gone.rmdir()
+    assert Path(temp_chat["workspace"]).is_dir()  # it is there, and still not offered
+    folders = _recent(temp_env)
+    assert [f["name"] for f in folders] == ["Kiwibro", "site"]  # the Settings folder is in the list once, where its chat put it
+    assert not any(workspaces.in_temp_root(f["path"]) or f["path"] == str(gone) for f in folders)
+
+
+def test_recent_folders_are_at_most_five(temp_env: Env) -> None:
+    for number in range(7):
+        folder = _home() / "Desktop" / f"p{number}"
+        folder.mkdir()
+        assert _set(temp_env, _new_chat(temp_env)["id"], path=str(folder)).status_code == 200
+    assert [f["name"] for f in _recent(temp_env)] == ["p6", "p5", "p4", "p3", "p2"]
+
+
 # --- the workspace tool ----------------------------------------------------------------------------------
 
 

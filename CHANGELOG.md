@@ -39,6 +39,22 @@ All notable changes to Kiwibro are documented here.
   already chosen. The folder name under the chat is a button: it opens a picker to choose
   another folder or go back to the temporary one, also before the first message, and
   Settings > Workspace has "New chats start in".
+- **A long step no longer looks stuck at "Thinking".** While Kiwi Mind writes a tool call (a
+  whole page of code can take minutes on the laptop) the status line now says what it writes and
+  how far it got ("Writing kiwitree.html · 84 lines"), and every step shows its seconds from the
+  fifth on. A call whose text starts repeating itself (lines that differ only in their numbers,
+  40 in a row) is cut off and tried again with sampling against repetition; until now the loop
+  guard only saw text that reached the chat, so such a call ran to the token cap (4,000 tokens,
+  five minutes, in the chat that found it). A call cut off by the reply length limit is told so,
+  instead of "each edit's new must be a string", which had it send the same long call again.
+- **Repeated failures pause only the tools that failed.** Six failed calls in a row used to pause
+  every tool for the rest of the turn, so after six guesses at a component that does not exist the
+  `write_file` that finally made the page was refused too. Now only the failing tools are paused,
+  and the model is told it may do the step with a different tool.
+- **The folder picker offers the folders you used lately.** Above the folder list, up to five
+  recent folders (the name, and the folder it sits in) choose with one tap or Enter. Folders
+  that are gone, temporary chat folders and the chat's own folder are left out; the Settings
+  folder comes last. New endpoint `GET /api/workspace/recent`.
 - **What Kiwibro makes shows up in the chat.** A page, drawing, picture, video or sound
   file that a turn writes appears under the reply. A page runs in a sealed frame that loads
   its own files and four public script libraries (enough for a three.js scene) and nothing

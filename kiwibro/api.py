@@ -997,6 +997,16 @@ def workspace_folders() -> Response:
     return jsonify({"ok": True, **listing})
 
 
+@bp.get("/api/workspace/recent")
+def workspace_recent() -> Response:
+    """Folders chats worked in lately, newest first, for the folder picker; not the one this chat uses."""
+    svc = services()
+    chat_id, _ = _chat_workspace(svc, request.args.get("conversation_id"))
+    settings = svc.settings_provider()
+    here = workspaces.folder_for(svc.db, chat_id) or (settings.get("workspace") if chat_id else None)
+    return jsonify({"ok": True, "folders": workspaces.recent_folders(svc.db, settings, exclude=here)})
+
+
 @bp.post("/api/workspace/files")
 def workspace_visual_files() -> Response:
     """Which of the files a turn wrote or named can be shown in the chat, with the address to show them from."""

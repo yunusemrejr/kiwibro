@@ -253,6 +253,7 @@ export const api = {
   workspaceFiles: (body) => request("/api/workspace/files", { method: "POST", body }),
   workspaceOpen: (body) => request("/api/workspace/open", { method: "POST", body }),
   workspaceFolders: (path) => request(`/api/workspace/folders${query({ path })}`),
+  workspaceRecent: (conversationId) => request(`/api/workspace/recent${query({ conversation_id: conversationId })}`),
   workspaceSet: (body) => request("/api/workspace/set", { method: "POST", body }),
 
   createConversation: (body = {}) => request("/api/conversations", { method: "POST", body }),

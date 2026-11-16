@@ -35,6 +35,22 @@ def test_failing_calls_get_coached_then_paused(env: Env) -> None:
     assert events[-1][0] == "done"
 
 
+def test_a_pause_stops_only_the_tools_that_kept_failing(env: Env) -> None:
+    """16 Nov 2026: six calls for a component that does not exist paused tools, and the write_file that
+    finally made the page was refused with them."""
+    guesses = ["/tmp", "/Desktop", "/", "/etc", "/usr", "/opt", "/srv"]
+    write = {"id": "call_w", "type": "function",
+             "function": {"name": "write_file", "arguments": json.dumps({"path": "page.html", "content": "<p>hi</p>"})}}
+    env.fake.stream_script = [_call(path, i) for i, path in enumerate(guesses)] + [
+        ChatResult(tool_calls=[write], usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}),
+        ChatResult(content="Wrote page.html."),
+    ]
+    chat_events(env, "List the files in your workspace, then write page.html.")
+    contents = [m["content"] for m in _tool_messages(env)]
+    assert contents[FAILURE_PAUSE_AT].startswith("Tool use is paused") and "list_files" in contents[FAILURE_PAUSE_AT]
+    assert any(c.startswith("Wrote") for c in contents[FAILURE_PAUSE_AT:]) and (env.workspace / "page.html").exists()
+
+
 def test_a_success_resets_the_failure_streak(env: Env) -> None:
     env.fake.stream_script = [_call("/tmp", 0), _call("/etc", 1), _call(".", 2), _call("/usr", 3),
                               ChatResult(content="Done.")]

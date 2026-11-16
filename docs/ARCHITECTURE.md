@@ -1246,7 +1246,11 @@ Safety (`safety.py`, `sandbox.py`, `guard.py`, `checkpoints.py`):
   the last 48 words anywhere in the reply for the third time, whatever changed between
   the copies), and every 250 characters `inference.is_looping`
   checks for circling deliberation (≥0.15 five-word-phrase recurrence with ≥4 hedges
-  per 100 words; code blocks ignored). The agent raises out of the stream (closing the
+  per 100 words; code blocks ignored). Kiwi Mind's tool calls never reach that stream (the
+  conductor holds them back), so `mind.conductor.CallWatch` checks a call while it is written:
+  once a second it names the step on the status line ("Writing page.html · 84 lines") and runs
+  `is_degenerate` plus a near-loop test (40 lines that differ only in their numbers) on the
+  call's unescaped text, raising `DegenerateOutput(circling=True)`. The agent raises out of the stream (closing the
   stream stops the server generating). A reply that repeated itself keeps its good start (up
   to the block's first copy) and is *continued*: the start goes back as an assistant
   message with `prompts.DEGENERATE_CONTINUE` and anti-repetition sampling
@@ -1376,7 +1380,10 @@ for when the web is away or has nothing.
   branch and whether it is a temporary folder. The badge under the chat is a button shown for
   every chat: "Temporary folder", or the folder's name, with the branch. It opens the picker
   (`folderpick.js`), which lists folders with `GET /api/workspace/folders` and applies the
-  choice with `POST /api/workspace/set`. On the new-chat screen the choice is kept in the
+  choice with `POST /api/workspace/set`. Above the listing it offers up to five recent
+  folders from `GET /api/workspace/recent` (`Database.recent_workspaces`, filtered in
+  `workspaces.recent_folders`): one tap chooses a folder, through the same path as "Use this
+  folder". On the new-chat screen the choice is kept in the
   page; the chat is made with it when the first message is sent (or a file is attached, since
   a file is stored in the chat's own folder). In a safe copy the badge gives way to the safe
   copy strip, which reads "Safe copy of" and the folder's name.

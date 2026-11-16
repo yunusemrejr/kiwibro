@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import safety
+from . import config, safety
 from .extensions import ExtensionTool, schema, tool_result
 
 ACTIONS = ("show", "switch", "reset")
@@ -31,6 +31,7 @@ _LISTING = 30
 # Places a conversation may never be bound to (whatever the user typed).
 FORBIDDEN_PLACES = frozenset({"root", "system", "device", "home_root", "secret", "startup", "kiwibro", "dynamic", "outside"})
 _MAX_FOLDERS = 200
+_RECENT_SCAN = 100  # chats in temp mode fill the newest slots with temporary folders
 
 
 def temp_root() -> Path:
@@ -160,6 +161,27 @@ def browse(raw: str | None) -> dict[str, Any]:
         "path": str(path), "parent": str(parent) if parent else None, "allowed": _accepts(path),
         "folders": folders[:_MAX_FOLDERS], "truncated": len(folders) > _MAX_FOLDERS,
     }
+
+
+def recent_folders(db: Any, settings: dict[str, Any], limit: int = 5, exclude: str | None = None) -> list[dict[str, str]]:
+    """Folders chats worked in lately, newest first, for the folder picker: only folders that are still
+    there, may be worked in and are not a temporary chat folder, then the Settings folder if it is not
+    among them. `exclude` is the folder the asking chat already uses."""
+    skip = os.path.realpath(exclude) if exclude else None
+    found: list[str] = []
+    for raw in [*db.recent_workspaces(_RECENT_SCAN), settings.get("workspace")]:
+        if len(found) >= limit:
+            break
+        if not raw or not os.path.isdir(raw):
+            continue
+        real = os.path.realpath(raw)
+        if real == skip or real in found or in_temp_root(real) or not _accepts(Path(real)):
+            continue
+        found.append(real)
+    return [
+        {"path": path, "name": os.path.basename(path), "parent": config.display_path(os.path.dirname(path))}
+        for path in found
+    ]
 
 
 def _listing(path: Path) -> str:

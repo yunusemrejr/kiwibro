@@ -1,7 +1,8 @@
 /**
  * The folder picker under the chat: a popover that changes the folder a chat works in.
- * It lists the folders inside a folder (GET /api/workspace/folders) and hands the choice
- * back; whoever opened it decides what choosing means (showfiles.js).
+ * It lists the folders inside a folder (GET /api/workspace/folders), puts the folders other chats
+ * worked in lately above them (GET /api/workspace/recent) and hands the choice back; whoever
+ * opened it decides what choosing means (showfiles.js).
  */
 
 import { el, icon, openPopover, closePopover } from "./ui.js";
@@ -10,10 +11,11 @@ const ROW = ".folder-row";
 
 /**
  * `path` is where the list starts ("" = the home folder); `temp` says the chat already
- * works in a temporary folder. `onUse(path)` and `onTemp()` throw to say why a choice
+ * works in a temporary folder; `conversationId` (none for a chat not made yet) keeps that chat's
+ * own folder out of the recent ones. `onUse(path)` and `onTemp()` throw to say why a choice
  * failed: the message is shown in the popover, which stays open.
  */
-export function openFolderPicker({ anchor, api, path = "", temp = false, onUse, onTemp }) {
+export function openFolderPicker({ anchor, api, conversationId, path = "", temp = false, onUse, onTemp }) {
   const input = el("input", {
     type: "text",
     value: path,
@@ -66,11 +68,28 @@ export function openFolderPicker({ anchor, api, path = "", temp = false, onUse, 
     if (tempButton) tempButton.disabled = busy;
   }
 
-  function row(name, iconName, onClick, title = "") {
+  function row(name, iconName, onClick, title = "", parent = "") {
     return el("button", { class: "menu-item folder-row", type: "button", tabindex: "-1", title, on: { click: onClick } }, [
       icon(iconName),
-      el("span", { class: "menu-item-body" }, [el("span", { class: "menu-item-name", text: name })]),
+      el("span", { class: "menu-item-body" }, [
+        el("span", { class: "menu-item-name", text: name }),
+        // right-to-left shows the end of a long path; the inner span keeps "~/Desktop" in reading order
+        parent ? el("span", { class: "folder-parent" }, [el("span", { dir: "ltr", text: parent })]) : null,
+      ]),
     ]);
+  }
+
+  /** The folders other chats worked in lately, above the listing. A failed lookup shows nothing: they are a shortcut. */
+  function showRecent(folders) {
+    if (!folders.length || !popover.isConnected) return;
+    const rows = folders.map((folder) => row(folder.name, "folder", () => choose(() => onUse(folder.path)), folder.path, folder.parent));
+    rows[0].setAttribute("tabindex", "0");
+    resettle(() =>
+      list.before(el("div", { class: "menu folder-recent", role: "group", "aria-label": "Recent folders" }, [
+        el("div", { class: "menu-label", text: "Recent" }),
+        ...rows,
+      ])),
+    );
   }
 
   function paint() {
@@ -135,18 +154,21 @@ export function openFolderPicker({ anchor, api, path = "", temp = false, onUse, 
       if (input.value.trim()) choose(() => onUse(input.value.trim()));
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
-      list.querySelector(ROW)?.focus();
+      content.querySelector(ROW)?.focus();
     }
   });
-  list.addEventListener("keydown", (event) => {
+  content.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const rows = [...content.querySelectorAll(ROW)]; // the recent ones, then the listing
+    const at = rows.indexOf(event.target);
+    if (at < 0) return;
     event.preventDefault();
-    const rows = [...list.querySelectorAll(ROW)];
-    const next = rows[rows.indexOf(document.activeElement) + (event.key === "ArrowDown" ? 1 : -1)];
+    const next = rows[at + (event.key === "ArrowDown" ? 1 : -1)];
     if (next) next.focus();
     else if (event.key === "ArrowUp") input.focus();
   });
 
+  api.workspaceRecent(conversationId).then((result) => showRecent(result.folders), () => {});
   browse(path || undefined).then(() => {
     if (!shown && path) return browse(undefined); // the folder is gone: start from home
   });

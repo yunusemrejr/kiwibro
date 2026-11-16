@@ -1200,6 +1200,11 @@ p {
   animation: soft-pulse 1.8s ease-in-out infinite;
 }
 
+.activity-time {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .spinner {
   width: 12px;
   height: 12px;
