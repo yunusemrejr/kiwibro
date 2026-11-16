@@ -685,8 +685,10 @@ at the end under "Packs before 3.0".
   example `<think>code light act</think>`. It names the skill, whether the request is light
   or heavy, and whether the reply says something or acts. A grammar holds the route to
   that form.
-- **Two requests per step.** Kiwibro asks for the route under the route layer. Then it
+- **Route then generate.** Kiwibro asks for the route under the route layer. Then it
   asks for the reply under the routed skill's layer, which switches on after `</think>`.
+  Once the skill is known, a forced call or a reply with tools disabled already has a
+  complete route and goes straight to generation.
 - **Shared reading.** Everything before `<think>` is read by the shared model alone, so
   changing the skill between turns re-reads nothing. Each reply's route is kept, and later
   prompts repeat it exactly, so the server keeps what it has already read.
@@ -708,27 +710,27 @@ at the end under "Packs before 3.0".
   budget and the context length from the manifest.
 - **Layers.** The layers are loaded as LoRA adapters. Each request names the layer that is
   on in its `lora` field: the chosen one at scale 1, the others at 0.
-- **Missing.** Without a llama.cpp build Kiwi Mind reports "Kiwi Mind needs llama.cpp, which
-  was not found on this computer." Node.js is not used.
-- **The little helper** (`mind/little.py`). If `models/Qwen/Qwen3-0.6B-Q8_0.gguf` is in the
-  data folder, a second `llama-server` is started the first time a background job needs it:
-  CPU only (`--device none`, `--gpu-layers 0`), 2 threads at low priority, a 8192-token
-  context, thinking off, its own free port and key. The graphics chip stays with the main
-  server. It ends with Kiwibro (the same parent-death signal) and after five idle minutes. If
-  the file is missing or the server does not start, the job goes to Kiwi Mind as before, and
-  that is logged once; a failed start is not tried again for ten minutes.
+- **Memory expert** (`mind/little.py`). A trained Qwen3 0.6B GGUF at Q4_K_M starts on demand
+  in its own loopback `llama-server`, on two low-priority CPU threads with thinking disabled.
+  It uses a short extraction prompt and sends its proposed facts through the existing
+  source-grounding and conflict checks. Background work yields to chat and the server exits
+  after five idle minutes or when Kiwibro stops. An existing stock Qwen3 installation can
+  still serve memory jobs if the trained expert is unavailable.
+- **Earlier Qwen3 stack.** Kiwi Mind 2.0.1 has a separately verified trunk, control head,
+  action unit and seven skill adapters. It starts lazily with the bundled WebAssembly host
+  on Node.js when the Spark stack is unavailable. Spark reads pictures and keeps its own
+  automatic adapter selection.
 
 ### In the app (`mind/service.py`, `pack.py`, `llama.py`, `conductor3.py`, `render3.py`)
 
-- **Pack.** `Pack.check()` verifies the files against the manifest; the result is kept until
-  a file changes. `Pack.engine()` returns `"llama"` for a 3.x pack. The pack is fetched from
-  `huggingface.co/yunusemrejr/kiwimind`, file by file, resuming a broken download.
-- **Usable.** Kiwi Mind leads when the pack verifies and a llama.cpp build is found; the
-  build is looked for at most every half minute. Otherwise the selected model answers and
-  the chat says so once.
-- **Leading.** `LLMClient` sends every chat turn to `Conductor3` when Kiwi Mind is usable.
-  The agent gives it the full tool catalog (`tools.tool_defs_for("full")`), and the reply is
-  parsed by `render.parse_reply` into text and tool calls like any other model's.
+- **Packs.** `Pack.check()` verifies files against their manifests and caches the result until
+  a file changes. The primary, text fallback and memory packs are fetched independently from
+  the Kiwi Mind Hugging Face repository and can resume interrupted downloads. Older installs
+  can add the two Qwen packs without downloading the Spark weights again.
+- **Leading.** `LLMClient` uses `Conductor3` with Spark or the older conductor with the text
+  fallback. The agent gives Kiwi Mind its tool catalog and applies the same argument, workspace
+  and approval checks to calls from either engine. The Hugging Face model card records the
+  three model lineages. Each has its own tokenizer, weights and runtime state.
 - **Checked in code.** What a small model gets wrong in form is caught by the app, for
   every brain. A damaged tool call is refused before it runs (`toolcall`,
   `prompts.DAMAGED_CALL`). A written file is parsed (`syntaxcheck.check`: Python by
@@ -742,14 +744,9 @@ at the end under "Packs before 3.0".
   (`render.split_notes`, the clock line, the order of the first blocks).
 - **Images.** A pack with vision layers answers pictures itself, under `see`. Without them,
   a picture goes to a helper that can see.
-- **Utility work.** Titles, summaries and memory extraction go to the helper when one is
-  selected. When none is selected and the little helper is there, memory extraction goes to it
-  (`llm._little_complete`; the caller marks its call with `little.background("memory")`, so
-  nothing else moves; summaries stay with Kiwi Mind, whose summaries were clearly better in a
-  30-chat comparison); titles and everything else go to Kiwi
-  Mind's utility slot under the chat skill. Replies, routing and delegated side questions
-  never go to the little helper. A memory job is let go the moment a reply starts and
-  tried again afterwards.
+- **Utility work.** The memory extractor marks eligible jobs with
+  `little.background("memory")`. The trained memory expert is preferred for these jobs.
+  Summaries and other utility jobs use the active main model or the selected external helper.
 - **API.** `GET /api/mind` reports `usable`, `installed`, `version`, `bytes`, `engine`
   (`"llama"` or `"wasm"`), `vision`, `node` (null for a 3.x pack), the state of the host,
   the helper, `little` (`available`, `running`, `pid`, `port`, why it is not used) and a

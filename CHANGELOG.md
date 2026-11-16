@@ -4,6 +4,22 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-11-16
+
+- Kiwi Mind manages three independently verified model packs. Spark X2.6 4B keeps its
+  automatic LoRA skills and vision. The earlier trained Kiwi Mind 2.0.1 Qwen3 pack
+  supplies a lazy text fallback. The new Qwen3 0.6B memory expert runs in the background.
+  Models offers a full-stack download and individual downloads.
+- The memory expert was trained with rank-8 LoRA on Colab and exported at Q4_K_M. Across
+  60 held-out transcripts it recovered 39/51 expected facts versus 25/51 for stock Qwen3
+  Q8_0. It wrote no memories on 24 negative cases. Median warm extraction fell from
+  1.46 s to 0.45 s on the same CPU runtime.
+- Added code and data workflow classifiers trained on Colab CPU. The combined four-head
+  bundle is 70 KB and took 0.64 ms p95 for warm inference in the local benchmark.
+- Workspace search ran about 5× faster over 3,500 files, and Python semantic recall ran
+  about 5.3× faster over a warm 240-message workload. Fixed-action retries skip a Spark
+  routing request when the skill is already known.
+
 ## [3.0.1] — 2026-11-16
 
 - Added browser navigation with real tab history, numbered links, destination checks, and guarded Chrome rendering for public JavaScript pages.

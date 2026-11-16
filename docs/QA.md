@@ -1,7 +1,47 @@
 # Kiwibro: testing
 
-How Kiwibro is tested, how to run each layer, and what was checked for version 3.0.0.
+How Kiwibro is tested and how to reproduce the runtime measurements.
 The contracts under test are [ARCHITECTURE.md](ARCHITECTURE.md) and [API.md](API.md).
+
+## Kiwi Mind stack and runtime benchmarks
+
+Run `python3 -m scripts.bench_runtime --baseline 03eabaa --trials 21` from the
+repository root. The benchmark checks identical results before alternating the baseline
+and current implementation. Measurements below use Python 3.14.4 on a Ryzen 5 7530U.
+
+| Workload | Baseline median | Updated median | Baseline / updated p95 |
+|---|---:|---:|---:|
+| Search a workspace with 3,500 source files | 312.72 ms | 62.75 ms | 324.45 / 63.94 ms |
+| Warm semantic recall across 240 messages, Python runtime | 11.42 ms | 2.14 ms | 11.63 / 2.22 ms |
+| Warm Spark forced-tool retry on Vulkan, 12 paired runs | 5.60 s | 4.59 s | 8.40 / 6.51 s |
+
+The Spark test used the same local pack, engine, tools, prompt and generation settings for
+both code revisions. All 12 pairs returned the same tool call and finish reason. It measures
+a retry where the skill and action are already fixed.
+
+The four workflow classifiers took 0.64 ms p95 across 4,400 warm Python calls. The new
+code and data heads picked the correct hint on 27/36 and 31/36 supported prompts in
+their final sets and each abstained on 20/20 out-of-scope prompts. Their tests cover
+the real chat prompt and tool permissions.
+
+The Qwen memory expert's held-out evaluator uses 60 synthetic transcripts with 51
+expected facts. Run `python3 -m scripts.mind.eval_memory --help` for options. It calls
+the real llama.cpp-backed runtime, then applies the app's grounding and persistence
+checks in scratch SQLite. The comparison measures the deployed Q4_K_M expert with its
+short prompt and the stock Q8_0 model with its example-based prompt.
+
+| Memory metric | Stock Qwen3 Q8_0 | Trained Qwen3 Q4_K_M |
+|---|---:|---:|
+| Correct saved facts | 25/40 | 39/52 |
+| Expected facts recovered | 25/51 | 39/51 |
+| Negative cases with unwanted writes | 5/24 | 0/24 |
+| Invalid output format | 13/60 | 1/60 |
+| Warm latency, median / p95 | 1.46 s / 2.95 s | 0.45 s / 1.16 s |
+
+The trained expert still missed expected facts and proposed extra facts on positive
+transcripts. The figures cover the frozen evaluation corpus.
+
+## Previous app verification
 
 | Layer | Command | 3.0.0 (10 Nov 2026) |
 |---|---|---|
