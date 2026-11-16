@@ -171,15 +171,19 @@ serves it. Everything here answers `404 not_found` in a build without Kiwi Mind.
 ### `GET /api/mind`
 What Kiwi Mind is and whether it can be used. The answer has no `ok` field.
 ```json
-{"usable": true, "installed": true, "version": "...", "bytes": 486110000,
- "node": "/usr/bin/node", "running": true, "pid": 4242, "rss_bytes": 512000000,
- "skills": ["chat", "web", "code", "terminal", "computer", "tools", "write"], "helper": {"id": "qwen3.8-2b", "name": "qwen3.8-2b"},
+{"usable": true, "installed": true, "version": "...", "bytes": 2608165792,
+ "engine": "llama", "vision": true, "node": null, "running": true, "pid": 4242, "rss_bytes": 512000000,
+ "skills": ["chat", "web", "code", "terminal", "computer", "tools", "write", "see"], "helper": {"id": "qwen3.8-2b", "name": "qwen3.8-2b"},
  "reason": "", "download": null}
 ```
 `usable` is true when `reason` is empty, that is when the pack is installed, every file
-matches its checksum and a new enough Node.js was found. `installed` only says a manifest is
-there; `version` and `bytes` come from it (`null` and `0` without one). `node` is the Node.js
-binary the host runs on (`null` when none was found). `running`, `pid` and `rss_bytes` are the
+matches its checksum and the engine it needs was found: llama.cpp for a 3.x pack, a new
+enough Node.js for a pack before 3.0. Without llama.cpp the reason is `Kiwi Mind needs
+llama.cpp, which was not found on this computer.` `installed` only says a manifest is
+there; `version` and `bytes` come from it (`null` and `0` without one). `engine` is `llama`
+for a 3.x pack and `wasm` for a pack before 3.0. `vision` is true when the pack carries the
+picture layers, so Kiwi Mind reads pictures itself. `node` is the Node.js binary the host
+runs on: `null` for a 3.x pack, or when none was found. `running`, `pid` and `rss_bytes` are the
 host process (`rss_bytes` `null` when it is not running). `skills` lists the skill names the
 pack carries. `helper` is the model that answers hard cases, `{id, name}`, or `null`.
 `download` is `null` or the download state below.
@@ -187,7 +191,7 @@ pack carries. `helper` is the model that answers hard cases, `{id, name}`, or `n
 ### `POST /api/mind/download`
 Starts the pack download into `<data>/mind/`, or resumes one that was interrupted.
 `{"ok": true, "download": {"state": "running", "done_bytes": 120000000,
-"total_bytes": 486110000}}`. A download already running is returned as it is.
+"total_bytes": 2608165792}}`. A download already running is returned as it is.
 
 Download state: `{"state", "done_bytes", "total_bytes"}` plus `error` when there is one.
 `state` is `running`, `done`, `cancelled` or `error`. Each file is written as `<name>.part`
@@ -429,9 +433,10 @@ SSE frames use `event: <type>\ndata: <json>\n\n`.
 | `error` | `{message, code, recoverable}` | end/failure |
 
 `brain` comes before the first text of the reply. `skill` is the skill Kiwi Mind chose for the
-turn (`chat` when it has no better answer; `null` or `""` when the helper model leads it), and
-`hard` is whether the turn was judged hard, so a helper model may answer. With a pack that has an
-action unit, the first reply to a message also carries `act`, how sure the unit is (0 to 1) that
+turn (`see` for a message with a picture, `chat` when it has no better answer; `null` or `""` when
+the helper model leads it), and `hard` is whether the turn was judged hard, so a helper model may
+answer. With a pack before 3.0, which has an action unit, the first reply to a message also
+carries `act`, how sure the unit is (0 to 1) that
 the reply should be a tool call, and `tool`, the tool it expects. `lead` is true when the helper
 writes the rest of a turn Kiwi Mind could not finish. A turn can emit more than one `brain` event,
 for example when a hard turn passes to the helper.

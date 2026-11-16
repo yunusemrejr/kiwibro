@@ -70,13 +70,17 @@ class MindClient:
             threading.Thread(target=_close_on_abort, args=(response, abort, finished),
                              name="kiwibro-mind-watch", daemon=True).start()
         if response.status_code != 200:
-            try:
-                message = str(response.json().get("error") or response.text[:300])
-            except ValueError:
-                message = response.text[:300]
+            refusal = self._refusal(response)
             response.close()
-            raise MindRequestError(message, response.status_code, context="context holds" in message)
+            raise refusal
         return response
+
+    def _refusal(self, response: requests.Response) -> MindRequestError:
+        try:
+            message = str(response.json().get("error") or response.text[:300])
+        except ValueError:
+            message = response.text[:300]
+        return MindRequestError(message, response.status_code, context="context holds" in message)
 
     def _json(self, path: str, body: dict[str, Any] | None = None, *, method: str = "POST") -> dict[str, Any]:
         with self.host.busy():

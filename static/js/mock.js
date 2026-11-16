@@ -13,10 +13,10 @@ const nowIso = () => new Date().toISOString();
 const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
 
 // Kiwi Mind: the page's ?mind= parameter picks the state; a download runs for about MIND_SIM_MS.
-const MIND_BYTES = 486110000;
+const MIND_BYTES = 2608165792;
 const MIND_PARTIAL = 201000000;
 const MIND_SIM_MS = 6000;
-const MIND_SKILLS = ["chat", "web", "code", "terminal", "computer", "tools", "write"];
+const MIND_SKILLS = ["chat", "web", "code", "terminal", "computer", "tools", "write", "see"];
 
 class MockApiError extends Error {
   constructor(status, code, message) {
@@ -603,7 +603,7 @@ export class MockBackend {
     }
     const model = this.models.find((entry) => entry.id === this.currentModel);
     const reasons = {
-      nonode: "Kiwi Mind needs Node.js, which is not installed.",
+      nonode: "Kiwi Mind needs llama.cpp, which was not found on this computer.",
       damaged: "Kiwi Mind's files are damaged. Download it again.",
     };
     let reason = "";
@@ -612,9 +612,11 @@ export class MockBackend {
     return {
       usable,
       installed,
-      version: installed ? "2.0.1" : null,
+      version: installed ? "3.0.0" : null,
       bytes: installed ? MIND_BYTES : 0,
-      node: param === "nonode" ? null : "/usr/bin/node",
+      engine: "llama",
+      vision: installed,
+      node: null,
       running: usable,
       pid: usable ? 4242 : null,
       rss_bytes: usable ? 1010000000 : 0,

@@ -24,10 +24,12 @@ REPO = "yunusemrejr/kiwimind"
 HF_URL = "https://huggingface.co"
 MANIFEST = "manifest.json"
 TRUNK = "kiwimind-trunk.fkm"
+TRUNK3 = "kiwimind-trunk.gguf"  # a 3.x pack: GGUF files that llama.cpp runs
 HEAD = "head.kmh"
 UNITS = "units.kmh"  # the action unit; packs before 2.0 have none
 TOKENIZER = "tokenizer.json"
 CHECK_CACHE = ".verified.json"
+PACK_SUFFIXES = (".fkm", ".kms", ".kmh", ".gguf", ".part")  # what a pack's own files end in
 CHUNK = 1 << 20
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 60
@@ -83,9 +85,32 @@ class Pack:
         except (OSError, ValueError):
             return None
         files = data.get("files") if isinstance(data, dict) else None
-        if not isinstance(files, dict) or TRUNK not in files:
+        if not isinstance(files, dict) or not (TRUNK in files or TRUNK3 in files):
             return None
         return data
+
+    def engine(self) -> str:
+        """What runs the installed pack: "llama" (llama.cpp, a 3.x pack) or "wasm" (Kiwibro's own engine)."""
+        return "llama" if (self.manifest() or {}).get("engine") == "llama" else "wasm"
+
+    def sweep(self) -> int:
+        """Remove the files an earlier pack left that the installed one does not list. Returns how many went.
+        Only a whole pack is swept, and only files a pack is made of."""
+        manifest = self.manifest()
+        if manifest is None or not self.check().ok:
+            return 0
+        gone = 0
+        for path in [*self.dir.glob("*"), *self.dir.glob("skills/*")]:
+            name = path.relative_to(self.dir).as_posix()
+            if name in manifest["files"] or not path.is_file():
+                continue
+            if name.endswith(PACK_SUFFIXES) or name == TOKENIZER:
+                try:
+                    path.unlink()
+                    gone += 1
+                except OSError:
+                    log.warning("could not remove the old Kiwi Mind file %s", path, exc_info=True)
+        return gone
 
     def path(self, name: str) -> Path:
         return self.dir / _safe_name(name)
@@ -235,6 +260,7 @@ class _Download:
     def _run(self) -> None:
         try:
             self._download_all()
+            self.pack.sweep()
             self._set(state="done")
             if self.pack.on_installed is not None:
                 self.pack.on_installed()

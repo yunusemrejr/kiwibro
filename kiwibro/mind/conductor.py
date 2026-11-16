@@ -140,9 +140,15 @@ class Settings:
     # From which reading of the action unit on a reply is opened as a tool call (None: never). The pack sets it,
     # and only when its own held-back cases showed that this puts right more replies than it breaks.
     act_mark: Callable[[], float | None] = lambda: None
+    # Kiwi Mind 3: the share of "heavy" in the route layer's answer from which a request is heavy (None: the
+    # word it wrote decides), and whether the pack has vision layers.
+    heavy_at: Callable[[], float | None] = lambda: None
+    sees: Callable[[], bool] = lambda: False
 
 
 class Conductor:
+    stop = render.STOP  # where a reply ends in the pack's prompt format
+
     def __init__(self, client: MindClient, settings: Settings) -> None:
         self.client = client
         self.cfg = settings
@@ -245,7 +251,7 @@ class Conductor:
         return {
             "prompt": prompt, "slot": slot, "skill": skill, "max_tokens": max_tokens,
             "temperature": 0.0 if temperature <= 0 else min(float(temperature), MAX_TEMPERATURE),
-            "stop": list(render.STOP), **SAMPLING,
+            "stop": list(self.stop), **SAMPLING,
         }
 
     def _events(self, events: Iterator[dict[str, Any]], abort: threading.Event | None) -> Iterator[dict[str, Any]]:
@@ -265,7 +271,9 @@ class Conductor:
         self, prompt: str, slot: str, skill: str, hard: bool, temperature: float, cap: int,
         on_delta: Callable[[str], None] | None, abort: threading.Event | None, emit: Events, *,
         helper: dict[str, Any] | None, messages: list[dict[str, Any]], opened: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> ChatResult:
+        """``extra``: what the request carries beside the conductor's own fields (the pictures of a prompt)."""
         hold = Holdback()
         if opened:  # the reply starts with this text: the model continues it
             prompt += opened
@@ -274,7 +282,8 @@ class Conductor:
         peeking = helper is not None
         seen = 0
         done: dict[str, Any] | None = None
-        stream = self._events(self.client.generate(self._body(prompt, slot, skill, temperature, cap), abort), abort)
+        body = {**self._body(prompt, slot, skill, temperature, cap), **(extra or {})}
+        stream = self._events(self.client.generate(body, abort), abort)
         try:
             for event in stream:
                 if event.get("done"):
@@ -294,7 +303,7 @@ class Conductor:
                                               skill=skill, hard=True,
                                               fallback=lambda: self._generate(
                                                   prompt, slot, skill, hard, temperature, cap, on_delta, abort,
-                                                  emit, helper=None, messages=messages),
+                                                  emit, helper=None, messages=messages, extra=extra),
                                               )
                     shown, pending = pending, ""
                 if shown and on_delta:
@@ -380,10 +389,13 @@ class Conductor:
 
     def complete(self, messages: list[dict[str, Any]], *, max_tokens: int, temperature: float,
                  abort: threading.Event | None = None) -> Completion:
-        prompt = render.render_plain(messages)
+        return self._complete(render.render_plain(messages), "none", max_tokens, temperature, abort)
+
+    def _complete(self, prompt: str, skill: str, max_tokens: int, temperature: float,
+                  abort: threading.Event | None, extra: dict[str, Any] | None = None) -> Completion:
         cap = self._room(prompt, max_tokens)
         text, done = "", None
-        body = self._body(prompt, UTIL_SLOT, "none", temperature, cap)
+        body = {**self._body(prompt, UTIL_SLOT, skill, temperature, cap), **(extra or {})}
         stream = self._events(self.client.generate(body, abort), abort)
         try:
             for event in stream:

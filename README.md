@@ -22,9 +22,9 @@ fumbles the call, and a second, tiny model that reads every reply and steps in w
 wrong. Any other open model you add becomes a helper for the heavy answers, run by Kiwibro
 itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is needed.
 
-- **Kiwi Mind.** Kiwibro's own model: under 500 MB, 4-bit, on the CPU in WebAssembly. Seven
-  skills (chat, web, code, terminal, computer, tools, write) are swapped in by a control
-  head that reads each message; you never pick or load anything.
+- **Kiwi Mind.** Kiwibro's own model: Spark X2.6 4B at IQ2_M, a 2.6 GB pack with its skills and vision, run by llama.cpp.
+  Eight skills (chat, web, code, terminal, computer, tools, write, see) are picked by a
+  route the model writes before each reply; you never pick or load anything.
 - **Helper models.** Download a model from Hugging Face inside the app, or use the ones LM
   Studio already downloaded. Kiwi Mind stays in charge of tools and steps and hands a
   heavy answer to the helper. Swap or drop the helper mid-chat; memories, notes and
@@ -106,7 +106,8 @@ never switched to. The server runs in its own systemd user scope as a process na
 
 - Linux (developed on Ubuntu; any GTK/GNOME desktop works)
 - Python 3.10+
-- Node.js 18.14 or newer, which runs Kiwi Mind's WebAssembly engine
+- llama.cpp, which Kiwi Mind 3.0 runs on; *Install engine* in *Models* sets it up
+- Node.js 18.14 or newer, only for a Kiwi Mind pack before 3.0 (its WebAssembly engine)
 - Chrome or Chromium for the app window, or any modern browser
 - Optional: `pip install wasmtime` lets the server run Kiwi Sense as WebAssembly (the
   browser always does). Without it an identical pure-Python reader runs.
@@ -126,23 +127,34 @@ never switched to. The server runs in its own systemd user scope as a process na
 
 ### Kiwi Mind
 
-Kiwi Mind is the model Kiwibro thinks with. It is Qwen3-0.6B trained on the 4-bit grid it
-is stored in, split in two: 16 shared layers read the conversation once, and the 12 above
-them carry one of seven skills. A control head reads each new message and picks the skill,
-so nothing is chosen or loaded by hand, and every turn keeps the skill it was answered
-with: a change of subject recomputes nothing. A second small network reads the same state
-and tells whether the reply to come should be a tool call. All open chats share one copy
-of the weights.
+Kiwi Mind is the model Kiwibro thinks with. Its base is Spark X2.6 4B, fully fine-tuned on
+Kiwibro's own practice conversations and stored as a GGUF file at IQ2_M (about 3.2 bits per
+weight). It runs on llama.cpp's `llama-server`, on the graphics chip when there is one.
+
+The lower 24 layers read the conversation once. Before every reply the model writes a
+three-word route in its thinking, for example `code light act`: which of eight skills
+answers (chat, web, code, terminal, computer, tools, write or see), whether the request is
+light or heavy, and whether the reply says something or acts with a tool call. Each skill is
+a small adapter on the upper 12 layers that switches on where its route ends, and every turn
+keeps the skill it was answered with, so a change of subject recomputes nothing. Nothing is
+chosen or loaded by hand, and all open chats share one copy of the weights.
+
+A picture in a message is read by the see skill. Kiwi Mind has its own image encoder (CLIP
+ViT-L/14), so it needs no separate vision helper.
 
 | | |
 |---|---|
-| On disk | under 500 MB, fetched once from [Hugging Face](https://huggingface.co/yunusemrejr/kiwimind) |
-| In memory | about 1 GB, freed when the window is closed |
-| Speed on a Ryzen 5 7530U, CPU only | reads 160 tok/s, writes 32 to 38 tok/s |
+| On disk | 2.6 GB, fetched once from [Hugging Face](https://huggingface.co/yunusemrejr/kiwimind) |
+| In memory | the 2.3 GB of weights, on the graphics chip when the GPU switch is on, and about 1 GB beside them; freed when the window is closed |
+| Speed on a Ryzen 5 7530U, integrated graphics | reads 120 tok/s, writes 12 to 14 tok/s |
 
-When the control head marks a request as heavy (a long report, a tricky algorithm) and a
-helper model is selected, Kiwi Mind still decides the tool steps and the helper writes the
-answer. With no helper, Kiwi Mind answers everything itself.
+When the route marks a request as heavy (a long report, a tricky algorithm) and a helper
+model is selected, Kiwi Mind keeps the tool steps and the helper writes the answer. With no
+helper, Kiwi Mind answers everything itself.
+
+**Packs before 3.0** (the 2.x format, with a control head and an action unit) still run on
+the old engine: Kiwi Mind's WebAssembly build on Node.js. Kiwibro picks the engine by the
+installed pack.
 
 ### Models
 

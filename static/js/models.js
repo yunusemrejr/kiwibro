@@ -25,7 +25,7 @@ const TASK_TEXT = {
 };
 const STRENGTH_TEXT = { full: "Full strength", half: "Half strength", off: "Switched off" };
 // Kiwi Mind's size on disk (the real pack), used until the download reports its total.
-const MIND_BYTES = 486110000;
+const MIND_BYTES = 2608165792;
 const MIND_SENTENCE = "Kiwibro's own model. It runs every chat and picks its skill by itself.";
 const MIND_HELPERS = "Optional. A helper writes the answers Kiwi Mind marks as heavy.";
 const NO_HELPER = "none";

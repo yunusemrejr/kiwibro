@@ -753,28 +753,28 @@ function adapters(root) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Kiwi Mind: one model, seven skills, an optional helper                     */
+/* Kiwi Mind: one model, eight skills, an optional helper                     */
 /* -------------------------------------------------------------------------- */
 
 function kiwiMind(root) {
   const slabs = [67, 91, 115, 139, 163];
-  const skills = ["chat", "web", "terminal", "computer", "tools", "write"];
+  const skills = ["chat", "web", "terminal", "computer", "tools", "write", "see"];
   const lowerX = 58;
   const headX = 187;
   const upperX = 316;
   const railY = 122;
 
-  // Left: the 16 shared layers, a stack of thin slabs.
+  // Left: the 24 shared layers, a stack of thin slabs.
   const lower = box(root, lowerX, 122, 96, 176, "", "hw-node-tan");
   for (const y of slabs) root.append(s("rect", { class: "hw-slab", x: lowerX - 34, y, width: 68, height: 14, rx: 4 }));
-  text(root, lowerX, 232, "16 shared", "hw-t-big");
+  text(root, lowerX, 232, "24 shared", "hw-t-big");
   text(root, lowerX, 252, "layers", "hw-t-big");
 
-  // The path the message takes, with the control head on it.
+  // The path the message takes, with the route on it.
   root.append(s("path", { class: "hw-line", d: `M106 ${railY}H125` }), s("path", { class: "hw-line", d: `M249 ${railY}H268` }));
   root.append(s("path", { class: "hw-arrow", d: `M262 ${railY - 4}l6 4-6 4` }));
   const head = box(root, headX, railY, 124, 44, "", "hw-node");
-  text(root, headX, railY + 5, "control head", "hw-t-big");
+  text(root, headX, railY + 5, "route", "hw-t-big");
 
   // Right: the 12 upper layers, with the code skill slotted in.
   const upper = box(root, upperX, 122, 96, 176, "", "hw-node-tan");
@@ -787,16 +787,16 @@ function kiwiMind(root) {
   text(root, upperX, 232, "12 upper", "hw-t-big");
   text(root, upperX, 252, "layers", "hw-t-big");
 
-  // The six other skills, quieter, beside the upper layers.
+  // The seven other skills, quieter, beside the upper layers.
   skills.forEach((name, index) => {
-    const y = 36 + index * 30;
+    const y = 26 + index * 28;
     const group = s("g", { class: "hw-card" });
     group.append(s("rect", { x: 380, y, width: 88, height: 22, rx: 6 }));
     group.append(s("text", { x: 424, y: y + 15, class: "hw-t-big", "text-anchor": "middle" }, name));
     root.append(group);
   });
 
-  // The dashed line from the control head to the helper model, with its label on the line.
+  // The dashed line from the route to the helper model, with its label on the line.
   root.append(s("path", { class: "hw-dash", d: `M${headX} ${railY + 22}V226` }));
   root.append(s("rect", { class: "hw-mask", x: headX - 58, y: 172, width: 116, height: 24 }));
   text(root, headX, 189, "heavy answers", "hw-t-big-muted");
@@ -833,9 +833,12 @@ function kiwiMind(root) {
 /* Training data: tasks go to a teacher model, practice conversations come out */
 /* -------------------------------------------------------------------------- */
 
-// Counts from the pack's own record of its training (manifest.json of Kiwi Mind 2.0.1).
-const LESSONS = { trunk: 3104, skills: 1294, held: 300 };
-const LOSS = { base: 2.0926, grid: 2.1746, trained: 1.19, steps: 173 };
+// Counts from the pack's own record of its training (manifest.json of Kiwi Mind 3.0.0).
+const LESSONS = { total: 6673, written: 3673, judged: 3000, trunk: 6130, held: 543 };
+const LOSS = { base: 1.4563, trained: 0.7386, quantized: 0.9898, layered: 0.9514, steps: 205 };
+const PACK = { gb: 2.6, layerMb: 41, ctx: 16384, minutes: 50, route: 93, calls: 93, pictures: 12000 };
+const fmt = (value) => value.toLocaleString("en");
+const about = (value) => fmt(Math.round(value / 100) * 100);
 
 /** The point k (0 to 1) of the way along a path of straight pieces. */
 function along(points, k) {
@@ -851,7 +854,7 @@ function along(points, k) {
 }
 
 function trainingData(root) {
-  const total = LESSONS.trunk + LESSONS.skills + LESSONS.held;
+  const total = LESSONS.total;
   const sources = [["oasst2", 66], ["Dolly", 112], ["MASSIVE", 158]];
   const teacherX = 226;
   const teacherY = 112;
@@ -876,9 +879,9 @@ function trainingData(root) {
     return sheet;
   });
   const count = text(root, pileX, 180, "0", "hw-t-big");
-  text(root, pileX, 198, "conversations");
+  text(root, pileX, 198, "lessons");
   const number = (value) => value.toLocaleString("en");
-  text(root, 240, 252, `${number(LESSONS.trunk)} for the shared layers · ${number(LESSONS.skills)} for the skills · ${LESSONS.held} held back`);
+  text(root, 240, 252, `${number(LESSONS.trunk)} to learn from · ${LESSONS.held} held back`);
   const dot = s("circle", { r: 6, class: "hw-dot" });
   root.append(dot);
 
@@ -912,14 +915,14 @@ function trainingData(root) {
 
 function training(root) {
   const floor = 204;
-  const scale = 60; // pixels per unit of loss
-  const width = 88;
-  const xs = [92, 240, 388];
-  const labels = ["as downloaded", "rounded to 4 bits", "after training"];
+  const scale = 140 / Math.max(LOSS.base, LOSS.trained, LOSS.quantized, LOSS.layered, 0.01); // pixels per unit of loss
+  const width = 76;
+  const xs = [72, 184, 296, 408];
+  const labels = ["as downloaded", "after training", "squeezed small", "with its skills"];
   text(root, 24, 30, "how wrong its next-word guesses are (lower is better)", "hw-t-muted", "start");
   root.append(s("path", { class: "hw-line", d: `M24 ${floor}H456` }));
   const bars = xs.map((x, index) => {
-    const group = s("g", { class: `hw-bar ${["", "hw-bar-orange", "hw-bar-tan"][index]}`.trim() });
+    const group = s("g", { class: `hw-bar ${["", "hw-bar-tan", "hw-bar-orange", "hw-bar-tan"][index]}`.trim() });
     const rect = s("rect", { x: x - width / 2, width, rx: 5 });
     const value = s("text", { x, class: "hw-t-big", "text-anchor": "middle" });
     group.append(rect, value);
@@ -927,7 +930,7 @@ function training(root) {
     text(root, x, floor + 22, labels[index]);
     return { group, rect, value };
   });
-  const steps = text(root, xs[2], floor + 42, "", "hw-t-green");
+  const steps = text(root, xs[1], floor + 42, "", "hw-t-green");
   const set = (bar, loss) => {
     const height = loss * scale;
     bar.rect.setAttribute("y", (floor - height).toFixed(1));
@@ -941,14 +944,16 @@ function training(root) {
     duration: 9,
     still: 8.4,
     draw(t) {
-      // Rounding makes the second bar a little taller; training brings the third one down.
-      const learning = span(t, 3.4, 7.2);
-      set(bars[1], mix(LOSS.base, LOSS.grid, span(t, 1.2, 2.4)));
-      fade(bars[1].group, span(t, 1.0, 1.4));
-      set(bars[2], mix(LOSS.grid, LOSS.trained, learning));
-      fade(bars[2].group, span(t, 3.0, 3.4));
-      on(bars[2].group, learning > 0 && learning < 1);
-      steps.textContent = t >= 3 ? `step ${Math.round(LOSS.steps * learning)} of ${LOSS.steps}` : "";
+      // Training brings the second bar down, squeezing lifts the third, the skill layers lower the fourth.
+      const learning = span(t, 1.2, 4.4);
+      set(bars[1], mix(LOSS.base, LOSS.trained, learning));
+      fade(bars[1].group, span(t, 0.8, 1.2));
+      on(bars[1].group, learning > 0 && learning < 1);
+      steps.textContent = t >= 0.8 ? `step ${Math.round(LOSS.steps * learning)} of ${LOSS.steps}` : "";
+      set(bars[2], mix(LOSS.trained, LOSS.quantized, span(t, 5.2, 6.2)));
+      fade(bars[2].group, span(t, 4.8, 5.2));
+      set(bars[3], mix(LOSS.quantized, LOSS.layered, span(t, 7.0, 8.0)));
+      fade(bars[3].group, span(t, 6.6, 7.0));
     },
   };
 }
@@ -966,7 +971,7 @@ const STOPS = [
       "Your message never reaches the model alone. Kiwibro first adds what it knows (the [[context]]), the model writes, and a small reader called [[Kiwi Sense]] checks the draft. If the model asks for a [[tool]], Kiwibro runs it and the model continues with the result.",
     fact: "The model and your data stay on this computer. Only web lookups go online.",
     tech: {
-      model: [["Kiwi Mind", "A 0.6-billion-parameter transformer (Qwen3-0.6B) with seven LoRA skills, run in WebAssembly on the CPU."]],
+      model: [["Kiwi Mind", "A 4-billion-parameter transformer (Spark X2.6 4B, fine-tuned) with eight LoRA skills and a vision layer, run by llama.cpp."]],
       app: [
         ["Local server", "Flask on 127.0.0.1. The reply is streamed to the window as server-sent events (SSE)."],
         ["One database", "Chats, memory and notes are in a single SQLite file on this computer."],
@@ -979,18 +984,19 @@ const STOPS = [
     title: "Kiwi Mind",
     question: "Which model is answering?",
     lines:
-      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 16 layers read your conversation once. A small [[control head]] looks at what they understood and picks one of seven [[skills]]: chat, web, code, terminal, computer, tools or write. The skill is a thin layer slid into the upper 12 layers, and every turn keeps the one it was answered with, so a change of subject costs nothing. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
-    fact: "464 MB on disk, 4 bits per weight, on the CPU in WebAssembly.",
+      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 24 layers read your conversation once. Before every reply it writes itself a three-word [[route]]: which of eight [[skills]] answers (chat, web, code, terminal, computer, tools, write or see), whether the request is light or heavy, and whether to speak or use a tool. The skill is a thin layer slid into the upper 12 layers, and every turn keeps the one it was answered with, so a change of subject costs nothing. A picture you attach is read by the see skill. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
+    fact: `${PACK.gb} GB on disk, about 3 bits per weight, on the graphics chip or the CPU.`,
     tech: {
       model: [
-        ["Quantization-aware training (QAT)", "The model was trained on the 4-bit grid it is stored in, so the file holds exactly what was trained."],
-        ["LoRA skill per turn", "Each skill is a low-rank adapter of rank 16 on layers 16 to 27. Every turn runs under its own skill and the opening instructions under none, so a change of skill recomputes nothing."],
-        ["Control head", "A two-layer network reads the state entering layer 16 and scores the seven skills plus \"heavy\". It is the gating idea of a mixture of experts (MoE), with the adapters as the experts and one chosen per message."],
-        ["Action unit", "A second two-layer network reads the same state and says how likely the reply is a tool call, and which tool. The host computes it from numbers it already has."],
+        ["Full fine-tune, then IQ2_M", "Every weight of the base model was trained on Kiwibro's conversations. The result is stored as a GGUF file at IQ2_M, about 3.2 bits per weight, and the skills were trained on that squeezed file, so they fit exactly what runs here."],
+        ["Activated LoRA per turn", "Each skill is a low-rank adapter of rank 16 on layers 24 to 35 that switches on only where its turn's route ends. Everything before that point is read by the shared model alone, so a change of skill recomputes nothing."],
+        ["Route", "A ninth adapter writes the route in the model's thinking channel, for example \"code light act\", and a grammar holds it to that form. How strongly it leans to \"heavy\" decides whether the helper is asked."],
+        ["Tool calls", "When the route says act, the reply opens as a tool call and a grammar holds it to the tools on offer and to valid JSON."],
+        ["Vision", "A CLIP ViT-L/14 image encoder and a two-layer projector turn a picture into 256 tokens that the model reads like words."],
       ],
       app: [
-        ["WebAssembly with SIMD and threads", "The engine is C compiled to WebAssembly and run by Node.js on 2 to 8 threads."],
-        ["Conductor", "Picks the skill for every message and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
+        ["llama.cpp", "Kiwi Mind runs on the same llama.cpp server as the helper models, on the graphics chip when there is one."],
+        ["Conductor", "Asks for the route, switches the skill on for the reply, and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
       ],
     },
     build: kiwiMind,
@@ -999,18 +1005,18 @@ const STOPS = [
     title: "Training data",
     question: "What did Kiwi Mind learn from?",
     lines:
-      "A model learns from examples, the way you pick up a job by watching it done well. Kiwi Mind's examples are about 4,700 practice conversations in which an assistant uses Kiwibro's tools properly. A much larger [[teacher model]] wrote them: it was handed a task, sometimes a question a real person once asked, and wrote how a careful assistant would carry it out: which tool to call, what comes back, what to say. Handing a big model's habits to a small one like this is called [[distillation]].",
-    fact: "One conversation in sixteen is never trained on. Those 300 are the exam every number on the next stop comes from.",
+      `A model learns from examples, the way you pick up a job by watching it done well. Kiwi Mind's examples are about ${about(LESSONS.written)} practice conversations in which an assistant uses Kiwibro's tools properly. A much larger [[teacher model]] wrote them: it was handed a task, sometimes a question a real person once asked, and wrote how a careful assistant would carry it out: which tool to call, what comes back, what to say. Handing a big model's habits to a small one like this is called [[distillation]]. The teacher also read ${fmt(LESSONS.judged)} real first messages and marked each one light or heavy. To learn to look, Kiwi Mind studied ${fmt(PACK.pictures)} photographs with captions and questions about them.`,
+    fact: `One lesson in ${Math.round(LESSONS.total / LESSONS.held)} is never trained on. Those ${LESSONS.held} are the exam every number on the next stop comes from.`,
     tech: {
       model: [
-        ["Teacher", "Qwen3.8-27B, an open model about 45 times Kiwi Mind's size, run with vLLM. It samples at temperature 0.9 and its output is held to a JSON schema, so every conversation it writes can be read back by a program."],
+        ["Teacher", "Qwen3.8-27B, an open model about seven times Kiwi Mind's size, run with vLLM. It samples at temperature 0.9 and its output is held to a JSON schema, so every conversation it writes can be read back by a program."],
         ["Four kinds of conversation", "A single request; a session of several turns; a repair, where a bad first reply is put right; and real first messages from three open collections: OpenAssistant oasst2, Databricks Dolly 15k and Amazon MASSIVE."],
-        ["Written the way the model reads", "Each conversation is stored in ChatML with Qwen's tool-call tags, the exact text Kiwi Mind sees when you use it, down to Kiwibro's note with the local time."],
-        ["What counts most", "Tokens do not weigh the same in training. A word of an answer counts 1, a token of a tool call 1.5 and the first three tokens of a reply 3, because that is where the model decides between calling a tool and talking."],
+        ["Written the way the model reads", "Each conversation is stored with the base model's own turn markers and tool-call tags, the exact text Kiwi Mind sees when you use it, down to Kiwibro's note with the local time. Every reply opens with its route."],
+        ["What counts most", "Tokens do not weigh the same in training. A word of an answer counts 1, a token of a tool call 2, and the route and the first tokens of a reply 3, because that is where the model decides between calling a tool and talking."],
       ],
       app: [
         ["Checked against the real tools", "Every conversation is checked against Kiwibro's own tool list. One with a call that would not run is thrown away."],
-        ["Three shares", "3,104 conversations train the shared layers, 1,294 others train the skills, and 300 are held back for testing."],
+        ["Two shares", `The conversations and the judged messages make ${fmt(LESSONS.total)} lessons. ${fmt(LESSONS.trunk)} train the model and then its skills; ${LESSONS.held} are held back for testing.`],
       ],
     },
     build: trainingData,
@@ -1019,20 +1025,21 @@ const STOPS = [
     title: "Training",
     question: "How was Kiwi Mind trained?",
     lines:
-      "Kiwi Mind did not start from nothing. Its base is [[Qwen3-0.6B]], a small open model that already knows language. Training shows it a practice conversation, lets it guess each next word, and nudges its numbers a little toward the right one, thousands of times over. The unusual part is that the numbers stay rounded to the 4 bits they are stored with while they learn ([[QAT]]), so saving the file loses nothing. Then the lower layers are frozen, seven thin [[skills]] are trained on top, and last comes the small [[control head]] that picks between them.",
-    fact: "The whole training takes about 25 minutes on one cloud graphics card.",
+      "Kiwi Mind did not start from nothing. Its base is [[Spark X2.6 4B]], an open model that already knows language. Training shows it a practice conversation, lets it guess each next word, and nudges its numbers a little toward the right one, over and over. Here all four billion of its numbers were free to move, which is called a full fine-tune. The result is then squeezed to about 3 bits per number ([[IQ2_M]]) so that it fits a laptop, and that costs some accuracy. So last, with the squeezed model frozen, eight thin [[skills]] and the layer that writes the [[route]] are trained on top of it.",
+    fact: `The training itself takes about ${PACK.minutes} minutes on one cloud graphics card.`,
     tech: {
       model: [
-        ["Base", "Qwen3-0.6B: 28 layers, each 1,024 numbers wide, with a vocabulary of 151,936 tokens."],
-        ["Trunk on the 4-bit grid", "One pass over 3,104 conversations in 173 steps of about 28,000 tokens (AdamW, learning rate 4e-5, cosine decay). At every step each weight is snapped to one of 16 levels, one scale per group of 32, and the gradient is passed straight through the rounding."],
-        ["What it gained", "Loss on the held-back conversations, lower is better: 2.09 as downloaded, 2.17 once rounded to 4 bits, 1.19 after training."],
-        ["Seven skills", "With the trunk frozen, each skill is a LoRA adapter of rank 16 on layers 16 to 27, trained for two passes at learning rate 1e-4 with its B matrix learning four times faster (LoRA+). A skill that does not beat the plain trunk is stored as no change."],
-        ["Control head", "Trained on 14,691 saved model states to name the skill. On 711 held-back states it is right 87% of the time."],
-        ["Heavy and action units", "Two more small networks read the same state. The heavy unit finds 77% of heavy requests; the action unit has the right tool among its top three 88% of the time."],
+        ["Base", "Spark X2.6 4B: 36 layers, each 2,560 numbers wide, with a vocabulary of 131,072 tokens. Some layers look at the whole conversation, the others at a sliding window of it."],
+        ["Full fine-tune", `${fmt(LESSONS.trunk)} lessons in ${LOSS.steps} steps (AdamW, learning rate 1e-5), with every weight free to move.`],
+        ["What it gained", `Loss on the held-back conversations, lower is better: ${LOSS.base.toFixed(2)} as downloaded, ${LOSS.trained.toFixed(2)} after training, ${LOSS.quantized.toFixed(2)} once squeezed to IQ2_M, ${LOSS.layered.toFixed(2)} with the skill layers on.`],
+        ["Squeezing", "The trained weights are converted to GGUF and quantized to IQ2_M with an importance matrix measured on the training conversations: the weights that matter most for them are stored most exactly."],
+        ["Eight skills and the route", "With the squeezed trunk frozen, each one is an activated LoRA adapter of rank 16 on layers 24 to 35, trained on the very weights the file holds."],
+        ["Route", `On the held-back conversations the route names the right skill ${PACK.route}% of the time and opens a tool call where one is due ${PACK.calls}% of the time.`],
+        ["Vision", "The CLIP image encoder stays as it is. The projector behind it learns on 8,000 captioned photographs, then together with the see skill on 4,000 conversations about photographs."],
       ],
       app: [
-        ["One script, six stages", "Write the conversations, train the trunk, the skills and the head, measure on the held-back set, export the pack."],
-        ["Parity check", "Before a pack is used, Kiwibro's engine and the training code must name the same next token on 32 prompts."],
+        ["One script", "Train the trunk, squeeze it, train the layers, measure on the held-back set, export the pack."],
+        ["Parity check", "Before a pack is used, llama.cpp on this computer and the training code must name the same next token on 32 prompts."],
       ],
     },
     build: training,
@@ -1045,8 +1052,8 @@ const STOPS = [
     fact: "Kiwibro runs GGUF files and shows, before you download one, whether it fits in this computer's memory.",
     tech: {
       model: [
-        ["4-bit weights", "In Kiwi Mind every weight is one of 16 levels, and each group of 32 shares one scale. The word table keeps 8 bits."],
-        ["GGUF", "Helper models come as GGUF, the file format of llama.cpp, mostly at 4 bits as well (Q4_K_M)."],
+        ["Kiwi Mind's weights", "Stored at IQ2_M: about 3 bits per weight on average, with more bits where rounding would hurt most."],
+        ["GGUF", "Kiwi Mind and the helper models all come as GGUF, the file format of llama.cpp. Helpers are mostly at 4 bits (Q4_K_M)."],
       ],
       app: [["Fit check", "Before a download, the file's size is compared with this computer's free memory."]],
     },
@@ -1059,7 +1066,7 @@ const STOPS = [
       "A model reads text as [[tokens]] (pieces of words) and holds only a fixed number of them at once: its [[context window]]. When a long chat fills three quarters of it, Kiwibro folds the oldest turns into a short summary. That is [[compaction]], and it lets a chat go on without losing its thread.",
     fact: "The ring beside the send button shows how full the window is.",
     tech: {
-      model: [["Context length", "Kiwi Mind holds 8,192 tokens at once."]],
+      model: [["Context length", `Kiwi Mind holds ${fmt(PACK.ctx)} tokens at once.`]],
       app: [
         ["Compaction", "At 75% full, the oldest turns become a summary of up to 600 tokens. The last four messages stay word for word."],
         ["Session ledger", "Every step is stored in full. After compaction a short index stays in view: what was asked, files changed, commands run, pages read."],
@@ -1076,12 +1083,12 @@ const STOPS = [
     fact: "Kiwibro's instructions stay byte for byte the same through a whole chat. Only compaction, which is rare, makes the model reread the chat.",
     tech: {
       model: [
-        ["KV cache", "The attention keys and values of every token already read. Kiwi Mind stores them in 8 bits to save memory."],
-        ["Shared lower layers", "On a skill change the cache of layers 0 to 15 is kept. Only the 12 upper layers are read again."],
+        ["KV cache", "The attention keys and values of every token already read, kept between turns."],
+        ["Skills that start late", "A skill switches on only where its turn's route ends, so everything read before it stays valid whichever skill comes next. A change of skill reads nothing again."],
       ],
       app: [
         ["Prefix caching", "The first message (instructions and tool list) is byte for byte the same every turn. The clock, memories and notes ride on the newest message."],
-        ["Slots", "Four conversations each keep a cache of their own over one copy of the weights."],
+        ["Slots", "Two conversations and Kiwibro's own background requests each keep a cache of their own over one copy of the weights."],
       ],
     },
     build: kvCache,
@@ -1215,7 +1222,7 @@ const STOPS = [
     tech: {
       model: [
         ["LoRA (low-rank adaptation)", "A weight matrix is a big table of numbers. Instead of changing it, two thin tables are kept beside it; multiplied together they give a table of the same size, which is added on top while the adapter is on. The thin tables hold a small fraction of the model's numbers."],
-        ["In Kiwi Mind", "Its seven skills are LoRA adapters of rank 16."],
+        ["In Kiwi Mind", "Its eight skills and its route are LoRA adapters of rank 16."],
       ],
       app: [
         ["Per-request switching", "For a helper model the adapter is switched on for one request and off again."],
@@ -1228,15 +1235,14 @@ const STOPS = [
 
 // Plain definitions of the terms that a stop teaches, shown as a hover title on the term.
 const TERM_NOTES = {
-  "Kiwi Mind": "Kiwibro's own model: Qwen3-0.6B, trained on the 4-bit grid it is stored in.",
-  "control head":
-    "A tiny network, under 1 MB, that reads the model's state after your message and scores the seven skills and whether the request is heavy.",
-  skills: "Seven thin sets of extra weights, 9 MB each, one per kind of work. One is active at a time.",
+  "Kiwi Mind": "Kiwibro's own model: Spark X2.6 4B, trained on Kiwibro's conversations and squeezed to about 3 bits per weight.",
+  route: "Three words the model writes before every reply, such as \"code light act\": the skill that answers, light or heavy, speak or use a tool.",
+  skills: `Eight thin sets of extra weights, ${PACK.layerMb} MB each, one per kind of work. One is active at a time.`,
   "helper model": "Any other model you downloaded. Optional.",
   "teacher model": "A large model whose written examples a small model learns from.",
   distillation: "Training a small model on what a large one wrote, so it picks up the large one's behaviour.",
-  "Qwen3-0.6B": "An open model of the Qwen family with 0.6 billion weights.",
-  QAT: "Quantization-aware training: the model learns with its weights already rounded, instead of being rounded afterwards.",
+  "Spark X2.6 4B": "An open model with 4 billion weights, under the Apache 2.0 licence.",
+  IQ2_M: "A way to store a model at about 3 bits per weight, with more bits where rounding would hurt most.",
   kit: "Starter files that already work, for example a page, a server or a test file.",
   recipe: "Four to eight steps written in terms of Kiwibro's own tools.",
 };

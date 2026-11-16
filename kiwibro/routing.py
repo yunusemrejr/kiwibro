@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterator
 from . import capabilities, media
 from .inference import NO_THINKING, model_profile
 from .llm import LLMError
+from .mind import KIWIMIND
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,13 @@ def pick_helper(
     else:
         pool.sort(key=lambda m: (loaded_first(m), _size_key(m)))
     return pool[0]
+
+
+def _mind_sees(llm: Any) -> bool:
+    """Whether Kiwi Mind can be given a picture. It is no model file, so the catalog does not list it."""
+    info = getattr(llm, "model_info", None)
+    record = info(KIWIMIND) if callable(info) else None
+    return bool(isinstance(record, dict) and record.get("vision"))
 
 
 def _catalog(llm: Any) -> list[dict[str, Any]]:
@@ -288,6 +296,8 @@ def run_helper(
         helper = _annotate(named)
     elif current is not None and _satisfies(_annotate(current), need) and need not in ("fast", "long_context"):
         helper = _annotate(current)  # the main model already can: no swap, no load
+    elif need == "vision" and current_model == KIWIMIND and _mind_sees(llm):
+        helper = {"id": KIWIMIND, "state": "loaded", "vision": True}  # Kiwi Mind looks itself
     else:
         helper = pick_helper(models, need, current=current_model)
     if helper is None:

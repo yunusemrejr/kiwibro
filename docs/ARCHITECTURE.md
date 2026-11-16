@@ -63,15 +63,18 @@ kiwibro/
 │   ├── delegate.py           # agent-facing delegation to other installed local models
 │   │   # Kiwi Mind
 │   ├── mind/                 # Kiwi Mind: Kiwibro's own model and what runs it
-│   │   ├── service.py        # Kiwi Mind as the app sees it: usable or not, state, lifecycle
+│   │   ├── service.py        # Kiwi Mind as the app sees it: usable or not, state, lifecycle, engine
 │   │   ├── pack.py           # the model pack: manifest, checksums, resumable download
-│   │   ├── host.py           # starts and stops the Node process that hosts the engine
+│   │   ├── llama.py          # 3.x: the llama-server process (LlamaHost) and its requests (LlamaClient)
+│   │   ├── conductor3.py     # 3.x: writes the route, then the reply (Conductor3)
+│   │   ├── render3.py        # 3.x: how a conversation is rendered for the model, and the route
+│   │   ├── host.py           # starts and stops the engine's process; before 3.0, the Node host
 │   │   ├── client.py         # HTTP client of the host: warm, control, generate
 │   │   ├── conductor.py      # picks the skill, hands heavy answers to the helper model
 │   │   ├── render.py         # the chat template the model was trained with, and its parser
-│   │   ├── engine/           # kiwimind.c, the inference engine, and build.sh
-│   │   ├── wasm/             # the engine compiled to WebAssembly (three committed builds)
-│   │   └── host/             # host.mjs: the engine behind a local HTTP port, in Node
+│   │   ├── engine/           # before 3.0: kiwimind.c, the inference engine, and build.sh
+│   │   ├── wasm/             # before 3.0: the engine compiled to WebAssembly (three committed builds)
+│   │   └── host/             # before 3.0: host.mjs, the engine behind a local HTTP port, in Node
 │   │   # Kiwi Sense & steering
 │   ├── sense/                # Kiwi Sense: a small reading model that watches the model
 │   │   ├── __init__.py       # the Sense front door: embed, similarity, probe, repeat, heads
@@ -160,7 +163,7 @@ kiwibro/
 │   └── sense/                # sense.bin (data file) and sense.wasm (committed build)
 ├── scripts/                  # run.sh, kiwibro.sh, install.sh, python.sh, desktop entry
 │   ├── sense/                # builds the Kiwi Sense data file and the behaviour probe
-│   └── mind/                 # trains Kiwi Mind (train.py), file formats, reference, benchmark
+│   └── mind/                 # trains Kiwi Mind 3 (train3.py) and packs before 3.0 (train.py), file formats, reference, benchmark
 ├── tests/                    # pytest unit and API tests, fake-server e2e suite (tests/e2e)
 ├── docs/                     # ARCHITECTURE.md, API.md, MEMORY.md, QA.md, screenshots/
 ├── requirements.txt          # Flask, requests, beautifulsoup4
@@ -654,72 +657,71 @@ Traits are read over the last `TRAIT_DAYS` (30) days.
 Kiwi Mind is the model every chat runs on. The user never selects, loads or switches
 anything in it; the model picked in the header is a helper for it.
 
+This section describes Kiwi Mind 3.0. Packs before 3.0 run on an older engine, described
+at the end under "Packs before 3.0".
+
 ### The model
 
-- **Trunk.** Qwen3-0.6B (28 layers, width 1024, 151,936 words) trained further with its
-  weights held on the 4-bit grid they are stored in, so the file that ships is the model
-  that was trained and not a rounded copy of it. The embedding table is 8-bit. One file,
-  `kiwimind-trunk.fkm`, 413 MB.
-- **Skills.** Seven sets of extra weights for layers 16 to 27 (LoRA, rank 16): `chat`,
-  `web`, `code`, `terminal`, `computer`, `tools`, `write`. One file each,
-  `skills/<name>.kms`, 8.7 MB. Every turn of a conversation runs under its own skill;
-  the system text at the top runs under none.
-- **Control head.** `head.kmh`, 0.9 MB: a two-layer network that reads the state entering
-  layer 16 at the last position of the prompt and gives eight scores, one per skill and one
-  for "this request is heavy". The heavy score has 32 hidden units of its own, which no
-  skill score reads, and is trained apart on states read from the running engine
-  (`heavy.py` below).
-- **Action unit.** `units.kmh`, 0.8 MB: a second two-layer network on the same state. It says
-  how likely the reply to come is a tool call and which tool it expects. The manifest names
-  the reading (`open_at`) from which Kiwibro opens a reply as a tool call, and names one only
-  when the pack's held-back cases came out better that way.
-- **Why the split.** Layers 0 to 15 are the same whatever the skill, so their reading of a
-  conversation is done once and kept. Only layers 16 to 27 depend on the skill.
-- **One manual.** Every conversation is trained and run with the same system text and the
-  whole tool catalog, whichever skill is active: the kept reading stays valid when the
-  skill changes, and the head cannot guess the skill from the tool list.
+- **Base.** Spark X2.6 4B (Apache-2.0, `XHToken/Spark-X2.6-4B` on Hugging Face): 36
+  transformer blocks, width 2,560, vocabulary 131,072. The release is text only. Every
+  weight was fine-tuned on Kiwibro's own practice conversations, then quantized to GGUF
+  IQ2_M, about 3.2 bits per weight.
+- **Layers.** A route layer and eight skill layers, all activated LoRA adapters (aLoRA,
+  rank 16) on blocks 24 to 35. The route layer is `route.gguf`. Each skill is one file,
+  `skills/<name>.gguf`: `chat`, `web`, `code`, `terminal`, `computer`, `tools`, `write`
+  and `see`.
+- **Vision.** `vision.gguf` holds a CLIP ViT-L/14 image encoder (224 px, 256 tokens per
+  picture) and its two-layer projector. A message with a picture is answered under the
+  `see` skill, so no separate vision helper is needed.
+- **Files.** The pack lives in `<data>/mind/`: `kiwimind-trunk.gguf` (1.64 GB), the
+  route and skill files, `vision.gguf` and `manifest.json`. The manifest lists each file
+  with its size and SHA-256, the engine (`"llama"`), the skills, `route.heavy_at`, the
+  vision file and the context length (`ctx`, 16,384).
 
-### The engine (`mind/engine/`, `mind/wasm/`, `mind/host/`)
+### How a reply is made
 
-- **`kiwimind.c`.** The whole inference engine in one C file without dependencies,
-  compiled to WebAssembly by `build.sh` in three builds (SIMD; SIMD with threads; relaxed
-  SIMD with threads). The builds are committed, about 56 KB each.
-- **`host/host.mjs`.** A Node program without packages. It loads the pack, takes the best
-  build the processor supports and serves it on a random port of `127.0.0.1` behind a
-  bearer key: `GET /health`, `POST /tokenize`, `POST /skills`, `POST /warm`, `POST
-  /control` (the head's scores and the action unit's; with `"state": true` also the numbers
-  they read, for training a unit on the engine's own states) and `POST /generate`
-  (streamed). It leaves when its stdin closes or on SIGTERM.
-- **Slots.** A conversation has a slot with what the lower layers read and the upper
-  layers' cache. All slots share one copy of the weights and one thread pool, so a second
-  conversation costs about 140 MB at 2,000 tokens and no second model. Requests that arrive
-  together take turns.
-- **Switching skill** costs nothing with a pack trained for it (`"scoped": true` in the
-  manifest, 2.0 and later): earlier turns keep what was computed under their own skill, and
-  only the new tokens run under the new one. With an older pack a switch recomputes layers
-  16 to 27 for the tokens already read (about 2 s at 500 tokens and 8 s at 2,000 on a Ryzen
-  5 7530U), so there the conductor switches only on a clear lead.
-- **Speed** on that processor with 6 threads: reads 160 tokens a second, writes 38 (after
-  500 tokens) to 23 (after 2,000). Ready 0.8 s after start; about 770 MB of memory.
+- **Route first.** Every assistant turn opens with a route in the thinking channel, for
+  example `<think>code light act</think>`. It names the skill, whether the request is light
+  or heavy, and whether the reply says something or acts. A grammar holds the route to
+  that form.
+- **Two requests per step.** Kiwibro asks for the route under the route layer. Then it
+  asks for the reply under the routed skill's layer, which switches on after `</think>`.
+- **Shared reading.** Everything before `<think>` is read by the shared model alone, so
+  changing the skill between turns re-reads nothing. Each reply's route is kept, and later
+  prompts repeat it exactly, so the server keeps what it has already read.
+- **Skill and weight.** The first reply to a user message chooses the skill and weighs the
+  request. The tool steps that follow keep both and only choose between saying and acting.
+- **Heavy.** The route request also returns the probability of the word "heavy". At or
+  above `route.heavy_at` the request is heavy. A heavy request answered in words goes to
+  the helper model if the user chose one. A step that acts stays with Kiwi Mind.
+- **Tool calls.** When the route says act, the reply opens with `<tool_call>`, and a
+  llama.cpp grammar holds the call to the tools on offer and to valid JSON.
 
-### In the app (`mind/service.py`, `pack.py`, `host.py`, `client.py`, `conductor.py`)
+### The engine: llama.cpp
 
-- **Pack.** The files live in `<data>/mind/` and are listed in `manifest.json` with size
-  and SHA-256. `Pack.check()` verifies them (the result is remembered until a file
-  changes). The pack is fetched from `huggingface.co/yunusemrejr/kiwimind`, file by file,
-  resuming a broken download.
-- **Usable.** Kiwi Mind leads when the pack verifies and Node.js 18.14 or newer is found
-  (`find_node`: the PATH, then nvm). Otherwise the selected model answers as before 4b
-  existed and the chat says so once.
-- **Process.** `MindHost` starts the host when the app is ready, or at the first request:
-  four slots, half the processor's threads (2 to 8). It is started with
-  `PR_SET_PDEATHSIG` and holds a stdin pipe, so it cannot outlive Kiwibro, and it is
-  stopped wherever the model servers of §4.4 are stopped.
-- **Leading.** `LLMClient` sends every chat turn to the conductor when Kiwi Mind is
-  usable. The agent gives it the full tool catalog (`tools.tool_defs_for("full")`), and
-  the reply is parsed by `render.parse_reply` into text and tool calls like any other
-  model's.
-- **Checked in code.** What a 0.6B model gets wrong in form is caught by the app, for
+- **Server.** Kiwibro starts one `llama-server` on `127.0.0.1`, at a free port with a
+  random key. It is a llama.cpp build of the kind the direct engine uses: the GPU build
+  when the GPU switch is on, otherwise a CPU build. It ends with Kiwibro.
+- **Slots.** The server has three slots: two for conversations (the least recently used
+  one gives way) and one for Kiwibro's background requests. The slots share one KV cache
+  budget and the context length from the manifest.
+- **Layers.** The layers are loaded as LoRA adapters. Each request names the layer that is
+  on in its `lora` field: the chosen one at scale 1, the others at 0.
+- **Missing.** Without a llama.cpp build Kiwi Mind reports "Kiwi Mind needs llama.cpp, which
+  was not found on this computer." Node.js is not used.
+
+### In the app (`mind/service.py`, `pack.py`, `llama.py`, `conductor3.py`, `render3.py`)
+
+- **Pack.** `Pack.check()` verifies the files against the manifest; the result is kept until
+  a file changes. `Pack.engine()` returns `"llama"` for a 3.x pack. The pack is fetched from
+  `huggingface.co/yunusemrejr/kiwimind`, file by file, resuming a broken download.
+- **Usable.** Kiwi Mind leads when the pack verifies and a llama.cpp build is found; the
+  build is looked for at most every half minute. Otherwise the selected model answers and
+  the chat says so once.
+- **Leading.** `LLMClient` sends every chat turn to `Conductor3` when Kiwi Mind is usable.
+  The agent gives it the full tool catalog (`tools.tool_defs_for("full")`), and the reply is
+  parsed by `render.parse_reply` into text and tool calls like any other model's.
+- **Checked in code.** What a small model gets wrong in form is caught by the app, for
   every brain. A damaged tool call is refused before it runs (`toolcall`,
   `prompts.DAMAGED_CALL`). A written file is parsed (`syntaxcheck.check`: Python by
   `compile`, JSON, TOML, `bash -n`, `node --check`, confined like the file tools); a
@@ -728,75 +730,67 @@ anything in it; the model picked in the header is a helper for it.
   `prompts.NO_CONNECTION_LINE`, and markers with no source behind them are removed
   (`_honest_reply`, `grounding.without_unsourced_markers`). A reply that names a file of
   the user's message in a turn where no tool ran gets `prompts.NOTHING_DONE` under it
-  (`_report_nothing_done`). The prompt keeps the layout
-  the skills were trained on (`render.split_notes`, the clock line, the order of the first
-  blocks); tests pin it against `scripts/mind/train.py`.
-- **Choosing the skill.** At the first generation after a user message the conductor asks
-  `/control` and takes the head's first choice. The skill then stays through the tool steps
-  of that turn, and a note Kiwibro adds in between does not count as a new message. With a
-  pack from before 2.0 a running conversation changes skill only when the new skill's share
-  beats the current one's by `SWITCH_MARGIN` (0.15).
-- **Opening a tool call.** `/control` also carries the action unit's reading. When it
-  reaches the pack's `open_at`, the reply is started with `<tool_call>`, so the model names
-  the tool and its arguments instead of talking about the step. The 2.0 pack names no
-  `open_at`: on its held-back cases opening changed nothing. The corrected attempt after a
-  reply that only announced a step, or said it had no tool, is always opened this way.
-- **Heavy requests.** When the head marks a request heavy and a helper is selected, the
-  conductor looks at the first pieces Kiwi Mind writes. If they open a tool call, Kiwi
-  Mind carries on: tool decisions never leave it. Otherwise the helper answers the same
-  messages, without tools. A helper that fails hands the answer back to Kiwi Mind.
-- **Images** go to a helper that can see; Kiwi Mind reads text only.
-- **Utility work** (titles, summaries, memory extraction) goes to the helper when one is
-  selected and otherwise to Kiwi Mind without a skill, in a slot of its own.
-- **API.** `GET /api/mind` (usable, installed, version, size, state of the host, the
-  helper, a running download), `POST /api/mind/download`, `POST
-  /api/mind/download/cancel`; `/health` carries `mind`; a turn's stream carries `brain`
-  events naming who writes (`kiwimind` with its skill, or the helper).
+  (`_report_nothing_done`). The prompt keeps the layout the skills were trained on
+  (`render.split_notes`, the clock line, the order of the first blocks).
+- **Images.** A pack with vision layers answers pictures itself, under `see`. Without them,
+  a picture goes to a helper that can see.
+- **Utility work.** Titles, summaries and memory extraction go to the helper when one is
+  selected; otherwise they go to Kiwi Mind's utility slot under the chat skill.
+- **API.** `GET /api/mind` reports `usable`, `installed`, `version`, `bytes`, `engine`
+  (`"llama"` or `"wasm"`), `vision`, `node` (null for a 3.x pack), the state of the host,
+  the helper and a running download. `POST /api/mind/download` fetches the pack and
+  `POST /api/mind/download/cancel` stops that. `/health` carries `mind`. A turn's stream
+  carries `brain` events naming who writes: `kiwimind` with its skill, or the helper.
 
-### Training (`scripts/mind/`)
+### Training
 
-`train.py` runs on one GPU in seven stages:
+`scripts/mind/train3.py` trains a 3.x pack on a cloud GPU, one stage per run:
 
-- `gen`: a large open teacher model writes conversations with Kiwibro's own tools. Four
-  kinds: one request, a session of several turns that may change subject, a bad first reply
-  that the user turns down and Kiwibro puts right, and real first messages from open data
-  sets (OpenAssistant oasst2, Dolly, MASSIVE). Every turn carries the note Kiwibro really
-  adds to it, so the model learns to use the note and not to repeat it.
-- `trunk`: quantization-aware training of the whole model. Tokens that decide what happens
-  count more in the loss: the first tokens of a reply three times, a tool call one and a
-  half times.
-- `skills`: all seven LoRA skills in one run on the frozen trunk. Each position runs under
-  the skill of its own turn, as in the engine, and a token is learned only where its turn's
-  skill produced it. The B side of each LoRA learns four times as fast as the A side.
-- `head`: the control head and the action unit on the trunk's states.
-- `eval`: held-out loss and tool-call checks with and without the skills, for first turns,
-  later turns and replies after a turned-down one, and whether opening sure replies as tool
-  calls helps.
-- `export`: the pack and its manifest.
-- `parity`: held-back prompts with the token the trained model picks next;
-  `scripts/mind/parity.py` runs the pack's engine on them, a session turn by turn.
+| Stage | What it does |
+|---|---|
+| `judge` | The teacher marks real first messages light or heavy. |
+| `trunk` | The full fine-tune of Spark X2.6 4B on the practice conversations. |
+| `gguf` | Conversion to GGUF and quantization to IQ2_M with an importance matrix. |
+| `adapters` | The route layer and the text skills, trained on the quantized trunk. |
+| `vision-features`, `vision-a`, `vision-b` | CLIP features of the photographs, then the projector alone, then the projector with the `see` skill. |
+| `eval` | Held-back loss, route accuracy, tool calls and the heavy threshold. |
+| `export` | The pack folder and its manifest. |
+| `parity` | First tokens from `llama-server` against the training code, pictures included. |
 
-Two rules came out of the first runs and are built in. The data set is small, so a second
-pass over it is learned by heart: the trunk reads every conversation once, and both the
-trunk and each skill are kept as they were at their lowest loss on the held-back
-conversations. And a skill trained on what the trunk has already read adds nothing, so 30%
-of the training conversations (`--skill-share`) are kept away from the trunk; each skill
-learns from its own part of them. A skill that never beats the trunk alone is stored as no
-change.
-`formats.py` reads and writes the three file formats, `reference.py` is a plain PyTorch
-reading of the same files to check the engine against, and `bench.mjs` measures the engine.
+The first pack: held-back loss 1.46 as downloaded, 0.74 after the fine-tune, 0.99 at IQ2_M
+and 0.95 with the layers on; the route names the right skill for 93% of held-back replies.
+Packs before 3.0 were trained by `scripts/mind/train.py`, described below.
 
-`heavy.py` trains the head's heavy score, after the export. Its `states` step sends labelled
-requests to a running host, each under the system text and the turn note the app really
-sends, alone and as the second message of a short chat, and keeps the state the head reads
-(`/control` with `"state": true`). Its `train` step fits a two-layer unit on those states:
-the requests are split by their text into training, validation and test, the weights that
-rank the validation requests best are kept, and the bias is set so that it names at most
-`--light` (3 in 100) of the light validation requests. The unit becomes extra
-hidden units of the head that only the heavy score reads, so the skill scores keep their
-values, and with `--pack` the manifest follows the new head. For the 2.0.1 pack a larger
-open model sorted 6,000 first messages from oasst2, Dolly and MASSIVE into heavy and light,
-and the states of 2,200 of them were read (660 also as a second message).
+### Packs before 3.0
+
+This part covers the 2.x format: `kiwimind-trunk.fkm`, `skills/*.kms`, `head.kmh`,
+`units.kmh` and `tokenizer.json`. `Pack.engine()` returns `"wasm"` for it, and `_build()` in
+`service.py` then builds `MindHost`, `MindClient` and `Conductor`.
+
+- **Trunk.** Qwen3-0.6B (28 layers, width 1024, 151,936 words), trained further with its
+  weights held on the 4-bit grid they are stored in; the embedding table is 8-bit. One file,
+  `kiwimind-trunk.fkm`, 413 MB.
+- **Skills.** Seven LoRA sets (rank 16) on layers 16 to 27: `chat`, `web`, `code`,
+  `terminal`, `computer`, `tools`, `write`. One file each, `skills/<name>.kms`, 8.7 MB.
+  Layers 0 to 15 do not depend on the skill, so their reading is done once and kept.
+- **Control head and action unit.** `head.kmh` (0.9 MB) reads the state entering layer 16
+  and gives eight scores: one per skill and one for "heavy". `units.kmh` (0.8 MB) gives how
+  likely the reply is a tool call and which tool it expects. The manifest's `open_at` names
+  the reading from which Kiwibro opens a reply as a tool call, when the held-back cases show
+  that this helps.
+- **Engine.** `kiwimind.c`, one C file without dependencies, compiled to WebAssembly by
+  `build.sh` in three builds, committed. `host/host.mjs`, a Node program without packages,
+  serves the engine on a random port of `127.0.0.1` behind a bearer key, and leaves when its
+  stdin closes.
+- **Host.** `MindHost` starts the host with four slots and half the processor's threads
+  (2 to 8). It needs Node.js 18.14 or newer (`find_node`: the PATH, then nvm); without it the
+  selected model answers.
+- **Skill switch.** With a 2.0 pack (`"scoped": true` in the manifest) a switch costs
+  nothing. With an older pack the conductor changes skill only when the new one leads by
+  `SWITCH_MARGIN` (0.15).
+- **Training.** `scripts/mind/train.py` runs on one GPU in seven stages: `gen`, `trunk`,
+  `skills`, `head`, `eval`, `export`, `parity`. `heavy.py` then trains the head's heavy
+  score on states read from the running host.
 
 ---
 

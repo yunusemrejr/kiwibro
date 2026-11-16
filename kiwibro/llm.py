@@ -269,6 +269,14 @@ def strip_reasoning(text: str) -> str:
     return text[:opened] if opened >= 0 else text
 
 
+def _has_pictures(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(m.get("content"), list)
+        and any(isinstance(part, dict) and part.get("type") in ("image_url", "image") for part in m["content"])
+        for m in messages
+    )
+
+
 def _socket_of(response: requests.Response) -> socket.socket | None:
     """The socket under a streaming response. urllib3 2.x detaches it from the connection
     while the body streams; it sits under the http.client response's file object then."""
@@ -331,8 +339,20 @@ class LLMClient:
             if self._mind is None:
                 from .mind.service import Mind
 
-                self._mind = Mind(self._data_dir, helper=self.helper, helper_stream=self.stream_chat)
+                self._mind = Mind(self._data_dir, helper=self.helper, helper_stream=self.stream_chat,
+                                  runtime=self._mind_runtime)
             return self._mind
+
+    def _mind_runtime(self) -> Any:
+        """The llama.cpp build a Kiwi Mind 3 pack runs on (None when none is installed)."""
+        from .engine import _runtime_env
+        from .mind.llama import LlamaRuntime
+
+        choice = self.direct_engine().runtime_choice()
+        if choice is None:
+            return None
+        runtime, flags, offload = choice
+        return LlamaRuntime(runtime.path, flags, offload, _runtime_env(runtime))
 
     def helper(self) -> dict[str, Any] | None:
         """The model the user selected, which supports Kiwi Mind and never leads (None when none is chosen)."""
@@ -850,9 +870,10 @@ class LLMClient:
         abort: threading.Event | None = None,
     ) -> Completion:
         if self.mind().usable() and model in ("", KIWIMIND):
-            # Utility work goes to the selected helper when there is one, else to Kiwi Mind itself.
+            # Utility work goes to the selected helper when there is one, else to Kiwi Mind itself. A picture
+            # put to Kiwi Mind by name is its own to look at when its pack has vision layers.
             helper = self.helper()
-            if helper is None:
+            if helper is None or (model == KIWIMIND and self.mind().sees() and _has_pictures(messages)):
                 return self.mind().conductor.complete(messages, max_tokens=max_tokens, temperature=temperature,
                                                       abort=abort)
             model = helper["id"]

@@ -6,6 +6,9 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **Kiwi Mind 3.0: an eighth skill, see, and vision layers.** A picture in a message is
+  answered under the see skill. Kiwi Mind reads pictures itself through an image encoder
+  (CLIP ViT-L/14) that ships in the pack, so no separate vision helper is needed.
 - **Every new chat gets a temporary folder of its own.** Its files no longer pile up in
   `~/Kiwibro`; the system clears temporary folders when the computer restarts, and a chat
   whose folder is gone gets an empty one again. Older chats keep their folder, and the setting
@@ -34,9 +37,9 @@ All notable changes to Kiwibro are documented here.
   and seven grounds. The page needs no build and no server and shows itself in the chat; a
   later change is one edited line. A word the kit does not know is shown as a labelled box
   and named on the page. A part can now list `unless` phrases, so "3D printer" calls for nothing.
-- **How it works: "Training data" and "Training" stops.** Where Kiwi Mind's 4,698 lessons came
-  from, and how the base model was trained in three stages, each with a figure and the
-  numbers behind it.
+- **How it works: "Training data" and "Training" stops.** Where Kiwi Mind's 6,673 lessons came
+  from, and how the base model was trained, squeezed to IQ2_M and given its skills, each with a
+  figure and the numbers behind it.
 - **Flowchart kit.** `ui/flowchart`: the model fills in steps and links, and plain
   JavaScript lays the chart out in layers and draws it as SVG, with decisions and loops.
   "Draw" now calls for a kit the way "make" does.
@@ -152,6 +155,13 @@ All notable changes to Kiwibro are documented here.
 
 ### Changed
 
+- **Kiwi Mind 3.0: a new base model.** Kiwi Mind is now Spark X2.6 4B, fully fine-tuned on
+  Kiwibro's own practice conversations and stored at IQ2_M, in place of Qwen3-0.6B. It runs on
+  llama.cpp instead of Kiwibro's own WebAssembly engine.
+- **Kiwi Mind writes a route before every reply.** A three-word route (skill, light or heavy,
+  say or act) opens each reply. It replaces the control head and the action unit.
+- **Packs before 3.0 keep working** on the old engine; the app picks the engine by the
+  installed pack.
 - **Lighter app window.** The window's private Chrome profile is started with a 64 MB cap on
   its page cache and without Chrome's own on-device model downloads, which had grown the
   profile past 200 MB.

@@ -888,6 +888,16 @@ class DirectEngine:
         runtimes = self._runtimes()
         return runtimes[0] if runtimes else None
 
+    def runtime_choice(self) -> tuple[Runtime, frozenset[str], bool | None] | None:
+        """The build a server of Kiwibro's own starts on, the options it knows and whether it uses the GPU,
+        chosen as for any model (Kiwi Mind 3 runs on it). None when no llama.cpp is installed."""
+        runtime = self.runtime()
+        if runtime is None:
+            return None
+        if runtime.path not in self._flags:
+            self._flags[runtime.path] = _flags_of(runtime)
+        return runtime, self._flags[runtime.path], (self._gpu_on() if gpu_devices(runtime) else None)
+
     def raw_entries(self) -> list[dict[str, Any]]:
         """One record per model file, in the shape llm.normalize_model reads."""
         with self._lock:
