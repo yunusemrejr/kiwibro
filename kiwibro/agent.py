@@ -421,6 +421,8 @@ class Turn:
     tool_calls_made: int = 0
     failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
     failing_tools: set[str] = field(default_factory=set)  # the tools that failed in that streak
+    missing_reads: set[Path] = field(default_factory=set)
+    checked_missing_read_folder: bool = False
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -973,8 +975,14 @@ class AgentManager:
             turn.truncated_calls = result.finish_reason == "length"
             turn.text_calls = result.text_calls
             refused_before = turn.truncated_writes
-            self._handle_tool_calls(turn, result.tool_calls, settings)
+            native_reads = _native_mind(model, prepared.model_info)
+            outcomes = self._handle_tool_calls(turn, result.tool_calls, settings, recover_reads=native_reads)
             self._raise_if_aborted(turn)
+            if native_reads and outcomes and all((outcome.meta or {}).get("repeated_missing_read") for outcome in outcomes):
+                self._say(turn, model, "I stopped after the read retried a path that the workspace reported missing.",
+                          {"checked_by_kiwibro": True}, "missing_read")
+                self._close_plan(turn, model)
+                break
             if turn.truncated_writes > refused_before:
                 if turn.truncated_writes >= 2:
                     self._say(turn, model,
@@ -3466,7 +3474,7 @@ class AgentManager:
         return self._handle_tool_calls(turn, [call], settings)[0]
 
     def _handle_tool_calls(
-        self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any]
+        self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any], *, recover_reads: bool = False,
     ) -> list[ToolResult]:
         """Validate, approve and run one round of tool calls.
 
@@ -3643,7 +3651,61 @@ class AgentManager:
             if progress and position == len(finished) - 1:
                 result = replace(result, content=f"{result.content}\n{progress}")
             self._record_tool_result(turn, item["id"], item["name"], result, duration, item.get("args"))
+        if recover_reads:
+            self._recover_missing_reads(turn, finished)
         return [result for _, result, _ in finished]
+
+    def _recover_missing_reads(self, turn: Turn, finished: list[tuple[dict[str, Any], ToolResult, int]]) -> None:
+        """Provide one real workspace inventory after a read proves a path is missing."""
+        candidate: tuple[Workspace, Path] | None = None
+        for item, result, _ in finished:
+            missing = (result.meta or {}).get("missing_path")
+            workspace = item["workspace"]
+            if not missing or workspace is None or item["location"]:
+                continue
+            try:
+                path = workspace.resolve(missing)
+            except (SandboxError, OSError, RuntimeError):
+                continue
+            turn.missing_reads.add(path)
+            if candidate is None:
+                candidate = workspace, path
+        if candidate is None or turn.checked_missing_read_folder:
+            return
+        settings = self._settings()
+        if not settings.get("agent_enabled", True) or tools.permission_mode(settings, "list_files") == "deny":
+            return
+        workspace, path = candidate
+        try:
+            root = workspace.root
+            if self._workspace(turn.conversation_id).root != root:
+                return
+            ancestor = next((parent for parent in path.parents if parent.is_relative_to(root) and parent.is_dir()), None)
+            if ancestor is None:
+                return
+            args = {"path": workspace.public(ancestor)}
+            if turn.plan is not None and turn.plan.route("list_files", args, workspace):
+                return
+        except (OSError, RuntimeError):
+            return
+        turn.checked_missing_read_folder = True
+        if not turn.tool_signatures.get(tools.tool_call_signature("list_files", args)):
+            self._raise_if_aborted(turn)
+            self._call_first(turn, "list_files", args)
+
+    @staticmethod
+    def _repeated_missing_read(turn: Turn, name: str, args: dict[str, Any], workspace: Workspace) -> bool:
+        if not turn.missing_reads or name not in ("read_file", "read_files"):
+            return False
+        paths = [args["path"]] if name == "read_file" else args["paths"]
+        try:
+            for path in paths:
+                resolved = workspace.resolve(path)
+                if resolved in turn.missing_reads and not resolved.exists():
+                    return True
+        except (SandboxError, OSError, RuntimeError):
+            pass
+        return False
 
     def _advance_plan(self, turn: Turn, finished: list[tuple[dict[str, Any], ToolResult, int]]) -> str:
         """Tick off the plan steps this round completed; the progress line ('' if none)."""
@@ -3805,6 +3867,14 @@ class AgentManager:
         decision = safety.decide(
             self._settings(), name, item["args"], workspace=workspace, turn_state=state, risk=spec.risk
         )
+        if (decision.mode != "deny" and route is None
+                and self._repeated_missing_read(turn, name, item["args"], workspace)):
+            stopped = refuse_shown(
+                "This path is still missing. Use the observed workspace paths or report what could not be found.",
+                "Repeated missing read stopped", spec.risk,
+            )
+            stopped["result"].meta["repeated_missing_read"] = True
+            return stopped
         requires = decision.mode == "ask"
         # "Allow in this chat" covers the same kind of step only, and never one that can destroy data.
         allowed_here = requires and decision.can_always and decision.allow_key in self._chat_allowed.get(

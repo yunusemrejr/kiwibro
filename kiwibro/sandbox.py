@@ -62,6 +62,14 @@ class SandboxError(Exception):
     """Raised for unsafe paths or commands; message is user-facing."""
 
 
+class MissingPathError(SandboxError):
+    """A path resolved inside the workspace but was absent."""
+
+    def __init__(self, path: str):
+        super().__init__(f"path does not exist: {path}")
+        self.path = path
+
+
 def check_command(command: str) -> None:
     if not command or not command.strip():
         raise SandboxError("command is empty")
@@ -301,7 +309,7 @@ class Workspace:
         if resolved != root and not resolved.is_relative_to(root):
             raise SandboxError("path is outside the workspace; use a path relative to it, like '.' or 'src/app.py'")
         if must_exist and not resolved.exists():
-            raise SandboxError(f"path does not exist: {self.public(resolved)}")
+            raise MissingPathError(self.public(resolved))
         return resolved
 
     def public(self, path: Path) -> str:

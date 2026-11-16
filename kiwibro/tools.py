@@ -20,7 +20,7 @@ from .delegate import DelegateError
 from .desktop import DesktopError
 from .llm import LLMClient
 from .memory import MemoryEngine
-from .sandbox import TERMINALS, SandboxError, Workspace
+from .sandbox import TERMINALS, MissingPathError, SandboxError, Workspace
 from .search import BROWSE_MAX_LINKS, SearchEngine, SearchError
 
 log = logging.getLogger(__name__)
@@ -1466,7 +1466,9 @@ def execute_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResul
     try:
         return _execute(name, args, ctx)
     except (SandboxError, SearchError, DesktopError, DelegateError, ValueError) as exc:
-        return ToolResult(ok=False, content=f"Error: {exc}", preview=_preview(f"Error: {exc}"))
+        message = f"Error: {exc}"
+        meta = {"missing_path": exc.path} if name in ("read_file", "read_files") and isinstance(exc, MissingPathError) else {}
+        return ToolResult(ok=False, content=message, preview=_preview(message), meta=meta)
     except Exception:  # pragma: no cover - unexpected tool bugs must not kill the turn
         log.exception("tool %s failed", name)
         return ToolResult(ok=False, content="Error: the tool failed unexpectedly.", preview="Tool failed")
