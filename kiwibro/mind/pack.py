@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 REPO = "yunusemrejr/kiwimind"
 LEGACY_REVISION = "b1bf460c962f9f14a938e82bafdf15f299af3fdd"
-MEMORY_REVISION = "main"
+MEMORY_REVISION = "f1af5118400ae3d59a766a1c7a84d235e51931b9"
 MEMORY_FILE = "memory-qwen3-0.6b-q4_k_m.gguf"
 HF_URL = "https://huggingface.co"
 MANIFEST = "manifest.json"
