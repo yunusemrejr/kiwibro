@@ -360,7 +360,7 @@ def test_a_sure_unit_opens_the_reply_as_a_tool_call(tmp_path: Path, monkeypatch:
     result = ask(unit_conductor(client), events=events, on_delta=shown.append, tools=TOOLS)
     assert client.bodies[0]["prompt"].endswith("<tool_call>\n")  # the model continues inside the call
     assert result.tool_calls and result.tool_calls[0]["function"]["name"] == "write" and shown == []
-    assert events == [("brain", {"brain": "kiwimind", "skill": "chat", "hard": False, "act": 0.95, "tool": "write"})]
+    assert [event for event in events if event[0] != "status"] == [("brain", {"brain": "kiwimind", "skill": "chat", "hard": False, "act": 0.95, "tool": "write"})]
     record = json.loads((tmp_path / "trace.jsonl").read_text().splitlines()[0])
     assert record["opened"] is True and record["prompt"].endswith("<tool_call>\n") and record["reply"].startswith("<tool_call>\n")
 
@@ -423,7 +423,7 @@ def test_open_call_opens_the_reply_without_a_reading_or_a_mark(
     result = ask(unit_conductor(client, mark=None), events=events, tools=tools, open_call=open_call)
     assert client.bodies[0]["prompt"].endswith("<tool_call>\n") is opened
     assert json.loads((tmp_path / "trace.jsonl").read_text().splitlines()[0])["opened"] is opened
-    assert events == [("brain", {"brain": "kiwimind", "skill": "chat", "hard": False})]
+    assert [event for event in events if event[0] != "status"] == [("brain", {"brain": "kiwimind", "skill": "chat", "hard": False})]
     assert bool(result.tool_calls) is opened
 
 

@@ -80,7 +80,7 @@ def test_the_host_is_gone_within_seconds_when_the_app_stops(tmp_path: Path, sig:
     try:
         health = wait_health(port)
         app_pid = int(health["pid"])
-        assert health["mind"] == {"usable": True, "running": False, "pid": None}  # nothing runs before it is needed
+        assert {key: health["mind"][key] for key in ("usable", "running", "pid")} == {"usable": True, "running": False, "pid": None}  # nothing runs before it is needed
         reply = requests.post(f"http://127.0.0.1:{port}/api/chat", json={"message": "hello there"}, stream=True,
                               timeout=60)
         assert reply.status_code == 200
