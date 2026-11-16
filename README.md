@@ -131,6 +131,9 @@ never switched to. The server runs in its own systemd user scope as a process na
 
 ### Kiwi Mind
 
+An opt-in native GGUF candidate can be evaluated beside the release using a separate data
+folder. [Stage and verify a Kiwi Mind candidate](docs/MIND-CANDIDATE.md)
+
 Kiwi Mind is the model Kiwibro thinks with. Its base is Spark X2.6 4B, fully fine-tuned on
 Kiwibro's own practice conversations and stored as a GGUF file at IQ2_M (about 3.2 bits per
 weight). It runs on llama.cpp's `llama-server`, on the graphics chip when there is one.

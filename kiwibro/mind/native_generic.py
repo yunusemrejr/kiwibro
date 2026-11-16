@@ -68,6 +68,18 @@ class NativeChatClient(LLMClient):
 class NativeModel:
     model: LocalModel
     reasoning_effort: bool
+    expert_bank: dict[str, int] | None = None
+
+
+def _expert_bank(manifest: Mapping[str, Any]) -> dict[str, int] | None:
+    """Expose only the bounded summary of the optional architecture report."""
+    raw = manifest.get("expert_bank")
+    keys = ("experts_before", "experts_after", "top_k_before", "top_k_after")
+    if not isinstance(raw, dict) or any(type(raw.get(key)) is not int or raw[key] < 1 for key in keys):
+        return None
+    if raw["top_k_before"] > raw["experts_before"] or raw["top_k_after"] > raw["experts_after"]:
+        return None
+    return {key: raw[key] for key in keys}
 
 
 def describe_pack(pack: Pack) -> NativeModel:
@@ -106,6 +118,7 @@ def describe_pack(pack: Pack) -> NativeModel:
             tools=True, thinking=thinking, thinking_toggle=thinking, source=SOURCE_MIND,
         ),
         thinking and capabilities.get("reasoning_effort") is True,
+        _expert_bank(manifest),
     )
 
 

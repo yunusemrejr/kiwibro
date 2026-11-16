@@ -1244,6 +1244,145 @@ const STOPS = [
   },
 ];
 
+// The lights illustrate one layer's routing for successive tokens. The cycle
+// is independent of the server's output and uses no conversation data.
+function expertRouting(root, bank) {
+  const exact = bank?.experts_after >= 1 && bank.experts_after <= 128;
+  const count = exact ? bank.experts_after : 12;
+  const used = exact ? bank.top_k_after : 3;
+  const columns = Math.min(16, count);
+  const width = Math.min(25, 400 / columns);
+  const columnsStart = (W - columns * width) / 2;
+  const top = 106;
+  box(root, 96, 50, 90, 38, "Token");
+  const router = box(root, 334, 50, 150, 38, "Layer router", "hw-node-tan");
+  root.append(
+    s("path", { class: "hw-line", d: "M141 50h118" }),
+    s("path", { class: "hw-line", d: "M334 69V88H240V100" }),
+    s("path", { class: "hw-arrow", d: "M236 94l4 6 4-6" }),
+  );
+  const pulse = s("circle", { r: 5, class: "hw-dot" });
+  root.append(pulse);
+  const experts = Array.from({ length: count }, (_, index) => {
+    const tile = s("rect", { class: "hw-tile", x: columnsStart + (index % columns) * width + 2.5,
+      y: top + Math.floor(index / columns) * 16, width: width - 5, height: 12, rx: 3 });
+    root.append(tile);
+    return tile;
+  });
+  const label = exact ? `${used} of ${count} experts selected in this layer` : "The router selects a subset of experts";
+  text(root, W / 2, 258, label, "hw-t-big");
+  text(root, W / 2, 276, "Illustrative token routing");
+  let shown = -1;
+  return {
+    duration: 8,
+    still: 2.6,
+    draw(t) {
+      const step = Math.floor(t / 2);
+      const local = t % 2;
+      const travel = span(local, 0.05, 0.5);
+      at(pulse, mix(146, 254, travel), 50);
+      fade(pulse, during(local, 0.03, 0.54, 0.12));
+      on(router, local >= 0.5);
+      const selection = local >= 0.5 ? step + 1 : 0;
+      if (selection === shown) return;
+      shown = selection;
+      const start = (step * 5) % count;
+      const stride = Math.floor(count / used);
+      const selected = new Set(Array.from({ length: selection ? used : 0 }, (_, index) => (start + index * stride) % count));
+      experts.forEach((expert, index) => on(expert, selected.has(index)));
+    },
+  };
+}
+
+function packSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+  if (bytes >= 1e6) return `${fmt(Math.round(bytes / 1e6))} MB`;
+  return `${fmt(bytes)} bytes`;
+}
+
+function nativeStops(mind) {
+  const bank = mind.expert_bank;
+  const known = Boolean(mind.base);
+  const gemma = /^google\/gemma-4-26b-a4b-it$/i.test(mind.base || "");
+  const sparse = Boolean(bank || gemma);
+  const model = gemma ? "Gemma 4 26B A4B" : mind.base || "Native Kiwi Mind";
+  const source = mind.base || "";
+  const caps = mind.capabilities || {};
+  const checked = caps.tools === true;
+  const context = checked && Number.isSafeInteger(mind.ctx) && mind.ctx > 0 ? fmt(mind.ctx) : "";
+  const disk = checked ? packSize(mind.bytes) : "";
+  const modelRows = [
+    ...(known ? [["Base model", source]] : []),
+    ...(mind.architecture ? [["GGUF architecture", mind.architecture]] : []),
+    ...(bank ? [["Expert bank", `${bank.experts_after} stored per layer, ${bank.top_k_after} selected per token.`],
+      ["Starting architecture", `${bank.experts_before} stored per layer, ${bank.top_k_before} selected per token.`]] : []),
+    ...(caps.tools ? [["Function calling", "The model's chat template sends structured calls to Kiwibro. The app checks the tool name, arguments and permissions."]] : []),
+    ...(mind.vision ? [["Vision", "The matching vision projector lets the same model read attached images."]] : []),
+    ...(caps.thinking ? [["Reasoning", caps.reasoning_effort ?
+      "The runtime can change reasoning effort for a request." : "The runtime can turn thinking on or off for a request."]] : []),
+  ];
+  const configuration = {
+    "The big picture": {
+      tech: { model: known ? [["Kiwi Mind", `${model}, served through its native chat template.`]] : [] },
+    },
+    "Kiwi Mind": {
+      question: mind.usable ? "What runs Kiwi Mind here?" : "What will run Kiwi Mind here?",
+      lines: !checked ? "This app is configured for a native GGUF candidate. Its model and capabilities appear here once its files are verified."
+        : sparse ? `${model} has a bank of [[experts]] in each routed layer. The learned router chooses which experts contribute to each token. The same model reads your message, makes tool requests and writes the answer.`
+        : `${model} runs through its native chat template. The same model reads your message, makes tool requests and writes the answer.`,
+      fact: disk ? `The verified pack occupies ${disk} on disk.` : "The Models panel shows the candidate's installation status.",
+      tech: { model: gemma ? [...modelRows, ["Shared expert", "Gemma also uses a shared expert. The figure shows the routed bank in one layer."]] : modelRows, app: [
+        ["Local runtime", "llama.cpp serves the candidate on an authenticated loopback address."],
+        ["Pack verification", "The manifest lists the checksums of the weights and any vision projector."],
+        ...(mind.reason ? [["Runtime status", mind.reason]] : []),
+      ] },
+      build: sparse ? (svg) => expertRouting(svg, bank) : bigPicture,
+    },
+    "The model file": {
+      lines: "A model is billions of numbers called [[weights]]. [[Quantization]] stores each one with fewer bits, like rounding a smooth curve to steps. The figure illustrates rounding and the size of those numbers. [[GGUF]] is the file format that holds the packed weights.",
+      fact: disk ? `The verified files occupy ${disk} on disk, including any projector in the pack.` : "The manifest records the size and SHA-256 of every file in the pack.",
+      tech: { model: mind.quant ? [["Installed quantization", mind.quant]] : [],
+        app: [["Load", "llama.cpp opens the GGUF pack locally. Memory use also includes the runtime and context cache."]] },
+    },
+    "Context window": {
+      tech: { model: context ? [["Context length", `The pack is configured for ${context} tokens.`]] : [] },
+    },
+    "KV cache": {
+      lines: "The runtime can reuse work for the beginning of a prompt when it matches a cached prefix. Kiwibro keeps stable instructions and the tool list at the beginning. Turn-specific context, such as matching memories and the clock, stays near the current message.",
+      fact: "llama.cpp reports the prompt tokens served from the cache when its runtime supplies timings.",
+      tech: { model: [["Attention state", "The KV cache stores keys and values for prompt tokens the runtime has read."]],
+        app: [["Shared model", "Chat and utility requests share a single local copy of the model."]] },
+    },
+    "Tools": {
+      tech: { model: [["Function calling", "The native chat template returns tool names and structured arguments."]] },
+    },
+    "Ready parts": {
+      tech: { model: [["Component tool", "The model can use starter files and steps selected from Kiwibro's component library."]] },
+    },
+    "Knowledge base": {
+      tech: { model: [["Reference text", "A relevant local passage gives the model facts, formulas and assumptions it can use when answering."]] },
+    },
+    "Checked answers": {
+      tech: { model: [["Sources", "The candidate receives the passages and tool results Kiwibro collected for this turn."]] },
+    },
+    "Memory and notes": {
+      fact: "Private chats keep their own local transcript and skip saving memories or notes.",
+      tech: { model: [["Structured extraction", "The same local model proposes memory operations in a JSON schema."]] },
+    },
+  };
+  return STOPS.filter((stop) => !["Training data", "Training", "Adapters"].includes(stop.title))
+    .map((stop) => {
+      const update = configuration[stop.title];
+      return update ? { ...stop, ...update, tech: { ...stop.tech, ...update.tech } } : stop;
+    });
+}
+
+const NATIVE_TERMS = {
+  "Kiwi Mind": "The primary model Kiwibro runs on this computer.",
+  experts: "Feed-forward networks inside a mixture-of-experts layer. The learned router selects a few for each token.",
+};
+
 // Plain definitions of the terms that a stop teaches, shown as a hover title on the term.
 const TERM_NOTES = {
   "Kiwi Mind": "Kiwibro's own model: Spark X2.6 4B, trained on Kiwibro's conversations and squeezed to about 3 bits per weight.",
@@ -1286,11 +1425,11 @@ function techBlock(tech) {
   ]);
 }
 
-function withTerms(line) {
+function withTerms(line, terms) {
   return line.split(/(\[\[.+?\]\])/).map((part) => {
     if (!part.startsWith("[[")) return part;
     const word = part.slice(2, -2);
-    return el("b", { class: "how-term", text: word, title: TERM_NOTES[word] });
+    return el("b", { class: "how-term", text: word, title: terms[word] || TERM_NOTES[word] });
   });
 }
 
@@ -1395,7 +1534,7 @@ function senseBench() {
 /* The panel                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export function createHowView({ dialog }) {
+export function createHowView({ dialog, getMind = () => null }) {
   const body = dialog.querySelector("#how-body");
   const stillOnly = window.matchMedia("(prefers-reduced-motion: reduce)");
   let index = 0;
@@ -1404,6 +1543,8 @@ export function createHowView({ dialog }) {
   let origin = 0;
   let paused = false;
   let built = false;
+  let stops = STOPS;
+  let nativeKey = null;
   let steps = [];
   let figure = null;
   let copy = null;
@@ -1440,8 +1581,8 @@ export function createHowView({ dialog }) {
   }
 
   function go(next) {
-    index = Math.min(STOPS.length - 1, Math.max(0, next));
-    const stop = STOPS[index];
+    index = Math.min(stops.length - 1, Math.max(0, next));
+    const stop = stops[index];
     steps.forEach((button, which) => {
       button.setAttribute("aria-current", which === index ? "step" : "false");
       button.classList.toggle("is-seen", which < index);
@@ -1453,7 +1594,7 @@ export function createHowView({ dialog }) {
     clear(copy);
     copy.append(
       el("h3", { class: "how-question", text: stop.question }),
-      el("p", { class: "how-lines" }, withTerms(stop.lines)),
+      el("p", { class: "how-lines" }, withTerms(stop.lines, nativeKey ? NATIVE_TERMS : TERM_NOTES)),
       el("p", { class: "how-fact" }, [el("span", { class: "how-fact-tag", text: "In Kiwibro" }), stop.fact]),
     );
     if (stop.tech) copy.append(techBlock(stop.tech));
@@ -1463,7 +1604,7 @@ export function createHowView({ dialog }) {
       extra.start();
     }
     prevButton.disabled = index === 0;
-    nextButton.disabled = index === STOPS.length - 1;
+    nextButton.disabled = index === stops.length - 1;
     copy.parentElement.scrollTop = 0;
     origin = performance.now();
     run();
@@ -1471,7 +1612,7 @@ export function createHowView({ dialog }) {
 
   function build() {
     built = true;
-    steps = STOPS.map((stop, which) => {
+    steps = stops.map((stop, which) => {
       const button = el("button", { class: "how-step", type: "button" }, [
         el("span", { class: "how-step-n", text: String(which + 1) }),
         el("span", { class: "how-step-name", text: stop.title }),
@@ -1522,12 +1663,32 @@ export function createHowView({ dialog }) {
     run();
   });
 
+  function syncModel() {
+    const mind = getMind();
+    if (!mind && built) return false;
+    const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
+      mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
+      mind.capabilities, mind.vision, mind.expert_bank,
+    ]) : null;
+    if (built && nextKey === nativeKey) return false;
+    const previous = stops[index]?.title;
+    const restoreTopicFocus = steps.includes(document.activeElement);
+    nativeKey = nextKey;
+    stops = nextKey ? nativeStops(mind) : STOPS;
+    index = Math.max(0, stops.findIndex((stop) => stop.title === previous));
+    build();
+    if (restoreTopicFocus) steps[index].focus();
+    return true;
+  }
+
   return {
     open() {
-      if (!built) build();
+      syncModel();
       openSheet(dialog);
       go(index);
     },
-    refreshIfOpen() {},
+    refreshIfOpen() {
+      if (dialog.open && syncModel()) go(index);
+    },
   };
 }

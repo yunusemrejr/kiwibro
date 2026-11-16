@@ -375,7 +375,20 @@ class Mind:
         if self.native_mode:
             status = self._native_health()
             pack = self.candidate_pack.describe()
-            return {**pack, **status, "active": "candidate" if status["usable"] else None, "vision": self.sees(),
+            details: dict[str, Any] = {"vision": False}
+            try:
+                candidate = describe_pack(self.candidate_pack)
+            except PackError:
+                pass
+            else:
+                model = candidate.model
+                details = {
+                    "base": model.repo, "architecture": model.arch, "quant": model.quantization,
+                    "vision": bool(model.projector), "expert_bank": candidate.expert_bank,
+                    "capabilities": {"tools": model.tools, "thinking": model.thinking,
+                                     "reasoning_effort": candidate.reasoning_effort},
+                }
+            return {**pack, **status, **details, "active": "candidate" if status["usable"] else None,
                     "node": None, "rss_bytes": _rss(status["pid"]) if status["pid"] else None,
                     "helper": None, "download": self.candidate_pack.download_state()}
         why = self.primary_reason()  # builds the parts for a pack that was put in place by hand

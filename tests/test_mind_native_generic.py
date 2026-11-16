@@ -242,3 +242,28 @@ def test_candidate_mode_requires_its_pack_without_exposing_old_downloads(
     with pytest.raises(LLMError, match="native Kiwi Mind"):
         client.stream_chat(model=KIWIMIND, messages=MESSAGES, max_tokens=100)
     assert not mind.host.alive()
+
+
+@pytest.mark.parametrize(("active", "exposed"), [(4, True), (33, False), (True, False)])
+def test_candidate_status_exposes_only_validated_architecture_counts(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, active: int, exposed: bool) -> None:
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    pack = pack_at(tmp_path, base="google/gemma-4-26B-A4B-it", effort=False)
+    manifest = pack.manifest()
+    manifest["arch"] = "gemma4"
+    summary = {"experts_before": 128, "experts_after": 32, "top_k_before": 8, "top_k_after": active}
+    manifest["expert_bank"] = {**summary, "kept_original_experts": {"0": [4, 12]}}
+    pack.path(MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+    mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()
+    monkeypatch.setattr(mind, "runtime", lambda: object())
+    status = mind.describe()
+    assert status["base"] == "google/gemma-4-26B-A4B-it" and status["architecture"] == "gemma4"
+    assert status["quant"] == "Q4_K_M" and status["ctx"] == 8192 and status["vision"]
+    assert status["capabilities"] == {"tools": True, "thinking": True, "reasoning_effort": False}
+    assert status["expert_bank"] == (summary if exposed else None)
+
+    pack.path(TRUNK3).write_bytes(b"stale")
+    status = mind.describe()
+    assert not status["usable"] and not status["vision"]
+    assert "expert_bank" not in status and "base" not in status

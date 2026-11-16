@@ -195,10 +195,18 @@ primary pack's installation status and any problem with its runtime.
 their process is `running`, and their own `download` state. The top-level `download` reports
 the primary pack's progress.
 
+With `KIWIMIND_CANDIDATE=1`, the response describes the native GGUF pack. It reports
+`engine: "native-gguf"` and `active: "candidate"` when usable. A checked pack includes
+`base`, `architecture`, `quant`, `ctx`, `bytes`, `vision` and `capabilities` for
+tools, thinking and reasoning effort. The optional `expert_bank` object reports
+`experts_before`, `experts_after`, `top_k_before` and `top_k_after`.
+[Candidate manifest and verification](MIND-CANDIDATE.md)
+
 ### `POST /api/mind/download`
 Starts or resumes the selected pack using the optional `target` query parameter.
 The default `primary` downloads to `<data>/mind/`, `legacy` to `<data>/mind/legacy/`,
-and `memory` to `<data>/mind/experts/`.
+`memory` to `<data>/mind/experts/`, and `candidate` to `<data>/mind/candidate/`.
+In candidate mode, use `primary` or `candidate` to download the native pack.
 `{"ok": true, "download": {"state": "running", "done_bytes": 120000000,
 "total_bytes": 2608165792}}`. A download already running is returned as it is.
 

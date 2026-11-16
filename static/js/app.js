@@ -655,6 +655,7 @@ async function refreshMind() {
     state.mind = null;
   }
   renderHeaderModel();
+  howView?.refreshIfOpen();
 }
 
 async function refreshModels({ quiet = false } = {}) {
@@ -666,6 +667,7 @@ async function refreshModels({ quiet = false } = {}) {
     state.engineError = data.engine_error || null;
     state.mind = mind;
     renderHeaderModel();
+    howView?.refreshIfOpen();
     updateComposerState();
     return true;
   } catch (error) {
@@ -1920,7 +1922,7 @@ function initSheets() {
     },
   });
 
-  howView = createHowView({ dialog: els.howSheet });
+  howView = createHowView({ dialog: els.howSheet, getMind: () => state.mind });
 
   for (const dialog of [els.memorySheet, els.settingsSheet, els.modelsSheet, els.notesSheet, els.howSheet]) {
     wireDialog(dialog);
