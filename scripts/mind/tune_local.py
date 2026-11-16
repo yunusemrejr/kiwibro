@@ -32,6 +32,7 @@ import socket
 import statistics
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -188,6 +189,17 @@ def stop(process) -> None:
             process.wait()
 
 
+def watch_memory(process, finished: threading.Event, minimum: int, report: dict) -> None:
+    low_samples = 0
+    while not finished.wait(0.5) and process.poll() is None:
+        available = available_mib()
+        low_samples = low_samples + 1 if 0 < available < minimum else 0
+        if low_samples >= 6:
+            report["memory_abort_mib"] = available
+            process.kill()
+            return
+
+
 def process_usage(pid: int) -> tuple[int, int, int] | None:
     """Process CPU ticks, minor and major page faults from Linux /proc."""
     try:
@@ -240,6 +252,9 @@ def write_report(path: Path, report: dict) -> None:
 def measure(args, options, environment, profile, device, folder, workload, trace: Path | None = None) -> dict:
     report = {"profile": asdict(profile), "flags": options, "available_mib_before": available_mib(),
               "system_pressure_before": pressure(), "score_ms": None, "rows": []}
+    if 0 < report["available_mib_before"] < args.min_available_mib:
+        report["error"] = "Insufficient host memory headroom before this profile."
+        return report
     if profile.gpu_layers and device:
         _, free = vulkan_device(inspect(args.server, environment, "--list-devices"))
         planned_weight = args.model.stat().st_size / MIB * min(1, profile.gpu_layers / args.layers)
@@ -256,6 +271,9 @@ def measure(args, options, environment, profile, device, folder, workload, trace
         session.trust_env = False
         started = time.perf_counter()
         process = subprocess.Popen(cmd, cwd=args.server.parent, env=environment, stdout=output, stderr=subprocess.STDOUT)
+        finished = threading.Event()
+        watchdog = threading.Thread(target=watch_memory, args=(process, finished, args.min_available_mib, report))
+        watchdog.start()
         try:
             wait_for_ready(session, process, url, args.startup_timeout)
             report["startup_ms"] = round((time.perf_counter() - started) * 1000, 2)
@@ -280,7 +298,12 @@ def measure(args, options, environment, profile, device, folder, workload, trace
         except (RuntimeError, requests.RequestException) as error:
             report["error"] = str(error)
         finally:
+            finished.set()
+            watchdog.join()
             stop(process)
+    if "memory_abort_mib" in report:
+        report["score_ms"] = None
+        report["error"] = f"Stopped after sustained low host memory ({report['memory_abort_mib']} MiB available)."
     report["system_pressure_after"] = pressure()
     if trace is not None:
         shutil.copyfile(log, trace)
@@ -304,6 +327,7 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=48)
     parser.add_argument("--startup-timeout", type=float, default=180)
     parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--min-available-mib", type=int, default=3072, help="Host memory to leave available during a run.")
     parser.add_argument("--profile", action="append", help="Only benchmark these named profiles.")
     parser.add_argument("--q4-kv", action="store_true")
     parser.add_argument("--full-vulkan", action="store_true")
@@ -318,6 +342,8 @@ def main() -> None:
     if min(args.context, args.threads, args.repeats, args.max_tokens,
            args.startup_timeout, args.timeout) < 1 or args.filler_lines < 0:
         parser.error("settings need positive values, and filler lines must be nonnegative")
+    if args.min_available_mib < 0:
+        parser.error("host memory headroom cannot be negative")
     args.server, args.model, *projector = [path.expanduser().resolve() for path in files]
     args.mmproj = projector[0] if projector else None
     if not os.access(args.server, os.X_OK):
@@ -366,6 +392,7 @@ def main() -> None:
         "projector": {"name": args.mmproj.name, "bytes": args.mmproj.stat().st_size} if args.mmproj else None,
         "vulkan": {"device": device, "free_mib": free},
         "context": args.context, "filler_lines": args.filler_lines, "repeats": args.repeats,
+        "min_available_mib": args.min_available_mib,
         "max_tokens": args.max_tokens, "runs": [], "selected": None,
     }
     with tempfile.TemporaryDirectory(prefix="kiwi-native-tune-") as folder:
