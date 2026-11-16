@@ -1,0 +1,498 @@
+# Synthetic task descriptions and observations. Each section is a head, split, and gold label.
+# Neither final test split comes from the SFT corpus; exercises use disjoint scenarios and phrasing.
+
+[workflow train repository]
+Trace which caller introduced the incompatible default in this checkout.
+Review the staged diff for lost cleanup paths before the branch is merged.
+Fix the C++ API break by checking the target library and running the focused test.
+Search the monorepo for the parser definition, then patch the one responsible module.
+Work out why the test fails only after the latest commit and keep my unrelated edits.
+Add a regression test for empty values to the closest suite in this repo.
+[workflow train terminal]
+See if our background shell process is still busy and check its completion status.
+Check available environment tools and run the existing compatibility command if installed.
+Report whether the local job exited successfully. Use the existing terminal session.
+Inspect the command's status once, then read the generated log if the build is done.
+Run the checked-in smoke command and report its actual exit code.
+Check this machine for make and pkg-config before attempting to build the local file.
+[workflow train artifact]
+Save a WebGL scene as a self-contained page and check it in the browser at phone width.
+Make an interactive HTML animation and compare the actual frames before saying it works.
+Build the mobile web demo, then inspect the rendered output for overflow or script errors.
+Show a rotating 3D object in HTML with a control that can pause its motion.
+Repair the viewport of my animated 3D scene and verify two distinct rendered frames.
+Write the requested diagram page into the workspace and confirm the page displays the figure.
+[workflow train delegate]
+Use the exact local model whose ID is room/small-helper for a bounded second opinion.
+Ask the named coding helper to inspect this one error message, then use the returned result.
+Delegate this attachment to the selected vision model alone. Tell me if it is unavailable.
+Send exactly this short question to local/reviewer and report what that helper returned.
+Only ask test/second for validation. Keep the current conversation model in charge.
+Have the explicit local helper read the label on a workspace image.
+[workflow train math]
+Apply the conservation of energy equation and calculate the resulting speed in meters per second.
+Find the diameter from the circumference and include the conversion to millimeters.
+Evaluate the acceleration from the change in velocity and duration.
+Use the stated numbers to compute the impulse. Report its sign and SI units.
+Calculate the density from the measured volume and mass, then convert it.
+Determine the share of completed checks as a percentage using the two totals.
+[workflow train none]
+Explain how a terminal emulator differs from a shell.
+Write a short story in which mathematical rules stop working.
+In this screenshot, what is the identifier on the red row?
+Explain the difference between reading the DOM and reacting to an HTML animation.
+Draft a plain-language guide to code reviews for my team.
+Give me a vocabulary list for things that rotate.
+Tell me why my browser displays a notice before every download.
+Keep a persistent memory about my taste for succinct replies.
+
+[workflow calibrate repository]
+Check whether the refactor broke call sites that pass no arguments. Report affected checkout files.
+Please trace and fix the throwing path in the recent Go changeset and run its existing test.
+Inspect the commit that changed focus order and write a finding against the affected file.
+Pin the malformed decimal in an existing unit test and check that it catches the bug.
+[workflow calibrate terminal]
+Wait for my existing build in term-5 to finish before you read its output.
+Can you confirm whether the host currently has ripgrep installed without changing packages?
+Look at the terminal job's state, and use the completion log to see its return code.
+Run the existing verification binary and report whether it exited cleanly.
+[workflow calibrate artifact]
+Put a live magnetic compass into one browser page. Verify it draws and resizes correctly.
+Make a mobile HTML interactive cutaway and pause animation on request. Verify the saved page.
+Correct the 3D rotor's rendering error and look at its frames to ensure it still turns.
+Build an offline browser demo with a movable model and confirm it does not clip.
+[workflow calibrate delegate]
+Ask dev/local-review for its opinion on this single retry condition only.
+Use my local helper vision-cpu for the uploaded photo. Do not change the chat model.
+Run a one-shot check with patch-reviewer-8b specifically and tell me what it says.
+Hand the log excerpt to the installed second-opinion model whose ID I just supplied.
+[workflow calibrate math]
+Calculate the load in newtons after converting 3.2 kg to a force on Earth.
+Use the radius in the prompt to find the area in square centimeters.
+What is the speed at t=4 s if acceleration is constant at 2 m/s² from rest?
+Find the mean of the measurements and show the count used.
+[workflow calibrate none]
+I need to know the latest published firmware release.
+Please read the contract and cite where repairs are described.
+Our assistant only needs a short explanation of how pressure works.
+Write a changelog summarizing the pull request after it was accepted.
+Turn my research notes into a compact outline.
+Make a generic checklist for terminal safety without running commands.
+
+[workflow regression repository]
+Find the earliest commit that changed how this package routes an empty path. Check the actual caller and make a minimal fix.
+Why do our integration checks fail after switching the checkpoint writer to the new implementation? Isolate the cause in the tree.
+Before this lands, audit the proposed process shutdown changes for resources that could still be held. Give file references.
+Freeze the now-fixed lazy loading behavior with one test case where the cache entry is absent.
+Check how CLI and worker each normalize the settings, then use one shared rule in the existing module.
+Trace which call path drops the environment flag when the service restarts and patch only that path.
+Look through the proposed YAML repository changes, preserve caller compatibility and run the smallest relevant regression command.
+[workflow regression terminal]
+The existing session is still attached to the disk scan. Wait once and read its final status without starting a second scan.
+Inventory what compilers this host already has and report whether the checked-in build command can run.
+Execute the project health command from its working directory and copy back the exit value.
+Read the result of the background package check from the already-running shell session once it finishes.
+See which Node binary is on PATH in this workspace before running the sample script.
+Check if the CLI process that began earlier has completed, then read only the last lines of its report.
+Measure free disk first, then run the installed local validation utility if its requirements are met.
+[workflow regression artifact]
+Create a self-contained browser exhibit that orbits a labeled prism, then sample two frames and open the finished page.
+The live demonstration's geometry is visible but offscreen on small viewports. Patch the CSS and render both widths.
+Deliver a saved interactive HTML gearbox viewer and verify the real page rotates with no console error.
+Make the plant visualizer render offline in a single web page and check that the actual canvas is visible.
+Our new scene's JavaScript is being displayed as page text. Repair the markup and verify the saved output in Chrome.
+Build a small 3D showroom control that can pause the turntable, and check the control state and phone layout.
+Fix the existing mesh demo so it stays responsive, then confirm animation survives the patch in the rendered page.
+[workflow regression delegate]
+Use the installed model sandbox/math-review once to check the arithmetic. Keep my selected model for the main reply.
+I want a single opinion from local/log-auditor on the reported error, with that exact helper ID.
+Run the supplied screenshot through my explicitly selected mini-vlm. Just ask what the status badge says.
+Send this exact clause to the helper named precise/reader as a second pass; if that model is absent, tell me.
+Check the logic with helper deep-checker-v4 specifically, then give me its concise verdict.
+Use local/extra-context to inspect this one long excerpt. Don't hand over the rest of my chat.
+Ask the designated auxiliary model qa/vision-3 to recognize the switch number in the photo.
+[workflow regression math]
+Convert 18 kilometers per hour to meters per second and compare it to the given side limit.
+Use the two specified distances and times to derive the average speed for the full trip.
+We have 27 passes out of 33 attempts. Find the completion percent to one decimal place.
+Estimate the lever torque using the perpendicular arm length and the force specified in the question.
+The voltage is 9 V and the resistance is 3 ohms. Find the current with units and the relation used.
+Find the area of this circle given a diameter of 16 cm, and state the approximation used.
+Use the starting velocity and supplied constant acceleration to work out displacement after three seconds.
+[workflow regression none]
+What does the selected local helper do with images? Explain its purpose in a paragraph.
+Open the vendor's current schedule and give a link to the support timetable.
+Write a narrative about a project manager trying to clean up an old release.
+Turn the two technical proposals into a short comparison for a staff meeting.
+Tell me which brand is written on the attached control panel.
+Remember that I moved my evening notes to a separate notebook.
+Give three questions to test seventh graders on physical forces.
+Explain how to compile projects in general without checking this machine.
+Read the notes marked review and summarize the decisions with bullet points.
+Give me no more than two sentences about why software can have bugs.
+
+[recovery train render]
+browser: HTTP extracted only an app mount point and a bundle script. The substantive ticket list never appeared.
+fetch_page: the body says JavaScript is required to access this timetable.
+browser: Visible DOM is a spinner with no content or links. Request was to read the results table.
+browser: navigation committed but the active tab still holds the previous host and offscreen menu.
+browser: the tool reports the URL changed after a redirect. The page title is still pending.
+browser: rendered view is needed because the static source only includes a script loader.
+browser: link number 6 is stale after the tab navigated to a different page.
+browser: blank shell contains placeholders for rows which hydrate later.
+[recovery train location]
+read_file: The requested relative path does not exist. The workspace is available.
+read_file: no such file under repository root for config.ini.
+analyze_table: File not found. The CSV is not at the guessed folder.
+write_file: Cannot open the intended parent directory because its name no longer exists.
+grep_files: The path 'docs/old' does not name a directory in this workspace.
+list_files: missing directory tree at the provided path. Workspace remains unchanged.
+doc_read: No document matched the handle. Search the index using the recorded title.
+read_file: expected file is absent from current workspace folder. No data was read.
+[recovery train boundary]
+apply_patch: User declined the permission prompt. The change was not applied.
+run_command: Approval is still pending. The command has not run.
+write_file: read-only workspace. The tool could not write the file.
+run_command: Explicitly denied by permission settings. Do not run from another tool.
+browser: Account access requires user approval. The form was not submitted.
+delegate: Permission denied for external sharing. No message was sent.
+run_command: Access refused by sandbox boundary because target is outside allowed root.
+clipboard: The write was disallowed by configured policy.
+[recovery train dependency]
+run_command: git: command not found. Shell exited 127.
+delegate: No installed model has the requested audio capability.
+run_command: libssl runtime is not installed. The workspace files are present.
+run_command: CUDA unavailable. A CPU build may run with the installed environment.
+describe_image: Model engine does not list any vision-capable model.
+run_command: interpreter missing from PATH. Cannot start the check.
+browser: Headless browser binary was not found on the machine.
+delegate: Requested local helper is unavailable in the installed model registry.
+[recovery train none]
+run_command: 15 tests passed. Exit code 0.
+browser: The browser inspection returned the final heading, complete table, and link list.
+read_file: First ten lines shown. File documentation describes a denied permission scenario.
+delegate: Local helper returned its inspection result.
+git: clean work tree. No staged or modified files.
+read_file: This error-handling manual includes an example of the text: file not found.
+write_file: File saved. Approval was granted before writing.
+run_command: SIMD probe succeeded on CPU. New check output is available.
+analyze_table: Columns count=3 and rows count=217. The check returned all matching rows.
+browser: Page title is Loaded and the search controls are ready.
+
+[recovery calibrate render]
+browser: only loading markup arrived and the client has not hydrated the catalog.
+browser: previous tab selection expired during redirect. Re-read current visible state.
+fetch_page: empty app root and loading JavaScript only; list never displayed.
+[recovery calibrate location]
+read_file: the filename from the request is not under the workspace's current directory.
+grep_files: directory on disk does not match the referenced relative path.
+analyze_table: Error opening data/report.tsv: no such file.
+[recovery calibrate boundary]
+write_file: blocked because the workspace is marked read-only; file unchanged.
+run_command: The user refused to let this command execute.
+delegate: This policy does not permit sending the given attachment to that service.
+[recovery calibrate dependency]
+run_command: Python executable cannot be resolved through PATH.
+delegate: The explicitly selected reviewer model was not installed.
+browser: Render could not start because Chromium executable was missing.
+[recovery calibrate none]
+browser: Render succeeded. The previously loading block has 19 visible rows.
+run_command: Toolchain found. Compile completes and tests pass.
+read_file: The returned README says which commands require approval. Current read succeeded.
+delegate: The requested model ran and found one issue.
+
+[recovery regression render]
+browser: HTTP shows an empty container with script references, and there is no user-visible result table yet.
+browser: Tab c changed identity while the link list was open. Item positions refer to its previous page.
+fetch_page: the extracted page is only a progress indicator until its client script runs.
+browser: Navigated from the earlier hostname. This observation contains no current link metadata.
+browser: Contents were not hydrated; the menu nodes are still absent from the initial DOM.
+browser: Active target was redirected after the navigation request and the destination has not been inspected.
+browser: The page is waiting for the client to render any rows beyond the noscript marker.
+[recovery regression location]
+read_file: The workspace mounted correctly, but reports/weekly.md is absent from the listed directories.
+analyze_table: The supplied data filename is one level down from where the tool tried it. It returned no rows.
+grep_files: The requested search root is absent on disk.
+read_file: Failed with ENOENT for the old generated filename, which may have changed.
+list_files: Could not find a folder named current under the designated workspace.
+doc_read: The supplied handle refers to no entry in the index.
+read_file: Requested build output path is wrong. Entry is missing from the current folder listing.
+[recovery regression boundary]
+apply_patch: The owner chose Reject when asked to approve the edit. Revision remains unchanged.
+run_command: This shell was unable to run the requested action due to the workspace's execution policy.
+write_file: No bytes were written. This operation needs approval and no approval was granted.
+browser: Account changes are disallowed for this profile. No action was taken.
+clipboard: The reader may inspect the data, but the policy forbids clipboard writes.
+run_command: Write target escaped the permitted directory; the harness refused execution.
+delegate: Sending private records to that address was declined by the tool permission check.
+[recovery regression dependency]
+run_command: /bin/sh could not find the executable zig anywhere on PATH.
+describe_image: The loaded model cannot receive pictures and no alternate vision model is installed.
+run_command: This runtime has no accelerator device. Unable to create CUDA context.
+browser: The host does not provide a headless browser binary to launch.
+delegate: Model local/reader is absent from the list of installed model IDs.
+run_command: The command requires a missing Python interpreter on this host.
+delegate: There is no installed worker capable of transcribing the attached audio file.
+[recovery regression none]
+browser: The render finished. The prior spinner is gone and the new heading is visible.
+run_command: The expected executable is present and exited with status 0.
+read_file: The text describes how missing model weights would be handled. Document read succeeded.
+run_command: Logs discuss an earlier approval denial but the current command completed successfully.
+list_files: Both expected input files are present in the workspace.
+browser: The destination was verified and the current tab returned eight visible links.
+delegate: The selected vision model read the third row and returned DONE.
+analyze_table: Parsed 80 rows with zero invalid records.
+write_file: The system recorded the new file and permission was approved.
+git: No new files changed after the process exited successfully.
+
+[workflow train repository]
+Walk from the CLI command to the validation helper and show where values get discarded.
+Locate the new worker bug in this monorepo. Start with the relevant files and tests instead of a full tree read.
+Read the caller of update_config and identify the first breaking signature change in the diff.
+Run the existing subprocess unit tests after making the code handle both argument paths.
+Preserve my uncommitted code while diagnosing the checkout failure and fixing the affected module.
+Add coverage for the boundary condition in the same directory as the checked-in test cases.
+When reading the repository, look at its changed files first and check the public call sites.
+Identify the line that leaves the connection open in the proposed review diff.
+Find out if the library changed its return contract in the refactor and report occurrences of the old behavior.
+Look for brittle retry conditions in the new branch before accepting that change.
+[workflow train terminal]
+Attach to the current job's terminal and tell me if it completed with status zero.
+Find the command that is installed on this machine and try it only if the necessary inputs exist.
+Poll the background compilation job then open the report file it printed.
+The command is running in an existing shell; check its process status and avoid starting a new copy.
+Check ls and uname to identify the environment for the existing build script and run its dry-run mode.
+Before running this checkout's read-only probe, check the locally available version of its compiler.
+Inspect the terminal log near the failed subprocess. Report only its output and status.
+The test harness is still printing results. Wait for it then report its summary line.
+Run the command already listed in the runbook and preserve the raw exit status.
+Check the toolchain capabilities before executing the selected health check in the current workspace.
+[workflow train artifact]
+Create a file containing a model viewer whose camera stays inside the viewport and run two rendering checks.
+Build a phone-sized simulation with a working pause button and check visible state before presenting the file.
+Write the canvas animation into index.html and check that actual pixels change after opening it.
+Show an exploded product model inside our app's HTML preview and verify the delivered page at both widths.
+Fix a blank scene in the existing workspace artifact then compare visible renders.
+Preserve animation when remediating the phone overflow in this saved standalone HTML file.
+[workflow train delegate]
+Have my chosen additional inference worker check this one argument and return the advice under its exact model ID.
+Use the auxiliary vision network called local/tag-reader for a single image-only subtask.
+Get a second opinion from my named model only, and leave the conversation model unchanged.
+Ask extra/reviewer about the specific array limit. Do not send the rest of the conversation.
+Invoke my selected helper if it is installed, otherwise tell me why you could not use it.
+Choose the explicit model from my request as the helper for the token count, not the fastest automatic choice.
+[workflow train math]
+Use F equals m times a to work out the force based on the mass and acceleration shown in the question.
+Compute how much faster the second trip was using each trip's distance and elapsed time.
+Find the ratio of successes to attempts, expressed as a percent with a stated denominator.
+At the given separation and electric field, derive the voltage difference numerically and give units.
+Evaluate the area of an annulus using both the inner and outer radii in the prompt.
+Convert from kilometers per hour to meters per second before applying the equation.
+Find the net displacement of the cart using seconds, speed and constant acceleration.
+Work out the amount of energy gained from a joule input and the stated conversion efficiency.
+[workflow train none]
+What does a local vision helper actually do when you show it an image?
+Explain the roles of the main model and auxiliary inference workers for a newcomer.
+Describe the options for rendering a scene on a phone without making a new page.
+Draft public documentation explaining how contributors can report a failing test.
+Give me names for the two characters in my story about a toolchain.
+Write a note on when you should use a terminal emulator.
+Translate this technical passage about forces for a general audience.
+How do I find and install a different model? Give general steps.
+I already have a note with a duration from last summer. Tell me its title.
+Write a tutorial on setting up a development environment without accessing my machine.
+What is a typical course syllabus for mathematical modeling?
+Write an outline for a policy describing review and release practices.
+
+[recovery train render]
+browser: This observation is from the page before redirect. The final tab has not yet been inspected.
+browser: Initial query selected stale elements left behind after the active tab switched.
+fetch_page: The returned body is empty except for the root and a JavaScript bootstrap tag.
+browser: No usable controls are visible because hydration is still waiting on the client.
+browser: Selected a link but the tool returned only a transition view. It did not show the loaded target.
+fetch_page: Script-generated rows are not present in the raw HTML and the user asked for the rows.
+browser: The now-active tab identifier differs from the identifier that produced the numbered links.
+browser: The static preview stops at a client-side skeleton. No substantive values were available.
+[recovery train location]
+read_file: Open failed with ENOENT. Find the relocated workspace file before reading.
+doc_read: the provided document handle is unknown in the current index.
+analyze_table: The file was not in the root but a similarly titled folder was listed.
+open_path: Cannot find the given filename in the current workspace.
+read_files: one requested relative path is stale; remaining two inputs were read.
+grep_files: No current directory corresponds to the supplied search root.
+list_files: The path vanished after the rename. Check the actual containing directory.
+read_file: The user moved the export under a different directory and this older path is absent.
+[recovery train boundary]
+run_command: User permissions forbade the operation. No process was created.
+write_file: The tool asked for confirmation but it has not been granted.
+apply_patch: Client reported that consent was revoked before a write.
+delegate: Outbound sharing was refused by the user, so the selected model was never called.
+browser: The action would modify the account and tool access was declined.
+git: The write action was held by policy and never reached the repository.
+run_command: Execution blocked before the command could cross the workspace boundary.
+write_file: No state changed. The requested directory is outside the permitted root.
+[recovery train dependency]
+delegate: The model selected for this subtask is absent from the model manifest.
+terminal_session: Required runner executable is absent from the PATH of this session.
+run_command: Accelerator library failed to load because its shared object is unavailable.
+browser: Browser binary not found. Headless rendering did not start.
+run_command: Shell startup completed but the executable doesn't exist on this host.
+describe_image: No installed vision-capable worker can accept the image payload.
+run_command: Missing package error at process startup. The dependency is not installed.
+delegate: The local server cannot serve the requested model ID, which is not in its catalogue.
+[recovery train none]
+delegate: The requested model ran and found two issues in the log.
+delegate: Selected helper is loaded and the supplied prompt completed successfully.
+delegate: A supported reviewer inspected this line and returned a useful comment.
+browser: The previously loading DOM is fully rendered with the requested records and current links.
+browser: Completed the redirect. Final page and all visible content were inspected.
+run_command: The old command was denied yesterday. Current execution succeeded with exit code zero.
+read_file: The contents discuss a missing runtime, but the read itself completed successfully.
+run_command: CPU fallback already completed, and no extra dependencies were needed.
+copy_file: The destination existed and the request was reported as a successful copy.
+write_file: User approved the write and the operation completed successfully.
+
+[workflow regression-2 repository]
+Inspect the recent storage schema changes and fix the caller that now discards a provided null.
+Before merging the patch, find a concrete behavioral change in the resize handler and cite the line.
+A module loses timezone information when reading its own saved format. Trace the checked-in codec and run a regression check.
+Check both imports of the URL normalizer in the monorepo and correct the one using the old name.
+Why does this checkout's upload command fail for decimal sizes only? Find the offending function and preserve other edits.
+Cover invoice IDs beginning with zero in the existing unit suite.
+[workflow regression-2 terminal]
+Before building, see if this workstation's C compiler provides the required feature flag using its version output.
+My export process is already running in term-13. Check when it finishes and read its resulting summary.
+Run the local lint script once and give its final exit status.
+See which of two installed binary tools is available on PATH in this workspace and test its version.
+Read the terminal's most recent command result from the session I opened earlier.
+Use the machine as configured to run the package checker, then report the printed build ID.
+[workflow regression-2 artifact]
+Author a single responsive HTML page displaying a turntable viewer, then check rendered rotation and phone layout.
+Repair the blank canvas in my dashboard while keeping its controls, and look at the resulting page in the renderer.
+Create a 3D browser model with motion and a stop control. Verify the saved page and show me its location.
+My new animated infographic paints beyond the mobile screen. Fix the viewport and render-check it twice.
+Write a standalone port model page that works offline and inspect its visible controls once it loads.
+Fix the play toggle on the small 3D page and check that two frames differ after it resumes.
+[workflow regression-2 delegate]
+Send only this scan's title to the specifically chosen local/compact-checker model and quote its returned label.
+Ask exact helper qa/layout-4 to say whether the screenshot's settings button is visible.
+Use org/retry-audit once for a second opinion on this command output.
+Have the helper model dev/thermals inspect my pasted temperatures. Keep this chat with the current model.
+Ask the selected audio worker to transcribe this one clip if it is installed; tell me if the chosen worker is missing.
+Call only local/counterexample to challenge the dependency in line 7, then present its answer.
+[workflow regression-2 math]
+A net 18 N force acts on a 6 kg cart. What is its acceleration in SI units?
+At 40 cm radius and 5 radians per second, calculate the tangential speed.
+How many seconds are there in the time shown by 2 minutes and 15 seconds? Then use it to compute distance.
+Give the percentage of successful records when 21 of our 24 checks completed.
+From the given inputs determine the kinetic energy, showing how you converted the mass.
+The pipe is 36 inches long. What is its length in centimeters and meters?
+[workflow regression-2 none]
+Explain what local model delegation is and how it uses different devices.
+Give me three example physics questions about springs.
+Write a handoff note summarizing work the other engineer already did.
+What does a console error generally look like in a browser?
+Find the official current version of the compiler and cite its release notes.
+Tell me which phrase in the policy permits calendar accommodations.
+Explain in general why HTML renders differently at different widths.
+Paraphrase this fictional conversation about a helper model on the Moon.
+
+[recovery regression-2 render]
+browser: The inspected response was an empty main element plus a bundled script. Data appears after client execution.
+browser: It switched to a different tab after the link was selected and the earlier observations no longer apply.
+fetch_page: Only the loading skeleton was received, with no product rows.
+browser: The rendered destination has not been checked because the URL redirected after inspection.
+browser: Number 3 belongs to the old tab. Current visible controls need to be collected again.
+browser: Static extraction returned a root container and client module without the requested data.
+[recovery regression-2 location]
+read_file: Directory listing has no match for docs/archive/search.md, and it wasn't opened.
+analyze_table: The data export name refers to a file in another workspace folder.
+doc_read: The local library does not recognize the identifier D37.
+open_path: The expected workspace-relative name refers to no file on disk.
+grep_files: Search skipped because the requested subfolder is absent.
+list_files: The selected expected directory is not present under the indicated root.
+[recovery regression-2 boundary]
+delegate: Access rules prevent sending this image to the named remote helper.
+write_file: The confirmation dialog was dismissed. Local file remains untouched.
+browser: No click occurred because the requested account action is blocked by profile policy.
+run_command: The safety decision prevented execution. The target resides outside the current workspace.
+apply_patch: User authorization for this modification is pending.
+run_command: This shortcut was disallowed under the current execution permissions.
+[recovery regression-2 dependency]
+run_command: No available binary can run this command on the host. It exited 127.
+browser: Server could not find a Chromium executable for the requested render.
+delegate: No eligible model is present in the local registry to answer the image question.
+run_command: The expected CUDA library is unavailable and this accelerator build cannot start.
+terminal_session: The specified language interpreter was not found by the shell.
+describe_image: No currently installed engine supports this image format.
+[recovery regression-2 none]
+browser: Current tab rendered successfully. Its loaded URL and form labels are visible.
+read_file: A support manual describes a permission error. The requested read completed successfully.
+run_command: Previous logs mention missing GPU support. Current CPU verification passed.
+write_file: The file was added after receiving confirmation.
+delegate: The named model has generated its answer to the requested question.
+browser: The loader has disappeared and all rows now appear in the visible table.
+analyze_table: File opened from the selected workspace directory. Zero rows match the filter.
+run_command: The interpreter was found and the validation command exited normally.
+
+# Final blind slice authored after the pilot guard design.
+[workflow test repository]
+Review whether changes to the retry budget still respect older consumers. Point to the affected call sites in the checkout.
+Repair the parser that fails on a dangling escape and validate the minimal fix through the existing tests.
+Use the project's staging diff to identify a mutex ownership error before the merge.
+Locate where CI began accepting bad URLs and add a focused regression case.
+[workflow test terminal]
+Check the process I already started under term-7, then report its last output once it exits.
+Run the checked-in benchmark command in this machine's current shell and capture its exit status.
+Verify the locally installed Perl version before running the script from the manual.
+Tell me whether the existing build shell has finished writing the checksum report.
+[workflow test artifact]
+Save my responsive 3D wireframe in exhibit.html and check that rotation actually shows up after the page renders.
+Correct the blank canvas in the saved orbit page and inspect a second frame as evidence the animation still moves.
+Create the single-page 3D tour, then check what the browser shows at desktop and mobile viewport widths.
+Render the existing interactive hex model and fix the pause toggle that leaves it permanently moving.
+[workflow test delegate]
+Use chosen helper qa/caption-a to identify the top-left warning in my screenshot, then quote its answer.
+Ask exactly local/second-look to critique the exception on line 51.
+I want one opinion from model my/short-maths, limited to the displayed conversion.
+Send this single row to the optional helper id museum/sign-reader if installed and retain my current conversation model.
+[workflow test math]
+Given mass and acceleration, calculate the net force. The inputs are 3 kg and 12 m/s².
+Find how much work has been done when the force is 22 N parallel to a 4 m displacement.
+Compute the revised percentage from 17 accepted records out of 42.
+How far does an object travel from rest after 4 seconds under a constant 3 m/s² acceleration?
+[workflow test none]
+Write a short definition of a helper model and two examples of where reading images is useful.
+Explain what version control records when programs compile in CI.
+Turn my draft tutorial about shells into simple language.
+Extract the alert label from the screenshot using your own vision.
+Describe how a rotating HTML object could be used in art education.
+Remember how I want you to report live failures in later chats.
+
+[recovery test render]
+browser: On following item 4, the tab moved to an address without a populated content panel. The previous link list is out of date.
+fetch_page: The document contains a bootstrap script in place of the evidence table.
+browser: Selector was found in prerendered markup but is missing in the newly active tab.
+browser: Only a placeholder is visible until a dynamic component finishes loading.
+[recovery test location]
+read_file: The requested path under incoming is gone but the workspace folder was opened.
+grep_files: The supplied directory does not exist in the live workspace.
+open_path: The target is missing and nothing was opened in the viewer.
+doc_read: The document ID was removed from the index and could not be retrieved.
+[recovery test boundary]
+apply_patch: The approval request was refused before the filesystem operation executed.
+run_command: Local policy rejected the requested write access.
+browser: The confirmation needed to change the profile was cancelled. No settings changed.
+delegate: The configured sharing rule blocked this attachment from being sent to the model.
+[recovery test dependency]
+describe_image: A vision adapter is required but the model catalogue has none.
+terminal_session: startup command could not find the needed shell interpreter.
+browser: The display could not be rendered because the configured headless driver is absent.
+run_command: Required libvulkan loader library is missing on this machine.
+[recovery test none]
+write_file: File saved under release/checkpoint.md. It contains an example of a denied write.
+delegate: The helper returned the expected line mentioning a missing dependency.
+browser: Finished inspecting the rendered page. The old loading skeleton was replaced by its live controls.
+run_command: Diagnostics mention that the accelerator was unavailable, but CPU mode exited with code 0.
+read_file: The source was read and includes an example of ENOENT for its documentation.
+analyze_table: The file opened and it contains no matching records after applying the requested filter.
