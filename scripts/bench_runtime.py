@@ -1,4 +1,4 @@
-"""Benchmark workspace search and warm semantic recall on synthetic local data.
+"""Benchmark workspace search, recall and prompt tracking on synthetic local data.
 
 From the checkout root, run `python3 -m scripts.bench_runtime --baseline REVISION`.
 Omit the baseline to time only the current checkout.
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from types import ModuleType
 
-from kiwibro import sandbox, sense, terms
+from kiwibro import context, inference, sandbox, sense, terms
 
 
 def baseline_module(revision, module):
@@ -45,6 +45,48 @@ def measure(label, trials, current, baseline):
     for name, runs in samples.items():
         p95 = sorted(runs)[math.ceil(0.95 * len(runs)) - 1]
         print(f"{label} ({name}): median {statistics.median(runs):.2f} ms, p95 {p95:.2f} ms (n={trials})")
+
+
+def prompt_rounds():
+    source = "\n".join(f"{index:03d}  assert checkout.status({index}) == 'ready'" for index in range(80))
+    schema = [{
+        "type": "function",
+        "function": {"name": "read_file", "description": "Read source text.", "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"],
+        }},
+    }]
+
+    def read(index):
+        call_id = f"read_{index}"
+        return [
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": call_id, "type": "function",
+                "function": {"name": "read_file", "arguments": {"path": f"tests/test_stage_{index}.py"}},
+            }]},
+            {"role": "tool", "tool_call_id": call_id, "content": source},
+        ]
+
+    history = []
+    for index in range(20):
+        history += [
+            {"role": "user", "content": f"What does checkout stage {index} verify?"},
+            *read(index),
+            {"role": "assistant", "content": "The tests check that the checkout reports readiness."},
+        ]
+    history.append({"role": "user", "content": "Review and compare the next eight checkout stages."})
+    messages = context.build_llm_messages("You are reviewing an internal test repository.", history)
+    rounds = [messages]
+    for index in range(20, 28):
+        messages = [*messages, *context.build_llm_messages("", read(index))]
+        rounds.append(messages)
+
+    def run(module, memo=None):
+        tracker = module.PrefixTracker()
+        options = {"chat_template_kwargs": {"enable_thinking": False}}
+        extra = {"memo": memo} if memo is not None else {}
+        return [tracker.observe("native", request, schema, options, **extra) for request in rounds]
+
+    return run
 
 
 def main():
@@ -93,6 +135,13 @@ def main():
     measure(
         f"Warm semantic recall, 240 messages ({reader.engine})", args.trials,
         lambda: nearest(reader), (lambda: nearest(old_reader)) if old_reader else None,
+    )
+    run_rounds = prompt_rounds()
+    old_inference = baseline_module(args.baseline, inference) if args.baseline else None
+    measure(
+        "Native prompt tracking, eight tool rounds over 20 prior turns", args.trials,
+        lambda: run_rounds(inference, inference.PrefixMemo()),
+        (lambda: run_rounds(old_inference)) if old_inference else None,
     )
 
 

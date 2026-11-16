@@ -429,6 +429,7 @@ class Turn:
     steering_lock: threading.Lock = field(default_factory=threading.Lock)
     system_prompt: str = ""
     turn_context: str = ""
+    prefix_memo: inference.PrefixMemo = field(default_factory=inference.PrefixMemo, repr=False)
     timer: inference.RoundTimer | None = None
     thinking: bool | None = None
     inference: dict[str, Any] = field(default_factory=dict)
@@ -2515,7 +2516,11 @@ class AgentManager:
                 limit = inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
             turn.think_chars, turn.think_budget = 0, limit
             request_extra = {**request_extra, **self._adapter_extra(turn, model, prepared)}
-            reuse = inference.PREFIX_TRACKER.observe(model, messages, tool_list, prompt_extra)  # sampling is not prompt
+            # Prepared context appends stable message objects. A full rebuild or
+            # transient suffix creates new objects, which are counted afresh.
+            reuse = inference.PREFIX_TRACKER.observe(
+                model, messages, tool_list, prompt_extra, memo=None if text_mode else turn.prefix_memo,
+            )
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0

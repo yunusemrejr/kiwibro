@@ -30,7 +30,7 @@ import json
 import re
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Mapping
 
@@ -327,6 +327,16 @@ def _default_tokens(message: Mapping[str, Any]) -> int:
     return message_tokens(dict(message))
 
 
+@dataclass
+class PrefixMemo:
+    """Work already done on the stable message objects of one active turn."""
+
+    messages: tuple[dict[str, Any], ...] = field(default=(), repr=False)
+    digests: list[str] = field(default_factory=list)
+    tokens: list[int] = field(default_factory=list)
+    salt: str = ""
+
+
 class PrefixTracker:
     """Estimates how much of each request the server can serve from its KV cache.
 
@@ -349,12 +359,33 @@ class PrefixTracker:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         options: Mapping[str, Any] | None = None,
+        *,
+        memo: PrefixMemo | None = None,
     ) -> dict[str, int]:
+        """Observe a request, optionally reusing estimates for turn-owned messages.
+
+        The caller supplying a memo replaces message objects when their contents
+        change. It owns the memo and discards it at the end of the turn.
+        """
         # Templates render the tool list and switches such as reasoning into the
         # system block, so they belong to message 0.
         salt = _digest({"tools": tools, "options": dict(options or {})}) if tools or options else ""
-        digests = [_digest(message, salt if index == 0 else "") for index, message in enumerate(messages)]
-        tokens = [self._token_fn(message) for message in messages]
+        stable = 0
+        digests, tokens = [], []
+        if memo is not None:
+            for message, previous in zip(messages, memo.messages):
+                if message is not previous:
+                    break
+                stable += 1
+            digests = memo.digests[:stable]
+            tokens = memo.tokens[:stable]
+            if stable and salt != memo.salt:
+                digests[0] = _digest(messages[0], salt)
+        tail = messages[stable:] if stable else messages
+        digests.extend(_digest(message, salt if index == 0 else "") for index, message in enumerate(tail, start=stable))
+        tokens.extend(self._token_fn(message) for message in tail)
+        if memo is not None:
+            memo.messages, memo.digests, memo.tokens, memo.salt = tuple(messages), digests, tokens, salt
         with self._lock:
             history = self._recent.setdefault(model, deque(maxlen=self._slots))
             shared, match_at = 0, None

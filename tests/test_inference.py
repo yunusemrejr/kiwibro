@@ -377,6 +377,55 @@ def test_prefix_tracker_forget_clears_history():
     assert tracker.observe("other", _chat("SYS", "hello", "more"))["reused_tokens_est"] == 0
 
 
+def test_turn_prefix_memo_reuses_unchanged_token_counts():
+    counted = []
+
+    def tokens(message):
+        counted.append(message)
+        return _tokens(message)
+
+    tracker = inf.PrefixTracker(token_fn=tokens)
+    memo = inf.PrefixMemo()
+    base = _chat("SYS", "hello")
+    message = {"role": "assistant", "content": "reply"}
+    tracker.observe("m", base, memo=memo)
+    assert counted == base
+    counted.clear()
+    result = tracker.observe("m", [*base, message], memo=memo)
+    assert counted == [message]
+    assert result["reused_tokens_est"] == 8
+    assert result["prompt_tokens_est"] == 13
+
+
+def test_turn_prefix_memo_matches_full_estimates_on_rewrites_and_tool_changes():
+    baseline = inf.PrefixTracker()
+    tracker = inf.PrefixTracker()
+    memo = inf.PrefixMemo()
+    messages = _chat("SYS", "Inspect the project")
+    messages.extend([
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": '{"path":"readme.md"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "A project about Çeşme."},
+    ])
+    tools = [{"type": "function", "function": {"name": "read"}}]
+    more = [*messages, {"role": "user", "content": [{"type": "text", "text": "Now inspect the diagram."}]}]
+    rewritten = [*messages[:3], {**messages[3], "content": "Updated text."}]
+    scenario = [
+        (messages, tools, {"enable_thinking": False}),
+        (more, tools, {"enable_thinking": False}),
+        (more, tools, {"enable_thinking": True}),
+        (rewritten, [], {}),
+        (rewritten[:-1], [], {}),
+        ([], [], {}),
+        (messages, tools, {"enable_thinking": False}),
+    ]
+    for content, schemas, options in scenario:
+        assert tracker.observe("m", content, schemas, options, memo=memo) == baseline.observe(
+            "m", content, schemas, options,
+        )
+
+
 # --- 11. RoundTimer ----------------------------------------------------------------------
 
 
