@@ -800,3 +800,825 @@ Analyze the attached screenshot and tell me why the left border of the active ta
 Compare the three contract excerpts in my messages and write down their differences.
 Give each teammate two tasks to finish the notes and browser patch concurrently.
 Explain which velocity term cancels from the equation for orbital power.
+
+# Code workflows. Each request has a primary next step, even when it also mentions tests or review.
+[code train diagnose]
+Find out why the Python service crashes before it accepts requests.
+The checkout used to compile. Reproduce the build error and identify the offending change.
+Debug the failing upload path from the stack trace in the repository.
+The worker exits when a record has an empty ID. Trace that runtime failure and fix it.
+Our nightly CI run started timing out after the queue refactor. Track down the cause.
+I get an AttributeError on startup. Identify which caller passes None in this repo.
+The desktop app crashes when the preferences window closes. Investigate the regression.
+The latest commit made fresh installs fail. Reproduce it and explain the cause before patching.
+This npm build now fails while collecting routes. Show which module breaks it.
+On Linux the command crashes on filenames with spaces. Fix the path handling in sync.py.
+Diagnose why first-run migrations hang forever in a clean checkout.
+The stdout check keeps failing only on the CI runner. Find out what's different.
+Identify the failure that makes the receipt endpoint send HTTP 500.
+Open the repo and figure out why the scheduler never wakes the second time.
+Go through the crash log and locate the line that dereferences the missing field.
+The tests passed before the hash function change. Find what broke and correct the implementation.
+The CLI started corrupting non-ASCII arguments after a refactor. Follow the path through decoding.
+Trace the runtime error after authentication and correct the underlying exception.
+The service segfaults when two sessions disconnect together. Isolate the failing call.
+Our application stops at the splash screen after the cache patch. Track that down.
+Something is failing on builds made without debug flags. Locate the conditional that goes wrong.
+Why does this branch's image exporter freeze on the second thumbnail? Investigate the checkout.
+The parser returns nothing for multiline data after the recent changeset. Pin down the regression.
+Find the reason CI only breaks on ARM following the endian cleanup.
+The traceback points to main.py, but the missing token should be optional. Follow the callers.
+Queued notifications are delivered twice after a retry. Reproduce in our repo and fix the logic.
+Diagnose this crash from the symbolized stack trace. My source is in the checkout.
+Recreate the intermittent hang in the worker's test harness and explain the lock ordering.
+After the merge, integration commands exit 3 only on Windows. Figure out the failure.
+The front end lost keyboard focus after the patch. Trace the changed event path.
+Uncover why valid encrypted files now trigger a failure in decode.go.
+The app build dies as soon as I switch locales. Pin down the broken initialization.
+Analyze this failing integration run and isolate the first real error.
+A Flask handler throws when a cookie has expired. Look up the failing call in our code.
+The new update changed a working path into a crash. Trace and restore the expected behavior.
+[code train tests]
+Add tests for empty, one-element, and duplicate input to the sorter.
+Keep this implementation and write unit tests for the retry guard.
+Extend the checkout's integration tests to cover a missing token.
+Add an assertion that verifies rollback actually restores the old file.
+Create a parameterized regression test that fails with the previous behavior.
+The repo needs coverage for a replayed notification. Use the existing fixtures.
+Write tests for the CLI flags without touching the command.
+Add screenshot assertions to the existing browser suite.
+Cover the Unicode filename branch in the test suite.
+Implement unit tests for the two new helpers using the surrounding conventions.
+I'd like a regression case for the bug we already fixed in sync.py.
+Add a test that confirms the grammar rejects a dangling escape.
+Exercise cache expiration with a fake clock in the project's suite.
+Use the temporary workspace fixture to test reading through a symlink.
+Write tests for resource cleanup when the download is interrupted.
+Expand the test suite around Unicode normalization and trailing spaces.
+Protect against this breaking again with tests for the exact notification payload.
+Add a negative check to the test that currently accepts a blank access key.
+Lock the expected ordering into a regression test for the priority queue.
+Cover the streaming path with chunked and truncated response fixtures.
+Add a separate unit test for daylight-saving rollover.
+Add launch and clean shutdown tests for the background process.
+Write an executable check for the parsed types, including null and booleans.
+Bake the example failing input into a test for the fixed decoder.
+Increase the coverage of the permission matrix without changing production settings.
+Give the new attachment reader integration coverage with small files in temp storage.
+Create a focused test suite for the new rate limiter.
+Add coverage for the case where the lock is already held by the same worker.
+Assert a missing mapping skips the row in a fixture in translate.py.
+Build a regression test for this reproduction command.
+Verify pagination explicitly by adding tests for the last and empty pages.
+Please write a failing test for the history boundary before implementing any fix.
+Improve the test isolation so the fixture cannot read the real credential file.
+Cover each retry count in the suite and assert the calls made.
+Use the existing test runner to add coverage for the API's invalid body case.
+[code train review]
+Review the diff for bugs and file-specific regressions before merge.
+Read the patch and flag breaking changes in the updated public API.
+Give me a code review of the latest commit. List issues by severity.
+Audit the changeset for use-after-free and leaked handles.
+Inspect this PR's diff for unintended changes to the storage format.
+Review what's staged and call out actual behavioral issues with line numbers.
+Compare the feature branch with main. Leave findings for possible data loss.
+Are there concurrency mistakes introduced by this patch?
+Read the changed code and give me review findings only.
+Identify any security regressions in the checkout's auth middleware diff.
+Look at what changed in HEAD and flag assumptions about caller input.
+Check the proposed merge for regressions in retry paths. I want a review.
+Critique the code changes and point to the affected files. Leave the patch alone.
+Review the diff to find where an existing caller might break after deployment.
+Inspect the proposed refactor for contract drift across module boundaries.
+Go over this PR for hidden failures behind successful test output.
+Look through the patch and report actionable concerns, including missing verification.
+Audit the implementation changes against the old API behavior.
+Point out undesirable side effects in the delta to the reconnect logic.
+Read the diff from tag v2 to current branch and find dropped checks.
+Would the cleanup in this patch break any of our command-line flags?
+Find bugs introduced by the latest commits and give line references.
+Review the branch for backwards compatibility of the JSON config.
+Give the pull request a second set of eyes for shutdown races.
+Check for ordering bugs in the modifications since yesterday's merge.
+Read the whole patch and tell me what is likely to break.
+Scan HEAD's changes for unexpected network or disk access.
+Read the latest patch and provide an issue list with suggested remedies.
+Do a static audit of the proposed query planner changes in the repo.
+Evaluate the permission edits for bypasses. Report findings for the patch author.
+Is the new changeset compatible with the callers we already ship?
+Assess the commit's behavior on upgrade and identify silent regressions.
+Tell me which changes in the patch violate the declared constraints.
+Review our current working tree for edge cases before I open the PR.
+Check whether the cleanup commits delete error handling that a caller depends on.
+[code train none]
+Write a new application that archives images into monthly folders.
+Explain the difference between an integration test and a unit test.
+Give me a simple JavaScript function that draws circles.
+What does the error keyword mean in the Rust compiler?
+Create a git commit message for a documentation change.
+What's the syntax for asking git to show me the diff from the previous commit?
+Show me a sample Python fixture in a tutorial.
+Read the commit history and write release notes for the QA team.
+I'd like a review of two rust-proof garden sheds.
+Build a table showing the five biggest categories in this file.
+Compare our refund database export with the credit card report.
+Explain theoretical data races to an engineering student.
+I'm reading a review of a new animated film and want a short summary.
+Write a landing page for a test-prep tutoring service.
+Find the official tests used for airport security screening and link them.
+The page has a broken stylesheet. Navigate the current tab to the homepage.
+How can I make a thumbnail with GitHub's logo?
+Make a scatter plot of runtime versus number of bytes from timings.csv.
+What is a test suite? Illustrate it with examples.
+Which branch of government first used a rider to pass a bill?
+Write the QA team a note explaining the deployment was rescheduled.
+Turn my handwritten release checklist into an ordered list.
+Print the commands required to compile this open source package on Windows.
+Generate a poem that uses the phrase trial and error.
+Summarize the policy appendix on evidence from our document.
+What was the score in last night's test match?
+Translate this bug report into Spanish for the localization team.
+Bundle the existing checkout as a zip that excludes caches according to the README.
+Install the versions listed in package.json and tell me their sizes.
+What does this timestamp in the git history tell me about the timezone?
+Prepare a one-page project report from the related documents in the archive.
+Give me guidance on how to review a novel for a book club.
+Delete this local scratch checkout after I confirm the folder path.
+Design a clean syntax highlighting theme for reading long test logs.
+Explain how open source contributors choose licenses for a repository.
+
+[code calibrate diagnose]
+This build breaks as soon as I enable optimizations. Narrow down where the failure starts.
+A recent refactor left the archive writer unable to open existing files. Locate and repair the fault.
+Figure out what causes an immediate crash when an account has no preferences.
+Importing old YAML now throws after the last parser commit. Track down the failing instruction.
+The back button unexpectedly clears the form since the changeset landed. Diagnose the regression.
+CI succeeds locally but fails on the runner when redis is absent. Inspect the job and correct the setup.
+My mocked transport returns an empty body and our script immediately exits. Trace it in receiver.py.
+We're seeing an exception only after refresh, shortly after the latest checkout was deployed. Find the root cause.
+The worker stops processing and never drains after the integration test finishes. Find what blocks it.
+Reproduce the issue where a filename ending in a dot breaks the new build, then patch the cause.
+After pulling main, the prepare step now reports a stack trace in JSX validation. Identify the bad input.
+Something in resolve.go drops IPv6 support. Track down what's wrong in the new parser.
+The compiler dies after consuming the fourth module. See what's throwing.
+The suite is red after adding the new token type. Find and repair the failing behavior.
+[code calibrate tests]
+Prove hash collisions preserve both entries by adding a case to the suite.
+Give the cache-key normalization path automated test coverage.
+Make the decimal rounding guarantee executable in the nearest test file.
+Take the exact payload that used to break webhooks and put an assertion around it.
+The fixed migration needs a reproducible check with a database from the old version. Put it in the tests.
+Add a test for interrupted uploads by exercising the buffered path directly.
+Preserve this new behavior across future changes with targeted assertions in the integration suite.
+Implement checks in tests/ for ASCII and full-width bracket tokenization.
+Revise the flaky fixture so the current tests verify expiry without waiting in real time.
+Please pin the stream close behavior with a minimal reproducible test.
+Can you cover the one-record restore case using the built-in temp directory fixture?
+Protect the new checksum validation by adding both dirty and pristine fixtures.
+Exercise the fallback job logic in pytest when credentials are absent.
+Write suite coverage for a trailing delimiter in the import format.
+[code calibrate review]
+Can you go through the patch and tell me whether any defaults have accidentally changed?
+Give me an issue-by-issue pass on what this pull request will do to readers on v1.
+What's risky in the latest diff? Tie each claim to changed code.
+Act as a reviewer for the retry changeset and provide concrete bugs with references.
+Scan the current commit for assumptions about ordering that don't hold under parallelism.
+Read the proposed schema edits for upgrade regressions before this goes to CI.
+I need a review of the uncommitted argument parsing changes, in order of impact.
+Flag state corruption routes in this checkout compared to the release branch. No edits.
+Would merging this patch create a privilege check bypass? Point to the exact path.
+Check the proposed pagination edits against old client contracts and report the ones likely to break.
+Inspect all changes since the last tag and tell me where a retry can replay data.
+Evaluate this diff for behavior on a disk-full error. Give me findings.
+Read the patch for a potential resource leak and tell me how to reproduce it.
+Take a review pass on these Go commits for cancellation propagation.
+[code calibrate none]
+Teach me what the stages of a build are.
+Which tests do doctors use to check for allergies?
+Write documentation for the newly added regression suite.
+Draft a review for a book I read last week.
+Find the open issue about our failed production build in the public tracker.
+How can a contributor run the unit tests? Show the relevant README commands.
+Format a shell transcript as Markdown with a numbered list.
+Why does the word fixture show up in sports schedules?
+Run the project's test command and summarize the raw output as-is.
+Implement the specified math function and show a short usage example.
+Write test questions for a student who is learning data modeling.
+Prepare our technical debt report for a staff meeting.
+Build a JavaScript preview for the score table.
+Add a CONTRIBUTING guide telling others how to propose and review a patch.
+
+[code regression diagnose]
+Since our deployment on Tuesday, valid sessions wait forever at the same spinner. Recreate and track down the bad commit.
+The daemon eats a core after one client disconnects. See what is spinning in session.go and repair it.
+I can bootstrap on a full install but a minimal build exits immediately. Follow the initialization path to the missing piece.
+All invoices now come back with a zero subtotal after we reorganized the API. Isolate where the value changes in the repo.
+Why did pytest turn red on Japanese filenames only? Pin the failure on the actual handling path.
+The recent refactor made a normal paste duplicate the pasted text. Work out which handler runs twice.
+After a fresh clone the server won't accept ordinary passwords. Trace first-run auth using the checkout.
+Configuration through environment variables stopped taking effect in the newest build. Find the break and correct it.
+Our replacement codec reads a valid trailer as malformed and aborts. Recreate that regression with the smallest input.
+The page now calls the same endpoint hundreds of times after a refresh. Trace the changed logic in the checkout and stop the loop.
+Can you fix whatever in this branch causes the new worker to exit when it encounters its first blank record?
+The generated asset path is wrong after the bundler upgrade. Reproduce the bad build and identify why.
+A cache miss sends the request through the route twice. Investigate the callback order in requests.py.
+It works in an interactive shell but the exact same app call fails with an unattended runner. Track down the difference.
+The latest checkout can't export an empty collection anymore. Investigate and restore the behavior.
+[code regression tests]
+Freeze the contract for null timestamps by exercising a real response in the project's suite.
+Create a fixture that catches the counter wraparound and assert how many results survive.
+I'd like a permanent executable example of what happens when the auth token has expired.
+Exercise the sqlite rollback path and check the original row stays put in the test database.
+Add cases around the normalization boundary so the suite catches off-by-one errors.
+Use the existing test harness to protect the fix against an empty header.
+Make this reported example part of CI as a check for stable sort order.
+Cover time zones with dates either side of a daylight-saving transition, in the tests.
+Pin the outcome of cancelling an already complete task with an assertion in suite.
+Please turn this manual reproduction into a repeatable test for v2 migration.
+Add an integration fixture confirming the download is retried just once after a 503.
+The fallback logic is unexercised. Nail down the result for a 0-byte payload in pytest.
+We need the suite to stop accepting frames with an invalid checksum. Add coverage for that edge.
+Create a failing example in the project tests that reproduces the race; leave the fix for another change.
+Specify the expected ordering of empty and repeated keys in a test case for the table parser.
+[code regression review]
+Read what's changed against release and tell the patch author if an upgrade can lose saved filters.
+Take apart the commits on this branch for unintended permission changes. Return severity and file references.
+Read the proposed difference in the locking code and look for a deadlock introduced by the edit.
+Give the log rotation changeset a critical pass before merge. Identify where it could remove the wrong file.
+Do these code edits preserve older readers? Inspect the diff and write up concrete failures.
+What would you block this merge over? Use the branch delta and show where the behavior regresses.
+Look for commitments this PR can't keep when the network is slow. Ground comments in the patch.
+Before this merges, spot assumptions about old rows in the new migration code and give me findings.
+Point to any changed line that could leave cleanup half-complete after a timeout.
+Audit the staged adapter update for call sites that still use the previous parameter name.
+Are my changes to retry policy safe to ship? Inspect the working tree and cite exact lines for risks.
+Grade the latest patch against the API contract and list breaking cases before style nits.
+Tell me whether the code changes can leave a lock held on the early return. I just need review feedback.
+Find likely compatibility bugs in the proposed refactor for non-Linux callers. Leave files untouched.
+Critique the proposed config-loader implementation as a reviewer, with a finding for each defect.
+[code regression none]
+How do I attach a record of my patch to an email?
+Turn the error messages from this log into plain-English documentation.
+Can you define assertions for a new developer? Give code samples.
+Add request logging to the checkout so operators can trace latency.
+Read docs in the repo and make a prioritized list of features for the manual.
+Find the Rust compiler's release blog and report the new lint names.
+Read this four-page contract and show exactly where the vendor promises response times.
+Mark the average run time on a graph built from the performance export.
+Prepare a lesson about why code review encourages readable naming.
+Run npm test once and copy the pass/fail totals here.
+The book review is four paragraphs long. Cut it down to two.
+Give the parser suite's history in the form of release notes for managers.
+Build a script that reads a browser page and extracts the visible phone numbers.
+Apply this prewritten patch to the new checkout and provide the resulting file names.
+List all issues assigned to me that have the word regression in the title.
+Design a static home page for an imaginary debugging consultancy.
+Write two questions to test seventh graders' recall of world capitals.
+Show what changed in this version, grouped by new features and removals.
+Draft a proposal for adding a new application to our code repository.
+Please remember that last week's CI build was the slowest one so far.
+
+[data train aggregate]
+Get the median handling time in this CSV by department.
+Analyze a TSV export and return counts per salesperson for active rows.
+Use the spreadsheet to total orders for each month and report the overall total.
+I need the average lead time for domestic shipments in the table.
+Sum the amount column for transactions between July and September.
+In the dataset, calculate defect frequency by line and give the number of inspections.
+Make a ranked table of net sales by country from orders.csv.
+Tell me how many entries in this workbook are blank for vendor code.
+Count failed cases per release in the attached test-results JSONL.
+Compare each category's share of the entire revenue column.
+Get the distribution of order weights from shipments.tsv.
+Measure typical delay per district and say how you handle absent times.
+Produce a table showing the proportion of each subscription tier among paid accounts.
+From the registration file, report accepted requests by week and the acceptance percentage.
+In the exported survey, how many respondents selected each answer and how many skipped?
+Summarize the amount charged per product using the billing export.
+Give me an offline analysis of the attached event records, with counts by month.
+How many source rows qualify for the filter and what are their sums by supplier?
+Group the daily readings from the worksheet by instrument and compare the spread.
+Profile the data table and summarize duplicate and missing cell counts by column.
+From the transaction dataset, report daily median purchase size with volume.
+Parse these rows and rank customer segments by number of complaints.
+For the newest batch of CSV rows, report the mean assessment per section.
+Show the highest and lowest measured latency for each test host in the table.
+Produce counts and percentage distributions for the external category field in inventory.csv.
+Use our worksheet to report the fraction of projects hitting each milestone.
+List the top departments by spend in the export and give the basis of the ranking.
+From the loan tape, how many rows per rate band are flagged as delinquent?
+Find the five most frequent error codes in the table of service records.
+Summarize department hiring from the spreadsheet by quarter.
+For each branch, what percentage of its active members came this month? Use the attendance export.
+Look at this CSV and break registrations down by referral source.
+What is the weighted mean per grade in the dataset? State the weighting column.
+Calculate incident totals by region from the report's table of entries.
+Give counts, missing values, and percentiles for every numeric column of the worksheet.
+[data train reconcile]
+Match customer IDs across the CSV export and the address table and report missing accounts.
+Join the invoice spreadsheet to the payment export on invoice number and flag unpaid entries.
+List rows that exist only in one of the two member rosters.
+Reconcile the inventory counts between the two exports and flag inconsistent SKUs.
+Compare this year's and last year's product records by stable identifier.
+Our old and new user tables should have the same email keys. Find extras and duplication.
+Figure out which of the IDs in the shipment file have no entry in the returns export.
+Match two bank statements by payment reference and identify unexpected differences.
+Find customers in our accounting export that are absent from the CRM snapshot.
+Pair rows from the two workbooks by part number and count unmatched records on each side.
+Link the ticket and refund tables by identifier and find tickets with more than one refund.
+Show which purchase IDs are present in both monthly exports and which are unique to one.
+Compare the invoices in the two datasets by invoice number; don't assume every number is unique.
+Use employee code to link the directory and time-sheet exports and flag conflicting department values.
+Check our source CSV against the exported archive and flag any dropped rows without silently deduping.
+Bring together the position table and order table by SKU; check the key before totaling quantity.
+Tell me where the organization IDs conflict across the reference tables.
+Find the record IDs in license export A that map to more than one record in export B.
+Verify that the payoff amount and index match when merging the customer tables.
+Align this version of the dataset with the previous one using a stable key, then find gaps.
+Which borrowers exist in both source files? Compare by membership number.
+Figure out if postal codes change on the same customer when cross-referencing the exports.
+Find one-to-many relationships between orders and settlements in the CSVs.
+Compare two registries and give me the keys with inconsistent values.
+Do the metering and billing rows cover the same accounts? Check meter ID for duplicates.
+Merge the manufacturing exports on lot and batch, then find lots with no test result.
+Use a left join for transactions versus refunds and show orphaned refunds separately.
+Check which codes in delivery history don't line up with those in the vendor table.
+Audit migrated accounts for a missing row or an extra duplicate against the source export.
+Bring these item records together using item numbers and compare wholesale prices.
+Set the two warehouse snapshots side by side by pallet ID and flag unmatched pallets.
+Reconcile Stripe Payout IDs between processor exports and our books.
+Find student IDs that are present in the enrollment sheet but absent in the attendance records.
+Which pre-migration IDs have no matching row in the post-migration TSV?
+Find where the two ledgers disagree on currency after pairing records by transaction key.
+[data train evidence]
+Use the indexed safety manual to quote the exact temperature limit and include its location.
+Read the policy PDF and cite the clauses that describe our cancellation rights.
+Find where the training handbook states how many sessions are required.
+Give me the source section in the contract that makes phone support optional.
+Verify each warranty claim against the two supplied documents and show the page number.
+Pull proof of the grant deadline from the attachment and give me a short excerpt.
+Which page in the PDF says whether a student may defer? Cite the page and sentence.
+Trace the equipment storage rule to the exact passage in our library.
+Find the part of the appendix that lists the compliance measurement period.
+According to the two technical manuals, what is the maintenance interval for this model? Quote both.
+Use the supplied tender documents to establish which bidder can apply.
+I need the audit report paragraph that mentions signing authority.
+Compare the indexed minutes for March and May. Show the sentences where they changed the policy.
+Cite the vendor agreement for what qualifies for a return.
+Extract the term limits from the bylaw document and cite the articles.
+Find where this regulatory filing discusses contingent obligations; reference each source page.
+Read the employee handbook for the required notification period and cite the heading.
+Our transcript has a decision about code ownership. Find the exact wording and who said it.
+Summarize how filing types are defined in my library and give the sources for each definition.
+Where does the first attachment set out the minimum travel reimbursement? I need the passage.
+Answer using only the attached faculty policy and link to the source section numbers.
+Check my report against the original discussion transcript and flag statements that have no support.
+Pull the precise language about exclusions from the insurer's policy PDF, with page references.
+The operating procedure changed the shutdown sequence. Where does the handbook describe the new order?
+What did the committee resolve on access rules? Quote the indexed minutes.
+Locate the model's amperage limit in the service manual and provide the section number.
+Find the document passage that covers what makes a student eligible for financial aid.
+Cite language in the source specification for each field and its allowed values.
+Use the included contract to answer whether the rent can increase during the term, with a quote.
+Locate the paragraph that sets the exception in the companion compliance document.
+In this report, find each mitigation that has an owner and state the page used.
+Tell me if the agreement or its latest addendum sets the expiration date with clauses for both.
+Find support in the source documents for the statement about a 24-hour response.
+Collect verbatim definitions from our reference library, with titles and locations.
+Find each required review step in the PDF and cite its paragraph number.
+[data train none]
+Design a spreadsheet template I can fill out for travel costs.
+Explain how SQL joins work, including the difference between inner and outer joins.
+Improve the wording of a letter to my insurer.
+Write a policy for a new office so contractors can access the building.
+Is the public holiday schedule changing next year? Find a current official source.
+Build a JSON parser that validates the optional key.
+Show me how to calculate a weighted aggregate with made-up data.
+Write a short report on what happened in our chat yesterday.
+Summarize this new textbook chapter for ten-year-olds. I only need the basic concepts.
+Can you format this document as a table of contents?
+Rework my messy draft into a formal memorandum.
+Implement a widget that shows the 10 smallest values.
+Tell me what a CSV file is and why it uses delimiters.
+Create an HTML pricing table for three tiers. Use sample numbers.
+Review this test file's data fixtures for backwards compatibility.
+Help me publish a new PDF view of my favorite photographs.
+Calculate 315 times 26 plus 18 percent.
+Find the key to the room where I keep our paper reports.
+Explain why data integrity matters for public research.
+Do you remember the title of the book I said I liked?
+Translate the title of this library event announcement into French.
+Read the weather page and find where the hourly forecast starts.
+Draft sections 1 to 3 of an entirely new report on urban planning.
+Turn these plain-text notes into a handout for the upcoming event.
+Write a code example for concatenating two records with different fields.
+Review the footnotes for spelling. Do not change wording elsewhere.
+Describe what common contract sections look like.
+Create five source citations for Hamlet by finding suitable publications online.
+Help me tidy the spacing in this worksheet.
+Put a colored outline around every table heading in the dashboard.
+Return a JSON representation of the event transcript as written.
+Draw an exploded diagram of an antique manual clock.
+Write a simple formula that works on a spreadsheet when I enter it.
+Estimate from memory how common the last name Smith is.
+Make this table of captions render properly on a mobile phone.
+
+[data calibrate aggregate]
+Return the proportion of blank values in every column of my vendor export.
+Use the supplied purchase records to break spend down by week and policy group.
+Which locations contribute the most to the usage total in the worksheet?
+Count visits grouped by paid or free based on the visit log table.
+What do the latency values look like for each client type in the TSV? Give medians and counts.
+Build a rollup from orders.csv of active count, failed count and total by department.
+Show a histogram of the transaction amount field in this dataset.
+My report table lists signup rows. Count them by date and show the running total.
+How much energy did each building use per month according to this table?
+Compute inventory value across all rows and break out the total by warehouse ID.
+Report how many assessment entries are missing versus marked absent in the workbook.
+Give me the average daily clicks per group from this export, excluding holidays.
+From the table of survey replies, compare the share of votes per option in each cohort.
+Summarize each athlete's distribution of readings from sensors.csv.
+[data calibrate reconcile]
+Align the two worksheet snapshots on email address and show which status values differ.
+Did any equipment go missing between the export from the old system and the new one? Compare serial numbers.
+Find subscribers that are included in the invoice data but excluded from the paid-up report.
+Tie the time log and payroll records together via employee code and flag mismatches.
+Compare the attached CSVs and identify keys with double matches in the second file.
+Line up billing codes from the two accounts tables and point out the orphans.
+Use payment references to pair entries from the two reports and report aggregate discrepancies per merchant.
+I expect every ID in the orders export to appear in the shipment workbook. Find exceptions.
+Check the booking and charge tables for entries that share a token but disagree on fee.
+Link inventory rows to their duplicate codes in the returned-items list.
+Which records survived the switch between source file A and B, using employee ID?
+Find rows belonging to the same entity in both records files and flag conflicts in the status field.
+Check which of these exported items lost their corresponding status row in the second dataset.
+Reconcile workstation IDs in the assigned and active lists. Use the two attached spreadsheets.
+[data calibrate evidence]
+Find out whether the procedures manual permits the exception. Include the section and exact text.
+Pull out the sentence from the uploaded handbook that defines the accreditation period.
+Get textual support for how reviewers vote from our indexed board documents.
+Which articles in the policy PDF are inconsistent about the effective date? Cite both.
+Provide the precise evidence from the attachment for the required identifier format.
+Use the supplier's indexed manual to tell me the model code for a replacement fan and where it appears.
+See which clauses in this contract define the termination process and give short quotes.
+Can you trace each compliance claim I listed to a page of the original report?
+Find where the memo transcript records who volunteered for the security review.
+Locate our guidance about guest accounts in the library and show the source section.
+What is the agreed support window? Use the documents I provided and cite a page.
+Get the actual language describing what qualifies as a reimburseable meal from the company policy.
+Answer whether a permit is needed for each site, relying only on the original handbooks.
+I want the part of the appendix that explains the certification rule, with page references.
+[data calibrate none]
+Make a pastel theme for a spreadsheet editor.
+Help me create a new index of the source documents in alphabetical order.
+Explain how to find the number of days between two dates.
+Can you tell me the rubric for good technical reports?
+Give a friendly description of the attached photo. It shows a sheet of paper and a dog.
+Does this browser tab redirect to our public terms of service?
+Translate the user manual into German without changing the code blocks.
+Write and run a unit test for the table rendering function.
+Build a database schema for tables of orders and refunds.
+Format the spelling in the supplier contract for UK English.
+Check the spelling of the first line of every attached memo.
+Convert this dataset to JSON without changing any values.
+Help me outline an article about basic table joins.
+Run a web search for similar contracts with current rates.
+
+[data regression aggregate]
+From the CSV, how are the renewals split by plan, and what share of eligible customers renewed in each?
+Take the scraped records already on disk and show the top five tag values by frequency, including blanks separately.
+I'd like the middle value of delivery durations for each store, excluding cancelled shipments. The source is the export.
+Count each distinct age bracket in the worksheet of respondents and include a total for all valid answers.
+Build a breakdown by region and quarter of qualified pipeline from opportunities.tsv.
+Can you profile the readings worksheet for min, max and missing per sensor?
+Tell me which shifts generated the most widgets and how many rejected units they reported. The production table has the flags.
+Look through the price records in the supplied spreadsheet and report typical unit price by product line.
+For every warehouse, how big a slice of its shipments were late? Use the timestamp rows.
+Get per-branch totals with and without refundable charges from the payments dataset.
+How many calls actually qualified for the response target? Break down compliance rates by team using calls.csv.
+Show a count of each distinct status per author from the attached review export.
+Given the rider dataset, list the fifty-percentile travel duration by route and the number of rides in each.
+Rank the payment methods by their contribution to settled sales according to these exported rows.
+Compute what fraction of the log rows are stale, grouping the result by source.
+[data regression reconcile]
+Pair the two tables by normalized license plate, and tell me which plates vanish or have two possible counterparts.
+Do all booking records in this worksheet have a check-in row in the second export? Verify using the confirmation code.
+The credits and deductions spreadsheets should net out by transaction ID. Find orphan records and mismatches.
+Line up these snapshots by badge number and give each department edit and each missing badge.
+Bring together the quote and purchase CSVs with their reference fields and identify lines lacking a purchase.
+I need suppliers appearing in both export files and ones found only in the current file.
+Show how many completed sessions have no charge in the second table. Use the shared session ID.
+Track differences between two CRM outputs by contact handle. Check whether handles repeat before comparing.
+Which catalogue numbers no longer appear after the migration? Use the two attached exports and identify repeated identifiers too.
+Relate each impression row to conversion entries using the tracking token and check for a one-to-many relationship.
+Compare outcome fields in two sets of records for the same ticket and list keys found only on either side.
+Match the two workbooks on employee number and country code. Flag amounts that disagree for matched people.
+Crosswalk department keys across both datasets. Tell me which codes only exist on the obsolete version.
+Figure out whether the copied records kept the correct identifier and rate compared to the source table.
+Audit payout references in the bank export against entries in the platform export and list entries on either side that lack a match.
+[data regression evidence]
+Give me the original wording and location for the clause setting the filing window, using the supplied document.
+What support is there in the meeting minutes for the decision to reclad the lobby? Include the recorded location for each quote.
+Read the two versions of the handbook and identify where the escalation order changed, with references to each edition's text.
+Does the attached protocol allow release after a missed calibration? Show the numbered clause.
+Find proof in our indexed grant material that facilities costs are reimbursable, and give the page.
+Can you substantiate all the quoted thresholds from the original maintenance manuals? Identify the source location or mark unverified.
+Use the project records in the library to identify who owns after-hours response with the lines that establish it.
+Locate precisely where the PDF explains the consequences of a late change order.
+Which paragraph of the vendor's uploaded terms gives them the ability to renegotiate? Extract the relevant phrase.
+What coverage did the review committee actually approve? Rely on the transcript and point to exact excerpts.
+Read the employment policy and locate the language that lets staff carry leave into next year.
+Identify which obligations come from the main agreement and which from the attachment; ground each in its clause.
+Using these reports, show where the recommended period comes from, including a heading and the supporting passage.
+Find where the rules change for applications from abroad in the indexed guide, with the source section.
+Does the technical appendix say this parameter is optional? Find the statement in the original and cite where.
+[data regression none]
+Add documentation explaining the shape of the payload for an online table upload.
+Create a report layout in HTML and insert sample company names.
+Give me the median of 7, 40 and 22.
+Build a general SQL tutorial covering queries and relationships with invented tables.
+Convert the workbook to bytes for an API upload without editing its cells.
+Look up the highest-grossing film of last year and link the source.
+Come up with a good book title for a story about a missing student record.
+Improve the readability of this pricing table by using CSS to align the numbers.
+Write a one-line command to parse a TSV when given a path.
+I'd like an animated globe with points taken from a table I'll send later.
+Review the spelling and punctuation throughout this legal memo.
+Deploy a library on our machine for reading XLSX in a script.
+Fix the script that started counting every empty column twice after the latest change.
+Make a blank form with columns for time spent, dates and reason.
+How do I tell whether the company has added a link to its newest compliance report on its website?
+Translate this PDF into English with the original formatting.
+Produce documentation of the new features based on the diff and commit messages.
+Make a rhyming children's story about an inventor reading a manual.
+Explain common use cases for reconciliation in a general business course.
+Show me the expected format of the source file using a sample row, without processing my files.
+
+# Fresh final test cases after the first code/data run. Previous tests remain regression cases.
+[code regression-2 diagnose]
+Since the last checkout, the build prints success but writes a zero-byte executable. Find which subprocess failed and repair it.
+The decode loop began treating underscores as spaces after the refactor. Pinpoint the regression with a two-character input.
+Our email worker throws after exactly one hour even with pending work. Find which runtime timer causes it.
+Track down an unexpected TypeError from request.py when I leave the optional flag unset, then fix the path.
+How did the changeset make a clean repo require cached credentials? Find the broken initialization.
+The new compiler upgrade causes the handler to panic only for input wrapped in parentheses. Locate the actual fault.
+The most recent retry implementation turns temporary DNS failures into permanent failure. Diagnose and patch the caller.
+A race appears only when I interrupt the command during cleanup. Reproduce the stack trace and fix the invalid access.
+The job runner used to cache completed imports, but now repeats the import after a successful run. Identify what changed.
+Investigate why the build on our arm64 runner fails only after pulling the submodule.
+The table handler freezes after the second page since we removed a return. Isolate which branch loops.
+Our test harness passes a capitalized content type and the service aborts. Find how the request check changed and repair it.
+[code regression-2 tests]
+Add one passing case and one rejected case in the suite for malformed cursor strings.
+Can you lock down the commit's case-folding behavior with assertions on the stored paths?
+For the repaired timeout, make the existing unit tests prove that the lock gets released.
+Use the same temporary-directory fixture to test overwriting a source owned by somebody else.
+Add coverage for a key with no value and a value with no key to our parser suite.
+Make an executable regression check for closing an already closed channel. Include the actual returned error.
+I need integration tests around the endpoint's pagination headers when one item fits.
+Write a new fixture and assertions for simultaneous handles that share a cache.
+Extend the project's tests to catch invisible whitespace at the start of a command.
+Preserve restart compatibility in CI by adding a case with a cached entry in the old format.
+Add unit cases that run with the clipboard offline and check what falls back.
+Pin this with a test: close returns cleanly even when its stream is already exhausted.
+[code regression-2 review]
+Walk through the pending patch to see whether the loop guard can block legitimate repeated inputs. Cite any offenders.
+Give me severity-ranked findings on the feature branch. Pay attention to compatibility around the removed fields.
+Can you inspect the staged diff and identify requests that now leak authentication state?
+Evaluate the CLI changes before I merge. Find commands where the old exit-code contract would change.
+Read the proposed scheduler migration and flag orders where an active item could disappear. Include locations.
+Treat this checkout's changes since the last release as a code review and report issues you can verify.
+Would this patch produce wrong results when the user has two pending requests? Trace and report any affected callers.
+Audit the commits that remove the deprecated callback and point out still-supported code paths that rely on it.
+Look through the diff for parse failures hidden behind a default value. Give the author file and line references.
+Take a review pass on this changeset, specifically around traceability of canceled uploads and retry behavior.
+Tell me which lines of the patch can cause a deadlock when two jobs finalize together. Give findings without editing.
+Review the uncommitted changes as if you own the stable API. Call out mismatches in arguments and return values.
+[code regression-2 none]
+Summarize the commit comments for a compliance report and put them in order by date.
+Design a practice exam on subjects covered by today's lecture.
+Create a web page to display the scores from last week's cricket test.
+Show me a Git tutorial on checking out a feature branch without altering main.
+Explain how static binding differs from dynamic dispatch using a made-up example.
+Assess whether the attached film script reads well and review the roles of the main characters.
+Use the library's deployment manual to cite the maximum allowed build time.
+Estimate CPU use from the attached test-runner CSV and rank by host.
+Prepare a sample receipt endpoint in a new application, with minimal scaffolding.
+Write a consumer-facing changelog from these exact patch notes.
+Print my local Git branch and the commit title.
+Find the best way to waterproof a tire patch.
+Find all TODO comments in this repository and quote them with their locations.
+Update the page to display next week's travel advisory from the government site.
+Show me three ways of formatting a test report for stakeholders.
+Translate the failure message into polite French without investigating the application.
+Check whether the developer conference moved its latest release announcement.
+Send the team a note that the build is expected to pass tomorrow.
+How much disk space would these two copies of the checkout occupy?
+Pick a framework for a new desktop settings app. I haven't created a repo.
+
+[data test aggregate]
+Measure the share of late railcars per terminal with their row counts from the movement export.
+Give me total training hours and typical session length by job family from the HR worksheet.
+Find the regions with the greatest quarter-to-quarter change in volumes using the table in shipments.csv.
+Use packs.tsv to return the maximum and median of delivered box weights for each warehouse code.
+Show the fraction of eligible returns that were also damaged using the supplied record file.
+Profile the inventory spreadsheet and count missing cost and missing quantity separately for each supplier.
+In coverage.csv, what proportion of routes ran with capacity under 60 percent? Include the count behind the rate.
+Make a weekly count of rejected frames by reason from the production dataset.
+Summarize successful versus total payments in the exported table for each payment type.
+Give me the three most common reasons for late registrations from the activity columns.
+Determine the overall score from the student records weighted by credit hours, with totals by program.
+Rank the number of contaminated specimens per facility and normalize by all inspected specimens in the worksheet.
+[data test reconcile]
+Link each expired permit to the renewal records by permit code and report orphans and repeat references.
+Tell me which employees in the new payroll export don't appear in the previous release's payroll CSV on staff ID.
+Use case number to line up the intake and investigation tables and show unmatched cases and changes in priority.
+Pair planned orders with created shipments. Identify order keys that were shipped twice and that never shipped in the CSVs.
+Diff the account-manager values for membership keys that occur in each of these two workbook exports.
+Which editions are missing from the replenishment rows? Compare against our store records by edition identifier and city.
+Match every scanner reading to a reference batch row. Give the IDs of duplicate reference rows too.
+Identify vendors in the invoice report who have no matching row in the approval export, joining on registration number.
+Use the record number to connect the source and archived tables and report changed totals for matched rows.
+Find duplicate billing identifiers before aligning the bank CSV and the finance-system CSV on transaction code.
+Reconcile closing quantities across the remote and local exports using item key. Surface excess and missing keys.
+Compare the two site reports on article ID and tell me which items changed their owner or only exist in one record set.
+[data test evidence]
+Use the indexed employment handbook to answer if seasonal employees qualify. Give the exact section and qualifying text.
+What does the signed contract say about the extra inventory charge? Quote the original clause, with its number.
+Find the original report's passage that substantiates the claim of a 15-day notice period, and cite the page and heading.
+Support each eligibility requirement by quoting the supplied grant documents with the page numbers.
+Did the committee vote for the updated billing date? Quote the line from the indexed minutes that establishes it.
+Use the appendix PDF to pinpoint the exact value of the measurement limit and its source location.
+Locate where the tenant manual explains whether bicycles may be stored upstairs. Cite the relevant passage.
+Where in the attachment can I verify the requirement for one supervising adult? Include the matching paragraph.
+Find the wording in the appendix that sets the transition date. Show which section states it.
+Use each vendor's documentation in the library to verify or flag the claims about offline mode. Provide quotations and headings.
+In the supplied transcript, where does the chair specify who can call a special meeting? Quote the lines.
+Tell me exactly when the regulation applies, based on the quoted text of the contract and the amended handbook.
+[data test none]
+Teach me how to join tables using made-up rows about flowers.
+Build a PDF template for teaching script syntax in school.
+Please convert the table layout to a stacked mobile view in HTML.
+Can you suggest some names for the next library talk about foreign cinema?
+Check the active browser tab for a notice that says the government report is now online.
+Turn each question in the manual into a slide heading without extracting answers.
+Write a contract for my new consulting company based on these three bullet points.
+Copy the rows as Markdown, retaining their order and exact contents.
+Explain the psychology behind why people overestimate percentage changes.
+Create a C program that prints the maximum value of a static array.
+Do a code review of our JSONL parser and cite specific lines.
+Give me a five-line haiku about how people spend time in the records office.
+Change raw milliseconds in the pasted examples to seconds.
+Run the existing data ingestion job once and report its exit code.
+I need a clickable mock-up of a record comparison browser with dummy data.
+Fix a formatting bug in the editor for columns with spaces.
+Show me a Python tutorial on reading a spreadsheet with fake school data.
+Tell me today's weather in the district from the airport website.
+Suggest three conventions for naming import tables in future projects.
+Find this week's official guidance for online PDF filing on the agency website.
+
+# Examples for distinguishing an engineering workflow from another task mentioning code.
+[code train diagnose]
+Symbols from the deployed package show its initializer died on the final line. Reproduce the failure on the release source.
+A smoke command takes down the daemon after the fourth connection. Isolate the runtime condition and fix the call that sets it.
+When the extension name uses mixed case, this branch loads the wrong module. Identify how casing changed and patch it.
+The log file grew normally before a settings reload. Determine what makes the writer stop flushing and fix that code path.
+The installer tells me the operation finished but the executable is absent. Follow the command exits to find what broke.
+The online and offline implementations disagree for the same input. Track down why the fallback path emits a malformed result.
+Opening the machine's menu should be instantaneous but the UI freezes on the new build. Work out which handler is blocking.
+A callback runs twice after retrying a cancelled sync. Find where the worker registers it a second time and fix that issue.
+The latest compile turned a correct warning into a panic in valid code. Pinpoint the parser branch that changed.
+The service accepts image/jpeg but dies for IMAGE/JPEG since the permission refactor. Check the handling path and repair it.
+Until the last commit, the report refreshed itself on a clean install. Identify what's changed in the schedule reader.
+Find which backend call brings the worker down when the environment variable is missing and make it handle the unset case.
+The Go implementation now restarts a successful operation. Determine why it loops when no error was returned.
+After switching HTTP libraries, valid bracketed addresses all fail before opening a socket. Isolate the first incorrect value.
+Investigate why the failing command now returns an empty file instead of a diagnostic. Recreate locally in the checkout.
+The module shows up as enabled but never starts. Reproduce the bug on this branch and locate the disabled state transition.
+[code train tests]
+Put the behavior for the rejected payload into the project's automated checks, then run those cases.
+Add an executable check covering cancellation halfway through a range request.
+Record the expected fields and order for the sorted result in a snapshot fixture in the suite.
+Use the integration tests to prove an upgrade preserves settings when the old key is absent.
+Add a case exercising the permission tool with an unset path. Check the precise returned status.
+Could you make an offline fixture for the no-results UI and assert that the loading indicator is gone?
+Add a guard case to our pytests so a late response arriving after cancellation can't be accepted again.
+Use the repo's existing test harness to pin the host-key handling with valid and unknown keys.
+Write repeatable checks using the three JSON inputs in the issue, with expected counts for each.
+Protect this behavior with a unit case that confirms the import stores case-sensitive names.
+Specify the missing-file and invalid-file outcomes in the parser tests and record assertions for both.
+The restored module runs in CI. Put a new verification case there for its output with a blank argument.
+Exercise the wrapper with a slow child command and assert the second call is aborted.
+Add a passing case to the token tests where we deliberately supply an empty user segment.
+Add a symlink test to the checkout so folder recursion can't chase itself forever.
+Make the recovered workspace state part of the SQLite fixture and confirm a reopened session sees it.
+[code train review]
+Before we merge, find lines in the pending changes that could truncate a user's export. Report the impact and location.
+Can you read these code changes like a reviewer and pinpoint any mismatch between the new format and old clients?
+I'd like comments for the author of the waiting patch. Check whether its parallel reads retain order.
+Look for unsafe defaults in the pending diff. Show the old reader and the changed writer where a break is possible.
+Audit staged code for new issues with retry timeouts and report specific risks before anyone edits it.
+Which update in this branch seems most likely to break the plugin ABI? Give actionable review findings.
+Find failure cases introduced in this PR's handler without trying to fix the code.
+Read the refactor and consider deployment to nodes where the environment variable is optional. Report backward-compatibility findings.
+Check this branch delta for error paths no longer returning promptly and point to the relevant lines.
+Assess the scheduler diff for subtle ways it could skip an active job. I want a written review.
+Read through the lock cleanup update and call out every path where it leaves the old lock acquired.
+Will the new stream decoder mishandle logs produced by existing agents? Read the changeset and report issue locations.
+Audit this implementation before deployment and cite observable regressions rather than formatting suggestions.
+Review the latest command-loop PR for state changes after failed cancellation. Give the paths and line numbers.
+What named cases could block release based on staged changes? Give me a ranked review with code references.
+Critique the pending branch for missing error checks. Leave code as-is and put remarks with file locations.
+[code train none]
+Copy all failing test names from this CI log so I can paste them into an email.
+Make an end-user guide for the regression reporting workflow.
+Draft setup documentation for running the existing integration suite in a fresh directory.
+Write release notes for the compiler changes this week, grouping by feature.
+Find the GitHub issue that reports a similar stack trace. Give me the issue number and title.
+Look up whether this upstream patch landed on the main branch using the public project site.
+List open reports about worker crashes in the public bug tracker.
+Check the current status of our failed build from the public status board and share the link.
+Make an FAQ explaining to release managers when they should schedule smoke tests.
+Review a film script and suggest how to make both actors' roles clear.
+Create a user's tutorial about the API endpoint. Describe the error codes without changing them.
+Annotate the build log with times and process IDs for my data table.
+What are the meanings of the five error types in our style guide? Just give the glossary entries.
+Search public projects for examples of defining regression coverage.
+Create a CLI utility for printing a file hash. Don't worry about writing a test suite yet.
+Find the commit that changed the default port based on commit subjects. Give me its ID only.
+Revise the merge announcement for a company chat room.
+Read the spec and rewrite the section about the queue state for a broader audience.
+Can you show me an abstract example of testing a change with mocks? Use a toy app.
+Explain how to choose a name for a test so its output can be read quickly.
+Which growth rates in the CI resource-usage spreadsheet are highest? Order them in a short table.
+Write a blog post that gives examples of common segmentation faults.
+Prepare a quiz on what happens when a Git patch has conflicts.
+Review the spelling of the new builder error messages.
+Save the last stack trace I pasted to a note under today's date.
+Apply this known patch in my checkout as provided and show what files were edited.
+Read this film review and extract the used actor names.
+Fix the punctuation in CONTRIBUTING.md where it explains which kinds of tests to run.
+Draw an SVG illustration of a compiler pipeline for a course.
+Compare your answer with the build handbook and quote the parts that verify it.
+
+# Held-out coding workflows and distractors, with new scenarios and phrasing.
+[code test diagnose]
+Blank arguments used to select defaults, but this version drops into an error handler. Pin down the regression in the CLI and patch the path.
+After a restart on ARM, the queue processor consumes the same item twice. Trace the startup code to find and fix the duplicate claim.
+Our chart renderer from yesterday's build stopped loading fonts that use uppercase suffixes. Reproduce the failure on that branch and identify the bad lookup.
+The installed service throws on its first exported record if no language is selected. Work out what part of the implementation introduced the error.
+Can you isolate the smallest input that makes the compiler enter an infinite loop after reading a semicolon, and then fix the loop?
+The new caching code catches the wrong exception for a stale entry and skips the reload. Locate where it became wrong and correct the behavior.
+We merged a change to process restart and the tests are red only if environment variables are empty. Find the root cause in the checkout.
+The latest changeset works for PNG but fails on local TIFF files. Trace the changed call sequence and find the first inconsistent value.
+A user cancels and immediately tries again, then the app hangs. Track the worker lifetime in jobs.py and correct the race.
+Find what makes the cleanup subcommand delete the downloaded artifact on a successful run since the retry refactor.
+Go through the startup traceback after a clean installation with no network. Repair the initialization that didn't expect offline mode.
+The API exposes the same result twice since our normalization commit. Reproduce in the branch and locate the mishandled key.
+[code test tests]
+Add test cases with a disabled flag and an omitted flag to verify they behave differently.
+Build an assertion in the integration suite that the existing cache path is kept after migration.
+Make the fix for completing an already closed task executable as a regression check in the repo.
+Use the suite's temp-workspace fixture to cover Unicode directory names and assert the actual filenames written.
+Add a case to the existing tests to prove the terminal restores its prompt after a failed command.
+Implement checks under pytest that reject out-of-order frame counters but accept sequential frames.
+Extend the test coverage with 32-bit and 64-bit inputs that map to the same hash value.
+Please add an automated test for dropping exactly one invalid row while leaving everything else in order.
+Pin the behavior for deleting an already removed note in the API suite. Assert the normal result and the stored row count.
+Take the payload that caused the proxy to crash and use it to add coverage to the fixed decoder.
+Build a failing case for losing WebSocket fragments in the closest integration tests. Leave working code as it is.
+Add a negative test that demonstrates a malformed range request cannot clear a saved settings value.
+[code test review]
+Before you approve this changeset, look for edge cases in how it passes along the argument list. Return concrete review issues.
+Study the staged authentication patch for ways a user without a session could obtain cached data. Point to the lines involved.
+Could anyone still call this removed function in the supported setup? Review the diff against current callers and cite any affected sites.
+Inspect the patch against v1 and flag broken link handling for prior deployments. Keep the repository read-only.
+Go line by line through the new parser branch to assess whether log readers keep accepting all previously valid variants. List review findings.
+Please assess the PR's migration logic for ways it can duplicate records after a partial retry and cite the responsible lines.
+Do a code review of the storage edits, with high-priority concerns first and precise locations.
+Look for races in the proposed cancellation implementation. Leave actionable feedback for the person who wrote the commit.
+Does merging this branch break requests that send empty arrays? Give review findings with affected files and examples.
+Review the checkout changes around worker restart for unreachable recovery branches and report what can fail.
+Read the working-tree diff for security regressions and point out the path each finding affects.
+Audit the API changes for dropped return fields. Ground review comments in the modified lines and the current caller.
+[code test none]
+Find the Git commit hash of the change that removed the old site footer. Give me just that identifier.
+Compile a directory of official tutorials on automated testing and provide links.
+Explain why the draft movie treatment keeps changing from one genre to another.
+Summarize the incident response log into a timeline for leadership.
+Put together an announcement saying the diagnostic patch is ready for testing.
+Make a minimal desktop app for reviewing a set of pictures and marking which ones to archive.
+Teach me the difference between an argument and an option with mock command samples.
+Use the status page to confirm whether the provider's build queue is currently delayed.
+Run the existing suite against the current checkout and send me the exact summary line.
+Write a workshop worksheet covering bad user inputs for simple programs.
+Which title would be clearer for a document that explains our testing strategy?
+Add these exact three functions from the spec to a fresh file, with a short README.
+Check which project uses the MIT license by reading the repository's license file.
+Read those two CSV exports and compare runtime values by shared test-run ID.
+Find the old policy sentence that describes who can approve an emergency build.
+Convert our recent release notes into plain language for customer support.
+Prepare a test plan draft for a coffee maker interface without access to its implementation.
+Show the diff command I should type if I only want to see what's staged.
+Answer whether insurance covers a crack that grew after a roof patch.
+Open the CI dashboard in the browser and follow the link titled Active Jobs.

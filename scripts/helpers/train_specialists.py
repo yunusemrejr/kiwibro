@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train and export the lightweight browser and 3D advisers in Google Colab.
+"""Train and export the lightweight workflow advisers in Google Colab.
 
     work="$(mktemp -d)"
     python3 scripts/helpers/train_specialists.py prepare "$work/job.py"
@@ -7,7 +7,7 @@
     python3 scripts/helpers/train_specialists.py collect "$work/colab.log"
 
 Training receives the checked-in synthetic corpus and source for feature parity.
-The CPU job fits both heads, tunes abstention on a dedicated calibration split,
+The CPU job fits the heads, tunes abstention on a dedicated calibration split,
 then scores the quantized runtime weights once on the held-out test split.
 """
 
@@ -35,6 +35,8 @@ TARGET = RUNTIME.with_name("specialists-v1.json.gz")
 HEADS = {
     "browser": {"lookup", "path", "state", "none"},
     "visual": {"scene", "mechanism", "reveal", "repair", "none"},
+    "code": {"diagnose", "tests", "review", "none"},
+    "data": {"aggregate", "reconcile", "evidence", "none"},
 }
 
 
@@ -44,7 +46,6 @@ def digest(data: bytes) -> str:
 
 def read_corpus(text: str) -> dict:
     dataset = {head: {split: [] for split in ("train", "calibrate", "test")} for head in HEADS}
-    dataset["browser"].update({"regression": [], "regression-2": [], "regression-3": [], "regression-4": []})
     seen = {head: set() for head in HEADS}
     for raw in text.splitlines():
         line = raw.strip()
@@ -52,8 +53,11 @@ def read_corpus(text: str) -> dict:
             continue
         if line.startswith("["):
             head, split, label = line.removeprefix("[").removesuffix("]").split()
-            if label not in HEADS[head] or split not in dataset[head]:
+            if label not in HEADS[head] or (
+                split not in dataset[head] and not re.fullmatch(r"regression(?:-\d+)?", split)
+            ):
                 raise ValueError(f"Unknown corpus section {line}")
+            dataset[head].setdefault(split, [])
             continue
         identity = " ".join(line.casefold().split())
         if identity in seen[head]:
@@ -83,6 +87,17 @@ def baseline(head: str, text: str) -> str:
             ("mechanism", r"mechanical|mechanism|cutaway|piston|hinge|dişli|mekanik|kesit"),
             ("scene", r"three\.js|webgl|3d.{0,28}(scene|animat|page|world)|"
              r"(scene|animat|page).{0,28}3d|üç boyutlu"),
+        ),
+        "code": (
+            ("review", r"\breview\b.{0,60}\b(?:diff|patch|pr|commit|branch|changes)|\bcode review\b"),
+            ("tests", r"\b(?:write|add|expand|improve)\b.{0,40}\b(?:tests?|coverage|assertions?)\b"),
+            ("diagnose", r"\b(?:crash|failing|traceback|regression|exception|segfault|debug)\b"),
+        ),
+        "data": (
+            ("reconcile", r"\b(?:join|merge|reconcile|match)\b.{0,40}\b(?:csv|sheets?|tables?|exports?|rows?)\b"),
+            ("evidence", r"\b(?:cite|quote|find)\b.{0,45}\b(?:pdfs?|documents?|manuals?|contracts?)\b"),
+            ("aggregate", r"\b(?:calculate|compute|sum|average|aggregate|group by)\b.{0,55}"
+             r"\b(?:csv|spreadsheet|column|data|rows|tables?)\b"),
         ),
     }
     return next((label for label, pattern in rules[head] if re.search(pattern, ask)), "none")

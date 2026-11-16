@@ -31,6 +31,30 @@ ACCOUNT_ACTION = re.compile(
 )
 EXPLAIN_BROWSER = re.compile(r"\A\s*(?:please\s+)?(?:explain|describe|teach me|how (?:does|do|can))\b", re.I)
 CHECK_LIVE = re.compile(r"https?://|\b(?:look up|search the web|check online|browse to|inspect the current)\b", re.I)
+CODE_EVIDENCE = re.compile(
+    r"\b(?:repo\w*|checkouts?|changesets?|patch|diff|commits?|branches?|tests?|pytest|suites?|coverage|"
+    r"assertions?|fixtures?|build|ci|compiler|runners?|code|staged|working tree|api|callers?|handlers?|"
+    r"failing|runtime|refactor|stack trace|traceback|crash\w*|regression|implementation|git|unit cases?)\b|"
+    r"\b[\w-]+\.(?:py|js|ts|tsx|rs|go|java|c|cpp|sh)\b", re.I,
+)
+CODE_DOC_WRITE = re.compile(
+    r"\A\s*(?:please\s+)?(?:write|draft|update|revise|prepare|create)\s+"
+    r"(?:(?:the|a|an|some|new|developer|setup|user|usage|test)\s+){0,3}"
+    r"(?:documentation|readme|handbook|release notes|changelog|tutorial|guide)\b", re.I,
+)
+DATA_EVIDENCE = re.compile(
+    r"\b(?:csvs?|tsvs?|xlsx?|jsonl|tables?|exports?|spreadsheets?|workbooks?|worksheets?|rows?|columns?|"
+    r"records?|datasets?|reports?|handbooks?|documents?|manuals?|contracts?|transcripts?|"
+    r"pdf|docx|source files|library|policy|appendix|minutes|attachments?|attached|uploaded|indexed)\b", re.I,
+)
+DATA_TUTORIAL = re.compile(
+    r"\b(?:tutorial|how-to|walk-?through)\b|\b(?:teach|show) me how to\b|"
+    r"\b(?:sample|invented|made-up|hypothetical|dummy|fictional) (?:data|rows|records|tables)\b", re.I,
+)
+DATA_SUPPLIED = re.compile(
+    r"\b(?:attached|uploaded|provided|supplied|indexed|existing|my|our|these|this)\s+"
+    r"(?:\w+\s+){0,2}(?:data|dataset|rows|records|table|file|spreadsheet|csv|documents?)\b", re.I,
+)
 HINTS = {
     "browser": {
         "path": (
@@ -58,6 +82,34 @@ HINTS = {
         "repair": (
             "Read the existing implementation and reproduce the visual symptom first. Patch the smallest "
             "responsible code path and check the saved page and affected motion in a browser."
+        ),
+    },
+    "code": {
+        "diagnose": (
+            "Reproduce the failure with the smallest relevant command and trace the failing path before "
+            "editing. Re-run the same check after the fix."
+        ),
+        "tests": (
+            "Read nearby tests for fixtures and conventions. Cover the requested case with an assertion "
+            "that would fail on the broken behavior, then run the targeted tests."
+        ),
+        "review": (
+            "Inspect the requested diff and affected callers. Lead with concrete regressions, their file "
+            "locations and impact, and distinguish findings from gaps in verification."
+        ),
+    },
+    "data": {
+        "aggregate": (
+            "Inspect headers, units and missing values first. For supported table files, use analyze_table "
+            "to filter and aggregate. State the rows and denominator behind each rate or summary."
+        ),
+        "reconcile": (
+            "Check that the matching keys have the intended uniqueness on both sides. Count unmatched "
+            "and duplicate keys separately, and check joined row counts before comparing totals."
+        ),
+        "evidence": (
+            "Use doc_search to find candidate sections in indexed documents, then doc_read to verify them. "
+            "Cite the title and page or section for each finding and flag gaps in the supplied sources."
         ),
     },
 }
@@ -115,9 +167,15 @@ def prediction(model: dict, signals: set[str]) -> tuple[str, float, float]:
 
 
 def admissible(head: str, message: str) -> bool:
-    if head != "browser":
+    if head == "visual":
         return True
     request = FENCE.sub(" ", message[:1600])
+    if head == "code":
+        return bool(CODE_EVIDENCE.search(request) and not CODE_DOC_WRITE.match(request))
+    if head == "data":
+        return bool(DATA_EVIDENCE.search(request) and (
+            not DATA_TUTORIAL.search(request) or DATA_SUPPLIED.search(request)
+        ))
     if EXPLAIN_BROWSER.search(request) and not CHECK_LIVE.search(request):
         return False
     return bool(BROWSER_EVIDENCE.search(request) and not ACCOUNT_ACTION.search(request))
@@ -131,21 +189,28 @@ def classify(model: dict, signals: set[str]) -> str:
     return "none"
 
 
-def note(message: str, *, browser: bool = True, visual: bool = True) -> str:
+def note(
+    message: str, *, browser: bool = True, visual: bool = True, code: bool = True,
+    tables: bool = True, documents: bool = True,
+) -> str:
     """Return bounded local advice when a supported workflow is recognized."""
-    if not isinstance(message, str) or not message.strip() or not (browser or visual):
+    if not isinstance(message, str) or not message.strip():
+        return ""
+    enabled = (("browser", browser), ("visual", visual), ("code", code), ("data", tables or documents))
+    if not any(active for _, active in enabled):
         return ""
     models = _models()
-    if not models:
+    candidates = [name for name, active in enabled if active and name in models and admissible(name, message)]
+    if not candidates:
         return ""
     signals = features(message)
     hints = []
-    for name, enabled in (("browser", browser), ("visual", visual)):
-        if not enabled or name not in models or not admissible(name, message):
-            continue
+    for name in candidates:
         try:
             label = classify(models[name], signals)
         except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if name == "data" and not (documents if label == "evidence" else tables):
             continue
         hint = HINTS[name].get(label)
         if hint:

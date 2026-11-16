@@ -470,6 +470,11 @@ staged in the shared index when that commit ran. Content is exactly as validated
 
 ## Done
 
+- **Workflow specialists (2026-11-16).** Code and data heads passed fresh and regression
+  evaluations in Google Colab. The code head gave the right workflow on 28 of 36 in-scope
+  final requests and the data head on 31 of 36. Both abstained on their 20 out-of-scope
+  requests. The previous browser and visual weights and thresholds are identical. The
+  agent enables advice only when its tools are available. `tests/test_specialists.py` passes.
 - **2.1.0 — readiness, automatic permissions, model-edited memory, rich replies, window-proof
   context** (Claude Code session `kiwibro-ce`, 2026-10-22). New `readiness.py`: explicit load
   (32K, 4 slots; ladder 16K/8K) + KV prefill of `AgentManager.warm_prefix` on open / model
