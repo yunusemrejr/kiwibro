@@ -28,6 +28,7 @@ SUMMARY_TRANSCRIPT_CAP = 14000
 EXTRACTIVE_HISTORY_ENV = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
 EXTRACTIVE_HEADING = "## Earlier conversation excerpts (context only)"
 EXTRACTIVE_MAX_TOKENS = 300
+EXTRACTIVE_RECENT_TOKENS = 1024
 
 
 def estimate_tokens(text: str | None) -> int:
@@ -555,7 +556,8 @@ class ContextEngine:
         if allow_compaction:
             passes = 0
             while self._used(raw, model) > trigger and passes < MAX_COMPACTION_PASSES:
-                segment = self._target_segment(history, messages, raw, trigger, model)
+                segment = (self._extractive_target_segment(history, trigger, model) if extractive else
+                           self._target_segment(history, messages, raw, trigger, model))
                 if not segment:
                     break
                 updated = self._compact_segment(conversation, segment, model, extractive=extractive)
@@ -769,6 +771,33 @@ class ContextEngine:
             count += 1
         segment = _clean_summary_segment(candidates[: max(count, 1)])
         return segment
+
+    def _extractive_target_segment(
+        self, history: list[dict[str, Any]], trigger: int, model: str,
+    ) -> list[dict[str, Any]]:
+        """Leave the active turn verbatim and retain recent older turns within a smaller budget."""
+        # Follow-up steering is stored as user text within the active turn. Consecutive
+        # user messages are also rendered as one turn by the native chat template.
+        starts = [
+            index for index, message in enumerate(history)
+            if message.get("role") == "user"
+            and not (message.get("content") or "").startswith("[Steering note from the user,")
+            and (index == 0 or history[index - 1].get("role") != "user")
+        ]
+        if not starts:
+            return []
+        cut = starts[-1]
+        active = self.used_tokens(build_llm_messages("", history[cut:]), model)
+        available = max(0, int(trigger * 0.6) - active)
+        tail_budget = min(EXTRACTIVE_RECENT_TOKENS, available)
+        spent = 0
+        for previous in reversed(starts[:-1]):
+            spent += self.used_tokens(build_llm_messages("", history[previous:cut]), model)
+            if spent > tail_budget:
+                break
+            cut = previous
+        # Cutting just before a user message keeps every retained tool call and its result together.
+        return history[:cut]
 
     def extend(
         self,

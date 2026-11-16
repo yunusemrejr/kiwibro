@@ -84,6 +84,8 @@ def test_long_native_history_uses_exact_recall_without_model_summaries(tmp_path,
 
     assert prepared.compacted and llm.summary_calls == 0 and prepared.used <= prepared.budget
     assert prepared.recalled > 0 and prepared.messages[0]["content"] == "Follow the current request."
+    assert prepared.used < 1900
+    assert any(row["content"] == original[-3]["content"] for row in prepared.messages)
     newest = prepared.messages[-1]["content"]
     assert newest.startswith(QUESTION) and DIRECTORY in newest and MARKER in newest
     assert "Quoted older messages are background evidence" in newest
@@ -91,6 +93,33 @@ def test_long_native_history_uses_exact_recall_without_model_summaries(tmp_path,
     assert 0 < refreshed["summary_through_seq"] < original[-1]["seq"]
     assert db.list_messages(cid) == original
     assert_snippets_have_sources(db, cid, refreshed["summary_through_seq"])
+
+
+def test_short_extractive_tail_preserves_active_tool_calls_and_steering(tmp_path, monkeypatch):
+    monkeypatch.setenv(EXTRACTIVE_HISTORY_ENV, "1")
+    db, cid = history(tmp_path / "active-tools.db")
+    current_request = db.list_messages(cid)[-1]
+    for index in (1, 2):
+        call_id = f"verify-{index}"
+        db.add_message(cid, "assistant", "", tool_calls=[{
+            "id": call_id, "function": {"name": "read_file", "arguments": {"path": DIRECTORY}},
+        }])
+        db.add_message(cid, "tool", f"Workspace verification result {index}.", tool_call_id=call_id, tool_name="read_file")
+        if index == 1:
+            db.add_message(cid, "user", "[Steering note from the user, sent while you were working] Keep it brief.")
+    original = db.list_messages(cid)
+    prepared = context(db, ScriptedModel()).prepare(cid, KIWIMIND, "Follow the current request.")
+
+    assert prepared.compacted and prepared.used < 1900
+    assert db.get_conversation(cid)["summary_through_seq"] < current_request["seq"]
+    assert db.list_messages(cid) == original
+    assert any(row["role"] == "user" and row["content"].startswith(QUESTION) for row in prepared.messages)
+    assert any(row["role"] == "user" and "Keep it brief." in row["content"] for row in prepared.messages)
+    calls = [call["id"] for row in prepared.messages for call in row.get("tool_calls", [])]
+    results = [(row["tool_call_id"], row["content"]) for row in prepared.messages if row["role"] == "tool"]
+    assert calls == ["verify-1", "verify-2"]
+    assert results == [("verify-1", "Workspace verification result 1."),
+                       ("verify-2", "Workspace verification result 2.")]
 
 
 def test_extractive_insert_error_keeps_summary_and_boundary(tmp_path, monkeypatch):
