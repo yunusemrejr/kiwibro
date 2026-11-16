@@ -50,7 +50,9 @@ PICTURE_DIR = "screenshots"
 HTML_SUFFIXES = (".html", ".htm")
 _LOCK = threading.Lock()  # one render at a time: each takes about 230 MB
 _PLACEHOLDER = re.compile(r"\{\{\s*[A-Za-z_][\w.-]*\s*\}\}")
-_MOTION = re.compile(r"\b(?:animat\w*|moving|spin\w*|rotat\w*|3-?d|game|simulation|bouncing)\b", re.IGNORECASE)
+_MOTION = re.compile(
+    r"\b(?:animat\w*|mov(?:e|es|ed|ing)|slid\w*|bounc\w*|spin\w*|rotat\w*|orbit\w*|puls\w*|blink\w*|drift\w*|swing\w*"
+    r"|flies|flying|walks|walking|falls|falling|forever|3-?d|game|simulation)\b", re.IGNORECASE)
 _PHONE = re.compile(r"\b(?:phones?|mobile|responsive|smartphone)\b", re.IGNORECASE)
 _ANSWER = re.compile(r"^\W*(yes|no)\b[\W]*", re.IGNORECASE)
 

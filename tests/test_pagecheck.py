@@ -210,3 +210,11 @@ def test_the_real_browser_finds_a_script_error_and_a_page_that_moves(tmp_path: P
     assert "line 2" in bad.findings[0].text  # the page's own line, not one shifted by what the look adds
     good = pagecheck.look(workspace, "ball.html", Options(moves=True))
     assert good.findings == [] and (tmp_path / good.picture).stat().st_size > 200
+
+
+def test_a_request_that_names_movement_in_plain_words_expects_motion():
+    for said in ("a page where a red square moves from left to right forever", "a ball that bounces",
+                 "a logo sliding in", "make an html page with an animation of a bouncing ball"):
+        assert pagecheck.wants_motion(said), said
+    for said in ("a page with my opening hours", "a table of prices", "remove the footer"):
+        assert not pagecheck.wants_motion(said), said
