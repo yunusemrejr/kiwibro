@@ -241,6 +241,30 @@ The upstream GPU expert cache accepts GPU-assigned layers whose complete expert 
 
 A width-preserving quantization control can try Q4_0 or IQ4_NL for the 16 Q5_0 down matrices from the original BF16 weights. It leaves the other 14 down matrices in Q8_0 and reduces the GGUF by about 302.5 MiB. Both formats align to 32 values, so this comparison needs no width change. The impact on output quality, native tool accuracy and throughput remains to be measured.
 
+## CPU cache and thread count at a 24,576-token allocation
+
+The 28-step pilot ran with one slot and the matching projector. Each profile
+passed the same tool call, screenshot and two retrieval checks. The uncached
+retrieval prompt had 1,372 tokens. Peak RSS is the model server's resident
+memory across the four requests. Times exclude server startup.
+
+| Decode / batch threads | KV cache | Total after startup | Peak server RSS |
+| --- | --- | ---: | ---: |
+| 4 / 6 | F16 | 137.12 s | 17,382 MiB |
+| 6 / 6 | Q8_0 | 104.85 s | 16,603 MiB |
+| 6 / 6 | F16 | 81.17 s | 17,370 MiB |
+
+The Q8_0 arm used 767 MiB less peak resident memory than the six-thread F16 arm.
+The six-thread F16 arm finished fastest. The CPU pressure average at each arm's
+start was 12.77%, 30.36%, and 9.32% in table order.
+
+```bash
+python3 -m scripts.mind.tune_local --server "$llama_server" --model "$gemma_gguf" \
+  --mmproj "$projector" --context 24576 --filler-lines 36 --repeats 1 --threads 6 \
+  --max-tokens 64 --profile cpu-f16 --profile cpu-fewer-threads --profile cpu-q8 \
+  --output cpu-24k.json
+```
+
 ## Long chat on the desktop
 
 An isolated app test seeded 18,490 estimated history tokens, then requested an
