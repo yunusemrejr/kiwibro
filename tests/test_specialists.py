@@ -89,6 +89,13 @@ def test_browser_advice_requires_evidence_and_avoids_account_changes():
     assert not specialists.admissible("browser", "Log in to my account and update my billing address.")
 
 
+def test_domain_evidence_avoids_mixed_vocabulary():
+    assert not specialists.admissible("code", "Read coverage.csv and find the highest value for each transaction code.")
+    assert not specialists.admissible("code", "Reconcile the invoice report with the approval export.")
+    assert not specialists.admissible("data", "Open the linked diagram labeled Connection Map from the handbook.")
+    assert not specialists.admissible("data", "Analyze the attached screenshot and explain what the active tab shows.")
+
+
 def test_a_missing_or_corrupt_pack_falls_back(monkeypatch, tmp_path):
     path = tmp_path / "model.gz"
     monkeypatch.setattr(specialists, "MODEL_PATH", path)

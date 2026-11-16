@@ -432,6 +432,10 @@ staged in the shared index when that commit ran. Content is exactly as validated
   `static/js/mock.js` (`DEFAULT_PERMISSIONS`).
 - SSE event names/shapes are contract-tested by `tests/e2e/` — keep
   `meta` first and `done` last; additive fields only.
+- Artifact delivery records confirmed workspace paths in successful tool message
+  `meta.artifacts`. An explicit preview request returns `done.shown_files`
+  and saves the same list in the assistant message metadata for chat reload.
+  The UI resolves those paths through the existing workspace preview API.
 - DB schema is forward-migrated in `kiwibro/db.py` (`_MIGRATIONS`).
 - **Self-update (2026-10-22, Claude Code session — launcher/memory lane):** the running server
   re-executes itself ~20 s after source edits settle, once idle, if the tree compiles and imports
@@ -470,8 +474,14 @@ staged in the shared index when that commit ran. Content is exactly as validated
 
 ## Done
 
+- **Recent-session artifact fixes** (Codex, 2026-11-16). Supported unnamed HTML
+  scene requests save and render a file. HTML delivery and referenced revisions
+  have write steps, revisions retain the original motion checks, and a matching
+  byte-for-byte write leaves the last render result in place. Verified the dance
+  request and the follow-up preview through the local chat API and Chrome.
+
 - **Workflow specialists (2026-11-16).** Code and data heads passed fresh and regression
-  evaluations in Google Colab. The code head gave the right workflow on 28 of 36 in-scope
+  evaluations in Google Colab. The code head gave the right workflow on 27 of 36 in-scope
   final requests and the data head on 31 of 36. Both abstained on their 20 out-of-scope
   requests. The previous browser and visual weights and thresholds are identical. The
   agent enables advice only when its tools are available. `tests/test_specialists.py` passes.

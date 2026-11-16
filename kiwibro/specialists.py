@@ -32,8 +32,9 @@ ACCOUNT_ACTION = re.compile(
 EXPLAIN_BROWSER = re.compile(r"\A\s*(?:please\s+)?(?:explain|describe|teach me|how (?:does|do|can))\b", re.I)
 CHECK_LIVE = re.compile(r"https?://|\b(?:look up|search the web|check online|browse to|inspect the current)\b", re.I)
 CODE_EVIDENCE = re.compile(
-    r"\b(?:repo\w*|checkouts?|changesets?|patch|diff|commits?|branches?|tests?|pytest|suites?|coverage|"
-    r"assertions?|fixtures?|build|ci|compiler|runners?|code|staged|working tree|api|callers?|handlers?|"
+    r"\b(?:repos?|repositor(?:y|ies)|checkouts?|changesets?|patch|diff|commits?|branches?|tests?|pytest|suites?|"
+    r"assertions?|fixtures?|build|ci|compiler|runners?|staged|working tree|api|callers?|handlers?|"
+    r"source code|code (?:reviews?|changes?|edits?|paths?|coverage)|(?:coverage|cover) for|"
     r"failing|runtime|refactor|stack trace|traceback|crash\w*|regression|implementation|git|unit cases?)\b|"
     r"\b[\w-]+\.(?:py|js|ts|tsx|rs|go|java|c|cpp|sh)\b", re.I,
 )
@@ -54,6 +55,11 @@ DATA_TUTORIAL = re.compile(
 DATA_SUPPLIED = re.compile(
     r"\b(?:attached|uploaded|provided|supplied|indexed|existing|my|our|these|this)\s+"
     r"(?:\w+\s+){0,2}(?:data|dataset|rows|records|table|file|spreadsheet|csv|documents?)\b", re.I,
+)
+DATA_NAVIGATION = re.compile(
+    r"\b(?:active|current|browser) tab\b|\b(?:verify|check|confirm|inspect) (?:its|the) (?:url|address)\b|"
+    r"\b(?:follow|open|click) (?:the )?(?:entry|link|linked|tab)\b|"
+    r"\b(?:public (?:policy|announcement|website|portal)|search the web)\b", re.I,
 )
 HINTS = {
     "browser": {
@@ -173,7 +179,7 @@ def admissible(head: str, message: str) -> bool:
     if head == "code":
         return bool(CODE_EVIDENCE.search(request) and not CODE_DOC_WRITE.match(request))
     if head == "data":
-        return bool(DATA_EVIDENCE.search(request) and (
+        return bool(DATA_EVIDENCE.search(request) and not DATA_NAVIGATION.search(request) and (
             not DATA_TUTORIAL.search(request) or DATA_SUPPLIED.search(request)
         ))
     if EXPLAIN_BROWSER.search(request) and not CHECK_LIVE.search(request):
