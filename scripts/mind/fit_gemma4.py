@@ -19,6 +19,8 @@ import time
 from scripts.mind.calibrate_gemma4 import messages_for_processor, rows
 from scripts.mind.prune_gemma4 import BASE_REVISION
 
+PROJECTION_CHUNK = 16
+
 
 def _supervision_template(template: str) -> str:
     # For a new model turn, the canonical non-thinking generation prompt ends
@@ -51,9 +53,39 @@ def _encoded(processor, template: str, messages: list[dict], tools: list[dict], 
     return complete, start
 
 
+def _loss(model, encoded, start: int):
+    import torch
+    from torch.nn import functional as F
+    from torch.utils.checkpoint import checkpoint
+
+    tokens = encoded["input_ids"]
+    positions = torch.arange(start - 1, tokens.shape[1] - 1, device=tokens.device)
+    expected = tokens[:, start:][0]
+    # Keep Gemma's multimodal forward pass and selective final-layer evaluation.
+    # A single vocabulary projection for a long answer can be several GiB, so
+    # recompute only small groups of logits on backward.
+    hidden = model.model(**encoded, logits_to_keep=positions, use_cache=False, return_dict=True).last_hidden_state
+    if hidden.shape[1] == tokens.shape[1]:
+        hidden = hidden.index_select(1, positions)
+    if hidden.shape[1] != expected.numel():
+        raise RuntimeError("Gemma returned an unexpected number of supervised states.")
+    softcap = model.config.get_text_config().final_logit_softcapping
+
+    def project(states, labels):
+        logits = model.lm_head(states)
+        if softcap is not None:
+            logits = (logits / softcap).tanh() * softcap
+        return F.cross_entropy(logits.float(), labels, reduction="sum")
+
+    losses = [
+        checkpoint(project, states, labels, use_reentrant=False)
+        for states, labels in zip(hidden[0].split(PROJECTION_CHUNK), expected.split(PROJECTION_CHUNK), strict=True)
+    ]
+    return torch.stack(losses).sum() / expected.numel()
+
+
 def fit(args: argparse.Namespace) -> None:
     import torch
-    import torch.nn.functional as F
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
@@ -74,6 +106,7 @@ def fit(args: argparse.Namespace) -> None:
         args.checkpoint, device_map="cpu" if packed_training else "cuda",
         dtype=torch.bfloat16, low_cpu_mem_usage=True,
     )
+    backbone = model
     packed_bytes = 0
     if packed_training:
         from scripts.mind.gemma4_expert_training import pack_experts_for_l4
@@ -133,12 +166,7 @@ def fit(args: argparse.Namespace) -> None:
                     continue
                 seen.add((row["id"], target))
                 encoded = encoded.to("cuda", torch.bfloat16)
-                expected = encoded["input_ids"][0, start:]
-                # Project only supervised positions into the 262K-token
-                # vocabulary. Earlier tokens still influence every prediction.
-                positions = torch.arange(start - 1, length - 1, device="cuda")
-                logits = model(**encoded, logits_to_keep=positions, use_cache=False).logits[0]
-                loss = F.cross_entropy(logits.float(), expected)
+                loss = _loss(backbone, encoded, start)
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite loss at {row['id']} step {len(losses)}.")
                 loss.backward()
@@ -148,7 +176,7 @@ def fit(args: argparse.Namespace) -> None:
                     optimizer.zero_grad(set_to_none=True)
                 losses.append(loss.item())
                 coverage[row["family"]] += 1
-                print(f"{len(losses)}/{args.steps} {row['id']} {len(expected)} supervised tokens "
+                print(f"{len(losses)}/{args.steps} {row['id']} {length - start} supervised tokens "
                       f"loss={losses[-1]:.4f}", flush=True)
                 break  # diversify across tasks before taking a second target from a row
             if len(losses) >= args.steps:
@@ -172,6 +200,7 @@ def fit(args: argparse.Namespace) -> None:
     report = {
         "base_revision": BASE_REVISION, "mode": args.mode, "parameters_tuned": parameter_count,
         "seed": args.seed, "learning_rate": args.lr, "steps": len(losses), "max_tokens": args.max_tokens,
+        "projection_chunk_tokens": PROJECTION_CHUNK,
         "corpus_sha256": digest, "workflow_steps": dict(coverage),
         "device": torch.cuda.get_device_name(), "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
         "frozen_fp8_expert_bytes": packed_bytes,
