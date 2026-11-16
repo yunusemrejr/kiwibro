@@ -78,7 +78,7 @@ def run(args: argparse.Namespace) -> dict:
             model = response.json()["data"][0]["id"]
         metadata = {"model": model, "probes_sha256": hashlib.sha256(raw).hexdigest(),
                     "seed": args.seed, "per_family_and_action_kind": args.per_family,
-                    "thinking": args.thinking, "count": len(cases)}
+                    "thinking": args.thinking, "count": len(cases), "answer_capture": "full"}
         if args.artifact_sha256:
             metadata["binding"] = {
                 "artifact_sha256": args.artifact_sha256, "runtime_id": args.runtime_id,
@@ -89,7 +89,7 @@ def run(args: argparse.Namespace) -> dict:
         for i, row in enumerate(cases, 1):
             case = Case(row["id"], row["family"], wire_messages(row, args.probes.parent.resolve()),
                         expected="", tools=row["tools"])
-            result = complete(client, url, model, case, True, args.pid, args)
+            result = complete(client, url, model, case, True, args.pid, args, answer_limit=None)
             actual = {"role": "assistant", "content": result["answer"], "tool_calls": [
                 {"function": {"name": name, "arguments": arguments}} for name, arguments in result["calls"]
             ]}

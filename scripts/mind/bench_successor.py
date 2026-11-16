@@ -309,7 +309,7 @@ def score(case: Case, answer: str, calls) -> bool:
     return not calls and bool(re.fullmatch(case.expected, clean, flags=re.I))
 
 
-def complete(session, url, model, case, cache, pid, args):
+def complete(session, url, model, case, cache, pid, args, *, answer_limit=1200):
     request: dict[str, Any] = {
         "model": model, "messages": case.messages, "temperature": 0, "seed": SAMPLING_SEED,
         "max_tokens": args.max_tokens, "stream": True, "cache_prompt": cache,
@@ -381,7 +381,7 @@ def complete(session, url, model, case, cache, pid, args):
         "ttft_ms": elapsed(first), "first_content_or_tool_ms": elapsed(visible), "total_ms": elapsed(finished),
         "prompt_ms": timings.get("prompt_ms"), "tokens_per_second": timings.get("predicted_per_second"),
         "output_tokens": timings.get("predicted_n", usage.get("completion_tokens")), "memory": sampler.report(),
-        "answer": text[:1200], "calls": decoded,
+        "answer": text[:answer_limit], "calls": decoded,
     }
 
 
