@@ -134,6 +134,24 @@ probes, reasoning settings and token budget. The next-action replay and the
 [native app acceptance suite](MIND-FINALIST-ACCEPTANCE.md) measure different
 parts of the workflow.
 
+### Matched replay results
+
+The three versions ran serially on the same Colab L4 and b12443 CUDA build with
+one 24,576-token slot and the same projector. Each mode scored 26 held-out
+next actions using full answers. Turn time includes prefill and generation.
+
+| Version | Reasoning Off | Median turn | Reasoning On | Median turn |
+| --- | ---: | ---: | ---: | ---: |
+| Stock Gemma, UD-IQ3_XXS | 5/26 | 1.16 s | 10/26 | 3.23 s |
+| 300 steps, standard Q4_K_M | 6/26 | 0.99 s | 6/26 | 1.58 s |
+| 300 steps, expert down weights in Q4_0 | 7/26 | 0.99 s | 6/26 | 2.08 s |
+
+All 156 requests completed. The compressed exports had shorter medians and
+missed four more cases than stock with reasoning On. On the Ryzen laptop, the
+standard export passed exact recall after 18,490 estimated tokens of history.
+The repository diagnosis timed out after repeatedly trying nonexistent paths.
+[Laptop measurements](../scripts/mind/NATIVE_CPU.md#long-chat-on-the-desktop)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
