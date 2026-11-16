@@ -7,8 +7,8 @@ From the checkout root, run:
       --output /tmp/kiwibro-memory-eval.json
 
 Requires the app's usual Python dependencies and llama-server, selected with its
-normal discovery or --server. All memories and server logs are temporary. Compare
-both models with the same prompt mode for an ablation of the fine-tuning alone.
+normal discovery or --server. All memories and server logs are temporary. Use
+the same prompt mode and quantization when isolating the effect of fine-tuning.
 
 The corpus is frozen synthetic English. Raw scoring matches each expected
 fact to one model line using labeled relation and value patterns, and scores
