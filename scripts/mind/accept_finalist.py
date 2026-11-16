@@ -21,6 +21,9 @@ from scripts.mind.bench_successor import MemorySamples, host_info, proc_values
 from scripts.mind.tune_local import sha256
 
 JOURNAL = "KIWIBRO_FINALIST_JOURNAL"
+PLACEMENT = "KIWIBRO_ACCEPTANCE_PLACEMENT"
+DIRECT_GPU = {"auto": "auto", "cpu": "off"}
+EXTRACTIVE_HISTORY = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
 SUPPLEMENT = "tests/test_finalist_acceptance.py"
 ACCEPTANCE = "tests/test_successor_acceptance.py"
 CASES = {
@@ -175,7 +178,13 @@ def run(args, scratch: Path, report: dict) -> None:
     if site.ENABLE_USER_SITE:
         environment["PYTHONPATH"] = site.getusersitepackages()
     if args.native_data:
-        environment.update(KIWIBRO_ACCEPTANCE_NATIVE_DATA=str(args.native_data), KIWIBRO_LLAMA_SERVER=str(args.server))
+        environment.update({
+            "KIWIBRO_ACCEPTANCE_NATIVE_DATA": str(args.native_data),
+            "KIWIBRO_LLAMA_SERVER": str(args.server),
+            PLACEMENT: args.placement,
+        })
+        if args.extractive_history:
+            environment[EXTRACTIVE_HISTORY] = "1"
     nodes = [f"{CASES[label][0]}::{CASES[label][1]}" for label in args.case]
     command = [sys.executable, "-m", "pytest", "-q", "-p", "scripts.mind.accept_finalist", *nodes]
     root = Path(__file__).resolve().parents[2]
@@ -211,6 +220,10 @@ def main() -> int:
     parser.add_argument("--native-data", type=Path, help="Data root containing mind/candidate/manifest.json.")
     parser.add_argument("--server", type=Path, help="Verified native llama-server executable.")
     parser.add_argument("--scripted", action="store_true", help="Check the driver without a live model.")
+    parser.add_argument("--placement", choices=DIRECT_GPU, default="auto",
+                        help="Use the app's automatic backend selection or force CPU in its isolated settings.")
+    parser.add_argument("--extractive-history", action="store_true",
+                        help="Enable experimental native extractive history compaction.")
     parser.add_argument("--case", action="append", choices=CASES)
     parser.add_argument("--history-tokens", type=int, default=18000)
     parser.add_argument("--reasoning", choices=("off", "on"), default="off")
@@ -219,6 +232,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.scripted == bool(args.native_data or args.server) or (not args.scripted and not (args.native_data and args.server)):
         parser.error("Use --scripted, or provide both --native-data and --server.")
+    if args.scripted and (args.placement != "auto" or args.extractive_history):
+        parser.error("Backend placement and extractive history only apply to a native run.")
     if not 1000 <= args.history_tokens <= 65536 or min(args.turn_timeout, args.suite_timeout) < 1:
         parser.error("Expected a history budget of 1000–65536 and positive timeouts.")
     args.case = list(dict.fromkeys(args.case or CASES))
@@ -226,6 +241,8 @@ def main() -> int:
         args.native_data, args.server = args.native_data.expanduser().resolve(), args.server.expanduser().resolve()
     result = {"mode": "scripted" if args.scripted else "native", "passed": False,
               "cases": args.case, "reasoning": args.reasoning, "history_tokens_target": args.history_tokens,
+              "placement": None if args.scripted else args.placement,
+              "extractive_history": args.extractive_history,
               "turn_timeout_s": args.turn_timeout, "suite_timeout_s": args.suite_timeout,
               "suite_timed_out": False, "phases": [], "host": host_info()}
     with args.report.open("x", encoding="utf-8") as output:

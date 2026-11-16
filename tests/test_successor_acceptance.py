@@ -30,6 +30,7 @@ from collections import Counter
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shlex
@@ -49,8 +50,9 @@ from kiwibro import create_app, pagecheck, tools
 from kiwibro.browser_render import _page_socket
 from kiwibro.llm import ChatResult, Completion
 from kiwibro.mind import KIWIMIND
-from kiwibro.mind.native_generic import NATIVE_FORMAT, describe_pack
+from kiwibro.mind.native_generic import NATIVE_FORMAT, NATIVE_MODEL, describe_pack
 from kiwibro.mind.pack import CHECK_CACHE, MANIFEST, Pack, PackError
+from scripts.mind.accept_finalist import DIRECT_GPU, PLACEMENT
 from test_backend import Env, SSEStream, tool_call_result
 
 PKG = "stack/packages/queue_policy/policy.py"
@@ -93,7 +95,9 @@ def verified_native_pack(tmp_path_factory: pytest.TempPathFactory) -> Pack:
 
 
 @pytest.fixture
-def acceptance(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
+def acceptance(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> Iterator[Env]:
     endpoint = os.environ.get("KIWIBRO_ACCEPTANCE_ENDPOINT")
     native = bool(os.environ.get(NATIVE_DATA))
     if endpoint and native:
@@ -135,6 +139,14 @@ def acceptance(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pyte
         return
 
     llm = scenario.svc.llm
+    placement = os.environ.get(PLACEMENT, "auto")
+    if placement not in DIRECT_GPU:
+        pytest.fail(f"{PLACEMENT} must be auto or cpu.")
+    # Set the scratch database directly before discovering the pack. The
+    # settings API would also queue readiness and warm the test's first turn.
+    scenario.svc.db.set_setting("direct_gpu", DIRECT_GPU[placement])
+    caplog.set_level(logging.INFO, logger="kiwibro.engine")
+    scenario.native_log = caplog
     mind = llm.mind()
     try:
         response = scenario.client.get("/api/mind")
@@ -149,11 +161,48 @@ def acceptance(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pyte
             llm.stop_direct()
 
 
+def managed_backend(env: Env) -> str | None:
+    server = env.svc.llm.direct_engine().loaded(NATIVE_MODEL)
+    return ("gpu" if server.gpu else "cpu") if server else None
+
+
+def native_transitions(records: list[logging.LogRecord]) -> dict[str, Any]:
+    launches = []
+    fallbacks = 0
+    for record in records:
+        if record.name != "kiwibro.engine" or not isinstance(record.args, tuple) or record.args[:1] != (NATIVE_MODEL,):
+            continue
+        if record.msg == "direct engine: starting %s (%s, ctx %d, %d slots, %d threads%s)":
+            _, _, context, slots, threads, gpu = record.args
+            launches.append({"backend": "gpu" if gpu else "cpu", "context": context, "slots": slots, "threads": threads})
+        elif record.msg == "direct engine: graphics device lost for %s, using CPU for this session":
+            fallbacks += 1
+    return {"launches": launches, "gpu_fallbacks": fallbacks}
+
+
+def terminal_status(events: list[tuple[str, dict[str, Any]]], timed_out: bool) -> dict[str, Any]:
+    name, payload = next(((name, data) for name, data in reversed(events) if name in {"error", "done"}), ("", {}))
+    code = payload.get("code") if name == "error" else None
+    if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", code):
+        code = None
+    terminal = "missing"
+    if timed_out:
+        terminal = "timeout"
+    elif name == "error":
+        terminal = "error"
+    elif name == "done":
+        terminal = "aborted" if payload.get("aborted") else "done"
+    return {"terminal": terminal, "sse_error_code": code}
+
+
 def turn(
     env: Env, prompt: str, allowed: set[str], *, allowed_paths: set[str] | None = None,
     command: tuple[str, str] | None = None, attachments: list[dict] | None = None,
     conversation_id: str | None = None, observer: Callable[[dict], None] | None = None,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
+    native_log = getattr(env, "native_log", None) if observer else None
+    start_records = len(native_log.records) if native_log is not None else 0
+    backend_before = managed_backend(env) if native_log is not None else None
     # Keep generated code in scratch space. The test driver may approve only
     # the predeclared test invocation and edits to the requested fixture file.
     writes = {"apply_patch", "replace_in_file", "write_file"}
@@ -214,16 +263,24 @@ def turn(
             stream.done.wait(3)
         if observer:
             done = next((data for event, data in observed if event == "done"), {})
-            observer({
+            stats = {
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 "timed_out": timed_out, "context": {key: value for key, value in meta.get("context", {}).items()
                                                      if key in {"used", "budget", "percent"}},
                 "usage": done.get("usage"), "same_chat": not conversation_id or meta.get("conversation_id") == conversation_id,
+                **terminal_status(observed, timed_out),
                 "successful_tools": dict(Counter(data["name"] for event, data in observed
                                                  if event == "tool_result" and data["ok"] and data["name"] in allowed)),
                 "failed_tools": dict(Counter(data["name"] for event, data in observed
                                              if event == "tool_result" and not data["ok"] and data["name"] in allowed)),
-            })
+            }
+            if native_log is not None:
+                stats["native_execution"] = {
+                    "backend_before": backend_before,
+                    "backend_after": managed_backend(env),
+                    **native_transitions(native_log.records[start_records:]),
+                }
+            observer(stats)
     assert events[0][0] == "meta"
     assert events[-1][0] == "done", [(name, data) for name, data in events if name == "error"]
     assert not events[-1][1]["aborted"]
@@ -331,7 +388,7 @@ def snapshot(root: Path) -> dict[str, str]:
             for path in root.rglob("*") if path.is_file()}
 
 
-def test_stale_data_path_and_typed_argument_recovery(acceptance: Env) -> None:
+def test_stale_data_path_and_typed_argument_recovery(acceptance: Env, record_property) -> None:
     env = acceptance
     old = "shipments/round-2/old.tsv"
     path = "shipments/round-2/priority-status.tsv"
@@ -355,6 +412,7 @@ def test_stale_data_path_and_typed_argument_recovery(acceptance: Env) -> None:
         "inside shipments/round-2 and report the number of failed status rows out of the total. "
         "Give both counts and the actual source file. This is a read-only check.",
         {"analyze_table", "list_files", "glob_files", "read_files", "read_file", "calculate"},
+        observer=lambda stats: record_property("turn", {"step": "recover_path", **stats}),
     )
     assert snapshot(env.workspace) == before
     assistant = [row["content"] for row in messages if row["role"] == "assistant"][-1]
@@ -411,7 +469,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 def test_attachment_to_interactive_rendered_artifact(
-    acceptance: Env, monkeypatch: pytest.MonkeyPatch, offline_chrome: Path,
+    acceptance: Env, monkeypatch: pytest.MonkeyPatch, offline_chrome: Path, record_property,
 ) -> None:
     env = acceptance
     if not pagecheck.find_chrome():
@@ -468,6 +526,7 @@ button.addEventListener("click", () => {{
         "Keep the page readable on a phone at 360 px and check the saved render.",
         {"write_file", "read_file", "apply_patch", "replace_in_file", "describe_image", "look_at_page"},
         allowed_paths={PANEL}, attachments=[{"path": attachment["path"]}],
+        observer=lambda stats: record_property("turn", {"step": "render_panel", **stats}),
     )
     assert before.read_bytes() == raw
     page = (env.workspace / PANEL).read_text()
@@ -647,7 +706,7 @@ def check_hatch(chrome: Path, page: Path) -> None:
     assert sum(returned[20:]) < 0.005 * summed, "Closing did not restore the initial rendered pose."
 
 
-def test_builds_and_checks_an_interactive_3d_hatch(acceptance: Env, offline_chrome: Path) -> None:
+def test_builds_and_checks_an_interactive_3d_hatch(acceptance: Env, offline_chrome: Path, record_property) -> None:
     env = acceptance
     filename = "inspection-hatch.html"
     if env.fake:
@@ -668,6 +727,7 @@ def test_builds_and_checks_an_interactive_3d_hatch(acceptance: Env, offline_chro
         "and JS only. Check the saved page using look_at_page.",
         {"write_file", "read_file", "apply_patch", "replace_in_file", "look_at_page"},
         allowed_paths={filename},
+        observer=lambda stats: record_property("turn", {"step": "build_hatch", **stats}),
     )
     assert any(event == "tool_result" and data["name"] == "look_at_page" and data["ok"] for event, data in events)
     assert (env.workspace / "screenshots" / "look-inspection-hatch.png").is_file()

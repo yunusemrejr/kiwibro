@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import sys
 
 import pytest
 
 from kiwibro.context import estimate_tokens
-from kiwibro.llm import ChatResult
+from kiwibro.llm import ChatResult, LLMError
+from kiwibro.mind.native_generic import NATIVE_MODEL
+from scripts.mind.accept_finalist import PLACEMENT
 from test_backend import env  # noqa: F401 - scripted app fixture
+from test_mind_native_generic import pack_at
 from test_successor_acceptance import (  # noqa: F401 - imported pytest fixtures
-    CHECK, FIXED_LIMIT, NOTE, ORIGINAL_LIMIT, PKG, acceptance, call, git, repo_fixture,
-    run_fixture_tests, snapshot, turn, verified_native_pack,
+    CHECK, FIXED_LIMIT, NATIVE_DATA, NOTE, ORIGINAL_LIMIT, PKG, acceptance, call, git, managed_backend,
+    native_transitions, repo_fixture, run_fixture_tests, snapshot, turn, verified_native_pack,
 )
 
 
@@ -133,3 +138,53 @@ def test_acceptance_turn_never_approves_writes_after_timeout(env, monkeypatch):
         turn(env, "Write after-timeout.txt.", {"write_file"},
              allowed_paths={"after-timeout.txt"}, observer=observed.append)
     assert observed[0]["timed_out"] and not (env.workspace / "after-timeout.txt").exists()
+    assert observed[0]["terminal"] == "timeout"
+
+
+def test_acceptance_reports_model_error_separately_from_done_without_usage(env):
+    observed = []
+    env.fake.stream_script = [ChatResult(content="The verification is complete.")]
+    turn(env, "Acknowledge the verification result.", set(), observer=observed.append)
+    assert observed[0]["terminal"] == "done" and observed[0]["usage"] is None
+    assert observed[0]["sse_error_code"] is None
+
+    private_message = "GPU lost while opening /private/model.gguf"
+    env.fake.stream_script = [LLMError("device_lost", private_message)]
+    with pytest.raises(AssertionError):
+        turn(env, "Acknowledge the verification result.", set(), observer=observed.append)
+    assert observed[1]["terminal"] == "error" and observed[1]["usage"] is None
+    assert observed[1]["sse_error_code"] == "device_lost" and private_message not in str(observed[1])
+
+
+def test_acceptance_native_placement_records_managed_launch_and_fallback(caplog):
+    logger = logging.getLogger("kiwibro.engine")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        starting = "direct engine: starting %s (%s, ctx %d, %d slots, %d threads%s)"
+        logger.info(starting, NATIVE_MODEL, "/private/runtime", 8192, 1, 6, ", GPU Radeon")
+        logger.warning("direct engine: graphics device lost for %s, using CPU for this session", NATIVE_MODEL)
+        logger.info(starting, "unrelated-model", "/private/runtime", 8192, 1, 6, "")
+        logger.info(starting, NATIVE_MODEL, "/private/runtime", 8192, 1, 6, "")
+    assert native_transitions(caplog.records) == {
+        "launches": [
+            {"backend": "gpu", "context": 8192, "slots": 1, "threads": 6},
+            {"backend": "cpu", "context": 8192, "slots": 1, "threads": 6},
+        ],
+        "gpu_fallbacks": 1,
+    }
+
+
+def test_acceptance_native_cpu_setting_applies_before_model_launch(request, tmp_path, monkeypatch):
+    staged = tmp_path / "staged"
+    pack_at(staged)
+    monkeypatch.setenv(NATIVE_DATA, str(staged))
+    monkeypatch.setenv(PLACEMENT, "cpu")
+    monkeypatch.setenv("KIWIBRO_LLAMA_SERVER", sys.executable)
+    monkeypatch.delenv("KIWIBRO_ACCEPTANCE_ENDPOINT", raising=False)
+
+    def unexpected_launch(*_args, **_kwargs):
+        pytest.fail("Selecting a backend launched a model before the first turn.")
+
+    monkeypatch.setattr("kiwibro.engine.DirectEngine._launch", unexpected_launch)
+    scenario = request.getfixturevalue("acceptance")
+    assert scenario.svc.settings_provider()["direct_gpu"] == "off"
+    assert managed_backend(scenario) is None
