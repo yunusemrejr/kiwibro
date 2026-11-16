@@ -797,7 +797,7 @@ def score(expected: dict, response: dict) -> bool:
     )
 
 
-def check(out: Path) -> dict:
+def check(out: Path, *, training_only: bool = False) -> dict:
     from PIL import Image
     from kiwibro.tools import tool_defs, validate_args
 
@@ -806,7 +806,7 @@ def check(out: Path) -> dict:
     seen_requests = set()
     heldout = {}
     summary: dict[str, Any] = {}
-    for split in ("train", "heldout"):
+    for split in (("train",) if training_only else ("train", "heldout")):
         rows = read_jsonl(out / f"{split}.jsonl")
         families: dict[str, int] = {}
         for row in rows:
@@ -856,6 +856,8 @@ def check(out: Path) -> dict:
             if split == "heldout":
                 heldout[row["id"]] = row
         summary[split] = {"episodes": len(rows), "families": families}
+    if training_only:
+        return summary
     cases = read_jsonl(out / "probes.jsonl")
     for probe in cases:
         row = heldout[probe["episode"]]
