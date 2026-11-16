@@ -224,6 +224,50 @@ def test_public_chat_prefill_and_memory_share_the_authenticated_local_engine(
     assert mind.describe()["active"] == "candidate"
 
 
+@pytest.mark.parametrize("partial", [False, True])
+def test_lost_device_stops_native_gpu_and_only_retries_before_output(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, partial: bool) -> None:
+    from types import SimpleNamespace
+
+    from kiwibro.mind import KIWIMIND
+
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    pack_at(tmp_path, base="google/gemma-4-26B-A4B-it", effort=False)
+    client = LLMClient(lambda: {}, data_dir=tmp_path)
+    runner = client.direct_engine()
+    monkeypatch.setattr(client.mind(), "runtime", lambda: object())
+    gpu = SimpleNamespace(url="http://127.0.0.1:9999", gpu="Renoir", adapters=(), alive=lambda: True)
+    cpu = SimpleNamespace(url="http://127.0.0.1:9998", gpu="", adapters=(), alive=lambda: True)
+    monkeypatch.setattr(runner, "_servers", {NATIVE_MODEL: gpu})
+    killed, urls, deltas = [], [], []
+    monkeypatch.setattr(runner, "_kill", killed.append)
+    monkeypatch.setattr(runner, "acquire", lambda model: runner._servers.setdefault(model, cpu))
+    monkeypatch.setattr(runner, "release", lambda server: None)
+
+    def post(url: str, **_kwargs: Any) -> Reply:
+        urls.append(url)
+        if url.startswith(cpu.url):
+            assert killed == [gpu]
+            assert NATIVE_MODEL in runner._unavailable_gpu
+            return text_reply("CPU answer.")
+        error = {"error": {"code": 500, "message": "decode() failed: vk::Queue::submit: ErrorDeviceLost"}}
+        output = [{"choices": [{"delta": {"content": "Partial"}}]}] if partial else []
+        return Reply(*output, error)
+
+    monkeypatch.setattr("kiwibro.llm.requests.post", post)
+    if partial:
+        with pytest.raises(LLMError, match="graphics device"):
+            client.stream_chat(model=KIWIMIND, messages=MESSAGES, on_delta=deltas.append)
+        assert deltas == ["Partial"]
+        assert urls == [f"{gpu.url}/v1/chat/completions"]
+    else:
+        result = client.stream_chat(model=KIWIMIND, messages=MESSAGES, on_delta=deltas.append)
+        assert result.content == "CPU answer." and deltas == ["CPU answer."]
+        assert urls == [f"{gpu.url}/v1/chat/completions", f"{cpu.url}/v1/chat/completions"]
+    assert killed == [gpu]
+    assert NATIVE_MODEL in runner._unavailable_gpu and not runner._starting
+
+
 def test_candidate_mode_requires_its_pack_without_exposing_old_downloads(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from mind_pack import make_pack

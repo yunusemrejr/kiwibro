@@ -763,6 +763,7 @@ class DirectEngine:
         self._scan_key: tuple[Any, ...] = ()
         self._servers: dict[str, Server] = {}
         self._starting: dict[str, threading.Event] = {}
+        self._unavailable_gpu: set[str] = set()
         self._flags: dict[str, frozenset[str]] = {}
         self._lock = threading.RLock()
         self._last_error: str | None = None
@@ -1082,7 +1083,7 @@ class DirectEngine:
         threads = int(self._settings().get("direct_threads") or 0) or physical_cores()
         port = _free_port()
         devices = gpu_devices(runtime)
-        offload = self._gpu_on() if devices else None
+        offload = self._gpu_on() and model.id not in self._unavailable_gpu if devices else None
         args = server_args(
             runtime, self._flags[runtime.path], model, port=port, api_key=self.api_key,
             context_length=context_length, parallel=parallel, threads=threads, cache_ram_mb=self._cache_ram_mb(),
@@ -1157,6 +1158,28 @@ class DirectEngine:
         """Stop a model's server; False when it is not running or still answering a request."""
         model = self.find(model_id)
         return self._stop(model.id if model else str(model_id), only_idle=True)
+
+    def fallback_managed_gpu(self, model_id: str, failed_url: str) -> bool:
+        """Release a lost device before the managed model can start on CPU."""
+        with self._lock:
+            server = self._servers.get(model_id)
+            if (
+                model_id not in self._managed or model_id in self._starting
+                or server is None or not server.gpu or server.url != failed_url
+            ):
+                return False
+            stopped = threading.Event()
+            self._starting[model_id] = stopped
+            self._unavailable_gpu.add(model_id)
+            del self._servers[model_id]
+        try:
+            self._kill(server)
+        finally:
+            with self._lock:
+                del self._starting[model_id]
+                stopped.set()
+        log.warning("direct engine: graphics device lost for %s, using CPU for this session", model_id)
+        return True
 
     def stop_idle(self, min_idle_s: float) -> int:
         """Stop every server that answers nothing and was last used at least ``min_idle_s`` ago."""

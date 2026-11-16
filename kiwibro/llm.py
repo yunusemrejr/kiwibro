@@ -235,6 +235,8 @@ def classify_http_error(status: int, body: str) -> LLMError:
     """Map a non-200 response from the model server to a typed error."""
     text = (body or "").lower()
     if status >= 500:
+        if "errordevicelost" in text or "vk_error_device_lost" in text:
+            return LLMError("device_lost", "The graphics device stopped responding.", status)
         return LLMError("server", "The model server had an error. Try again.", status)
     if status in (400, 413, 422):
         if any(marker in text for marker in _TOOL_MARKERS):
@@ -612,8 +614,10 @@ class LLMClient:
             self._announce_helper(model, events)
         use_tools = bool(tools)
         base = url = ""  # set by _serving below, before attempt() runs
+        generated = False
 
         def attempt(with_tools: bool) -> ChatResult:
+            nonlocal generated
             payload = self._payload(
                 model, messages, tools if with_tools else None, temperature, max_tokens, stream=True,
                 extra=extra,
@@ -666,6 +670,7 @@ class LLMClient:
                             log.debug("skipping malformed stream chunk: %.200s", data)
                             continue
                         self._consume_chunk(chunk, result, tool_acc, on_delta, on_reasoning, on_rewrite)
+                        generated = generated or bool(result.content or result.reasoning)
                     if abort is not None and abort.is_set():
                         raise TurnAborted()
             except requests.RequestException as exc:
@@ -681,17 +686,31 @@ class LLMClient:
             result.tool_calls = self._finish_tool_calls(tool_acc)
             return result
 
-        with self._serving(model) as base:
-            url = f"{base}/v1/chat/completions"
-            try:
-                return attempt(use_tools)
-            except ToolsUnsupportedError:
-                if not use_tools:
-                    raise
-                log.info("model %s rejected tools; retrying without tools", model)
-                result = attempt(False)
-                result.tools_disabled = True
-                return result
+        def run() -> ChatResult:
+            nonlocal base, url
+            with self._serving(model) as base:
+                url = f"{base}/v1/chat/completions"
+                try:
+                    return attempt(use_tools)
+                except ToolsUnsupportedError:
+                    if not use_tools:
+                        raise
+                    log.info("model %s rejected tools; retrying without tools", model)
+                    result = attempt(False)
+                    result.tools_disabled = True
+                    return result
+
+        try:
+            return run()
+        except LLMError as error:
+            if error.kind != "device_lost" or not self.direct_on():
+                raise
+            recovered = self.direct_engine().fallback_managed_gpu(model, base)
+            if not recovered or generated:
+                raise
+            if abort is not None and abort.is_set():
+                raise TurnAborted() from error
+            return run()
 
     def _announce_helper(self, model: str, events: Callable[[str, dict[str, Any]], None]) -> None:
         """A model that is not Kiwi Mind leads this turn: say so, and say why once."""
@@ -782,6 +801,9 @@ class LLMClient:
     ) -> None:
         if not isinstance(chunk, dict):
             return
+        if error := chunk.get("error"):
+            status = error.get("code", 500) if isinstance(error, dict) else 500
+            raise classify_http_error(status if type(status) is int else 500, json.dumps(error))
         usage = _usage(chunk.get("usage"))
         if usage:
             result.usage = usage

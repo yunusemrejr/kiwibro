@@ -45,6 +45,10 @@ Open [the isolated app](http://127.0.0.1:8778), or inspect its checked pack meta
 Before the first request, `running` can be false. A missing pack, corrupt file or unavailable
 runtime appears in `reason`.
 
+If Vulkan reports that the graphics device was lost, the candidate switches to CPU
+for the app session. It retries the current request once when generation has yet to
+produce any answer or reasoning text.
+
 For a compacted Gemma pack, pass `--architecture path/to/architecture.json` from
 [the expert export](../scripts/mind/prune_gemma4.py). For a fitted checkpoint, also
 supply `--training path/to/training.json` from the completed Colab run. Staging
