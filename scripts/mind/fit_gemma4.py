@@ -37,8 +37,9 @@ def _supervision_template(template: str) -> str:
     """)
 
 
-def _encoded(processor, template: str, messages: list[dict], tools: list[dict], target: int):
-    params = dict(chat_template=template, tools=tools, tokenize=True, return_dict=True, return_tensors="pt")
+def _encoded(processor, template: str, messages: list[dict], tools: list[dict], target: int, *, thinking: bool = False):
+    params = dict(chat_template=template, tools=tools, enable_thinking=thinking,
+                  tokenize=True, return_dict=True, return_tensors="pt")
     prefix = processor.apply_chat_template(messages[:target], add_generation_prompt=True, **params)
     complete = processor.apply_chat_template(messages[:target + 1], add_generation_prompt=False, **params)
     input_ids = complete["input_ids"][0]
@@ -94,6 +95,17 @@ def fit(args: argparse.Namespace) -> None:
         raise ValueError("Training requires positive steps and a usable token budget.")
     if args.output.exists():
         raise FileExistsError(args.output)
+    corpus = rows(args.corpus, args.per_family, args.seed)
+    if not corpus:
+        raise ValueError("No training rows.")
+    for row in corpus:
+        thinking = row.get("thinking", False)
+        assistant = [message for message in row["messages"] if message["role"] == "assistant"]
+        if type(thinking) is not bool or (thinking and any(
+            not isinstance(message.get("reasoning"), str) or not message["reasoning"].strip()
+            for message in assistant
+        )):
+            raise ValueError(f"Invalid reasoning supervision in {row['id']}.")
     architecture_path = args.checkpoint / "architecture.json"
     architecture = json.loads(architecture_path.read_text())
     if architecture.get("base_revision") != BASE_REVISION:
@@ -159,23 +171,23 @@ def fit(args: argparse.Namespace) -> None:
         optimizer = torch.optim.AdamW(trainable, lr=args.lr, fused=True)
 
     model.train()
-    corpus = rows(args.corpus, args.per_family, args.seed)
-    if not corpus:
-        raise ValueError("No training rows.")
     coverage = Counter()
+    reasoning_steps = 0
     losses = []
     seen = set()
     began = time.monotonic()
     for _ in range(args.epochs):
         rng.shuffle(corpus)
         for row in corpus:
+            thinking = row.get("thinking", False)
             messages = messages_for_processor(row, args.corpus.parent)
             targets = [i for i, message in enumerate(messages) if message["role"] == "assistant"]
             rng.shuffle(targets)
             for target in targets:
                 if (row["id"], target) in seen:
                     continue
-                encoded, start = _encoded(processor, supervision_template, messages, row["tools"], target)
+                encoded, start = _encoded(processor, supervision_template, messages, row["tools"], target,
+                                          thinking=thinking)
                 length = encoded["input_ids"].shape[-1]
                 if length > args.max_tokens:
                     continue
@@ -191,6 +203,7 @@ def fit(args: argparse.Namespace) -> None:
                     optimizer.zero_grad(set_to_none=True)
                 losses.append(loss.item())
                 coverage[row["family"]] += 1
+                reasoning_steps += thinking
                 print(f"{len(losses)}/{args.steps} {row['id']} {length - start} supervised tokens "
                       f"loss={losses[-1]:.4f}", flush=True)
                 break  # diversify across tasks before taking a second target from a row
@@ -216,6 +229,7 @@ def fit(args: argparse.Namespace) -> None:
         "base_revision": BASE_REVISION, "mode": args.mode, "parameters_tuned": parameter_count,
         "seed": args.seed, "learning_rate": args.lr, "steps": len(losses), "max_tokens": args.max_tokens,
         "initial_training_steps": initial_steps, "total_steps": initial_steps + len(losses),
+        "reasoning_steps": reasoning_steps,
         "projection_chunk_tokens": PROJECTION_CHUNK,
         "corpus_sha256": digest, "workflow_steps": dict(coverage),
         "device": torch.cuda.get_device_name(), "peak_gpu_bytes": torch.cuda.max_memory_allocated(),

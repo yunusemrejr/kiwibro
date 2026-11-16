@@ -58,6 +58,9 @@ Build the [KiwiBro curriculum](../scripts/mind/agent_corpus.py) with
 `python3 -m scripts.mind.agent_corpus build corpus --verify-fixtures`. The training
 input is `corpus/train.jsonl` with its referenced images. Keep the held-out conversations and
 next-action probes outside the training input.
+Training rows with `thinking: true` use the native reasoning template and must supply
+brief evidence-based reasoning on every assistant turn. Other rows use the compact
+non-thinking template.
 
 The L4 recipe uses the [pinned Gemma checkpoint](https://huggingface.co/google/gemma-4-26B-A4B-it/tree/4d7ae4984b7db7de8f8457170b3f1a419ee76d52)
 in `reference/`, a BF16-capable Colab CUDA runtime, Transformers 5.23.0, Accelerate,
