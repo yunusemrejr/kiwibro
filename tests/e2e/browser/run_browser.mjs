@@ -447,35 +447,24 @@ async function flowModels(page, outDir, options) {
   const file = await shot(page, outDir, "models", options.settle);
   // switch away from the current model and back, proving selection works
   const current = (await page.textContent(SEL.modelPillName)).trim();
-  const items = page.locator(`${SEL.modelPopover} .menu-item`);
-  const count = await items.count();
-  let switched = false;
-  for (let index = 0; index < count; index += 1) {
-    const label = (await items.nth(index).innerText()).split("\n")[0].trim();
-    if (label && label !== current) {
-      await items.nth(index).click();
-      await page.waitForFunction(
-        (previous) => document.querySelector("#model-pill-name")?.textContent?.trim() !== previous,
-        current,
-        { timeout: 10000 },
-      );
-      switched = true;
-      break;
-    }
-  }
-  await page.keyboard.press("Escape");
-  await page.waitForSelector(SEL.modelPopover, { state: "detached", timeout: 5000 }).catch(() => {});
-  if (!switched) throw new Error("model popover had no alternative model to switch to");
+  const items = page.locator(`${SEL.modelPopover} [role="menuitemradio"][data-model-id]`);
+  const selected = items.and(page.locator('[aria-checked="true"]'));
+  const original = await selected.getAttribute("data-model-id");
+  const alternatives = items.and(page.locator('[aria-checked="false"]'));
+  if (!(await alternatives.count())) throw new Error("model popover had no alternative model to switch to");
+  await alternatives.first().click();
+  await page.waitForFunction(
+    (previous) => document.querySelector("#model-pill-name")?.textContent?.trim() !== previous,
+    current,
+    { timeout: 10000 },
+  );
   // restore the original selection so later flows/screenshots stay canonical
   await page.click(SEL.modelPill);
   await page.waitForSelector(SEL.modelPopover, { timeout: 5000 });
-  const rows = page.locator(`${SEL.modelPopover} .menu-item`);
-  for (let index = 0; index < (await rows.count()); index += 1) {
-    const label = (await rows.nth(index).innerText()).split("\n")[0].trim();
-    if (label === current) {
-      await rows.nth(index).click();
-      break;
-    }
+  for (const item of await items.all()) {
+    if ((await item.getAttribute("data-model-id")) !== original) continue;
+    await item.click();
+    break;
   }
   await page.waitForFunction(
     (expected) => document.querySelector("#model-pill-name")?.textContent?.trim() === expected,
@@ -684,10 +673,12 @@ async function flowHow(page, outDir, options) {
   const file = await shot(page, outDir, "how", options.settle);
   const sheet = page.locator(SEL.howSheet);
   await sheet.getByRole("button", { name: /Kiwi Mind/ }).click();
-  await sheet.getByText(/kiwimind-trunk\.gguf/).waitFor({ state: "visible" });
+  await sheet.getByText(/switches the route and skill adapters automatically/).waitFor({ state: "visible" });
+  await sheet.getByText(/recovered 39 of 51 expected facts/).waitFor({ state: "visible" });
+  await sheet.getByText(/starts on demand when the Spark pack or runtime is unavailable/).waitFor({ state: "visible" });
   await sheet.getByRole("button", { name: /Kiwi Sense/ }).click();
-  await sheet.getByText(/specialists-v1\.json\.gz/).waitFor({ state: "visible" });
-  await sheet.getByText(/17 of 20 supported requests/).waitFor({ state: "visible" });
+  await sheet.getByText(/Four Colab-trained specialists/).waitFor({ state: "visible" });
+  await sheet.getByText(/27\/36 for code and 31\/36 for data/).waitFor({ state: "visible" });
   await sheet.getByRole("button", { name: /Memory and notes/ }).click();
   await sheet.getByText(/note text stays out of automatic memory extraction/).waitFor({ state: "visible" });
   await closePanel(page);
