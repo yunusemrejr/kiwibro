@@ -1,4 +1,4 @@
-"""Held-out workspace outcomes through the real KiwiBro HTTP API and agent loop.
+r"""Held-out workspace outcomes through the real KiwiBro HTTP API and agent loop.
 
 The default uses the suite's scripted LLM boundary. An optional loopback model
 uses the same task prompts and state assertions:
@@ -9,6 +9,17 @@ uses the same task prompts and state assertions:
 The endpoint must already be running. The runner creates its own temporary app
 state and workspace. Model transport credentials can be passed through
 KIWIBRO_SERVER_KEY, as with a normal attached KiwiBro installation.
+
+To test the installed Kiwi Mind path, use an existing verified native pack at
+<staged-data>/mind/candidate/ (see docs/MIND-CANDIDATE.md) and a supported runtime:
+
+    KIWIBRO_ACCEPTANCE_NATIVE_DATA=/absolute/path/to/staged-data \
+      KIWIBRO_LLAMA_SERVER=/absolute/path/to/llama-server \
+      python3 -m pytest -q tests/test_successor_acceptance.py
+
+This mode starts the native engine on demand. It checks the pack once in scratch
+space, links the weights into a separate app state per test, and stops that app's
+engine at teardown. Use one live mode per run.
 """
 
 from __future__ import annotations
@@ -21,12 +32,13 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 import pytest
@@ -35,6 +47,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 from kiwibro import create_app, pagecheck, tools
 from kiwibro.browser_render import _page_socket
 from kiwibro.llm import ChatResult, Completion
+from kiwibro.mind import KIWIMIND
+from kiwibro.mind.native_generic import NATIVE_FORMAT, describe_pack
+from kiwibro.mind.pack import CHECK_CACHE, MANIFEST, Pack, PackError
 from test_backend import Env, SSEStream, tool_call_result
 
 PKG = "stack/packages/queue_policy/policy.py"
@@ -44,31 +59,93 @@ PANEL = "handoff.html"
 STAMP = "LX-731-Q"
 ORIGINAL_LIMIT = "return requested or DEFAULT"
 FIXED_LIMIT = "return DEFAULT if requested is None else requested"
+NATIVE_DATA = "KIWIBRO_ACCEPTANCE_NATIVE_DATA"
+
+
+def link_native_pack(source: Pack, data_dir: Path) -> Pack:
+    manifest = source.manifest()
+    if manifest is None or manifest.get("format") != NATIVE_FORMAT:
+        pytest.fail(f"Missing native pack manifest in {source.dir}")
+    pack = Pack(data_dir, subdir="candidate")
+    pack.dir.mkdir(parents=True)
+    for name in manifest["files"]:
+        destination = pack.path(name)
+        target = source.path(name).resolve()
+        if destination.suffix != ".gguf" or not target.is_file():
+            pytest.fail(f"Expected a staged GGUF file at {source.path(name)}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.symlink_to(target)
+    pack.path(MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    return pack
+
+
+@pytest.fixture(scope="session")
+def verified_native_pack(tmp_path_factory: pytest.TempPathFactory) -> Pack:
+    source = Pack(Path(os.environ[NATIVE_DATA]).expanduser(), subdir="candidate")
+    # Verify in scratch space so Pack.check never writes a cache to the source.
+    linked = link_native_pack(source, tmp_path_factory.mktemp("acceptance-verified-pack"))
+    try:
+        describe_pack(linked)
+    except PackError as error:
+        pytest.fail(f"Cannot use native pack in {source.dir}: {error}")
+    return linked
 
 
 @pytest.fixture
-def acceptance(request: pytest.FixtureRequest, tmp_path: Path) -> Env:
+def acceptance(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
     endpoint = os.environ.get("KIWIBRO_ACCEPTANCE_ENDPOINT")
-    if not endpoint:
-        return request.getfixturevalue("env")
+    native = bool(os.environ.get(NATIVE_DATA))
+    if endpoint and native:
+        pytest.fail(f"Set either {NATIVE_DATA} or KIWIBRO_ACCEPTANCE_ENDPOINT for a live run.")
+    if not (endpoint or native):
+        yield request.getfixturevalue("env")
+        return
 
-    address = urlsplit(endpoint)
-    if address.scheme != "http" or address.hostname not in {"127.0.0.1", "localhost", "::1"} or address.username:
-        pytest.fail("Acceptance requires an already-running HTTP model on loopback.")
-    model = os.environ.get("KIWIBRO_ACCEPTANCE_MODEL")
-    if not model:
-        pytest.fail("Set KIWIBRO_ACCEPTANCE_MODEL to the model ID under test.")
+    data_dir = tmp_path / "data"
+    if native:
+        verified = request.getfixturevalue("verified_native_pack")
+        pack = link_native_pack(verified, data_dir)
+        shutil.copyfile(verified.path(CHECK_CACHE), pack.path(CHECK_CACHE))
+        monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+        monkeypatch.setenv("KIWIBRO_OWN_MODELS_ONLY", "1")
+        monkeypatch.delenv("KIWIBRO_MODELS_DIR", raising=False)
+        monkeypatch.setenv("KIWIBRO_OFFLINE", "1")
+        server_url = ""
+    else:
+        address = urlsplit(endpoint)
+        if address.scheme != "http" or address.hostname not in {"127.0.0.1", "localhost", "::1"} or address.username:
+            pytest.fail("Acceptance requires an already-running HTTP model on loopback.")
+        model = os.environ.get("KIWIBRO_ACCEPTANCE_MODEL")
+        if not model:
+            pytest.fail("Set KIWIBRO_ACCEPTANCE_MODEL to the model ID under test.")
+        server_url = endpoint.rstrip("/").removesuffix("/v1")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_app({
-        "TESTING": True, "KIWIBRO_DATA_DIR": str(tmp_path / "data"),
-        "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_SERVER_URL": endpoint.rstrip("/").removesuffix("/v1"),
+        "TESTING": True, "KIWIBRO_DATA_DIR": str(data_dir), "KIWIBRO_WARMUP": False,
+        "KIWIBRO_WORKSPACE": str(workspace), "KIWIBRO_SERVER_URL": server_url,
     })
     scenario = Env(app, app.extensions["kiwibro"], None, workspace)
-    listing = scenario.client.get("/api/models?refresh=1")
-    assert listing.status_code == 200
-    assert model in {row["id"] for row in listing.get_json()["models"]}, f"Model {model!r} is unavailable"
-    return scenario
+    if not native:
+        listing = scenario.client.get("/api/models?refresh=1")
+        assert listing.status_code == 200
+        assert model in {row["id"] for row in listing.get_json()["models"]}, f"Model {model!r} is unavailable"
+        yield scenario
+        return
+
+    llm = scenario.svc.llm
+    mind = llm.mind()
+    try:
+        response = scenario.client.get("/api/mind")
+        assert response.status_code == 200
+        status = response.get_json()
+        assert status["usable"] and status["engine"] == NATIVE_FORMAT and status["active"] == "candidate", status
+        yield scenario
+    finally:
+        try:
+            mind.stop()
+        finally:
+            llm.stop_direct()
 
 
 def turn(
@@ -86,8 +163,9 @@ def turn(
     payload: dict[str, Any] = {"message": prompt}
     if attachments:
         payload["attachments"] = attachments
+    native = env.fake is None and bool(os.environ.get(NATIVE_DATA))
     if env.fake is None:
-        payload["model"] = os.environ["KIWIBRO_ACCEPTANCE_MODEL"]
+        payload["model"] = KIWIMIND if native else os.environ["KIWIBRO_ACCEPTANCE_MODEL"]
     response = env.client.post("/api/chat", json=payload, buffered=False)
     assert response.status_code == 200, response.get_data(as_text=True)
     stream = SSEStream(response).start()
@@ -113,6 +191,9 @@ def turn(
     assert events[0][0] == "meta"
     assert events[-1][0] == "done", [(name, data) for name, data in events if name == "error"]
     assert not events[-1][1]["aborted"]
+    if native:
+        assert events[0][1]["model"] == events[-1][1]["model"] == KIWIMIND
+        assert any(event == "brain" and data["brain"] == KIWIMIND for event, data in events)
     conversation = events[0][1]["conversation_id"]
     detail = env.client.get(f"/api/conversations/{conversation}")
     assert detail.status_code == 200
