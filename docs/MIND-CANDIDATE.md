@@ -48,6 +48,10 @@ runtime appears in `reason`.
 If Vulkan reports that the graphics device was lost, the candidate switches to CPU
 for the app session. It retries the current request once when generation has yet to
 produce any answer or reasoning text.
+For the managed b12443 runtime, `KIWIMIND_CPU_DRAFT=1` enables the experimental
+CPU mode that drafts from repeated text in the current context. The model verifies
+the tokens as it generates the reply.
+[Ryzen laptop measurements](../scripts/mind/NATIVE_CPU.md#repeated-text-on-cpu)
 
 For a compacted Gemma pack, pass `--architecture path/to/architecture.json` from
 [the expert export](../scripts/mind/prune_gemma4.py). For a fitted checkpoint, also

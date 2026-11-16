@@ -559,6 +559,26 @@ def test_server_args_adds_mmproj_for_a_projector():
     assert value_after(args, "--mmproj") == "/models/pub/mmproj-some.gguf"
 
 
+@pytest.mark.parametrize(("enabled", "known", "offload", "retry"), [
+    (True, True, False, False), (True, False, False, False), (True, True, True, False),
+    (True, True, False, True), (False, True, False, False),
+])
+def test_native_gemma_cpu_copy_drafts_use_the_validated_runtime(monkeypatch, enabled, known, offload, retry):
+    monkeypatch.setenv("KIWIMIND_CPU_DRAFT", "1" if enabled else "0")
+    runtime = Runtime("/runtime/llama-server", "b12443" if known else "b12000", "vulkan", "kiwibro")
+    model = chat_model(projector="/models/vision.gguf", source=engine.SOURCE_MIND, arch="gemma4")
+    flags = ALL_OPTIONAL_FLAGS | {"--spec-type", *(flag for flag, _ in engine.NATIVE_CPU_DRAFT)}
+    args = server_args(runtime, flags, model, port=24455, api_key="test", context_length=8192,
+                       parallel=1, threads=6, cache_ram_mb=0, speculative=not retry, offload=offload)
+
+    assert value_after(args, "--mmproj") == "/models/vision.gguf"
+    if enabled and known and not offload and not retry:
+        assert value_after(args, "--spec-type") == "ngram-mod"
+        assert value_after(args, "--spec-ngram-mod-n-max") == "64"
+    else:
+        assert "--spec-type" not in args
+
+
 def test_server_args_offload_fits_every_layer_on_the_gpu():
     assert value_after(build(flags=ALL_OPTIONAL_FLAGS | {"--gpu-layers", "--fit"}, offload=True), "--gpu-layers") == "auto"
     # an older build without --fit only takes a number

@@ -74,6 +74,9 @@ CTX_CHECKPOINTS = 8
 # next one: an idle Kiwibro holds no model memory (KIWIBRO_IDLE_SLEEP_S; 0 = never).
 IDLE_SLEEP_S = 1800
 SPEC_TYPE = "ngram-mod"
+NATIVE_CPU_DRAFT = (
+    ("--spec-ngram-mod-n-match", "24"), ("--spec-ngram-mod-n-min", "48"), ("--spec-ngram-mod-n-max", "64"),
+)
 UNSUPPORTED_KEYS = frozenset({"ttl", "draft_model"})  # knobs llama.cpp has no use for
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _QUANT = re.compile(r"(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|F16|BF16|F32|MXFP4)(?:$|[-_.])", re.IGNORECASE)
@@ -736,10 +739,19 @@ def server_args(
         args.append("--metrics")
     if model.projector and has("--mmproj"):
         args += ["--mmproj", model.projector]
-    elif speculative and has("--spec-type"):
+    native_cpu_draft = (
+        os.environ.get("KIWIMIND_CPU_DRAFT") == "1"
+        and model.source == SOURCE_MIND and model.arch == "gemma4" and not offload
+        and runtime.own and runtime.version == "b12443"
+        and all(flag in flags for flag, _ in NATIVE_CPU_DRAFT)
+    )
+    if speculative and has("--spec-type") and (not model.projector or native_cpu_draft):
         # Drafts from n-grams already in the context: no draft model, idle on free text,
         # and ~45% faster decode when a reply repeats what it read (files, code edits).
         args += ["--spec-type", SPEC_TYPE]
+        if native_cpu_draft:
+            for flag, value in NATIVE_CPU_DRAFT:
+                args += [flag, value]
     return args
 
 

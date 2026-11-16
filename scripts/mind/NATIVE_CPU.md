@@ -155,6 +155,45 @@ memory passed all four probes in 136.9 seconds. Adding a 1,024 MiB expert
 cache brought that shorter test to 61.0 seconds. Profile timings include
 different desktop load. They record candidate behavior on this laptop.
 
+## Repeated text on CPU
+
+The managed b12443 runtime can draft tokens from repeated sequences in the
+current context. It verifies the draft against the same model and needs no
+extra model file. The experimental CPU profile uses `--spec-type
+ngram-mod`, a 24-token match, and a 48–64 token draft. Tool calls and images
+still use the native template and the same vision projector.
+
+The compact Q4_K_M pilot ran with six threads, one 8,192-token slot and the
+matching projector. The two passes reversed runtime order. Times exclude
+server startup. All twelve probe requests passed.
+
+| Probe | No speculative decoding | Context drafts |
+| --- | ---: | ---: |
+| Exact code search tool call | 9.14–9.55 s | 10.34–10.39 s |
+| Read code from a screenshot | 19.92–22.14 s | 21.72–23.81 s |
+| Copy 14 C declarations | 50.44–61.56 s | 21.50–22.88 s |
+
+Copy throughput was 4.41–5.52 tokens/s without drafts and 16.10–16.83
+tokens/s with drafts. The copy workload measures repeated code. A fresh
+solution, image encoding, or short tool request sees different costs.
+The first full app probe used 549 prompt tokens and hit its 180-second deadline
+under desktop load. The app profile is opt-in pending an end-to-end speed result.
+
+For each arm, run a single pinned server with `--device none --gpu-layers 0
+--parallel 1 --threads 6 --threads-batch 6 --ctx-size 8192 --cache-ram 0
+--flash-attn on --jinja --no-webui`, the same model and the same projector.
+Use `--spec-type none` for the control and `--spec-type ngram-mod
+--spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`
+for the draft arm. Repeat in reverse order. With the server listening on the
+loopback endpoint and the synthetic model ID supplied as `auto`:
+
+```bash
+python3 -m scripts.mind.bench_successor \
+  --endpoint cpu http://127.0.0.1:8081 auto --thinking off \
+  --case tool-symbol --case screenshot-release --case preserve-code-block \
+  --output cpu-arm.json
+```
+
 ## One worker per routed expert
 
 The opt-in patch `ggml_cpu_moe_routes.patch` assigns each of six CPU workers one expert projection for one decode token. It uses the original activation quantizer and dot kernel. This avoids the shared route buckets, internal barrier and dynamic row queue. It applies to plain Q4_K fused gate/up and Q5_0 or Q8_0 down weights at the 704-width pilot's shapes, with the existing CPU repacked kernels selected first when available. Other shapes or thread counts use the stock path.

@@ -158,6 +158,14 @@ def long_case(filler_lines: int) -> Case:
                 r"violet-orbit-392\s*,\s*silver-window-518[.!]?")
 
 
+def copy_case() -> Case:
+    source = "\n".join(f"static int control_{value:02d}(void) {{ return {value * 7}; }}"
+                       for value in range(1, 15))
+    return Case("preserve-code-block", "decode", [user(
+        "Return the C declarations verbatim. Include all 14 lines. Do not add a heading or fence.\n\n" + source
+    )], source)
+
+
 def cases(filler_lines: int) -> list[Case]:
     files = [
         tool("grep_files", "Find text occurrences in code files under a folder.", {"pattern": "string", "path": "string"}),
@@ -305,6 +313,8 @@ def decode_calls(calls):
 def score(case: Case, answer: str, calls) -> bool:
     if isinstance(case.expected, list):
         return calls == case.expected and not answer.strip()
+    if case.category == "decode":
+        return not calls and answer.strip() == case.expected
     clean = re.sub(r"[\x60*]", "", answer).strip()
     return not calls and bool(re.fullmatch(case.expected, clean, flags=re.I))
 
@@ -470,6 +480,7 @@ def main() -> None:
         pids[label] = int(pid)
     workload = cases(args.filler_lines)
     if args.case:
+        workload.append(copy_case())
         available = {case.name for case in workload}
         if set(args.case) - available:
             parser.error(f"unknown case; choose from {', '.join(sorted(available))}")
