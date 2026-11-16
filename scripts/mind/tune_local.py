@@ -13,8 +13,10 @@ the next one starts. The report chooses the lowest sum of per-probe median
 wall times among profiles that pass every probe, and retains the raw rows.
 Linux process CPU time and page faults help spot scheduling and paging costs.
 Pass --trace-vulkan /tmp/vulkan-kernels.log to profile one separate retrieval
-pair with the backend's per-operation timing logger. Tracing changes runtime
-cost and is excluded from profile selection.
+pair with the backend's operation timing logger. Split-backend tracing can
+abort in llama.cpp with a compute-context assertion. Include --full-vulkan
+when memory allows to trace a fully offloaded profile. Traces are measured in
+a separate process and are excluded from profile selection.
 """
 
 from __future__ import annotations
@@ -383,9 +385,15 @@ def main() -> None:
             usable = [run for run in report["runs"] if run["profile"]["gpu_layers"] and not run.get("error")]
             diagnostics = {"log": str(args.trace_vulkan)}
             if usable:
-                chosen = min(usable, key=lambda run: run["score_ms"] if run["score_ms"] is not None else float("inf"))
+                # The timestamp logger on some builds aborts when CPU and
+                # Vulkan split the graph. Prefer a measured full offload.
+                chosen = min(usable, key=lambda run: (
+                    run["profile"]["gpu_layers"] <= args.layers,
+                    run["score_ms"] if run["score_ms"] is not None else float("inf"),
+                ))
                 tracing = argparse.Namespace(**{**vars(args), "repeats": 1})
-                trace_env = {**environment, "GGML_VK_PERF_LOGGER": "1", "GGML_VK_PERF_LOGGER_FREQUENCY": "2"}
+                trace_env = {**environment, "GGML_VK_PERF_LOGGER": "1",
+                             "GGML_VK_PERF_LOGGER_CONCURRENT": "1", "GGML_VK_PERF_LOGGER_FREQUENCY": "2"}
                 diagnostics.update(measure(
                     tracing, chosen["flags"], trace_env, Profile(**chosen["profile"]), device, Path(folder),
                     [case for case in workload if case.category == "retrieval"], trace=args.trace_vulkan,
