@@ -308,7 +308,7 @@ _NATIVE_TEXT = frozenset({
     ".xml", ".ini", ".toml", ".log", ".py", ".js", ".ts", ".sh", ".html", ".htm",
 })
 _NATIVE_READ = re.compile(
-    r"""^read\s+(?:(?:the\s+)?file\s+)?(?:\x60[^\x60\n]+\x60|"[^"\n]+"|'[^'\n]+'|[^\s,;]+?)"""
+    r"""^read\s+(?:(?:the\s+)?file\s+)?(?P<path>\x60[^\x60\n]+\x60|"[^"\n]+"|'[^'\n]+'|[^\s,;]+?)"""
     r"(?:\s+with\s+(?:the\s+)?(?:file-reading tool|read_file))?"
     r"(?:\.\s+reply\s+with\s+[^.,;!?\n]+)?[.!?]?$", re.I,
 )
@@ -811,12 +811,15 @@ class AgentManager:
         # A question the computer answers is never also a web search: "today" in a question about the
         # user's own disk is no reason to search the web.
         searched = self._search_first(turn, settings) if not (answered or scene or browsed or looked) else False
-        if answered or scene or searched or looked or browsed:
+        read = self._native_read_first(turn, settings, model_info, tool_list) if not (
+            answered or scene or browsed or looked or searched
+        ) else False
+        if answered or scene or searched or looked or browsed or read:
             self._raise_if_aborted(turn)
             if scene == "ended" or (not scene and turn.reply_text.strip()):  # answered without generation
                 max_rounds = 0
                 self._close_plan(turn, model)
-            else:
+            elif not (read and turn.prompt_changed):
                 prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
                                                turn_context=turn_context)
                 self._emit_context(turn, prepared)
@@ -2124,6 +2127,38 @@ class AgentManager:
         result = self._handle_tool_call(turn, call, self._settings())
         self._raise_if_aborted(turn)
         return result
+
+    def _native_read_first(
+        self, turn: Turn, settings: dict[str, Any], model_info: dict[str, Any],
+        tool_list: list[dict[str, Any]] | None,
+    ) -> bool:
+        """Run one exact native Auto read so the first generation can use its evidence."""
+        if (not _native_mind(turn.model, model_info) or settings.get("tool_profile") not in (None, "auto")
+                or not tool_list or tool_list[0]["function"]["name"] != "read_file"
+                or _native_auto_names(turn) != {"read_file"} or turn.plan is None):
+            return False
+        first, *following = turn.plan.steps
+        if first.kind != "read" or first.target is None or any(step.kind != "answer" for step in following):
+            return False
+        match = _NATIVE_READ.fullmatch(first.text.strip())
+        if match is None:
+            return False
+        operand = match["path"]
+        if operand[0] in ("\x60", '"', "'") and operand[0] == operand[-1]:
+            operand = operand[1:-1]
+        try:
+            # A token found inside a quoted filename is not necessarily the named file.
+            if self._workspace(turn.conversation_id).resolve(operand) != first.target.path:
+                return False
+        except (SandboxError, RuntimeError):
+            return False
+        if self._drain_steering(turn):
+            return False
+        result = self._call_first(turn, "read_file", {"path": first.target.shown})
+        self._drain_steering(turn)
+        if not result.ok or (result.meta or {}).get("paged"):
+            turn.native_unscoped = turn.prompt_changed = True
+        return True
 
     def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,
