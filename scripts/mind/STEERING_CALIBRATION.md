@@ -8,6 +8,41 @@ the packaged model or helpers.
 
 ## Collect successor traces
 
+Generate the separate recovery and steering collection with
+`python -m scripts.mind.calibration_traces build OUT`. It creates 72 training,
+24 calibration, and 36 blind probes across missing paths, stale browser state,
+blocked calls, missing dependencies, untrusted observations, and successful
+controls. Each split has a distinct scenario for each kind. Names and numbers
+vary within that scenario and count as correlated observations.
+
+Reuse the candidate's running local endpoint for one split at a time:
+
+```sh
+python -m scripts.mind.replay_successor OUT/train.jsonl TRAIN-REPLAY.jsonl \
+  --endpoint http://127.0.0.1:8080 --thinking off --max-tokens 320
+python -m scripts.mind.calibration_traces import OUT/train.jsonl TRAIN-REPLAY.jsonl TRAIN-TRACES.jsonl \
+  --artifact-sha256 ACTUAL_ARTIFACT_SHA256
+```
+
+Run the same commands for calibration and blind test. Keep the split files
+separate in storage. Each imported response keeps the original tool
+observation and stable observation ID, with a failure ID for a failed,
+denied, unavailable, or stale action. The importer validates the frozen probe
+digest and recomputes the next-action outcome. It records the shipped steering
+verdict beside the outcome so an adjudicator can inspect disagreements.
+
+On Colab, use only reviewed training traces for fitting. Use the 24-case
+calibration split for score cutoffs and abstention. Retain the 36-case split
+for one frozen comparison. Associate every training sentence with its
+observed response and failure ID. Separate interrupted or length-limited
+generation from errors in answer grounding or tool choice. These probes
+measure six recovery scenarios per split. Broader approval, safety,
+and real file or browser workflows still need independent held-out tasks.
+
+Use `python -m scripts.mind.calibration_traces smoke REPORT OUTPUT` to check an
+existing native benchmark report against its original tasks. This path exports
+parser controls only. Warm and cold traces from a single case share one group.
+
 Record the exact model and artifact hash, serving runtime, chat template,
 quantization, context cap, tool profile, seed, and sampling options. For each
 run record the task family, first 500 streamed characters, final answer, tool
