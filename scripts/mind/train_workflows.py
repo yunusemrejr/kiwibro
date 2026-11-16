@@ -6,8 +6,10 @@
     python scripts/mind/train_workflows.py collect LOG CANDIDATE.json.gz
 
 The exported pack is an evaluation candidate. The installed specialist pack
-uses a different contract. Only train.jsonl goes into feature fitting. Authored
+uses a different contract. Feature fitting uses training rows only. Authored
 class-specific calibration and test prompts are separate from that corpus.
+With --probes-dir and --replays-dir, successor recovery training also uses
+baseline replay misses. The successor holdout never enters the Colab job.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CURRICULUM = "workflow_calibration.txt"
+REPLAY_INPUT = "successor_recovery.json"
 HEADS = {
     "workflow": {"repository", "terminal", "artifact", "delegate", "math", "none"},
     "recovery": {"render", "location", "boundary", "dependency", "none"},
@@ -158,6 +161,8 @@ def train() -> None:
     corpus = Path("train.jsonl").read_bytes()
     additions = Path(CURRICULUM).read_bytes()
     splits = dataset(corpus, additions)
+    replay_input = Path(REPLAY_INPUT)
+    replay = json.loads(replay_input.read_bytes()) if replay_input.is_file() else None
     pack = {"version": 1, "origin": "google-colab", "scale": runtime.WEIGHT_SCALE, "heads": {}}
     report = {
         "kind": "workflow-and-recovery-candidate", "origin": pack["origin"],
@@ -167,8 +172,16 @@ def train() -> None:
                    for name in ("train.jsonl", CURRICULUM, "specialists.py", "train_workflows.py")},
         "heads": {},
     }
+    if replay is not None:
+        report["successor_recovery"] = replay["provenance"]
+        report["sha256"][REPLAY_INPUT] = digest(replay_input.read_bytes())
     for name, data in splits.items():
-        samples, labels = zip(*data["train"])
+        fit_data = data["train"]
+        cutoff_data = data["calibrate"]
+        if name == "recovery" and replay is not None:
+            fit_data = fit_data + [(text, label) for text, label, _ in replay["splits"]["train"]]
+            cutoff_data = [(text, label) for text, label, _ in replay["splits"]["calibrate"]]
+        samples, labels = zip(*fit_data)
         vectorizer = CountVectorizer(analyzer=runtime.features, binary=True, min_df=2, max_features=5000,
                                      dtype=np.float64)
         vectors = vectorizer.fit_transform(samples)
@@ -181,8 +194,12 @@ def train() -> None:
             "weights": {key: values.tolist() for key, values in zip(vectorizer.get_feature_names_out(), weights)
                         if values.any()},
         }
-        calibration, labels = zip(*data["calibrate"])
-        head["thresholds"] = choose_thresholds(labels, [runtime.prediction(head, runtime.features(text)) for text in calibration])
+        calibration, labels = zip(*cutoff_data)
+        predictions = [runtime.prediction(head, runtime.features(text)) for text in calibration]
+        if name == "recovery" and replay is not None:
+            predictions = [(scoped(name, choice, text), probability, margin)
+                           for (choice, probability, margin), text in zip(predictions, calibration)]
+        head["thresholds"] = choose_thresholds(labels, predictions)
         def evaluate(rows):
             tests, labels = zip(*rows)
             raw = [runtime.classify(head, runtime.features(text)) for text in tests]
@@ -196,6 +213,7 @@ def train() -> None:
             }
         report["heads"][name] = {
             "split_sizes": {key: len(rows) for key, rows in data.items()},
+            "fit_rows": len(fit_data), "calibration_rows": len(cutoff_data),
             "thresholds": list(head["thresholds"]), "feature_count": len(head["weights"]),
             **evaluate(data["test"]),
         }
@@ -209,18 +227,26 @@ def train() -> None:
         print("KIWI_WORKFLOW_DATA " + chunk)
 
 
-def prepare(corpus: Path, destination: Path) -> None:
-    source = {
+def prepare(corpus: Path, destination: Path, probes: Path | None = None, replays: Path | None = None) -> None:
+    paths = {
         "train.jsonl": corpus / "train.jsonl", "train_workflows.py": Path(__file__),
         CURRICULUM: HERE / CURRICULUM,
         "specialists.py": ROOT / "kiwibro" / "specialists.py",
         "train_specialists.py": ROOT / "scripts" / "helpers" / "train_specialists.py",
     }
-    dataset(source["train.jsonl"].read_bytes(), source[CURRICULUM].read_bytes())
+    source = {name: path.read_bytes() for name, path in paths.items()}
+    authored = dataset(source["train.jsonl"], source[CURRICULUM])
+    if (probes is None) != (replays is None):
+        raise ValueError("Provide both the frozen probes and the successor baseline replays")
+    if probes is not None:
+        from scripts.mind.workflow_replay import prepare_observations
+
+        replay = prepare_observations(probes, replays, authored["recovery"])
+        source[REPLAY_INPUT] = json.dumps(replay, sort_keys=True, separators=(",", ":")).encode()
     bundle = BytesIO()
     with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, path in source.items():
-            archive.writestr(name, path.read_bytes())
+        for name, data in source.items():
+            archive.writestr(name, data)
     payload = base64.b64encode(bundle.getvalue()).decode("ascii")
     destination.write_text(textwrap.dedent(f"""\
         import base64, io, os, runpy, sys, tempfile, zipfile
@@ -254,13 +280,17 @@ def main() -> None:
     bundle = commands.add_parser("prepare")
     bundle.add_argument("corpus", type=Path)
     bundle.add_argument("output", type=Path)
+    bundle.add_argument("--probes-dir", type=Path)
+    bundle.add_argument("--replays-dir", type=Path)
     result = commands.add_parser("collect")
     result.add_argument("log", type=Path)
     result.add_argument("output", type=Path)
     commands.add_parser("_train")
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(args.corpus, args.output)
+        if args.probes_dir is not None and not __package__:
+            parser.error("Run trace-bound preparation as python -m scripts.mind.train_workflows")
+        prepare(args.corpus, args.output, args.probes_dir, args.replays_dir)
     elif args.action == "collect":
         print(json.dumps(collect(args.log, args.output), indent=2))
     else:

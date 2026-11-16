@@ -15,29 +15,76 @@ blocked calls, missing dependencies, untrusted observations, and successful
 controls. Each split has a distinct scenario for each kind. Names and numbers
 vary within that scenario and count as correlated observations.
 
-Reuse the candidate's running local endpoint for one split at a time:
+Use the same exact artifact and serving profile throughout. Set `artifact`
+to the GGUF served by the running local endpoint and `runtime_id` to a stable
+ID for the server binary, chat template, context and launch settings. When a
+projector is present, include its hash in the serving profile. The replay
+records the declared artifact identity and request settings. Keep the server
+launch record with the replay to confirm which weights it loaded. Set
+`colab_config` to your CPU Colab session configuration.
 
 ```sh
-python -m scripts.mind.replay_successor OUT/train.jsonl TRAIN-REPLAY.jsonl \
-  --endpoint http://127.0.0.1:8080 --thinking off --max-tokens 320
-python -m scripts.mind.calibration_traces import OUT/train.jsonl TRAIN-REPLAY.jsonl TRAIN-TRACES.jsonl \
-  --artifact-sha256 ACTUAL_ARTIFACT_SHA256
+work=$(mktemp -d)
+mkdir -p "$work/baseline"
+artifact_digest=$(sha256sum "$artifact")
+artifact_sha=${artifact_digest%% *}
+endpoint=http://127.0.0.1:8080
+
+python -m scripts.mind.agent_corpus build "$work/corpus"
+python -m scripts.mind.calibration_traces build "$work/probes"
+for split in train calibrate; do
+  python -m scripts.mind.replay_successor "$work/probes/$split.jsonl" "$work/baseline/$split.jsonl" \
+    --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
+    --thinking off --max-tokens 320 --timeout 180
+done
+python -m scripts.mind.train_workflows prepare "$work/corpus" "$work/fit.py" \
+  --probes-dir "$work/probes" --replays-dir "$work/baseline"
+colab --config "$colab_config" run -s kiwi-successor-helpers --timeout 165 "$work/fit.py" > "$work/fit.log"
+python -m scripts.mind.train_workflows collect "$work/fit.log" "$work/candidate.json.gz" > "$work/fit-report.json"
 ```
 
-Run the same commands for calibration and blind test. Keep the split files
-separate in storage. Each imported response keeps the original tool
-observation and stable observation ID, with a failure ID for a failed,
-denied, unavailable, or stale action. The importer validates the frozen probe
-digest and recomputes the next-action outcome. It records the shipped steering
-verdict beside the outcome so an adjudicator can inspect disagreements.
+The trainer verifies exact probe digests and recomputes the outcomes from
+recorded tool calls and answers. Only complete training decisions enter
+recovery feature fitting, alongside the authored training examples. A
+completed miss with a known recovery action supplies a recovery label.
+Already solved cases and the untrusted and successful controls supply
+abstention labels. The separate successor calibration fold selects the
+recovery score cutoffs. If either fold has no recoverable complete miss, the
+job is skipped. The job receives the frozen blind probe digest and keeps the
+blind text, labels and answers out of the uploaded bundle. The workflow head
+still fits on the authored data.
 
-On Colab, use only reviewed training traces for fitting. Use the 24-case
-calibration split for score cutoffs and abstention. Retain the 36-case split
-for one frozen comparison. Associate every training sentence with its
-observed response and failure ID. Separate interrupted or length-limited
-generation from errors in answer grounding or tool choice. These probes
-measure six recovery scenarios per split. Broader approval, safety,
-and real file or browser workflows still need independent held-out tasks.
+Freeze the Colab candidate before running the two test arms. Hint generation
+uses only the current tool observation and the fitted head. It adds fixed
+guidance text when the classifier fires. The oracle and the baseline decision
+are used later for scoring.
+
+```sh
+python -m scripts.mind.workflow_replay hint "$work/candidate.json.gz" "$work/probes/test.jsonl" \
+  "$work/hinted.jsonl" > "$work/hint-plan.json"
+python -m scripts.mind.replay_successor "$work/probes/test.jsonl" "$work/baseline/test.jsonl" \
+  --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
+  --thinking off --max-tokens 320 --timeout 180
+python -m scripts.mind.replay_successor "$work/hinted.jsonl" "$work/assisted.jsonl" \
+  --endpoint "$endpoint" --artifact-sha256 "$artifact_sha" --runtime-id "$runtime_id" \
+  --thinking off --max-tokens 320 --timeout 180
+python -m scripts.mind.workflow_replay compare "$work/candidate.json.gz" "$work/probes/test.jsonl" \
+  "$work/baseline/test.jsonl" "$work/hinted.jsonl" "$work/assisted.jsonl" > "$work/paired-report.json"
+```
+
+Look at recovered and regressed decisions in the hinted cases and at changes
+in the identical no-hint controls. Review incomplete pairs, hints on already
+solved failures, and hints on untrusted or successful controls. These results
+measure one strict next-action oracle per fixture. Cases within a scenario
+are correlated, and alternate valid decisions can miss a strict oracle.
+Validate actual file and browser effects and permission boundaries through
+the application harness before shipping the head.
+
+To inspect lineage or adjudicate steering disagreements, export any arm with
+`python -m scripts.mind.calibration_traces import PROBES REPLAY TRACES --artifact-sha256 "$artifact_sha"`.
+Each imported response retains its observation and failure IDs, outcome, and
+the shipped steering verdict. Use the saved IDs to review genuine response
+failures for a separate steering fit.
 
 Use `python -m scripts.mind.calibration_traces smoke REPORT OUTPUT` to check an
 existing native benchmark report against its original tasks. This path exports
@@ -62,7 +109,7 @@ to the same repository in a single split.
   `scripts/sense/corpus.py`. Record context separately, including tool success
   and whether the tool was available. Include correct refusals, completed
   actions, quoted misuse, and genuine capability limits as controls.
-- Use actual recovery traces to label workflow and tool-result advice.
+- Use actual recovery traces to label tool-result advice.
   A wrong path, a stale browser observation, an unavailable named helper, and a
   rejected action have different safe next steps. Reuse the runtime tokenizer
   and tool schemas, and keep all advice contingent on the current request and

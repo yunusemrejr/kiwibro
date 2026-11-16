@@ -159,6 +159,27 @@ def variant(kind: str, split: str, name: str, n: int) -> tuple[str, dict, str, d
             exact_answer(code, forbidden=("I changed", "could not read")), ("note", "remember", "run_command"))
 
 
+def probe(kind: str, split: str, name: str, index: int, catalog: dict) -> dict:
+    prompt, prior, result, expected, tools = variant(kind, split, name, index)
+    tool = prior["name"]
+    identifier = f"{split}-{kind}-{name}"
+    messages = [
+        {"role": "system", "content": POLICY},
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_observed", "type": "function", "function": prior},
+        ]},
+        {"role": "tool", "name": tool, "tool_call_id": "call_observed", "content": result},
+    ]
+    return {"id": identifier, "episode": identifier, "family": f"recovery_{kind}",
+            "messages": messages, "tools": [catalog[name] for name in tools], "images": [],
+            "expected": expected, "oracle": {
+                "split": split, "observation_id": identifier + "/call_observed",
+                "failure_id": identifier if kind in LABELS[:4] else None,
+                "tool": tool, "status": LABEL_STATUS[kind], "kind": kind,
+            }}
+
+
 def build(directory: Path) -> dict:
     from kiwibro.tools import tool_defs, validate_args
 
@@ -170,30 +191,15 @@ def build(directory: Path) -> dict:
         rows = []
         for kind in LABELS:
             for n, name in enumerate(names):
-                prompt, prior, result, expected, tools = variant(kind, split, name, n)
-                tool = prior["name"]
-                validate_args(tool, prior["arguments"])
-                for action in expected["calls"]:
-                    validate_args(action["name"], action["arguments"])
-                identifier = f"{split}-{kind}-{name}"
+                row = probe(kind, split, name, n, catalog)
+                prompt = row["messages"][1]["content"]
                 if prompt in seen:
-                    raise ValueError(f"Repeated prompt in {identifier}")
+                    raise ValueError(f"Repeated prompt in {row['id']}")
+                prior = row["messages"][-2]["tool_calls"][0]["function"]
+                for action in [prior, *row["expected"]["calls"]]:
+                    validate_args(action["name"], action["arguments"])
                 seen.add(prompt)
-                messages = [
-                    {"role": "system", "content": POLICY},
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": "", "tool_calls": [
-                        {"id": "call_observed", "type": "function", "function": prior},
-                    ]},
-                    {"role": "tool", "name": tool, "tool_call_id": "call_observed", "content": result},
-                ]
-                rows.append({"id": identifier, "episode": identifier, "family": f"recovery_{kind}",
-                             "messages": messages, "tools": [catalog[name] for name in tools], "images": [],
-                             "expected": expected, "oracle": {
-                                 "split": split, "observation_id": identifier + "/call_observed",
-                                 "failure_id": identifier if kind in LABELS[:4] else None,
-                                 "tool": tool, "status": LABEL_STATUS[kind], "kind": kind,
-                             }})
+                rows.append(row)
         path = directory / f"{split}.jsonl"
         agent_corpus.jsonl(path, rows)
         manifest["splits"][split] = {
@@ -258,6 +264,9 @@ def join(probes: Path, report: Path, artifact_hash: str) -> tuple[dict, list[dic
     meta, *results = agent_corpus.read_jsonl(report)
     if meta["probes_sha256"] != digest or len(results) != meta["count"]:
         raise ValueError("Replay digest/count does not match the frozen probes")
+    binding = meta.get("binding")
+    if binding is not None and binding.get("artifact_sha256") != artifact_hash:
+        raise ValueError("Replay artifact binding does not match the supplied SHA-256")
     seen = set()
     normalized = []
     for result in results:
@@ -291,6 +300,7 @@ def join(probes: Path, report: Path, artifact_hash: str) -> tuple[dict, list[dic
     if len(splits) != 1:
         raise ValueError("Import one split at a time")
     return {"model": meta["model"], "model_sha256": artifact_hash, "probes_sha256": digest,
+            "binding": binding,
             "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
             "split": splits.pop(), "thinking": meta["thinking"], "count": len(normalized),
             "passed": sum(r["passed"] for r in normalized),

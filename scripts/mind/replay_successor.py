@@ -11,12 +11,13 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 
 from PIL import Image
 import requests
 
 from scripts.mind.agent_corpus import score
-from scripts.mind.bench_successor import Case, complete, image_part, is_loopback
+from scripts.mind.bench_successor import SAMPLING_SEED, Case, complete, image_part, is_loopback
 
 
 def wire_messages(row: dict, root: Path) -> list[dict]:
@@ -75,9 +76,16 @@ def run(args: argparse.Namespace) -> dict:
             response = client.get(f"{url}/v1/models", timeout=(5, 20))
             response.raise_for_status()
             model = response.json()["data"][0]["id"]
-        destination.write(json.dumps({"model": model, "probes_sha256": hashlib.sha256(raw).hexdigest(),
-                                      "seed": args.seed, "per_family_and_action_kind": args.per_family,
-                                      "thinking": args.thinking, "count": len(cases)}) + "\n")
+        metadata = {"model": model, "probes_sha256": hashlib.sha256(raw).hexdigest(),
+                    "seed": args.seed, "per_family_and_action_kind": args.per_family,
+                    "thinking": args.thinking, "count": len(cases)}
+        if args.artifact_sha256:
+            metadata["binding"] = {
+                "artifact_sha256": args.artifact_sha256, "runtime_id": args.runtime_id,
+                "sampling_seed": SAMPLING_SEED, "temperature": 0, "cache_prompt": True,
+                "thinking": args.thinking, "max_tokens": args.max_tokens, "timeout": args.timeout,
+            }
+        destination.write(json.dumps(metadata) + "\n")
         for i, row in enumerate(cases, 1):
             case = Case(row["id"], row["family"], wire_messages(row, args.probes.parent.resolve()),
                         expected="", tools=row["tools"])
@@ -113,9 +121,15 @@ def main() -> None:
     parser.add_argument("--thinking", choices=("off", "on", "default"), default="off")
     parser.add_argument("--max-tokens", type=int, default=1600)
     parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--artifact-sha256", help="SHA-256 of the model artifact served for a bound replay.")
+    parser.add_argument("--runtime-id", help="One stable ID for the server build, template and launch settings.")
     args = parser.parse_args()
     if args.per_family < 0 or min(args.max_tokens, args.timeout) <= 0:
         parser.error("invalid case or request budget")
+    if (args.artifact_sha256 or args.runtime_id) and (
+        not re.fullmatch(r"[a-f0-9]{64}", args.artifact_sha256 or "") or not (args.runtime_id or "").strip()
+    ):
+        parser.error("bound replay requires both a lowercase artifact SHA-256 and a runtime ID")
     print(json.dumps(run(args), indent=2))
 
 

@@ -62,6 +62,8 @@ from urllib.parse import urlsplit
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+SAMPLING_SEED = 94037
+
 CONNECT_TIMEOUT = 5
 MEMORY_SAMPLE_SECONDS = 0.2
 MEMINFO = Path("/proc/meminfo")
@@ -309,7 +311,7 @@ def score(case: Case, answer: str, calls) -> bool:
 
 def complete(session, url, model, case, cache, pid, args):
     request: dict[str, Any] = {
-        "model": model, "messages": case.messages, "temperature": 0, "seed": 94037,
+        "model": model, "messages": case.messages, "temperature": 0, "seed": SAMPLING_SEED,
         "max_tokens": args.max_tokens, "stream": True, "cache_prompt": cache,
         "stream_options": {"include_usage": True},
     }
