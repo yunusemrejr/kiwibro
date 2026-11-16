@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import config, media, prompts, sense, terms
 from .db import Database
 from .llm import LLMClient, LLMError
+from .mind import KIWIMIND
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +25,9 @@ MAX_COMPACTION_PASSES = 3
 MIN_KEEP_MESSAGES = 4
 SUMMARY_MAX_TOKENS = 600
 SUMMARY_TRANSCRIPT_CAP = 14000
+EXTRACTIVE_HISTORY_ENV = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
+EXTRACTIVE_HEADING = "## Earlier conversation excerpts (context only)"
+EXTRACTIVE_MAX_TOKENS = 300
 
 
 def estimate_tokens(text: str | None) -> int:
@@ -279,12 +285,47 @@ def format_transcript(db_messages: list[dict[str, Any]], cap: int = SUMMARY_TRAN
         per_message //= 2
 
 
+def _summary_parts(summary: str) -> tuple[str, str]:
+    """Separate a legacy summary from quoted excerpts that belong at user priority."""
+    generated, _, excerpts = ("\n\n" + (summary or "").strip()).partition(f"\n\n{EXTRACTIVE_HEADING}\n")
+    return generated.strip(), excerpts.strip()
+
+
 def combine_system_prompt(system_prompt: str, summary: str) -> str:
     """Append the rolling conversation summary so compacted history is never lost."""
-    summary = (summary or "").strip()
+    summary, _ = _summary_parts(summary)
     if not summary:
         return system_prompt
     return f"{system_prompt.rstrip()}\n\n## Earlier conversation summary\n{summary}"
+
+
+def _extractive_summary(segment: list[dict[str, Any]]) -> str:
+    """Retain recent spoken context as bounded quotations with source roles and sequence numbers."""
+    lines: list[str] = []
+    spent = 0
+    for message in reversed(segment):
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = (message.get("content") or "").strip()
+        if not text:
+            continue
+        quoted = json.dumps(text[:320], ensure_ascii=False)
+        suffix = " (excerpt)" if len(text) > 320 else ""
+        line = f"- [{role.title()}, step {message['seq']}] {quoted}{suffix}"
+        cost = estimate_tokens(line)
+        if cost > EXTRACTIVE_MAX_TOKENS:
+            continue
+        if spent + cost > EXTRACTIVE_MAX_TOKENS:
+            break
+        lines.append(line)
+        spent += cost
+    return "\n".join(reversed(lines))
+
+
+def _native_extractive(model: str, model_info: dict[str, Any] | None) -> bool:
+    return (model == KIWIMIND and os.environ.get(EXTRACTIVE_HISTORY_ENV) == "1"
+            and (model_info or {}).get("engine") == "native-gguf")
 
 
 # --- small-context adaptation (v2) -------------------------------------------
@@ -461,9 +502,11 @@ class ContextEngine:
                 m for m in db_messages if m["seq"] > conversation["summary_through_seq"]
             ]
         system = combine_system_prompt("", conversation["summary"])
-        used = estimate_messages(
-            build_llm_messages(system, db_messages), self.calibration_factor(model)
-        )
+        messages = build_llm_messages(system, db_messages)
+        _, excerpts = _summary_parts(conversation["summary"])
+        if excerpts:
+            messages = place_turn_context(messages, f"{EXTRACTIVE_HEADING}\n{excerpts}")
+        used = self.used_tokens(messages, model)
         _ctx, budget, _info = self.budget_for(model)
         return context_stats(used, budget)
 
@@ -507,6 +550,7 @@ class ContextEngine:
         raw = raw_message_sum(messages)
         compacted = False
         trimmed = False
+        extractive = _native_extractive(model, model_info)
 
         if allow_compaction:
             passes = 0
@@ -514,17 +558,10 @@ class ContextEngine:
                 segment = self._target_segment(history, messages, raw, trigger, model)
                 if not segment:
                     break
-                summary = self.summarise(
-                    conversation["summary"], segment, model, conversation_id=conversation_id
-                )
-                if not summary:
+                updated = self._compact_segment(conversation, segment, model, extractive=extractive)
+                if updated is None:
                     break
-                conversation = self.db.update_conversation(
-                    conversation_id,
-                    summary=summary,
-                    summary_through_seq=segment[-1]["seq"],
-                    touch=False,
-                ) or conversation
+                conversation = updated
                 history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
                 messages = build_llm_messages(
                     combine_system_prompt(system_prompt, conversation["summary"]), history
@@ -562,14 +599,28 @@ class ContextEngine:
         recalled = 0
         anchored = False
         note_parts = [turn_context.strip()] if turn_context.strip() else []
-        if conversation["summary_through_seq"] > 0:
+        _, excerpts = _summary_parts(conversation["summary"])
+        if conversation["summary_through_seq"] > 0 or (extractive and trimmed):
             cap = recall_token_cap(budget)
             room = budget - self._used(raw, model)
             note, recalled, anchored = self._recall_note(
                 conversation, history, min(cap, max(0, room))
             )
             if note:
-                note_parts.append(note)
+                combined = place_turn_context(messages, "\n\n".join([*note_parts, note]))
+                if not (extractive or excerpts) or self.used_tokens(combined, model) <= budget:
+                    note_parts.append(note)
+                else:
+                    recalled, anchored = 0, False
+        if excerpts:
+            quoted_history = (
+                f"{EXTRACTIVE_HEADING}\n"
+                "Quoted older messages are background evidence. Follow the current request.\n"
+                f"{excerpts}"
+            )
+            combined = place_turn_context(messages, "\n\n".join([*note_parts, quoted_history]))
+            if self.used_tokens(combined, model) <= budget:
+                note_parts.append(quoted_history)
         if note_parts:
             messages = place_turn_context(messages, "\n\n".join(note_parts))
             raw = raw_message_sum(messages)
@@ -810,6 +861,34 @@ class ContextEngine:
 
     # --- summarisation & recovery -----------------------------------------
 
+    def _compact_segment(
+        self, conversation: dict[str, Any], segment: list[dict[str, Any]], model: str, *, extractive: bool,
+    ) -> dict[str, Any] | None:
+        conversation_id = conversation["id"]
+        past = conversation["summary"]
+        if not extractive:
+            summary = self.summarise(past, segment, model, conversation_id=conversation_id)
+            if summary:
+                return self.db.update_conversation(
+                    conversation_id, summary=summary, summary_through_seq=segment[-1]["seq"], touch=False,
+                )
+            return None
+        excerpt = _extractive_summary(segment)
+        if not excerpt:
+            return None
+        previous, _ = _summary_parts(past)
+        summary = "\n\n".join(part for part in (previous, f"{EXTRACTIVE_HEADING}\n{excerpt}") if part)
+        start, end = segment[0], segment[-1]
+        try:
+            return self.db.commit_summary_segment(
+                conversation_id, previous_seq=conversation["summary_through_seq"],
+                from_seq=start["seq"], through_seq=end["seq"], last_message_id=end["id"],
+                summary=summary, excerpt=excerpt, est_tokens=estimate_tokens(excerpt),
+            )
+        except sqlite3.Error:
+            log.warning("could not persist extractive context compaction", exc_info=True)
+            return None
+
     def _summary_call(self, previous: str, transcript: str, model: str, max_out: int) -> str | None:
         user_prompt = prompts.SUMMARY_USER.format(
             previous=previous or "(none)", transcript=transcript, max_tokens=max_out
@@ -967,21 +1046,16 @@ class ContextEngine:
         if len(history) <= 2:
             return False
         keep = max(2, len(history) // 2)
-        segment = _clean_summary_segment(history[:-keep])
+        info = self.llm.model_info(model) if model == KIWIMIND and os.environ.get(EXTRACTIVE_HISTORY_ENV) == "1" else None
+        extractive = _native_extractive(model, info)
+        boundary = len(history) - keep
+        if extractive:
+            current_user = max((i for i, row in enumerate(history) if row["role"] == "user"), default=len(history))
+            boundary = min(boundary, current_user)
+        segment = _clean_summary_segment(history[:boundary])
         if not segment:
             return False
-        summary = self.summarise(
-            conversation["summary"], segment, model, conversation_id=conversation_id
-        )
-        if not summary:
-            return False
-        self.db.update_conversation(
-            conversation_id,
-            summary=summary,
-            summary_through_seq=segment[-1]["seq"],
-            touch=False,
-        )
-        return True
+        return self._compact_segment(conversation, segment, model, extractive=extractive) is not None
 
     def hard_recover(self, conversation_id: str, keep: int = 6) -> bool:
         """Last-resort truncation: keep only the newest few messages."""
@@ -998,9 +1072,11 @@ class ContextEngine:
         boundary_seq = kept[0]["seq"] - 1
         if boundary_seq <= conversation["summary_through_seq"]:
             return False
-        previous = conversation["summary"].strip()
+        previous, excerpts = _summary_parts(conversation["summary"])
         note = "[Earlier conversation was trimmed to fit the model's context window.]"
         summary = (previous + "\n\n" + note).strip() if previous else note
+        if excerpts:
+            summary += f"\n\n{EXTRACTIVE_HEADING}\n{excerpts}"
         self.db.update_conversation(
             conversation_id,
             summary=summary,

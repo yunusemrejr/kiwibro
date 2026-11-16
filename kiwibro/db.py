@@ -913,15 +913,43 @@ class Database:
         summary: str,
         est_tokens: int | None = None,
     ) -> dict[str, Any]:
-        sid = _new_id("seg")
         with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO summary_segments(id, conversation_id, from_seq, through_seq, "
-                "summary, est_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (sid, conversation_id, from_seq, through_seq, summary, est_tokens, config.now_iso()),
-            )
+            sid = self._insert_summary_segment(conn, conversation_id, from_seq, through_seq, summary, est_tokens)
             row = conn.execute("SELECT * FROM summary_segments WHERE id = ?", (sid,)).fetchone()
         return self._segment(row)
+
+    @staticmethod
+    def _insert_summary_segment(
+        conn: sqlite3.Connection, conversation_id: str, from_seq: int, through_seq: int,
+        summary: str, est_tokens: int | None,
+    ) -> str:
+        sid = _new_id("seg")
+        conn.execute(
+            "INSERT INTO summary_segments(id, conversation_id, from_seq, through_seq, "
+            "summary, est_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sid, conversation_id, from_seq, through_seq, summary, est_tokens, config.now_iso()),
+        )
+        return sid
+
+    def commit_summary_segment(
+        self, conversation_id: str, *, previous_seq: int, from_seq: int, through_seq: int,
+        last_message_id: str, summary: str, excerpt: str, est_tokens: int,
+    ) -> dict[str, Any] | None:
+        """Publish the digest and its provenance together if the history still matches."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                "UPDATE conversations SET summary = ?, summary_through_seq = ? "
+                "WHERE id = ? AND summary_through_seq = ? AND EXISTS "
+                "(SELECT 1 FROM messages WHERE conversation_id = ? AND seq = ? AND id = ?)",
+                (summary, through_seq, conversation_id, previous_seq, conversation_id, through_seq, last_message_id),
+            )
+            if not changed.rowcount:
+                return None  # connect rolls back an uncommitted transaction
+            self._insert_summary_segment(conn, conversation_id, from_seq, through_seq, excerpt, est_tokens)
+            row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+            conn.execute("COMMIT")
+        return self._conversation(row)
 
     def list_summary_segments(self, conversation_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
