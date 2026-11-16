@@ -120,3 +120,37 @@ On the stock IQ3 GGUF, the placement trace put the tied weight and output multip
 | CPU projection | 5.168, 5.282 tok/s | 19.05% |
 
 The pooled medians were 5.51 tok/s on CPU and 5.03 tok/s with the Vulkan tensor placement. Desktop pressure varied between runs. The stock-GGUF test supplies no speed evidence for enabling this placement on the compact model.
+
+## Compact pilot on the desktop
+
+The 28-step Q4_K_M pilot has 80 stored experts, six active per token, and an
+8,192-token serving window. Its text GGUF is 11,105,979,328 bytes. These
+application requests asked for the same exact marker in a local text file,
+used six threads, and repeated the request twice on the live engine.
+The native Gemma profiles used one slot. Cold wall time includes model
+startup. Desktop load varied across the separately run controls.
+
+| Pack and profile | Cold | First warm | Second warm |
+| --- | ---: | ---: | ---: |
+| Installed Spark pack, default GPU placement | 30.1 s | 16.2 s | 8.6 s |
+| Stock Gemma, 10 Vulkan layers | 27.8 s | 7.3 s | 2.2 s |
+| Compact Gemma, 10 Vulkan layers | 28.8 s | 5.8 s | 2.1 s |
+| Compact Gemma, CPU | 40.8 s | 14.4 s | 3.4 s |
+
+Both Gemma profiles retrieved the file before generation and sent its result
+in one model request. In the compact Vulkan run, peak system GTT was 13,762
+MiB and available host memory bottomed out at 10,233 MiB. The CPU run left at
+least 13,115 MiB available. These are measurements for the small read
+workload. The same 10-layer compact profile reached the live acceptance
+test's 300-second limit on an interactive 3D HTML task before it completed
+its first tool call.
+
+A separate raw test of the compact pilot observed the following across one
+tool call, one screenshot and two retrieval requests with identical prompts.
+Retrieval used 36 filler lines. Full Vulkan passed all four probes in
+68.5 seconds after startup. The 15-layer profile failed its first retrieval
+after Vulkan reported `ErrorDeviceLost`. In a follow-up test using eight
+filler lines, placing dense weight operations on Vulkan and experts in host
+memory passed all four probes in 136.9 seconds. Adding a 1,024 MiB expert
+cache brought that shorter test to 61.0 seconds. Profile timings include
+different desktop load. They record candidate behavior on this laptop.
