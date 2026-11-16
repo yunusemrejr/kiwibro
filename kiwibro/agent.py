@@ -303,6 +303,46 @@ def _directives_note(db: Database, conversation_id: str) -> str:
 
 # Always offered in text-protocol mode: deterministic helpers small models need most.
 _TEXT_MODE_EXTRA = ("calculate", "doc_search", "doc_read")
+_NATIVE_TEXT = frozenset({
+    ".md", ".markdown", ".txt", ".text", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml",
+    ".xml", ".ini", ".toml", ".log", ".py", ".js", ".ts", ".sh", ".html", ".htm",
+})
+_NATIVE_READ = re.compile(
+    r"""^read\s+(?:(?:the\s+)?file\s+)?(?:\x60[^\x60\n]+\x60|"[^"\n]+"|'[^'\n]+'|[^\s,;]+?)"""
+    r"(?:\s+with\s+(?:the\s+)?(?:file-reading tool|read_file))?"
+    r"(?:\.\s+reply\s+with\s+[^.,;!?\n]+)?[.!?]?$", re.I,
+)
+
+
+def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
+    return model == KIWIMIND and (info or {}).get("engine") == "native-gguf"
+
+
+def _compact_parameters(schema: dict[str, Any]) -> dict[str, Any]:
+    """Keep JSON Schema constraints and argument names, omit argument prose in native Auto."""
+    compact = {name: value for name, value in schema.items() if name != "description"}
+    if isinstance(schema.get("properties"), dict):
+        compact["properties"] = {name: _compact_parameters(item) for name, item in schema["properties"].items()}
+    if isinstance(schema.get("items"), dict):
+        compact["items"] = _compact_parameters(schema["items"])
+    return compact
+
+
+def _native_auto_names(turn: Turn | None) -> set[str] | None:
+    """Select the exact schema for an unambiguous workspace read, or retain the usual profile."""
+    if turn is None or turn.goal or turn.attachments or turn.native_unscoped:
+        return None
+    if plan.is_small_talk(turn.message):
+        return set()
+    if turn.plan is None:
+        return None
+    reads = [step for step in turn.plan.steps if step.kind == "read"]
+    if (not reads or any(step.kind not in {"read", "answer"} for step in turn.plan.steps)
+            or any(step.target is None or step.target.outside or step.target.is_dir
+                   or step.target.path.suffix.lower() not in _NATIVE_TEXT
+                   or not _NATIVE_READ.fullmatch(step.text.strip()) for step in reads)):
+        return None
+    return {"read_file"}
 
 
 def _text_mode_specs(settings: dict[str, Any]) -> list[tools.ToolSpec]:
@@ -359,6 +399,8 @@ class Turn:
     page_limit: int = 8000  # tool outputs longer than this are paged into the library
     nudged: bool = False
     reserve: int = 0  # prompt tokens the tool schemas take (kept out of the message budget)
+    native_unscoped: bool = False  # steering can widen a previously narrow tool set
+    native_tool_charge: int = 0  # the native schema charge in the last generation
     reviewed: bool = False  # the one end-of-turn self-check has been offered
     pending_review: str = ""  # checklist nudge for the next round (transient)
     plan: plan.TurnPlan | None = None  # the request's steps, when it has several or names a place
@@ -542,6 +584,9 @@ class AgentManager:
             notes, turn.steering_notes = turn.steering_notes, []
             if last and not notes:
                 turn.steering_open = False
+        if (notes and turn.model == KIWIMIND and _native_auto_names(turn) is not None
+                and _native_mind(turn.model, self.llm.model_info(turn.model))):
+            turn.native_unscoped = turn.prompt_changed = True
         for note in notes:
             self.db.add_message(
                 turn.conversation_id,
@@ -721,10 +766,10 @@ class AgentManager:
         # One profile-sized set, identical for every turn and conversation: the tool list
         # renders ahead of all messages, so any change re-prefills them. Its tokens are
         # reserved in the budget so compaction starts before the window overflows.
-        tool_list = self._tool_list(model, settings, model_info)
-        turn.reserve = self._tool_tokens(model, tool_list)
-        self._page_long_message(turn, user_message, model)
         turn.plan = self._plan_for(turn, settings)
+        tool_list = self._tool_list(model, settings, model_info, turn=turn)
+        turn.reserve = self._tool_tokens(model, tool_list, model_info)
+        self._page_long_message(turn, user_message, model)
         turn.questions = plan.questions(turn.message) if turn.plan is None else []
         turn.worked = self._worked(turn)
         captured = self._capture_memory(turn, settings)
@@ -2302,8 +2347,10 @@ class AgentManager:
         system_prompt = self._system_prompt(
             {**settings, "workspace": self._folder(turn.conversation_id)}, model=model, model_info=info
         )
-        tool_list = self._tool_list(model, settings, info)
-        turn.system_prompt, turn.reserve, turn.prompt_changed = system_prompt, self._tool_tokens(model, tool_list), False
+        tool_list = self._tool_list(model, settings, info, turn=turn)
+        turn.system_prompt = system_prompt
+        turn.reserve = self._tool_tokens(model, tool_list, info)
+        turn.prompt_changed = False
         prepared = self.context.prepare(
             turn.conversation_id, model, system_prompt, turn_context=turn.turn_context, reserve_tokens=turn.reserve
         )
@@ -2338,7 +2385,8 @@ class AgentManager:
             temperature = min(temperature, steer.RETRY_TEMPERATURE)
         max_tokens = self._max_tokens(turn, prepared, settings)
         profile = inference.model_profile(model, prepared.model_info)
-        budgets = inference.uses_budgets(profile, self.llm.direct_on())  # thinking never touches the prompt
+        native_mind = _native_mind(model, prepared.model_info)
+        budgets = inference.uses_budgets(profile, native_mind or self.llm.direct_on())
         if turn.thinking is None:  # decided once per turn: with the server a flip re-prefills everything
             turn.thinking = inference.turn_reasoning(
                 settings.get("reasoning"),
@@ -2353,6 +2401,10 @@ class AgentManager:
             extra = inference.budget_payload(profile, think=think, must_act=must_act)
         else:
             extra = inference.reasoning_payload(profile, think=think)
+        if native_mind and not think:
+            # Some native templates still generate reasoning with a zero budget.
+            # Keep the user's Off setting and Auto's shallow turns off in the template.
+            extra = {**extra, **inference.NO_THINKING, "chat_template_kwargs": {"enable_thinking": False}}
         prompt_extra = {k: v for k, v in extra.items() if k not in inference.BUDGET_KEYS}  # what renders
         attempts = 0
         collapsed = False  # the reply collapsed once; this request recovers it
@@ -2394,6 +2446,10 @@ class AgentManager:
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter()
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
+            turn.native_tool_charge = (
+                self._tool_tokens(model, tool_list, prepared.model_info)
+                if native_mind else 0
+            )
             try:
                 # Kiwi Mind: this chat's cache slot and status line. A leading helper was announced above, once.
                 bind_turn(turn.conversation_id, None if model == turn.lead else turn.emit)
@@ -2713,6 +2769,10 @@ class AgentManager:
 
         settings = self._settings()
         model_info = self.llm.model_info(model)
+        if _native_mind(model, model_info) and settings.get("tool_profile") in (None, "auto"):
+            # Auto may advertise a narrow schema or no tools. Prefilling the
+            # generic catalog would delay the caller and miss that prefix.
+            return None
         system_prompt = self._system_prompt(
             {**settings, "workspace": self._prompt_folder(conversation_id)}, model=model, model_info=model_info
         )
@@ -2726,25 +2786,30 @@ class AgentManager:
         messages = build_llm_messages(
             combine_system_prompt(system_prompt, summary), [*history, {"role": "user", "content": "…"}]
         )
+        tool_list = self._tool_list(model, settings, model_info)
         if history:
             _ctx, budget, _info = self.context.budget_for(model)
+            if _native_mind(model, model_info):
+                budget = max(512, budget - self._tool_tokens(model, tool_list, model_info))
             used = self.context.used_tokens(messages, model)
             if used > int(budget * COMPACT_TRIGGER) or used > readiness.warm_limit(model):
                 return None
         info = model_info or {}
-        tool_list = self._tool_list(model, settings, model_info)
         if settings.get("agent_enabled", True) and not info.get("tools", False):
             messages = toolcall.to_text_protocol(messages)
         profile = inference.model_profile(model, info)
-        if inference.uses_budgets(profile, self.llm.direct_on()):  # every turn renders thinking on
-            return messages, tool_list, dict(inference.TEMPLATE_THINKING) if profile.reasoning_toggle else {}
         previous = self._thinking.get(conversation_id) if conversation_id else None
         think = previous if previous is not None else inference.wants_reasoning(settings.get("reasoning"), "")
+        native_mind = _native_mind(model, model_info)
+        if native_mind and not think:
+            return messages, tool_list, {**inference.NO_THINKING, "chat_template_kwargs": {"enable_thinking": False}}
+        if inference.uses_budgets(profile, native_mind or self.llm.direct_on()):
+            return messages, tool_list, dict(inference.TEMPLATE_THINKING) if profile.reasoning_toggle else {}
         extra = inference.reasoning_payload(profile, think=think)
         return messages, tool_list, extra
 
     def _tool_list(
-        self, model: str, settings: dict[str, Any], model_info: dict[str, Any] | None
+        self, model: str, settings: dict[str, Any], model_info: dict[str, Any] | None, *, turn: Turn | None = None,
     ) -> list[dict[str, Any]] | None:
         """Native tool definitions for this model, sized to its window.
 
@@ -2754,6 +2819,17 @@ class AgentManager:
         info = model_info or {}
         if not settings.get("agent_enabled", True) or not info.get("tools", False):
             return None
+        if _native_mind(model, info):
+            catalog = tools.tool_defs_for(settings=settings)
+            if settings.get("tool_profile") not in (None, "auto"):
+                return catalog
+            names = _native_auto_names(turn)
+            selected = catalog if names is None else [item for item in catalog if item["function"]["name"] in names]
+            return [
+                {**item, "function": {**item["function"],
+                 "parameters": _compact_parameters(item["function"]["parameters"])}}
+                for item in selected
+            ] or None
         if model == KIWIMIND:  # trained on the whole catalog in one fixed order: the same text for every skill
             return tools.tool_defs_for("full", settings=settings)
         _ctx, budget, _info = self.context.budget_for(model)
@@ -2765,11 +2841,19 @@ class AgentManager:
         log.info("model %s: window too small for the full tool set; using the minimal set", model)
         return small if estimate_tokens(json.dumps(small, ensure_ascii=False)) <= room else None
 
-    @staticmethod
-    def _tool_tokens(model: str, tool_list: list[dict[str, Any]] | None) -> int:
-        """What the tool list costs in the window: Kiwi Mind reads one manual line per tool, not the JSON schemas."""
+    def _tool_tokens(
+        self, model: str, tool_list: list[dict[str, Any]] | None, model_info: dict[str, Any] | None = None,
+    ) -> int:
+        """Reserve room for the tool definitions that this model's template receives."""
         if not tool_list:
             return 0
+        if _native_mind(model, model_info):
+            count = self.llm.native_schema_tokens(tool_list)
+            if count is not None:
+                return count
+            # JSON fields and their punctuation survive the native template. Budget the
+            # actual advertised schemas, with room for its function wrappers.
+            return estimate_tokens(json.dumps(tool_list, ensure_ascii=False, separators=(",", ":"))) + 6 * len(tool_list)
         if model == KIWIMIND:
             return estimate_tokens(manual_text(tool_list))
         return estimate_tokens(json.dumps(tool_list, ensure_ascii=False))
@@ -3244,6 +3328,12 @@ class AgentManager:
             workspace_block = prompts.WORKSPACE_TEMP_BLOCK  # no path: the same text in every temporary chat
         else:
             workspace_block = prompts.WORKSPACE_BLOCK.format(workspace=config.display_path(workspace)) if workspace else ""
+        if _native_mind(model, model_info):
+            enabled = bool(settings.get("agent_enabled", True))
+            permissions = (prompts.NATIVE_MANUAL if settings.get("autonomy") == "supervised"
+                           else prompts.NATIVE_AUTOMATIC) if enabled else prompts.NATIVE_TOOLS_DISABLED
+            return prompts.NATIVE_SYSTEM.format(workspace_block=workspace_block, permissions=permissions,
+                                                user_block=user_block)
         if not settings.get("agent_enabled", True):
             tools_block = prompts.TOOLS_DISABLED_BLOCK
         elif model_info is not None and not model_info.get("tools"):
@@ -3264,7 +3354,8 @@ class AgentManager:
         if not usage:
             return
         if prepared is not None and turn.model:
-            self.context.note_usage(turn.model, prepared.raw_sum, int(usage.get("prompt_tokens") or 0))
+            charge = 0 if result.tools_disabled else turn.native_tool_charge
+            self.context.note_usage(turn.model, prepared.raw_sum, max(0, int(usage.get("prompt_tokens") or 0) - charge))
         turn.has_usage = True
         turn.usage_prompt += int(usage.get("prompt_tokens") or 0)
         turn.usage_completion += int(usage.get("completion_tokens") or 0)

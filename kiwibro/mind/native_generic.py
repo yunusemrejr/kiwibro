@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
+
+import requests
 
 from ..config import MEMORY_KINDS
 from ..engine import SOURCE_MIND, DirectEngine, LocalModel
@@ -62,6 +66,41 @@ class NativeChatClient(LLMClient):
     def unload(self) -> None:
         if self._used_engine is not None:
             self._used_engine.unload(NATIVE_MODEL)
+
+    def schema_tokens(self, tools: list[dict[str, Any]]) -> int | None:
+        """Count tool-template overhead on the loaded server without starting it."""
+        engine = self._used_engine
+        server = engine.loaded(NATIVE_MODEL) if engine is not None else None
+        if engine is None or server is None:
+            return None
+        encoded = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+        plain = _template_tokens(server.url, engine.api_key, "[]")
+        with_tools = _template_tokens(server.url, engine.api_key, encoded) if plain is not None else None
+        if plain is None or with_tools is None or with_tools <= plain:
+            return None
+        return with_tools - plain
+
+
+@lru_cache(maxsize=64)
+def _template_tokens(url: str, key: str, encoded: str) -> int | None:
+    body = {
+        "messages": [{"role": "system", "content": "You are KiwiBro."},
+                     {"role": "user", "content": "Continue."}],
+        "tools": json.loads(encoded),
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        with requests.post(f"{url}/apply-template", json=body, headers=headers, timeout=1) as response:
+            response.raise_for_status()
+            prompt = response.json()["prompt"]
+        with requests.post(f"{url}/tokenize", json={"content": prompt, "add_special": False, "parse_special": True},
+                           headers=headers, timeout=1) as response:
+            response.raise_for_status()
+            tokens = response.json()["tokens"]
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        return None
+    return len(tokens) if isinstance(tokens, list) else None
 
 
 @dataclass(frozen=True)

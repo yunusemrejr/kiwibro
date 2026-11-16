@@ -112,6 +112,9 @@ class Mind:
         if self._native is not None:
             self._native.unload()
 
+    def native_schema_tokens(self, tools: list[dict[str, Any]]) -> int | None:
+        return self._native.schema_tokens(tools) if self._native is not None else None
+
     def managed_native_model(self) -> LocalModel | None:
         if self._native is None:
             return None

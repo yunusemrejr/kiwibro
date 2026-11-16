@@ -348,6 +348,9 @@ class LLMClient:
                                   runtime=self._mind_runtime, native_engine=self.direct_engine if candidate else None)
             return self._mind
 
+    def native_schema_tokens(self, tools: list[dict[str, Any]]) -> int | None:
+        return self.mind().native_schema_tokens(tools)
+
     def _mind_runtime(self) -> Any:
         """The llama.cpp build a Kiwi Mind 3 pack runs on (None when none is installed)."""
         from .engine import _runtime_env
