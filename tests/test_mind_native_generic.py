@@ -317,6 +317,22 @@ def test_candidate_status_exposes_only_validated_architecture_counts(
     assert "expert_bank" not in status and "base" not in status
 
 
+@pytest.mark.parametrize(("training", "expected"), [
+    ({"steps": 64, "total_steps": 300}, 300), ({"steps": 28}, 28),
+    ({"steps": 64, "total_steps": 28}, None), ({"steps": True}, None),
+])
+def test_candidate_status_reports_cumulative_training_steps(tmp_path, monkeypatch, training, expected):
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    pack = pack_at(tmp_path)
+    manifest = pack.manifest()
+    manifest["training"] = training
+    pack.path(MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+    mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()
+    monkeypatch.setattr(mind, "runtime", lambda: object())
+    assert mind.describe()["training_steps"] == expected
+
+
 def test_candidate_reserves_one_full_local_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
     pack_at(tmp_path, base="google/gemma-4-26B-A4B-it", effort=False)

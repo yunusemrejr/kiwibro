@@ -1318,6 +1318,8 @@ function nativeStops(mind) {
     ...(bank ? [["Expert bank", `${bank.experts_after} stored per layer, ${bank.top_k_after} selected per token.`],
       ["Starting architecture", `${bank.experts_before} stored per layer, ${bank.top_k_before} selected per token.`]] : []),
     ...(bank?.width_after ? [["Expert intermediate width", `${bank.width_after} channels per expert, from ${bank.width_before}.`]] : []),
+    ...(checked && Number.isSafeInteger(mind.training_steps) && mind.training_steps > 0 ?
+      [["Adapter training", `${fmt(mind.training_steps)} cumulative optimizer steps recorded in the pack.`]] : []),
     ...(caps.tools ? [["Function calling", "The model's chat template sends structured calls to Kiwibro. The app checks the tool name, arguments and permissions."]] : []),
     ...(mind.vision ? [["Vision", "The matching vision projector lets the same model read attached images."]] : []),
     ...(caps.thinking ? [["Reasoning", caps.reasoning_effort ?
@@ -1669,7 +1671,7 @@ export function createHowView({ dialog, getMind = () => null }) {
     if (!mind && built) return false;
     const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
       mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
-      mind.capabilities, mind.vision, mind.expert_bank,
+      mind.capabilities, mind.vision, mind.expert_bank, mind.training_steps,
     ]) : null;
     if (built && nextKey === nativeKey) return false;
     const previous = stops[index]?.title;

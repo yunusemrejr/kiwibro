@@ -108,6 +108,7 @@ class NativeModel:
     model: LocalModel
     reasoning_effort: bool
     expert_bank: dict[str, int] | None = None
+    training_steps: int | None = None
 
 
 def _expert_bank(manifest: Mapping[str, Any]) -> dict[str, int] | None:
@@ -123,6 +124,17 @@ def _expert_bank(manifest: Mapping[str, Any]) -> dict[str, int] | None:
     if type(before) is int and type(after) is int and 1 <= after < before:
         summary.update(width_before=before, width_after=after)
     return summary
+
+
+def _training_steps(manifest: Mapping[str, Any]) -> int | None:
+    training = manifest.get("training")
+    if not isinstance(training, dict):
+        return None
+    steps = training.get("steps")
+    total = training.get("total_steps", steps)
+    if type(steps) is int and type(total) is int and 1 <= steps <= total <= 2**53 - 1:
+        return total
+    return None
 
 
 def describe_pack(pack: Pack) -> NativeModel:
@@ -162,6 +174,7 @@ def describe_pack(pack: Pack) -> NativeModel:
         ),
         thinking and capabilities.get("reasoning_effort") is True,
         _expert_bank(manifest),
+        _training_steps(manifest),
     )
 
 
