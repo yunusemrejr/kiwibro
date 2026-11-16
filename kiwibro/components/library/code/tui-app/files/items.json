@@ -1,0 +1,8 @@
+[
+  {"title": "Renew the home insurance", "status": "doing", "tags": ["home", "admin"], "date": "2026-11-18", "body": "Ends 30 November. Compare the quote with last year's premium."},
+  {"title": "Book the dentist", "status": "todo", "tags": ["health"], "date": "2026-11-21", "body": "Last visit in May. Ask about evening slots."},
+  {"title": "Fix the leaking tap", "status": "blocked", "tags": ["home", "repair"], "date": "2026-11-12", "body": "Washer is worn. The part was ordered on 10 November."},
+  {"title": "Write the garden club report", "status": "doing", "tags": ["writing"], "date": "2026-11-20", "body": "Membership numbers and hall costs, one page plus the treasurer's table."},
+  {"title": "Return the library books", "status": "done", "tags": ["errands"], "date": "2026-11-14", "body": "Returned to the central branch."},
+  {"title": "Clean the gutters", "status": "blocked", "tags": ["home", "garden"], "date": "2026-11-16", "body": "Waiting for the borrowed ladder."}
+]

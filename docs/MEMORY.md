@@ -87,6 +87,12 @@ Nothing is ever deleted by compaction. Compaction only changes what is
   transcript budget). Otherwise the watermark stays put and those messages are read later
   together with the next memorable one; the result then has `deferred: 1`. Code and links
   are ignored when looking for the signal (`memory.worth_extracting`).
+- **Who extracts**: a helper model you chose, else the little helper (Qwen3 0.6B on the CPU,
+  `mind/little.py`) when its file is in the models folder, else Kiwi Mind. The little helper
+  is shown only what the user wrote, with worked examples (`prompts.LITTLE_MEMORY_*`), and
+  answers in lines (`kind | User ...`) that `memory.lines_to_ops` turns into the same
+  operations; it keeps a line only if it starts with "User" and every capitalised word in it
+  is in what the user wrote. Everything after that (limits, dedupe, the watermark) is the same.
 - **Extraction watermark**: `extracted_through_seq` advances only after a
   successful extraction response, so a timed-out small model retries next
   turn instead of silently skipping facts. The extraction timeout is sized

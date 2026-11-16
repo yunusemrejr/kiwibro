@@ -2,19 +2,19 @@
   "name": "web/scene-3d",
   "kind": "kit",
   "title": "3D scene",
-  "summary": "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, follows, orbits).",
-  "when": "Use when the user wants something in 3D, a three.js or WebGL page, a 3D simulation, or an animated scene of things that walk, drive or fly.",
+  "summary": "One HTML file with a three.js 3D scene made from plain lines: things (kiwi, tree, house, car and about 60 more) and what they do (walks to, runs to, flies to, drives to, hugs, follows, orbits), with a sky in any colour.",
+  "when": "Use when the user wants something in 3D, a three.js or WebGL page, a 3D simulation, or an animated scene of things that walk, drive, fly or hug, with a sky of any colour.",
   "blanks": {
     "title": {
       "about": "A short name for the scene, shown in the browser tab and on the page.",
       "default": "A dog comes home"
     },
     "scene": {
-      "about": "What happens in the scene, in plain words, no code. The user's own sentence works: \"a dog walks to a house and stops\". More lines, separated by \\n, add things and actions: \"tree at 4 0\", \"bird flies to tree\", \"car drives to house\".",
+      "about": "What happens in the scene, in plain words, no code. The user's own sentence works: \"a dog walks to a house and stops\", or \"a kiwi walking towards a tree and hugging it\" (it walks up and leans in against the tree). More lines, separated by \\n, add things and actions: \"tree at 4 0\", \"bird flies to tree\", \"car drives to house\".",
       "default": "house at 5 -1\ntree at -2 -4\ndog at -7 2\ndog walks to house"
     },
     "sky": {
-      "about": "The sky: day, dawn, sunset or night.",
+      "about": "The sky: day, dawn, sunset or night; or a colour in words or hex, which tints the sky, fog and light (\"purple\", \"a purple sky\", \"#6b3fa0\", \"pink sunset\").",
       "default": "day"
     },
     "ground": {
@@ -37,7 +37,16 @@
     "threejs",
     "webgl",
     "webgl page",
-    "animated scene"
+    "animated scene",
+    "walking towards",
+    "walks towards",
+    "walking to",
+    "walks to",
+    "runs to",
+    "flies to",
+    "drives to",
+    "hugs",
+    "hugging"
   ],
   "unless": [
     "3d printer",

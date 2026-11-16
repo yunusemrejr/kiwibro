@@ -157,6 +157,10 @@ SEARCH_SPENT = (
     "say what is still unknown."
 )
 SMALL_TALK_NO_TOOLS = "Not run: this message needs no tools. Just reply to the user in a sentence or two."
+KIT_DOES_NOT_FIT = (
+    "This call did not run: {name} makes only this: {makes} The request asks for something else. Write "
+    "the page yourself with write_file, drawing exactly what the user asked for."
+)
 TOOLS_PAUSED = (
     "Tool use is paused for the rest of this turn after repeated failures of {tools}. Do the step with a "
     "different tool if one fits (write_file writes a page by hand); otherwise answer the user now: say "
@@ -279,6 +283,30 @@ the old one); a new fact about something else is an add.
 add preference "User wants short answers"; "my boss Ali hates long emails" -> add person "User's boss Ali \
 hates long emails".
 - Return {{"ops": []}} only when the user said nothing about themselves and asked for nothing to be kept."""
+
+# The little helper (Qwen3 0.6B) copies the empty list at the end of the long JSON prompt above and answers
+# {"ops": []} to everything (measured on 30 chats: none of the 34 facts found). It does better with plain lines,
+# only what the user wrote and worked examples, so it gets this prompt and the app turns its lines into the same
+# operations (`memory.lines_to_ops`).
+LITTLE_MEMORY_SYSTEM = (
+    "You read what a USER wrote and list the facts the user states about themselves: their name, job, "
+    "place, family, pets, health, skills, tools, projects, and lasting wishes about how to be answered. "
+    "Write one fact per line, as: kind | User ... Kinds: fact, preference, project, person, decision. "
+    "Do not list questions, requests, tasks, topics the user only asks about, or things the assistant said. "
+    "If the user states nothing about themselves, write only: none"
+)
+LITTLE_MEMORY_EXAMPLES = (
+    ("I'm Dana, a vet in Leeds, and I have two cats. Can you help me write a rota?",
+     "fact | User's name is Dana\nfact | User works as a vet\nfact | User lives in Leeds\nfact | User has two cats"),
+    ("How do I reverse a list in Python? And what is a tuple?", "none"),
+    ("From now on, answer me in French. I work with Rust at a small bank.",
+     "preference | User wants answers in French\nfact | User works with Rust at a small bank"),
+    ("Which running shoes are best for flat feet?", "none"),
+    ("My son Omar is nine and he plays chess. Which book should he read next?",
+     "person | User's son Omar is nine\nfact | User's son Omar plays chess"),
+)
+LITTLE_MEMORY_USER = "{transcript}{known}"
+LITTLE_MEMORY_KNOWN = "\n\nAlready remembered (do not write these again):\n{known}"
 
 APPROVAL_SUMMARY_TOOL = "The agent wants to {verb} {target}. Review the details before allowing."
 

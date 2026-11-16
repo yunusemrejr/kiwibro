@@ -1,0 +1,85 @@
+{
+  "name": "web/music",
+  "kind": "kit",
+  "title": "Music loop",
+  "summary": "One HTML page that composes and plays a looping piece with the Web Audio API, no library and no internet: drums, bass, chords and melody in lo-fi, ambient, chiptune, house or felt-piano style, a step grid and a WAV download.",
+  "when": "Use when the user wants music made: a lo-fi beat, a chiptune or ambient track, a piano melody, a game soundtrack. Not for a music player, a playlist of their files or a visualizer.",
+  "blanks": {
+    "title": {
+      "about": "The name of the piece, above the controls and in the browser tab.",
+      "default": "Night loop"
+    },
+    "style": {
+      "about": "lofi, ambient, chiptune, house or piano. A whole sentence works; the first style word found is used.",
+      "default": "lofi"
+    },
+    "tempo": {
+      "about": "Beats per minute as a plain number, for example 90; own takes the style's tempo.",
+      "default": "own"
+    },
+    "key": {
+      "about": "The key, for example \"A minor\" or \"C major\"; own takes the style's key.",
+      "default": "own"
+    },
+    "bars": {
+      "about": "How many bars the loop is, as a plain number, for example 8.",
+      "default": "8"
+    }
+  },
+  "next": "Nothing more to do: the page is finished and shows itself in the chat. Do not read it, run it, build it or install anything; tell the user in one or two sentences what the piece is and that Play starts it. Only when the user asks for a change: edit the plain lines at the top of index.html inside <script type=\"text/plain\" id=\"settings\"> with replace_in_file, one line per call.",
+  "match": [
+    "lofi beat",
+    "lo-fi beat",
+    "lofi",
+    "lo-fi",
+    "make music",
+    "compose music",
+    "compose a song",
+    "write a song",
+    "a melody",
+    "melody",
+    "chiptune",
+    "ambient music",
+    "ambient track",
+    "a beat",
+    "beat",
+    "song",
+    "soundtrack",
+    "music page",
+    "web audio",
+    "music",
+    "piano melody",
+    "piano piece",
+    "piano tune",
+    "music loop",
+    "looping music",
+    "generative music",
+    "synth tune",
+    "a tune",
+    "jingle"
+  ],
+  "unless": [
+    "player",
+    "playlist",
+    "spotify",
+    "itunes",
+    "soundcloud",
+    "youtube",
+    "music library",
+    "music folder",
+    "music files",
+    "song files",
+    "sound files",
+    "audiobook",
+    "sheet music",
+    "music notes",
+    "visualizer",
+    "visualiser",
+    "spectrum",
+    "make a game",
+    "build a game",
+    "game with"
+  ],
+  "finished": true,
+  "change": "Only the five lines at the top of index.html, inside <script type=\"text/plain\" id=\"settings\">, are edited: title, style, tempo, key, bars. One call per change, copying the old line exactly: replace_in_file(path=\"{file}\", old=\"style lofi\", new=\"style chiptune\")."
+}

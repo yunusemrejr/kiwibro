@@ -232,7 +232,7 @@ _MAX_GAP = 2  # "fix the login bug" still says "fix bug"
 _FILLER = frozenset({"a", "an", "the", "my", "this", "that", "these", "those", "me", "please", "our", "your", "some"})
 # A kit is files to start from, so it fits only a message that asks for something to be made.
 _MAKES = re.compile(
-    r"\b(?:create|make|build|write|generate|scaffold|set\s*up|start|add|implement|develop|code|draw|"
+    r"\b(?:create|make|build|write|generate|scaffold|set\s*up|start|add|implement|develop|code|draw|compose|"
     r"need|want|give\s+me|new)\b",
     re.IGNORECASE,
 )
@@ -290,6 +290,15 @@ def suggest(message: str, library: Library | None = None) -> Component | None:
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
         return None
     return ranked[0][1]
+
+
+def called_for(component: Component, message: str) -> bool:
+    """Whether the message asks for what this component makes: one of its ``match`` phrases is said
+    and none of its ``unless`` phrases."""
+    said = _sequence(message or "")
+    if any(_says(said, _sequence(phrase)) >= 0 for phrase in component.unless):
+        return False
+    return any(_says(said, _sequence(phrase)) >= 0 for phrase in component.match)
 
 
 def advice(component: Component) -> str:

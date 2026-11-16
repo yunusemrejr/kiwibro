@@ -631,6 +631,22 @@ def _to_enum(value: Any, allowed: list[Any], key: str, notes: list[str]) -> Any:
     return match
 
 
+_MARKUP_OPENER_RE = re.compile(r"^(?P<tag>!doctype|\?xml|html|head|body|svg)(?=[\s>?])[^<]*>", re.IGNORECASE)
+_MARKUP_FILE_SUFFIXES = (".html", ".htm", ".svg", ".xml")
+
+
+def restore_markup_opener(path: str, content: str) -> tuple[str, str]:
+    """A markup file whose first tag lost its ``<`` (``html lang="en">``) gets it back. Returns (content, note)."""
+    if not path.lower().endswith(_MARKUP_FILE_SUFFIXES):
+        return content, ""
+    lead = content.lstrip()
+    match = _MARKUP_OPENER_RE.match(lead)
+    if match is None:
+        return content, ""
+    start = len(content) - len(lead)
+    return f"{content[:start]}<{lead}", f"added the '<' that the first tag lost ({match.group('tag')})"
+
+
 @dataclass
 class PreparedCall:
     """A model tool call after name resolution and argument normalisation."""
@@ -658,6 +674,10 @@ def prepare_call(call: Mapping[str, Any], specs: Mapping[str, Any]) -> PreparedC
     if name != raw_name:
         notes.insert(0, f"tool '{raw_name}' → '{name}'")
     args, more = normalize_args(args, specs[name].parameters)
+    if name == "write_file" and isinstance(args.get("content"), str):
+        args["content"], fixed = restore_markup_opener(str(args.get("path") or ""), args["content"])
+        if fixed:
+            more.append(fixed)
     return PreparedCall(call_id, raw_name, name, args, notes + more, damaged=damaged)
 
 

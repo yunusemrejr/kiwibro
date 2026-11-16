@@ -25,6 +25,9 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Kiwi Mind.** Kiwibro's own model: Spark X2.6 4B at IQ2_M, a 2.6 GB pack with its skills and vision, run by llama.cpp.
   Eight skills (chat, web, code, terminal, computer, tools, write, see) are picked by a
   route the model writes before each reply; you never pick or load anything.
+- **A little helper for the background work.** Memory notes are written by Qwen3 0.6B (Q8_0, 0.6 GB) on the processor, beside Kiwi Mind, so the
+  graphics chip stays with your reply. Put the file in the models folder, or download
+  `Qwen/Qwen3-0.6B-GGUF` in *Models*; without it Kiwi Mind writes them itself.
 - **Helper models.** Download a model from Hugging Face inside the app, or use the ones LM
   Studio already downloaded. Kiwi Mind stays in charge of tools and steps and hands a
   heavy answer to the helper. Swap or drop the helper mid-chat; memories, notes and
@@ -45,7 +48,7 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
   changes only after you have read what changed and the git command that undoes it. It
   never deletes: deletions come as commands for you to run.
-- **Components.** 75 ready parts, from a web page to a 3D scene to a GTK app for Ubuntu, that any model
+- **Components.** 77 ready parts, from a web page to a 3D scene, a music loop or a terminal app to a GTK app for Ubuntu, that any model
   can search and build on instead of starting from a blank page.
 - **Looks at what it makes.** Before a reply about a page is final, Kiwibro opens the page in
   Chrome, says what is wrong (a script error, a blank picture, a notice left on screen) and has it
@@ -154,6 +157,12 @@ ViT-L/14), so it needs no separate vision helper.
 When the route marks a request as heavy (a long report, a tricky algorithm) and a helper
 model is selected, Kiwi Mind keeps the tool steps and the helper writes the answer. With no
 helper, Kiwi Mind answers everything itself.
+
+Memory notes are a different kind of job: short, mechanical, and nobody waits for them. When no helper model is selected and
+`Qwen3-0.6B-Q8_0.gguf` is in the models folder, a second llama.cpp server runs that 0.6B model on
+two processor cores. It starts with the first note, ends after five idle minutes and
+never writes a reply. A memory note waits for a quiet moment and is dropped for a reply. Summaries of long chats stay
+with Kiwi Mind, whose summaries read better.
 
 **Packs before 3.0** (the 2.x format, with a control head and an action unit) still run on
 the old engine: Kiwi Mind's WebAssembly build on Node.js. Kiwibro picks the engine by the

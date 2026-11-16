@@ -65,10 +65,11 @@ RESEARCH_NEXT = ("The final answer must state the answer in plain sentences with
 LIST_HINT = 'To use one: component(action="use", name="<name>", path="<folder>", values={...})'
 # A kit is usually a handful of small starter files. A whole engine in one page is the
 # exception: a three.js scene that draws itself from plain lines cannot be split without
-# stopping being one file, and the 3D chart and the 2D animation are single finished pages
+# stopping being one file, and the 3D chart, the 2D animation and the music loop are single finished pages;
+# the terminal app keeps its screen and its rules in two files and has its own test (test_tui_kit.py)
 # by design too. The kits listed here answer to the wide ceiling instead, and nothing else
 # in the library may join the list without a test of its own.
-BIG_KITS = {"web/scene-3d", "web/chart-3d", "web/animation-2d"}
+BIG_KITS = {"web/scene-3d", "web/chart-3d", "web/animation-2d", "web/music", "code/tui-app"}
 LINES = 200
 BYTES = 16 * 1024
 BIG_LINES = 1400
@@ -121,7 +122,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 75
+    assert len(MANIFESTS) == 77
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):

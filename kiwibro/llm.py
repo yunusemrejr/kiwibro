@@ -874,6 +874,10 @@ class LLMClient:
             # put to Kiwi Mind by name is its own to look at when its pack has vision layers.
             helper = self.helper()
             if helper is None or (model == KIWIMIND and self.mind().sees() and _has_pictures(messages)):
+                if helper is None:  # no helper chosen: the little CPU model takes the background jobs
+                    little = self._little_complete(messages, max_tokens, temperature, abort)
+                    if little is not None:
+                        return little
                 return self.mind().conductor.complete(messages, max_tokens=max_tokens, temperature=temperature,
                                                       abort=abort)
             model = helper["id"]
@@ -948,6 +952,29 @@ class LLMClient:
                     finish_reason=str(choices[0].get("finish_reason") or "") or None,
                 )
             raise last_error or LLMError("http", "The model could not handle that request.")
+
+    def _little_complete(
+        self, messages: list[dict[str, Any]], max_tokens: int, temperature: float, abort: threading.Event | None,
+    ) -> Completion | None:
+        """The little helper's answer to a background job (memory, summary: see ``mind.little.background``), or
+        None when this call is no such job or the little helper cannot take it: Kiwi Mind then answers."""
+        from .mind.little import LittleError, current_job
+
+        job = current_job()
+        if job is None or _has_pictures(messages):
+            return None
+        try:
+            done = self.mind().little.complete(
+                job.messages or messages, max_tokens=max_tokens, temperature=temperature, abort=abort,
+                defer=job.defer, as_json=job.as_json,
+            )
+        except LittleError as exc:
+            log.debug("a %s job stays on Kiwi Mind: %s", job.kind, exc)
+            return None
+        if job.convert is not None:
+            text = done.text.rpartition("\n")[0] if done.finish_reason == "length" else done.text  # no cut-off line
+            done = Completion(text=job.convert(text), usage=done.usage, finish_reason="stop")
+        return done
 
     def complete_json(
         self,

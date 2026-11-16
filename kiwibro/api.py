@@ -34,7 +34,8 @@ def services():
     return current_app.extensions["kiwibro"]
 
 
-NO_MIND = {"usable": False, "running": False, "pid": None}
+NO_MIND = {"usable": False, "running": False, "pid": None,
+           "little": {"available": False, "running": False, "pid": None, "port": None}}
 
 
 def _mind(svc: Any) -> Any:

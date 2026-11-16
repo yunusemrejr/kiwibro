@@ -66,6 +66,7 @@ kiwibro/
 │   │   ├── service.py        # Kiwi Mind as the app sees it: usable or not, state, lifecycle, engine
 │   │   ├── pack.py           # the model pack: manifest, checksums, resumable download
 │   │   ├── llama.py          # 3.x: the llama-server process (LlamaHost) and its requests (LlamaClient)
+│   │   ├── little.py         # 3.x: the little helper, a Qwen3 0.6B on the CPU for memory notes
 │   │   ├── conductor3.py     # 3.x: writes the route, then the reply (Conductor3)
 │   │   ├── render3.py        # 3.x: how a conversation is rendered for the model, and the route
 │   │   ├── host.py           # starts and stops the engine's process; before 3.0, the Node host
@@ -116,7 +117,7 @@ kiwibro/
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
 │   ├── components.py         # the component library: search, show, use
-│   ├── components/library/   # 70 kits and recipes, one folder each (plain data)
+│   ├── components/library/   # 77 kits and recipes, one folder each (plain data)
 │   ├── knowledge.py          # the knowledge base: a read-only reference, searched by code
 │   ├── knowledge/base/       # 24 topic files of short entries (plain Markdown)
 │   │   # safety
@@ -709,6 +710,13 @@ at the end under "Packs before 3.0".
   on in its `lora` field: the chosen one at scale 1, the others at 0.
 - **Missing.** Without a llama.cpp build Kiwi Mind reports "Kiwi Mind needs llama.cpp, which
   was not found on this computer." Node.js is not used.
+- **The little helper** (`mind/little.py`). If `models/Qwen/Qwen3-0.6B-Q8_0.gguf` is in the
+  data folder, a second `llama-server` is started the first time a background job needs it:
+  CPU only (`--device none`, `--gpu-layers 0`), 2 threads at low priority, a 8192-token
+  context, thinking off, its own free port and key. The graphics chip stays with the main
+  server. It ends with Kiwibro (the same parent-death signal) and after five idle minutes. If
+  the file is missing or the server does not start, the job goes to Kiwi Mind as before, and
+  that is logged once; a failed start is not tried again for ten minutes.
 
 ### In the app (`mind/service.py`, `pack.py`, `llama.py`, `conductor3.py`, `render3.py`)
 
@@ -735,11 +743,19 @@ at the end under "Packs before 3.0".
 - **Images.** A pack with vision layers answers pictures itself, under `see`. Without them,
   a picture goes to a helper that can see.
 - **Utility work.** Titles, summaries and memory extraction go to the helper when one is
-  selected; otherwise they go to Kiwi Mind's utility slot under the chat skill.
+  selected. When none is selected and the little helper is there, memory extraction goes to it
+  (`llm._little_complete`; the caller marks its call with `little.background("memory")`, so
+  nothing else moves; summaries stay with Kiwi Mind, whose summaries were clearly better in a
+  30-chat comparison); titles and everything else go to Kiwi
+  Mind's utility slot under the chat skill. Replies, routing and delegated side questions
+  never go to the little helper. A memory job is let go the moment a reply starts and
+  tried again afterwards.
 - **API.** `GET /api/mind` reports `usable`, `installed`, `version`, `bytes`, `engine`
   (`"llama"` or `"wasm"`), `vision`, `node` (null for a 3.x pack), the state of the host,
-  the helper and a running download. `POST /api/mind/download` fetches the pack and
-  `POST /api/mind/download/cancel` stops that. `/health` carries `mind`. A turn's stream
+  the helper, `little` (`available`, `running`, `pid`, `port`, why it is not used) and a
+  running download. `POST /api/mind/download` fetches the pack and
+  `POST /api/mind/download/cancel` stops that. `/health` carries `mind`, with the little
+  helper under `mind.little`. A turn's stream
   carries `brain` events naming who writes: `kiwimind` with its skill, or the helper.
 
 ### Training
@@ -899,7 +915,11 @@ and links back to the chat it came from.
   slowed its first token from 2.8 s to 8.4 s and stored a fact that reply had just changed. The
   worker asks the selected model for strict JSON operations
   (`{"ops":[{"op":"add|update|delete","id?":"...","kind":"...","content":"..."}]}`)
-  given the last few turns plus a compact list of existing memories (top ~40).
+  given the last few turns plus a compact list of existing memories (top ~40). With no
+  helper selected and the little helper present it asks that one instead, with its own
+  prompt (the user's words only, worked examples, answers as `kind | User ...` lines);
+  `memory.lines_to_ops` reads the lines as `add` operations and drops any line that is
+  not about the user or names something the user did not write.
   Validate: content 3–300 chars, kind whitelist, no duplicates, max 5 ops applied
   per turn; cap 400 memories total (prune oldest low-confidence non-pinned).
 - **Dedupe**: normalise (lowercase, collapse whitespace, strip punctuation) and
@@ -1279,9 +1299,9 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 75 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
-  service, 3D scene), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
-  gallery, and a UI review recipe), `code/` (Python CLI and package, Node CLI and server, C
+- **Areas.** 77 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service, 3D scene, music loop), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
+  gallery, and a UI review recipe), `code/` (Python CLI and package, terminal app with curses, Node CLI and server, C
   program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
   fix a bug, add a feature, refactor, review, explain a project and repair failing tests),
   `data/` (CSV report, JSON tool, answer from a table), `write/` (README, report, summary,

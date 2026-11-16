@@ -274,6 +274,10 @@ class MindHost:
     def busy(self) -> "_Use":
         return _Use(self)
 
+    def in_flight(self) -> int:
+        """How many requests the host is working on now (replies, routes, reads)."""
+        return self._in_flight
+
     def stop_idle(self, min_idle_s: float) -> int:
         with self._lock:
             if not self.alive() or self._in_flight or time.monotonic() - self._last_used < min_idle_s:

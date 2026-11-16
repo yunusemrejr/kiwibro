@@ -1,0 +1,16 @@
+{
+  "name": "code/tui-app",
+  "kind": "kit",
+  "title": "Terminal app",
+  "summary": "Terminal app in Python with curses: list and detail panes, live filter, sort, help, colour that falls back to monochrome, tests for its logic.",
+  "when": "Use when the user wants an interactive terminal app to browse notes, tasks or any list of records, or names curses, a TUI or ncurses.",
+  "blanks": {
+    "title": {"about": "The app title, in the header line and the help panel.", "default": "Tasks"},
+    "accent": {"about": "curses colour for the selection and headings: teal, cyan, blue, green, magenta, red or yellow.", "default": "teal"},
+    "items": {"about": "What the records are, plural (tasks, notes), for the labels and the empty message.", "default": "tasks"}
+  },
+  "next": "Write the files, run python3 -m pytest -q, then python3 app.py. Adapt items.json to the user's records (title, status, tags, date, body); for other fields, rename them in load_items, detail_lines and sort_items in app.py.",
+  "match": ["tui", "terminal ui", "terminal user interface", "text user interface", "terminal app",
+            "curses", "console app", "ncurses"],
+  "unless": ["terminal command", "open a terminal", "terminal window"]
+}

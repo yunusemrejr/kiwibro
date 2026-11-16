@@ -366,7 +366,7 @@ function readyParts(root) {
     root.append(tile);
     return tile;
   });
-  text(root, 240, 216, "75 ready parts", "hw-t-tan");
+  text(root, 240, 216, "77 ready parts", "hw-t-tan");
   const chosen = text(root, 240, 236, "picked by code, not by the model");
   const model = box(root, 420, 152, 88, 96, "Model", "", 152);
   const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
@@ -984,7 +984,7 @@ const STOPS = [
     title: "Kiwi Mind",
     question: "Which model is answering?",
     lines:
-      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 24 layers read your conversation once. Before every reply it writes itself a three-word [[route]]: which of eight [[skills]] answers (chat, web, code, terminal, computer, tools, write or see), whether the request is light or heavy, and whether to speak or use a tool. The skill is a thin layer slid into the upper 12 layers, and every turn keeps the one it was answered with, so a change of subject costs nothing. A picture you attach is read by the see skill. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer.",
+      "Kiwibro has a model of its own, [[Kiwi Mind]]. Its lower 24 layers read your conversation once. Before every reply it writes itself a three-word [[route]]: which of eight [[skills]] answers (chat, web, code, terminal, computer, tools, write or see), whether the request is light or heavy, and whether to speak or use a tool. The skill is a thin layer slid into the upper 12 layers, and every turn keeps the one it was answered with, so a change of subject costs nothing. A picture you attach is read by the see skill. When a request is heavy and you chose a [[helper model]], Kiwi Mind keeps the steps and the helper writes the answer. Notes about you and summaries of a long chat are written by a much smaller second model, Qwen3 0.6B, on the processor, so the graphics chip stays free for your reply.",
     fact: `${PACK.gb} GB on disk, about 3 bits per weight, on the graphics chip or the CPU.`,
     tech: {
       model: [
@@ -997,6 +997,7 @@ const STOPS = [
       app: [
         ["llama.cpp", "Kiwi Mind runs on the same llama.cpp server as the helper models, on the graphics chip when there is one."],
         ["Conductor", "Asks for the route, switches the skill on for the reply, and passes a heavy answer to the helper model while tool decisions stay with Kiwi Mind."],
+        ["Little helper", "Qwen3 0.6B on two processor cores writes memory notes. It starts with the first note, ends after five idle minutes, and a memory note waits until no reply is being written. Without its file, Kiwi Mind writes them."],
       ],
     },
     build: kiwiMind,
@@ -1113,13 +1114,13 @@ const STOPS = [
     title: "Ready parts",
     question: "Why does it not start from a blank page?",
     lines:
-      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 75 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 77 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
     fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
     tech: {
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["45 kits", "Web pages, 3D scenes, dashboards, tables, charts, flowcharts, servers, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
+        ["47 kits", "Web pages, 3D scenes, music, dashboards, tables, charts, flowcharts, servers, terminal apps, command-line tools, scripts, tests, Ubuntu apps. Files are written through the same checks as any file and can be undone."],
         ["29 recipes", "For code, the browser, the terminal, documents and data. The steps name Kiwibro's own tools and arrive with the message, so no tool call is spent on finding them."],
         ["Exact answers", "Sums, unit conversions and letter or word counts are computed before the model writes. A reply with another figure is sent back once."],
       ],

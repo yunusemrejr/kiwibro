@@ -3370,6 +3370,17 @@ class AgentManager:
         if turn.failure_streak >= FAILURE_PAUSE_AT and name in turn.failing_tools:
             return refuse(prompts.TOOLS_PAUSED.format(tools=", ".join(sorted(turn.failing_tools))),
                           "Tools paused after repeated failures")
+        # A finished kit draws a fixed set of things. Asked for a kiwi walking to a tree, the 2D animation
+        # kit drew bouncing balls and the turn called that done (16 Nov 2026): it runs only when called for.
+        if name == "component" and isinstance(rescued.args, dict) and rescued.args.get("action") == "use":
+            try:
+                kit = components.default_library().get(str(rescued.args.get("name") or ""))
+            except components.ComponentError:
+                kit = None
+            if (kit is not None and kit.kind == components.KIT and kit.finished
+                    and not components.called_for(kit, turn.message)):
+                return refuse(prompts.KIT_DOES_NOT_FIT.format(name=kit.name, makes=kit.summary),
+                              "This kit does not make what was asked")
         spec = tools.TOOL_SPECS.get(name)
         if rescued.damaged and spec is not None and not cut_off:  # a guess is never written, run or searched for
             # A read is the exception: stray characters after complete arguments only cost a look,

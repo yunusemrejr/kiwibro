@@ -15,6 +15,7 @@ from .client import MindClient
 from .conductor import Conductor, Settings
 from .conductor3 import Conductor3
 from .host import MindHost, find_node
+from .little import Little
 from .llama import NO_RUNTIME, LlamaClient, LlamaHost, LlamaRuntime
 from .pack import Pack
 
@@ -46,6 +47,8 @@ class Mind:
         self._notified = False
         self._lock = threading.Lock()
         self._build()
+        # The small CPU model for background jobs; it is idle work, so it yields to every request Kiwi Mind has.
+        self.little = Little(data_dir, self.runtime, lambda: self.host.in_flight() > 0)
         self.pack.on_installed = self._installed
         atexit.register(self.stop)
 
@@ -186,6 +189,7 @@ class Mind:
             "rss_bytes": host["rss_bytes"],
             "skills": pack["skills"],
             "helper": {"id": helper["id"], "name": helper.get("name") or helper["id"]} if helper else None,
+            "little": self.little.describe(),
             "reason": reason,
             "download": self.pack.download_state(),
         }
@@ -193,7 +197,7 @@ class Mind:
     def health(self) -> dict[str, Any]:
         usable = self.usable()
         host = self.host.describe()
-        return {"usable": usable, "running": host["running"], "pid": host["pid"]}
+        return {"usable": usable, "running": host["running"], "pid": host["pid"], "little": self.little.health()}
 
     # --- lifecycle -------------------------------------------------------------------
 
@@ -212,6 +216,7 @@ class Mind:
     def stop(self) -> None:
         self.pack.shutdown()
         self.host.stop()
+        self.little.stop()
 
     def stop_idle(self, min_idle_s: float) -> int:
-        return self.host.stop_idle(min_idle_s)
+        return self.host.stop_idle(min_idle_s) + self.little.stop_idle(min_idle_s)

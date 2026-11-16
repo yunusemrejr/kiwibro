@@ -700,7 +700,9 @@ def test_the_api_describes_an_installed_kiwi_mind(with_mind: Any, tmp_path: Path
     assert shown["skills"] == ["chat", "web", "code", "terminal", "computer", "tools", "write"]
     assert shown["running"] is False and shown["pid"] is None and shown["helper"] is None
     assert shown["download"] is None
-    assert with_mind.client.get("/health").get_json()["mind"] == {"usable": True, "running": False, "pid": None}
+    assert with_mind.client.get("/health").get_json()["mind"] == {
+        "usable": True, "running": False, "pid": None,
+        "little": {"available": False, "running": False, "pid": None, "port": None}}
     chosen = with_mind.client.post("/api/models/select", json={"id": "none"})  # Kiwi Mind alone
     assert chosen.status_code == 200 and with_mind.svc.settings_provider()["model"] == "none"
 

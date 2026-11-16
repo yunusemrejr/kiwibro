@@ -51,6 +51,28 @@ def test_a_pause_stops_only_the_tools_that_kept_failing(env: Env) -> None:
     assert any(c.startswith("Wrote") for c in contents[FAILURE_PAUSE_AT:]) and (env.workspace / "page.html").exists()
 
 
+def _kit_call(message_index: int) -> ChatResult:
+    call = {"id": f"call_k{message_index}", "type": "function",
+            "function": {"name": "component", "arguments": json.dumps(
+                {"action": "use", "name": "web/animation-2d", "path": "anim", "values": {}})}}
+    return ChatResult(tool_calls=[call], usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25})
+
+
+def test_a_finished_kit_runs_only_when_the_request_calls_for_it(env: Env) -> None:
+    """16 Nov 2026: asked for a kiwi walking to a tree, the 2D animation kit drew bouncing balls."""
+    env.fake.stream_script = [_kit_call(0), ChatResult(content="I will draw it by hand.")]
+    chat_events(env, "Create kiwitree.html that animates a kiwi walking towards a tree. Sky should be purple.")
+    refused = _tool_messages(env)[0]["content"]
+    assert refused.startswith("This call did not run: web/animation-2d makes only") and "write_file" in refused
+    assert not (env.workspace / "anim").exists()
+
+
+def test_a_finished_kit_still_runs_when_asked_for(env: Env) -> None:
+    env.fake.stream_script = [_kit_call(0), ChatResult(content="Here are the balls.")]
+    chat_events(env, "Make a bouncing balls animation.")
+    assert (env.workspace / "anim" / "index.html").exists()
+
+
 def test_a_success_resets_the_failure_streak(env: Env) -> None:
     env.fake.stream_script = [_call("/tmp", 0), _call("/etc", 1), _call(".", 2), _call("/usr", 3),
                               ChatResult(content="Done.")]

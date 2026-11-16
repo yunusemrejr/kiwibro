@@ -66,12 +66,13 @@ addEventListener("unhandledrejection",function(e){var r=e.reason;E.push({m:s(r&&
 var ce=console.error;console.error=function(){try{C.push(s([].map.call(arguments,function(a){return a&&a.message||a}).join(" ")))}catch(x){}return ce.apply(console,arguments)};
 var ra=window.requestAnimationFrame;window.requestAnimationFrame=function(f){return ra.call(window,function(t){raf++;return f(t)})};
 function seen(n){var r=n.getBoundingClientRect();return r.width>0&&r.height>0}
-function report(){if(sent)return;sent=true;var b=document.body,t=b?b.innerText:"",d=document.documentElement;
+function visibleText(b){var out=[],w=document.createTreeWalker(b,NodeFilter.SHOW_TEXT,null,false),n;while(n=w.nextNode()){var p=n.parentElement;if(p&&!p.closest("pre,code,kbd,samp,textarea,script,style,noscript,template")&&p.getClientRects().length)out.push(n.nodeValue)}return out.join("")}
+function report(){if(sent)return;sent=true;var b=document.body,t=b?b.innerText:"",d=document.documentElement,vis=b?visibleText(b):"";
 var cv=[].filter.call(document.querySelectorAll("canvas"),seen).length;
 var md=[].filter.call(document.querySelectorAll("img,svg,video"),seen).length;
 var el=b?[].filter.call(b.querySelectorAll("*"),function(n){return !/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(n.tagName)}).length:0;
 var an=document.getAnimations?document.getAnimations().filter(function(a){return a.playState==="running"}).length:0;
-console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),raf:raf,an:an,text:t.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
+console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),raf:raf,an:an,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
 setTimeout(report,@MS@);})();""".replace("\n", "")  # one line: the page's own line numbers stay what they were
 
 
@@ -215,6 +216,18 @@ def notice(line: str) -> Finding:
     said = _quote(line)
     return Finding("notice", f'The page shows a notice that its values were not understood: "{said}".',
                   f'the page shows "{said}"', "the notice is gone")
+
+
+_MARKUP_SHOWN = re.compile(
+    r"<!doctype\b|</[a-z][\w-]*|<(?:html|head|body|div|span|p|a|section|main|header|footer|script|style|svg|canvas"
+    r"|button|img|table|ul|li|h[1-6])\b|(?<![\w<])(?:html|head|body|svg)\s+[\w:-]+=[\"']",
+    re.IGNORECASE)
+
+
+def shown_markup(line: str) -> Finding:
+    said = _quote(line)
+    return Finding("markup", f'Part of the page\'s code shows as text: "{said}". The file\'s markup is broken there.',
+                  f'part of the page\'s code shows as text ("{said}")', "the code no longer shows as text")
 
 
 def unlike(sentence: str) -> Finding:
@@ -439,6 +452,9 @@ def _from_report(report: dict[str, Any], page: Path, flat: bool | None) -> list[
     holder = _PLACEHOLDER.search(str(report.get("text") or ""))
     if holder:
         found.append(unfilled(holder.group(0)))
+    shown = next((line.strip() for line in str(report.get("vis") or "").splitlines() if _MARKUP_SHOWN.search(line)), "")
+    if shown:
+        found.append(shown_markup(shown))
     return found
 
 

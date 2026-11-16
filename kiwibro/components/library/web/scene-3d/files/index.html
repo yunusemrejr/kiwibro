@@ -28,10 +28,10 @@
 <!-- KIWIBRO: the scene is the plain lines below. One thing or one action per line; no code.
   Things:   tree at 4 0  |  red car at -6 2  |  3 rocks  |  big house near tree  |  dog named rex
             (the two numbers are left-right and back-front, about -10 to 10; leave them out to be placed for you)
-  Actions:  kiwi walks to tree  |  dog runs to house  |  bird flies to tree  |  car drives to 6 2
+  Actions:  kiwi walks to tree  |  dog runs to house  |  bird flies to tree  |  car drives to 6 2  |  kiwi hugs tree
             rabbit hops to rock |  cat follows dog    |  plane orbits tower   |  ball spins  |  dog waits 2  |  dog walks home
             (actions of one thing run in the order written; "slowly" or "fast" changes the speed)
-  Setting:  sky is day, dawn, sunset or night; ground is grass, sand, snow, water, stone, dirt or moon
+  Setting:  sky is day, dawn, sunset or night, or any colour (sky purple, sky #6b3fa0); ground is grass, sand, snow, water, stone, dirt or moon
             camera follows kiwi      repeat
   Known things: kiwi bird duck chicken penguin cat dog fox rabbit sheep cow horse pig mouse bear deer frog fish butterfly bee
             person robot car truck bus boat plane rocket balloon tree pine palm bush rock flower mushroom log cactus pond
@@ -72,6 +72,34 @@ const COLORS = {
 const SIZES = { tiny: 0.5, small: 0.7, little: 0.7, baby: 0.6, short: 0.8, big: 1.5, large: 1.5, tall: 1.4, huge: 2.1, giant: 2.5, enormous: 2.5 };
 const PACES = { slowly: 0.5, slow: 0.5, gently: 0.6, quickly: 1.8, quick: 1.8, fast: 1.8 };
 const SKY_WORDS = { day: "day", noon: "day", morning: "day", sunny: "day", daytime: "day", dawn: "dawn", sunrise: "dawn", sunset: "sunset", evening: "sunset", dusk: "sunset", night: "night", midnight: "night", dark: "night" };
+const SKY_HUES = { ...COLORS, lavender: "#b9a3e3", violet: "#7f4fc9", lilac: "#c8a2d8", magenta: "#c94fa6", indigo: "#4b4fa0", navy: "#1f2d5c", turquoise: "#3fc1b8", coral: "#f08a6c", mint: "#9fe0c4", maroon: "#7a2c3e", crimson: "#b8233a" };
+function hueOf(word) {
+  const hex = /^colorhex([0-9a-f]{6})$/.exec(word);
+  return hex ? `#${hex[1]}` : SKY_HUES[word] || null;
+}
+function hslOf(hex) {
+  const [r, g, b] = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+  const high = Math.max(r, g, b), low = Math.min(r, g, b), span = high - low, light = (high + low) / 2;
+  const sat = span === 0 ? 0 : span / (1 - Math.abs(2 * light - 1));
+  const turn = span === 0 ? 0 : high === r ? (g - b) / span : high === g ? (b - r) / span + 2 : (r - g) / span + 4;
+  return { hue: (turn * 60 + 360) % 360, sat };
+}
+function hslHex(hue, sat, light) {
+  const channel = (n) => { const k = (n + hue / 30) % 12, a = sat * Math.min(light, 1 - light); return light - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+  return "#" + [channel(0), channel(8), channel(4)].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+}
+// A sky in a colour keeps its hue: a deeper top, a pale horizon. A dark sky stays dark.
+function skyPalette(base, hex) {
+  const { hue, sat } = hslOf(hex);
+  const chroma = sat < 0.2 ? sat : Math.min(Math.max(sat, 0.55), 0.85);
+  if (base.dark) return { ...base, top: hslHex(hue, chroma, 0.12), low: hslHex(hue, chroma * 0.6, 0.32) };
+  // the horizon keeps the hue: a light tint of it, not white, so the fog and far grass take that tint too
+  return { ...base, top: hslHex(hue, chroma, 0.5), low: hslHex(hue, Math.max(chroma * 0.75, 0.4), 0.8) };
+}
+function brightness(hex) {
+  const [r, g, b] = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
 const GROUND_WORDS = {
   grass: "grass", meadow: "grass", field: "grass", lawn: "grass", sand: "sand", desert: "sand", beach: "sand", snow: "snow", ice: "snow", snowy: "snow",
   water: "water", sea: "water", ocean: "water", lake: "water", stone: "stone", pavement: "stone", concrete: "stone", road: "stone", dirt: "dirt", mud: "dirt", soil: "dirt", earth: "dirt", moon: "moon",
@@ -84,7 +112,7 @@ const VERBS = {
   fly: "fly", soar: "fly", glide: "fly", flap: "fly",
   hop: "hop", jump: "hop", leap: "hop", bounce: "hop",
   drive: "glide", ride: "glide", sail: "glide", roll: "glide", swim: "glide", slide: "glide", float: "glide", drift: "glide",
-  follow: "follow", orbit: "orbit", circle: "orbit", spin: "spin", rotate: "spin", twirl: "spin",
+  hug: "hug", embrace: "hug", follow: "follow", orbit: "orbit", circle: "orbit", spin: "spin", rotate: "spin", twirl: "spin",
   wait: "wait", pause: "wait", rest: "wait", sleep: "wait", sit: "wait", stand: "wait",
   stop: "stop", stay: "stop", arrive: "stop", halt: "stop", look: "face", face: "face", turn: "face",
 };
@@ -124,7 +152,7 @@ function verbOf(word) {
 }
 
 function readScene(text, KINDS) {
-  const setup = { sky: "day", ground: "grass", follow: null, loop: false, plain: false };
+  const setup = { sky: "day", skyHue: null, ground: "grass", follow: null, loop: false, plain: false };
   const specs = [], named = {}, problems = [];
   let last = [];
 
@@ -181,6 +209,11 @@ function readScene(text, KINDS) {
   }
 
   function setting(words) {
+    const hue = words.map(hueOf).find(Boolean), base = words.map((word) => SKY_WORDS[word]).find(Boolean);
+    if (hue && (base || words.includes("sky")) && !words.some(verbOf) && !words.some(nounOf)) {
+      Object.assign(setup, { skyHue: hue }, base ? { sky: base } : {});
+      return true;
+    }
     const sky = words.map((word) => SKY_WORDS[word]).find(Boolean), ground = words.map((word) => GROUND_WORDS[word]).find(Boolean);
     const short = words.length <= 4 && !words.some((word, index) => index > 0 && verbOf(word));
     if (["sky", "time", "weather", "light"].includes(words[0]) && sky) return (setup.sky = sky);
@@ -221,6 +254,7 @@ function readScene(text, KINDS) {
       if (type && (index === at || JOIN.has(words[index - 1]) || type === "wait" || type === "stop")) parts.push({ type, verb: words[index], words: [] });
       else if (!JOIN.has(words[index])) parts[parts.length - 1].words.push(words[index]);
     }
+    let target = null;  // the thing the last action went to: "it" in "hugs it"
     for (const part of parts) {
       const act = { type: part.type };
       const numbers = [];
@@ -242,8 +276,14 @@ function readScene(text, KINDS) {
         act.type = "orbit";
       }
       if (numbers.length >= 2) act.point = numbers.length >= 3 ? [numbers[0], numbers[2]] : numbers;
-      else if (!act.home && !["wait", "stop", "spin"].includes(act.type)) act.to = refer(part.words, false);
-      for (const thing of who) if (act.to !== thing) thing.acts.push({ ...act });
+      else if (!act.home && !["wait", "stop", "spin"].includes(act.type)) {
+        const pronoun = act.type === "hug" && part.words.some((word) => PRONOUNS.has(word));
+        act.to = pronoun && target ? target : refer(part.words, false);
+      }
+      // a hug walks up to the thing first, then presses against it
+      const steps = act.type === "hug" ? [{ ...act, type: "walk" }, act] : [act];
+      for (const thing of who) for (const step of steps) if (step.to !== thing) thing.acts.push({ ...step });
+      if (act.to) target = act.to;
     }
     last = who;
     return true;
@@ -329,7 +369,7 @@ function readScene(text, KINDS) {
     return out;
   }
 
-  let clean = text.toLowerCase().replace(/[“”"'`]/g, "").replace(/[_-]+(?=[a-z])/g, " ").replace(/^\s*(?:\d+[.)]|[-*•])\s+/gm, "");
+  let clean = text.toLowerCase().replace(/[“”"'`]/g, "").replace(/#([0-9a-f]{6})\b/g, "colorhex$1").replace(/[_-]+(?=[a-z])/g, " ").replace(/^\s*(?:\d+[.)]|[-*•])\s+/gm, "");
   for (const [pattern, word] of PHRASES) clean = clean.replace(pattern, word);
   clean = clean.replace(/(\d)\s*,\s*(-?\d)/g, "$1 $2");  // "at 4, 0" is one place, not two lines
   for (const line of clean.split(/\n|;|!|,|\.(?=\s|$)/)) {
@@ -1000,20 +1040,28 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
-const sky = SKIES[setup.sky];
-document.body.classList.toggle("dark", Boolean(sky.dark) || setup.sky === "sunset");
+const sky = setup.skyHue ? skyPalette(SKIES[setup.sky], setup.skyHue) : SKIES[setup.sky];
+document.body.classList.toggle("dark", Boolean(sky.dark) || setup.sky === "sunset" || Boolean(setup.skyHue && brightness(sky.top) < 0.5));
 const scene = new THREE.Scene();
-const wash = document.createElement("canvas");
-wash.width = 4;
-wash.height = 256;
-const brush = wash.getContext("2d"), fade = brush.createLinearGradient(0, 0, 0, 256);
-fade.addColorStop(0, sky.top);
-fade.addColorStop(0.62, sky.low);
-fade.addColorStop(1, sky.low);
-brush.fillStyle = fade;
-brush.fillRect(0, 0, 4, 256);
-scene.background = new THREE.CanvasTexture(wash);
-scene.background.colorSpace = THREE.SRGBColorSpace;
+let skyLine = 0.62, backdrop = null;
+// The sky behind everything: the top colour down to the horizon line (a fraction of the screen height from the top).
+// A coloured sky ends its gradient at the horizon, where the fog and the far ground already have the same colour.
+function paintSky(line) {
+  const wash = document.createElement("canvas");
+  wash.width = 4; wash.height = 256;
+  const brush = wash.getContext("2d"), fade = brush.createLinearGradient(0, 0, 0, 256);
+  fade.addColorStop(0, sky.top);
+  fade.addColorStop(line, sky.low);
+  fade.addColorStop(1, sky.low);
+  brush.fillStyle = fade;
+  brush.fillRect(0, 0, 4, 256);
+  backdrop?.dispose();
+  backdrop = new THREE.CanvasTexture(wash);
+  backdrop.colorSpace = THREE.SRGBColorSpace;
+  scene.background = backdrop;
+  skyLine = line;
+}
+paintSky(0.62);
 scene.fog = new THREE.Fog(sky.low, 34, 90);
 
 const groundColor = GROUNDS[setup.ground];
@@ -1032,6 +1080,7 @@ WINDOW.emissiveIntensity = sky.dark ? 1.4 : setup.sky === "sunset" ? 0.7 : 0;
 for (const thing of things) {
   const built = thing.kind.make(rng, thing.spec.color, thing.spec);
   built.scale.setScalar(thing.size);
+  built.rotation.order = "YXZ";  // the lean tips the thing forward before it turns
   const data = built.userData;
   thing.mesh = built;
   thing.data = data;
@@ -1147,6 +1196,14 @@ function resize() {
   camera.updateProjectionMatrix();
   if (!framed || controls.autoRotate) frameAll();
   framed = true;
+  if (setup.skyHue) paintSky(horizonLine());
+}
+// Where the horizon sits on screen: a far point on the ground, straight ahead of the camera.
+function horizonLine() {
+  const ahead = new THREE.Vector3().subVectors(controls.target, camera.position).setY(0).setLength(170).add(controls.target).setY(0);
+  camera.lookAt(controls.target);
+  camera.updateMatrixWorld();
+  return THREE.MathUtils.clamp((1 - ahead.project(camera).y) / 2, 0.02, 0.9);
 }
 addEventListener("resize", resize);
 controls.addEventListener("start", () => { framed = true; });
@@ -1157,7 +1214,7 @@ resize();
 function reset() {
   for (const thing of things) {
     if (thing.extra) continue;
-    Object.assign(thing, { x: thing.home.x, z: thing.home.z, yaw: thing.home.yaw, turnTo: thing.home.yaw, step: 0, clock: 0, speed: 0, air: 0, hop: 0, phase: 0, swingBy: 0, went: 0 });
+    Object.assign(thing, { x: thing.home.x, z: thing.home.z, yaw: thing.home.yaw, turnTo: thing.home.yaw, step: 0, clock: 0, speed: 0, air: 0, hop: 0, phase: 0, swingBy: 0, went: 0, lean: 0 });
   }
   report.done = false;
   ended = -1;
@@ -1176,6 +1233,22 @@ function act(thing, dt) {
   thing.clock += dt;
   const other = now.to && first(now.to);
   const type = now.type;
+  if (type !== "hug") thing.lean = 0;
+  if (type === "hug") {
+    // pressed against the thing: lean in over 0.6 s, hold, then go on
+    if (begins) now.from = [thing.x, thing.z];
+    const press = Math.min(1, thing.clock / 0.6);
+    thing.lean = 0.38 * press;
+    if (other) {
+      const [fx, fz] = now.from, dx = other.x - fx, dz = other.z - fz, away = Math.hypot(dx, dz) || 1;
+      thing.x = fx + dx / away * 0.12 * press;
+      thing.z = fz + dz / away * 0.12 * press;
+      thing.turnTo = Math.atan2(dx, dz);
+    }
+    thing.speed = thing.aim = 0;
+    if (thing.clock > 2.5) next(thing);
+    return false;
+  }
   if (type === "stop") { next(thing); return false; }
   if (type === "wait") { if (!now.forever && thing.clock > (now.seconds ?? 1.5)) next(thing); return false; }
   if (type === "spin") {
@@ -1258,6 +1331,7 @@ function pose(thing, moving, dt, time) {
   const bounce = moving && thing.hopping && !thing.flying ? Math.abs(Math.sin(thing.phase * 0.55)) * 0.45 * thing.size : thing.hop;
   mesh.position.set(thing.x, thing.y + thing.air + bounce, thing.z);
   mesh.rotation.y = thing.yaw;
+  mesh.rotation.x = thing.lean ?? 0;
   const walking = thing.air < 0.15 ? thing.swingBy : 0;
   if (data.legs) data.legs.forEach((leg, index) => { leg.rotation.x = Math.sin(thing.phase + data.swing[index]) * 0.62 * walking; });
   if (data.body) {
@@ -1313,6 +1387,8 @@ renderer.setAnimationLoop(() => {
     controls.target.lerp(new THREE.Vector3(lead.x, 1, lead.z), Math.min(1, dt * 2.5));
   }
   controls.update();
+  // the camera may have turned: keep the horizon and the sky meeting
+  if (setup.skyHue) { const line = horizonLine(); if (Math.abs(line - skyLine) > 0.002) paintSky(line); }
   renderer.render(scene, camera);
 });
 </script>

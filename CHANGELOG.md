@@ -6,6 +6,21 @@ All notable changes to Kiwibro are documented here.
 
 ### Added
 
+- **A small helper model for the background work.** Memory notes are now written by Qwen3 0.6B
+  (Q8_0) in a second llama.cpp server of its own, on
+  two processor cores at low priority, so the graphics chip and Kiwi Mind stay with your reply.
+  The file `Qwen3-0.6B-Q8_0.gguf` goes in the models folder (a download of `Qwen/Qwen3-0.6B-GGUF`
+  in *Models* lands there). The server starts with the first note and ends with Kiwibro or
+  after five idle minutes. A memory note waits until no reply is being written and gives way
+  when one starts. Measured on 30 test chats, Kiwi Mind's own memory pass stored nothing (it
+  answered the chat instead), while the little model found 21 of 34 facts. Summaries of long
+  chats stay with Kiwi Mind: the little model's were faster but copied the chat and slipped
+  into the first person. Without the file, or if
+  the server does not start, Kiwi Mind writes the notes as before and the log says so once. A
+  helper model you chose still takes them. Replies, routing and titles stay with Kiwi Mind.
+  The little model gets its own memory prompt (plain lines with worked examples), and the app
+  keeps only lines that are about you and name nothing you did not write. `GET /api/mind` and
+  `/health` show it under `little`: available, running, pid, port.
 - **Kiwibro looks at the page it made, and `/goal` keeps going until it is right.** Before a
   turn that wrote or changed an HTML page ends, the page is opened in headless Chrome and
   checked: script errors (with the page's own line number), files that are not there, a blank
@@ -51,6 +66,21 @@ All notable changes to Kiwibro are documented here.
   every tool for the rest of the turn, so after six guesses at a component that does not exist the
   `write_file` that finally made the page was refused too. Now only the failing tools are paused,
   and the model is told it may do the step with a different tool.
+- **A finished kit runs only when the request asks for what it makes.** Asked for a kiwi walking
+  to a tree, the 2D animation kit drew bouncing balls and the turn called it done. A finished kit
+  whose phrases the request does not say is now refused, and the model is told to write the page
+  by hand.
+- **Music and terminal apps from one request.** Two new kits: `web/music` composes and plays a
+  looping piece (drums, bass, chords and melody in lo-fi, ambient, chiptune, house or piano, in
+  the key and tempo asked) with a step grid, mutes, a new-variation button and a WAV download;
+  `code/tui-app` is a Python curses app with list and detail panes, live filter, sort, help and
+  tests. "Compose" now counts as asking for something to be made.
+- **The 3D scene hugs and takes any sky colour.** "A kiwi walking towards a tree and hugging it,
+  sky purple" now finds the scene kit: "walking towards" walks, "hugs it" leans into the last
+  thing named, and a sky can be any colour, in words or hex.
+- **A page whose code shows as text is caught.** A write of an HTML, SVG or XML file whose first
+  tag lost its `<` gets it back, and the page look reports code that shows as text on the page
+  instead of saying nothing is wrong.
 - **The folder picker offers the folders you used lately.** Above the folder list, up to five
   recent folders (the name, and the folder it sits in) choose with one tap or Enter. Folders
   that are gone, temporary chat folders and the chat's own folder are left out; the Settings

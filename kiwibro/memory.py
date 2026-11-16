@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -14,6 +15,7 @@ from . import autofacts, config, inference, ledger, prompts, sense, terms
 from .context import estimate_tokens
 from .db import Database
 from .llm import LLMClient, LLMError, TurnAborted, parse_json_loose
+from .mind.little import YieldedToChat, background
 
 log = logging.getLogger(__name__)
 
@@ -303,6 +305,25 @@ def lenient_kind(kind: Any) -> str | None:
         return None
     value = str(kind).strip().lower()
     return value if value in config.MEMORY_KINDS else "fact"
+
+
+def lines_to_ops(text: str, source: str = "") -> str:
+    """The little helper's answer ("kind | User ..." lines, or "none") as the JSON operations the app reads.
+
+    A line is kept only if it is about the user and every name or capitalised word in it is in what the user wrote
+    (``source``): a small model that has nothing to say copies the worked examples of its prompt."""
+    seen = set(re.findall(r"\w+", source.lower()))
+    ops = []
+    for line in text.splitlines():
+        kind, bar, content = line.partition("|")
+        content = content.strip()
+        if not bar or not content[:4].lower() == "user":
+            continue
+        words = re.findall(r"\w+", content)[1:]
+        if any(w[0].isupper() and w.lower() not in seen for w in words if w.lower() != "user"):
+            continue
+        ops.append({"op": "add", "kind": kind.strip().lower().strip("-* "), "content": content})
+    return json.dumps({"ops": ops})
 
 
 def parse_ops(raw: Any) -> list[dict[str, Any]]:
@@ -1104,9 +1125,11 @@ class MemoryEngine:
         *, abort: Any = None,
     ) -> tuple[Any, str]:
         """(parsed JSON or None, outcome): outcome is ``ok``, ``failed`` or ``cancelled``."""
-        messages = self._extraction_messages(conversation_id, window=window)
+        parts = self._extraction_parts(conversation_id, window)
+        messages = self._extraction_messages(conversation_id, window=window, parts=parts)
         if not messages:
             return None, "failed"
+        user_text = "\n".join(line for line in parts[0] if line.startswith("User: "))
         # Sized from this model's measured speeds: a fixed short timeout means a CPU-only
         # machine never finishes an extraction (the watermark then retries forever).
         budget = inference.SPEEDS.budget_s(
@@ -1121,10 +1144,12 @@ class MemoryEngine:
         if abort is not None:
             watcher = threading.Thread(target=_relay, args=(abort, stop), daemon=True)
             watcher.start()
-        try:
-            try:
-                future = executor.submit(
-                    self.llm.complete_json,
+
+        def ask() -> Any:
+            # The little CPU model may take this job: with its own prompt, and its lines read as operations.
+            with background("memory", defer=True, messages=self._little_extraction_messages(parts),
+                            convert=lambda text: lines_to_ops(text, user_text)):
+                return self.llm.complete_json(
                     model=model,
                     messages=messages,
                     max_tokens=EXTRACT_MAX_TOKENS,
@@ -1133,12 +1158,16 @@ class MemoryEngine:
                     retries=0,
                     **({"abort": stop} if abort is not None else {}),
                 )
+
+        try:
+            try:
+                future = executor.submit(ask)
             except RuntimeError:  # the app is shutting down: not this window's failure
                 return None, "cancelled"
             raw = future.result(timeout=budget + 1.0)
             return raw, "ok" if raw is not None else "failed"
-        except TurnAborted:
-            return None, "cancelled" if abort is not None and abort.is_set() else "failed"
+        except TurnAborted as exc:  # a reply came first: the job is tried again once it is over
+            return None, "cancelled" if isinstance(exc, YieldedToChat) or (abort is not None and abort.is_set()) else "failed"
         except TimeoutError:
             log.info("memory extraction timed out")
             return None, "failed"
@@ -1177,9 +1206,10 @@ class MemoryEngine:
             add(self._rank(self._search_pool(said[:2000]), said), related_only=True)
         return picked
 
-    def _extraction_messages(
+    def _extraction_parts(
         self, conversation_id: str, window: list[dict[str, Any]] | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """The transcript lines of the window and the existing memories worth showing next to them."""
         recent = window if window is not None else self._pending_window(conversation_id)[0]
         lines: list[str] = []
         budget = EXTRACT_TRANSCRIPT_CHARS
@@ -1196,20 +1226,29 @@ class MemoryEngine:
             lines.append(line)
             budget -= len(line) + 1
         if not lines:
-            return []
+            return [], []
         lines.reverse()
-        existing = self._relevant_existing_memories(lines)
-        existing_lines: list[str] = []
+        shown: list[dict[str, Any]] = []
         spent = 0
-        for memory in existing:
-            line = f"{memory['id']} | {memory['kind']} | {memory['content'][:160]}"
+        for memory in self._relevant_existing_memories(lines):
             # Keep the utility prompt small enough for small-context models:
             # the dedupe decision needs the *relevant* memories, not all 40
             # most recent ones (~2k tokens before the transcript even starts).
-            if spent + len(line) > EXTRACT_EXISTING_CHARS and existing_lines:
+            size = len(f"{memory['id']} | {memory['kind']} | {memory['content'][:160]}")
+            if spent + size > EXTRACT_EXISTING_CHARS and shown:
                 break
-            existing_lines.append(line)
-            spent += len(line) + 1
+            shown.append(memory)
+            spent += size + 1
+        return lines, shown
+
+    def _extraction_messages(
+        self, conversation_id: str, window: list[dict[str, Any]] | None = None,
+        parts: tuple[list[str], list[dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
+        lines, existing = parts or self._extraction_parts(conversation_id, window)
+        if not lines:
+            return []
+        existing_lines = [f"{m['id']} | {m['kind']} | {m['content'][:160]}" for m in existing]
         user_prompt = prompts.MEMORY_USER.format(
             existing="\n".join(existing_lines) if existing_lines else "(none)",
             transcript="\n\n".join(lines),
@@ -1218,6 +1257,20 @@ class MemoryEngine:
             {"role": "system", "content": prompts.MEMORY_SYSTEM},
             {"role": "user", "content": user_prompt},
         ]
+
+    @staticmethod
+    def _little_extraction_messages(parts: tuple[list[str], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """The same job for the little helper: only what the user wrote, worked examples, plain lines out."""
+        lines, existing = parts
+        written = "\n".join(line.removeprefix("User: ") for line in lines if line.startswith("User: "))
+        known = "\n".join(f"- {m['content'][:160]}" for m in existing)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": prompts.LITTLE_MEMORY_SYSTEM}]
+        for talk, answer in prompts.LITTLE_MEMORY_EXAMPLES:
+            messages += [{"role": "user", "content": prompts.LITTLE_MEMORY_USER.format(transcript=talk, known="")},
+                         {"role": "assistant", "content": answer}]
+        messages.append({"role": "user", "content": prompts.LITTLE_MEMORY_USER.format(
+            transcript=written, known=prompts.LITTLE_MEMORY_KNOWN.format(known=known) if known else "")})
+        return messages
 
     def _apply_ops(
         self, ops: list[dict[str, Any]], transcript: str | None = None, *, conversation_id: str | None = None,
