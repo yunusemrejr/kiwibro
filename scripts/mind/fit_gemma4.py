@@ -20,8 +20,23 @@ from scripts.mind.calibrate_gemma4 import messages_for_processor, rows
 from scripts.mind.prune_gemma4 import BASE_REVISION
 
 
-def _encoded(processor, messages: list[dict], tools: list[dict], target: int):
-    params = dict(tools=tools, tokenize=True, return_dict=True, return_tensors="pt")
+def _supervision_template(template: str) -> str:
+    # For a new model turn, the canonical non-thinking generation prompt ends
+    # with an empty thought channel. Include it before the final training
+    # answer as well. Prior messages and continuations keep their normal form.
+    start_turn = r"{{- '<|turn>' + role + '\n' }}"
+    if template.count(start_turn) != 1:
+        raise ValueError("Unexpected Gemma model-turn template.")
+    return template.replace(start_turn, start_turn + r"""
+        {%- if loop.last and role == 'model' and not enable_thinking
+            and not (message.get('reasoning') or message.get('reasoning_content')) -%}
+            {{- '<|channel>thought\n<channel|>' -}}
+        {%- endif -%}
+    """)
+
+
+def _encoded(processor, template: str, messages: list[dict], tools: list[dict], target: int):
+    params = dict(chat_template=template, tools=tools, tokenize=True, return_dict=True, return_tensors="pt")
     prefix = processor.apply_chat_template(messages[:target], add_generation_prompt=True, **params)
     complete = processor.apply_chat_template(messages[:target + 1], add_generation_prompt=False, **params)
     input_ids = complete["input_ids"][0]
@@ -53,6 +68,7 @@ def fit(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
     processor = AutoProcessor.from_pretrained(args.checkpoint)
+    supervision_template = _supervision_template(processor.chat_template)
     packed_training = args.mode == "l4-lora"
     model = AutoModelForImageTextToText.from_pretrained(
         args.checkpoint, device_map="cpu" if packed_training else "cuda",
@@ -111,7 +127,7 @@ def fit(args: argparse.Namespace) -> None:
             for target in targets:
                 if (row["id"], target) in seen:
                     continue
-                encoded, start = _encoded(processor, messages, row["tools"], target)
+                encoded, start = _encoded(processor, supervision_template, messages, row["tools"], target)
                 length = encoded["input_ids"].shape[-1]
                 if length > args.max_tokens:
                     continue
