@@ -209,10 +209,10 @@ def test_question_about_an_earlier_chat_gets_the_recent_chats_note(env: Env) -> 
 
 def test_an_unrelated_question_gets_no_earlier_chats_note(env: Env) -> None:
     _lisbon_chat(env)
-    env.fake.stream_script = [ChatResult(content="4.")]
+    env.fake.stream_script = [ChatResult(content="Iron is ferromagnetic.")]
     before = len(env.fake.stream_calls)
 
-    chat_events(env, "what is 2+2")  # a new chat, chat C
+    chat_events(env, "Why do magnets attract iron?")  # a new chat, chat C
 
     assert len(env.svc.db.list_conversations()) == 2
     assert "Your other recent chats" not in _request_text(env, before)

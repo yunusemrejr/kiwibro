@@ -12,6 +12,7 @@ working) and is removed afterwards. It reports through one console line that is 
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -44,6 +46,7 @@ MIN_WINDOW = 500  # headless Chrome never opens a window narrower than this
 BUDGET_MS = 2600  # virtual milliseconds the page runs before the first picture
 LATER_MS = 2000  # the second picture is taken this much later
 TIMEOUT_S = 40  # real seconds one Chrome run may take
+LIVE_MOTION_TIMEOUT_S = 12
 MAX_HTML_BYTES = 2_000_000
 CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
 PICTURE_DIR = "screenshots"
@@ -58,13 +61,14 @@ _PHONE = re.compile(r"\b(?:phones?|mobile|responsive|smartphone)\b", re.IGNORECA
 _ANSWER = re.compile(r"^\W*(yes|no)\b[\W]*", re.IGNORECASE)
 
 # Runs before any page script: records what goes wrong and what moves, then reports once near the end of the time budget.
-_PROBE = """(function(){var P="@PREFIX@",E=[],F=[],C=[],sent=false;
+_PROBE = """(function(){var P="@PREFIX@",E=[],F=[],C=[],queued=false,sent=false;
 function s(v){return String(v==null?"":v).slice(0,300)}
 addEventListener("error",function(e){var t=e.target;
 if(t&&t!==window&&(t.src||t.href)){F.push({u:String(t.src||t.href),m:t.type==="module"})}
 else{E.push({m:s(e.message),l:e.lineno||0})}},true);
 addEventListener("unhandledrejection",function(e){var r=e.reason;E.push({m:s(r&&r.message||r),l:0})});
 var ce=console.error;console.error=function(){try{C.push(s([].map.call(arguments,function(a){return a&&a.message||a}).join(" ")))}catch(x){}return ce.apply(console,arguments)};
+var frame=window.requestAnimationFrame;window.requestAnimationFrame=function(){queued=true;return frame.apply(this,arguments)};
 function seen(n){var r=n.getBoundingClientRect();return r.width>0&&r.height>0}
 function visibleText(b){var out=[],w=document.createTreeWalker(b,NodeFilter.SHOW_TEXT,null,false),n;while(n=w.nextNode()){var p=n.parentElement;if(p&&!p.closest("pre,code,kbd,samp,textarea,script,style,noscript,template")&&p.getClientRects().length)out.push(n.nodeValue)}return out.join("")}
 function report(){if(sent)return;sent=true;var b=document.body,t=b?b.innerText:"",d=document.documentElement,vis=b?visibleText(b):"";
@@ -73,7 +77,8 @@ var md=[].filter.call(document.querySelectorAll("img,svg,video"),seen).length;
 var el=b?[].filter.call(b.querySelectorAll("*"),function(n){return !/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(n.tagName)}).length:0;
 var scene=window.sceneReport&&window.sceneReport.motion;
 var motion=scene&&{planned:scene.planned===true,observed:scene.observed===true,rendered:Number(scene.rendered)||0,waiting:scene.waiting===true};
-console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),motion:motion,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
+var live=queued||!!(document.getAnimations&&document.getAnimations().some(function(a){return a.playState==="running"}));
+console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),motion:motion,live:live,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
 setTimeout(report,@MS@);})();""".replace("\n", "")  # one line: the page's own line numbers stay what they were
 
 
@@ -104,6 +109,7 @@ class Render:
 
     report: dict[str, Any] | None = None
     error: str = ""
+    virtual_time: bool = False
 
 
 @dataclass
@@ -420,7 +426,7 @@ def chrome_render(page: Path, png: Path, width: int, height: int, budget_ms: int
         if not found:
             return Render()
         try:
-            return Render(report=json.loads(unquote(found.group(1))))
+            return Render(report=json.loads(unquote(found.group(1))), virtual_time=True)
         except ValueError:
             return Render()
     except OSError as exc:
@@ -429,6 +435,76 @@ def chrome_render(page: Path, png: Path, width: int, height: int, budget_ms: int
         for stray in (copy, wrapper):
             stray.unlink(missing_ok=True)
         shutil.rmtree(profile, ignore_errors=True)
+
+
+def _live_motion_frames(page: Path, first: Path, later: Path) -> bool:
+    """Capture two compositor frames from one loaded page with Chrome's normal clock."""
+    try:
+        import websocket
+    except ImportError:
+        return False
+    from .browser_render import _page_socket
+
+    chrome = find_chrome()
+    if chrome is None:
+        return False
+    deadline = time.monotonic() + LIVE_MOTION_TIMEOUT_S
+    url = page.resolve().as_uri()
+    with tempfile.TemporaryDirectory(prefix="kiwibro-motion-") as profile:
+        process = None
+        socket = None
+        try:
+            process = subprocess.Popen([
+                chrome, "--headless=new", "--no-first-run", "--no-default-browser-check",
+                "--disable-background-networking", "--disable-extensions", "--disable-dev-shm-usage",
+                "--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--hide-scrollbars", "--mute-audio",
+                f"--user-data-dir={profile}", "--remote-debugging-port=0", "about:blank",
+            ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            socket = _page_socket(Path(profile), process, deadline)
+            if socket is None:
+                return False
+
+            sequence = 0
+
+            def command(method: str, **params: Any) -> dict[str, Any]:
+                nonlocal sequence
+                sequence += 1
+                socket.send(json.dumps({"id": sequence, "method": method, "params": params}))
+                while time.monotonic() < deadline:
+                    try:
+                        reply = json.loads(socket.recv())
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    if reply.get("id") == sequence:
+                        if "error" in reply:
+                            raise ValueError(reply["error"])
+                        return reply["result"]
+                raise TimeoutError
+
+            command("Emulation.setDeviceMetricsOverride", width=DESKTOP[0], height=DESKTOP[1],
+                    deviceScaleFactor=1, mobile=False)
+            if command("Page.navigate", url=url).get("errorText"):
+                return False
+            while True:
+                state = command("Runtime.evaluate", expression="[location.href, document.readyState]",
+                                returnByValue=True).get("result", {}).get("value")
+                if state in ([url, "interactive"], [url, "complete"]):
+                    break
+                time.sleep(0.05)
+            for picture in (first, later):
+                if picture == later:
+                    time.sleep(min(LATER_MS / 1000, max(deadline - time.monotonic(), 0)))
+                data = command("Page.captureScreenshot", format="png")["data"]
+                picture.write_bytes(base64.b64decode(data, validate=True))
+            return True
+        except (OSError, ValueError, KeyError, websocket.WebSocketException):
+            return False
+        finally:
+            if socket is not None:
+                socket.close(timeout=0)
+            if process is not None:
+                _quit(process)
+                process.wait()
 
 
 # --- the look -------------------------------------------------------------------------------------
@@ -514,6 +590,7 @@ def look(
             result.could_not = main.error
             return result
         picture, report = first, main.report
+        possible_animation = bool((report or {}).get("live"))
         motion = (report or {}).get("motion") if scene_kit else None
         blocking = {"script", "logged", "missing", "module", "empty", "flat", "notice", "markup", "unfilled"}
         flat = _flat(first)
@@ -526,6 +603,7 @@ def look(
             if not again.error:
                 result.again, picture = True, later
                 report = again.report or report
+                possible_animation = possible_animation or bool((report or {}).get("live"))
                 if scene_kit:
                     motion = (report or {}).get("motion")
                 flat = _flat(picture)
@@ -539,6 +617,13 @@ def look(
             return result
         result.findings = list({finding.short: finding for finding in [*result.findings, *problems]}.values())
         same = _same(first, picture) if result.again and not scene_kit else None
+        if same is True and main.virtual_time and possible_animation and not any(f.code in blocking for f in result.findings):
+            live_first, live_later = Path(scratch) / "live-first.png", Path(scratch) / "live-later.png"
+            if _live_motion_frames(target, live_first, live_later):
+                same = _same(live_first, live_later)
+                picture, flat = live_later, _flat(live_later)
+            else:
+                same = None
         moved = options.moves and ((motion is not None and motion["observed"]) if scene_kit else same is False)
         if can_check_motion and not moved and not any(f.code in blocking for f in result.findings):
             if scene_kit:

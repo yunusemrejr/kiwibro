@@ -102,6 +102,23 @@ def test_an_animation_callback_without_visible_motion_does_not_pass(workspace: W
     assert "it moves" not in found.confirmed
 
 
+def test_a_running_callback_needs_pixels_to_move_in_the_live_check(workspace: Workspace, monkeypatch) -> None:
+    class Virtual(Fake):
+        def __call__(self, *args) -> Render:
+            report = super().__call__(*args).report
+            return Render({**report, "live": True}, virtual_time=True)
+
+    def motion(_page, first, later):
+        write_png(first, 0)
+        write_png(later, 0)
+        return True
+
+    monkeypatch.setattr(pagecheck, "_live_motion_frames", motion)
+    found = look(workspace, Virtual(moves=False), Options(moves=True))
+    assert [item.code for item in found.findings] == ["still"]
+    assert "it moves" not in found.confirmed
+
+
 def test_scene_motion_is_checked_on_the_subject(workspace: Workspace) -> None:
     (workspace.root / "index.html").write_text(
         '<!doctype html><html><body><canvas></canvas>'
@@ -226,7 +243,11 @@ def test_what_kiwibro_says_after_a_look_follows_how_the_problems_changed() -> No
 
 
 @pytest.mark.skipif(pagecheck.find_chrome() is None, reason="Chrome is not installed here")
-def test_the_real_browser_finds_a_script_error_and_a_page_that_moves(tmp_path: Path) -> None:
+def test_the_real_browser_finds_a_script_error_and_a_page_that_moves(tmp_path: Path, monkeypatch) -> None:
+    # Chrome's virtual-time screenshots can be the same compositor frame. Force that first
+    # comparison here so the test verifies the real-time fallback on every Chrome version.
+    compare = pagecheck._same
+    monkeypatch.setattr(pagecheck, "_same", lambda first, later: first.name == "first.png" or compare(first, later))
     (tmp_path / "bad.html").write_text(
         '<!doctype html><html><head><meta charset="utf-8"></head><body><canvas id="c"></canvas><script>\n'
         'document.getElementById("c").getContext("2d").fillRect(0,0,10,10); spin();\n</script></body></html>\n',
@@ -243,6 +264,7 @@ def test_the_real_browser_finds_a_script_error_and_a_page_that_moves(tmp_path: P
     assert "line 2" in bad.findings[0].text  # the page's own line, not one shifted by what the look adds
     good = pagecheck.look(workspace, "ball.html", Options(moves=True))
     assert good.findings == [] and (tmp_path / good.picture).stat().st_size > 200
+    assert "it moves" in good.confirmed and not good.could_not
 
 
 def test_a_request_that_names_movement_in_plain_words_expects_motion():
