@@ -2837,6 +2837,10 @@ class AgentManager:
             turn.message,
             browser="browser" in tool_names and connectivity.online(),
             visual=not turn.kit_called_for and bool({"component", "write_file"} & tool_names),
+            code={"read_file", "run_command"} <= tool_names,
+            # analyze_table is available by exact name even outside the active profile.
+            tables="run_python" in tool_names and tools.permission_mode(settings, "analyze_table") != "deny",
+            documents={"doc_search", "doc_read"} <= tool_names,
         )
         knowledge_part = "" if ready_part else self._knowledge_part(turn)
         learned = prompts.JUST_LEARNED.format(facts="\n".join(f"- {fact}" for fact in turn.learned)) if turn.learned else ""
