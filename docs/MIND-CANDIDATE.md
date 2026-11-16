@@ -94,6 +94,8 @@ fit, pass `--init-adapter adapted` with a fresh output directory, step count and
 Each continuation starts with the prior adapter weights and a fresh optimizer.
 The merge uses the compact BF16 checkpoint and the fitted adapter. Use llama.cpp
 build b12443 (commit `301db6337`) for a matching converter, quantizer and replay server.
+If PEFT rejects the TorchAO version bundled in the Colab image, run
+`python -m pip uninstall -y torchao` in that runtime and retry the CPU BF16 merge.
 Retrain the routing and recovery helpers on the new model's traces with the
 [Colab calibration workflow](../scripts/mind/STEERING_CALIBRATION.md).
 
