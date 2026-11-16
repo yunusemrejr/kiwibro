@@ -111,16 +111,23 @@ def fit(args: argparse.Namespace) -> None:
     if architecture.get("base_revision") != BASE_REVISION:
         raise ValueError("Missing or mismatched compact architecture calibration.")
     initial_steps = 0
+    checkpoint_report = args.checkpoint / "training.json"
+    if checkpoint_report.is_file():
+        baked = json.loads(checkpoint_report.read_text())
+        initial_steps = baked.get("total_steps", baked.get("steps"))
+        if baked.get("base_revision") != BASE_REVISION or type(initial_steps) is not int or initial_steps < 1:
+            raise ValueError("The checkpoint's existing training report is invalid.")
     if args.init_adapter:
         prior = json.loads((args.init_adapter / "training.json").read_text())
-        initial_steps = prior.get("total_steps", prior.get("steps"))
+        prior_steps = prior.get("total_steps", prior.get("steps"))
         if (
             args.mode != "l4-lora" or prior.get("mode") != args.mode
             or prior.get("base_revision") != BASE_REVISION
-            or type(initial_steps) is not int or initial_steps < 1
+            or type(prior_steps) is not int or prior_steps <= initial_steps
             or (args.init_adapter / "architecture.json").read_bytes() != architecture_path.read_bytes()
         ):
             raise ValueError("The initial adapter must come from the same compact L4 checkpoint.")
+        initial_steps = prior_steps
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
     processor = AutoProcessor.from_pretrained(args.checkpoint)
