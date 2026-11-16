@@ -63,6 +63,18 @@ def stage(
             or experts > bank["experts_before"]
         ):
             raise ValueError("Expert report disagrees with the exported GGUF.")
+        if (channels := architecture.get("channel_compaction")) is not None:
+            width = meta.get("gemma4.expert_feed_forward_length")
+            if not isinstance(channels, dict):
+                raise ValueError("Invalid expert channel report.")
+            before, after = channels.get("width_before"), channels.get("width_after")
+            if (
+                type(width) is not int or type(before) is not int or type(after) is not int
+                or not 1 <= after < before or after != width or channels.get("experts") != experts
+                or channels.get("top_k_experts") != active
+            ):
+                raise ValueError("Expert channel report disagrees with the exported GGUF.")
+            bank.update(width_before=before, width_after=after)
     if training is not None:
         steps = training.get("steps")
         total_steps = training.get("total_steps", steps)

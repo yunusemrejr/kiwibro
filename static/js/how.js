@@ -1317,6 +1317,7 @@ function nativeStops(mind) {
     ...(mind.architecture ? [["GGUF architecture", mind.architecture]] : []),
     ...(bank ? [["Expert bank", `${bank.experts_after} stored per layer, ${bank.top_k_after} selected per token.`],
       ["Starting architecture", `${bank.experts_before} stored per layer, ${bank.top_k_before} selected per token.`]] : []),
+    ...(bank?.width_after ? [["Expert intermediate width", `${bank.width_after} channels per expert, from ${bank.width_before}.`]] : []),
     ...(caps.tools ? [["Function calling", "The model's chat template sends structured calls to Kiwibro. The app checks the tool name, arguments and permissions."]] : []),
     ...(mind.vision ? [["Vision", "The matching vision projector lets the same model read attached images."]] : []),
     ...(caps.thinking ? [["Reasoning", caps.reasoning_effort ?

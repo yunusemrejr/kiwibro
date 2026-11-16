@@ -118,7 +118,11 @@ def _expert_bank(manifest: Mapping[str, Any]) -> dict[str, int] | None:
         return None
     if raw["top_k_before"] > raw["experts_before"] or raw["top_k_after"] > raw["experts_after"]:
         return None
-    return {key: raw[key] for key in keys}
+    summary = {key: raw[key] for key in keys}
+    before, after = raw.get("width_before"), raw.get("width_after")
+    if type(before) is int and type(after) is int and 1 <= after < before:
+        summary.update(width_before=before, width_after=after)
+    return summary
 
 
 def describe_pack(pack: Pack) -> NativeModel:

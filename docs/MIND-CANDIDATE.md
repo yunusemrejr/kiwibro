@@ -49,7 +49,8 @@ For a compacted Gemma pack, pass `--architecture path/to/architecture.json` from
 [the expert export](../scripts/mind/prune_gemma4.py). For a fitted checkpoint, also
 supply `--training path/to/training.json` from the completed Colab run. Staging
 checks the expert report against the actual GGUF. How it works reads the checked
-expert counts, file sizes and context from this pack.
+expert counts, intermediate expert width when compacted, file sizes and context
+from this pack.
 
 ## Train and export on Colab
 

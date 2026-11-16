@@ -244,15 +244,19 @@ def test_candidate_mode_requires_its_pack_without_exposing_old_downloads(
     assert not mind.host.alive()
 
 
-@pytest.mark.parametrize(("active", "exposed"), [(4, True), (33, False), (True, False)])
+@pytest.mark.parametrize(("active", "width", "exposed"), [(4, 512, True), (4, 768, True), (33, 512, False), (True, 512, False)])
 def test_candidate_status_exposes_only_validated_architecture_counts(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, active: int, exposed: bool) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, active: int, width: int, exposed: bool) -> None:
     monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
     pack = pack_at(tmp_path, base="google/gemma-4-26B-A4B-it", effort=False)
     manifest = pack.manifest()
     manifest["arch"] = "gemma4"
     summary = {"experts_before": 128, "experts_after": 32, "top_k_before": 8, "top_k_after": active}
-    manifest["expert_bank"] = {**summary, "kept_original_experts": {"0": [4, 12]}}
+    manifest["expert_bank"] = {
+        **summary, "width_before": 704, "width_after": width, "kept_original_experts": {"0": [4, 12]},
+    }
+    if width < 704:
+        summary.update(width_before=704, width_after=width)
     pack.path(MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
 
     mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()

@@ -97,7 +97,7 @@ Run only one server at a time. Use the same runtime, backend, context, one slot,
 
 ### Tied projection Vulkan experiment
 
-This matched test changes the placement of the 577.5 MiB tied Q6_K embedding/projection tensor on the existing pilot. It uses no GPU layer or KV offload. Begin with at least 14 GiB host memory available and 2 GiB unused GTT, then monitor both during the run. These are conservative admission values based on observed host pressure and the tensor size. The split runtime's total peak memory needs live verification.
+The stock IQ3 and compact Q4 GGUFs both have a 577.5 MiB tied Q6_K embedding/projection tensor. This test places it on Vulkan with zero GPU layers and CPU KV. Begin with at least 14 GiB host memory available and 2 GiB unused GTT, then monitor both during the run. These are conservative admission values based on observed host pressure and the tensor size.
 
 ```bash
 # Both variables point to verified local artifacts.
@@ -108,4 +108,15 @@ LD_LIBRARY_PATH="$llama_release" "$llama_release/llama-bench" "${args[@]}" > cpu
 LD_LIBRARY_PATH="$llama_release" "$llama_release/llama-bench" "${args[@]}" "${overrides[@]}" > vulkan-head.json
 ```
 
-Repeat in reverse order. A short separate probe with `GGML_SCHED_DEBUG=2` and `llama-bench -v` can verify that the logits multiply follows the tied weight onto Vulkan. Run the timed trials with scheduler debugging disabled. Compare decoded outputs and native tool behavior as well as timing, since the CPU and Vulkan implementations can differ in floating-point accumulation. This specific placement has yet to be benchmarked.
+Repeat in reverse order. A short separate probe with `GGML_SCHED_DEBUG=2` and `llama-bench -v` verifies that the logits multiply follows the tied weight onto Vulkan. Run the timed trials with scheduler debugging disabled.
+
+On the stock IQ3 GGUF, the placement trace put the tied weight and output multiply on Renoir. The timed sequence used six threads and decoded 24 tokens at a 256-token depth per sample.
+
+| Arm | Warm decode samples | CPU pressure at start |
+| --- | ---: | ---: |
+| CPU projection | 5.741, 6.050 tok/s | 0.66% |
+| Vulkan projection | 5.037, 5.021 tok/s | 14.45% |
+| Vulkan projection | 2.969, 5.362 tok/s | 7.40% |
+| CPU projection | 5.168, 5.282 tok/s | 19.05% |
+
+The pooled medians were 5.51 tok/s on CPU and 5.03 tok/s with the Vulkan tensor placement. Desktop pressure varied between runs. The stock-GGUF test supplies no speed evidence for enabling this placement on the compact model.
