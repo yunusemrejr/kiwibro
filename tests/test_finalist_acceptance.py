@@ -10,9 +10,9 @@ import pytest
 from kiwibro.context import estimate_tokens
 from kiwibro.llm import ChatResult
 from test_backend import env  # noqa: F401 - scripted app fixture
-from test_successor_acceptance import (  # noqa: F401 - acceptance is a pytest fixture
+from test_successor_acceptance import (  # noqa: F401 - imported pytest fixtures
     CHECK, FIXED_LIMIT, NOTE, ORIGINAL_LIMIT, PKG, acceptance, call, git, repo_fixture,
-    run_fixture_tests, snapshot, turn,
+    run_fixture_tests, snapshot, turn, verified_native_pack,
 )
 
 

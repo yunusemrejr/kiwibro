@@ -54,8 +54,15 @@ def pytest_runtest_makereport(item, call):
             if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(workspace.resolve()):
                 result["artifacts"][name] = {"sha256": sha256(path), "bytes": path.stat().st_size}
     if report.failed:
-        error = str(call.excinfo.value) if call.excinfo else ""
+        info = call.excinfo
+        error = str(info.value) if info else ""
         result["failure"] = "turn_timeout" if error.startswith("Acceptance timeout") else report.when
+        result["failure_kind"] = {
+            "FixtureLookupError": "fixture_lookup",
+            "FileNotFoundError": "missing_file",
+            "PermissionError": "permission",
+            "AssertionError": "assertion",
+        }.get(info.typename if info else "", "test_failure")
     with Path(journal).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(result) + "\n")
     return report
