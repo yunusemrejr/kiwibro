@@ -176,8 +176,10 @@ server startup. All twelve probe requests passed.
 Copy throughput was 4.41–5.52 tokens/s without drafts and 16.10–16.83
 tokens/s with drafts. The copy workload measures repeated code. A fresh
 solution, image encoding, or short tool request sees different costs.
-The first full app probe used 549 prompt tokens and hit its 180-second deadline
-under desktop load. The app profile is opt-in pending an end-to-end speed result.
+Through the app's chat stream with reasoning Off, both CPU arms returned all 14
+declarations. Cold completion fell from 78.25 to 51.78 seconds. Time to first text
+was 31.13 and 32.75 seconds respectively. An earlier Auto run reached its
+180-second deadline under desktop load. The app profile remains experimental.
 
 For each arm, run a single pinned server with `--device none --gpu-layers 0
 --parallel 1 --threads 6 --threads-batch 6 --ctx-size 8192 --cache-ram 0
