@@ -77,6 +77,44 @@ class ConversationNotFound(Exception):
 _LEADING_NOISE = re.compile(
     r"^(?:(?:please|pls|kindly|hey|hi|hello|ok|okay|so|now|just)\b[\s,]+)+", re.IGNORECASE
 )
+_MODEL_PART = r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)*"
+_MODEL_LABEL = r"(?:the\s+)?(?:exact\s+)?(?:helper|model)\s+"
+_NAMED_DELEGATE = re.compile(
+    rf"^(?:only\s+)?(?:ask|delegate\s+(?:only\s+)?to|use(?=\s+(?:only\s+)?{_MODEL_LABEL}))"
+    rf"\s+(?:only\s+)?(?P<label>{_MODEL_LABEL})?"
+    rf"(?P<quote>[\x60\"“'])?(?P<model>{_MODEL_PART}(?:/{_MODEL_PART})?(?:[@:]{_MODEL_PART})?)"
+    r"[\x60\"”']?(?=\s|[,.;:!?]|$)",
+    re.IGNORECASE,
+)
+_DELEGATE_UNAVAILABLE = r"if\s+[^?!,;\n]{0,120}?\b(?:unavailable|not (?:available|installed)|fails?)\b"
+_DELEGATE_CHOICE = (
+    rf"(?:[\x60\"“']?{_MODEL_PART}/{_MODEL_PART}(?:[@:]{_MODEL_PART})?[\x60\"”']?|"
+    rf"[\x60\"“']{_MODEL_PART}[\x60\"”']|"
+    r"(?:(?:another|a different|any|an available)\s+(?:(?:available|installed|local)\s+)*|"
+    r"(?:the|my)\s+(?:selected|configured|default)\s+)(?:helper|model)\b)"
+)
+_DELEGATE_ALTERNATIVE = rf"(?:use|try|ask|fall back to|delegate to)\s+{_DELEGATE_CHOICE}"
+_DELEGATE_FALLBACK = re.compile(
+    rf"^\s+or\s+(?:{_DELEGATE_ALTERNATIVE}|{_DELEGATE_CHOICE})|"
+    rf"(?:^|\n|(?<=[,.!?;])\s+)(?:but\s+)?"
+    rf"(?:(?:otherwise|{_DELEGATE_UNAVAILABLE})[,\s]+(?:then\s+)?(?:you\s+(?:can|may)\s+)?{_DELEGATE_ALTERNATIVE}"
+    rf"|{_DELEGATE_ALTERNATIVE}\s+{_DELEGATE_UNAVAILABLE}|you\s+(?:can|may)\s+{_DELEGATE_ALTERNATIVE})",
+    re.IGNORECASE,
+)
+
+
+def _named_delegate(message: str) -> str | None:
+    """An exact model in a direct delegation request, unless the user allows a fallback."""
+    request = _REQUEST_PREFIX.sub("", _LEADING_NOISE.sub("", message.lstrip()))
+    match = _NAMED_DELEGATE.match(request)
+    if match is None:
+        return None
+    model = match["model"]
+    if "/" not in model and not match["quote"] and not (match["label"] and re.search(r"[\d_@:-]", model)):
+        return None
+    return None if _DELEGATE_FALLBACK.search(request[match.end():]) else model
+
+
 _FILLER_PREFIX = re.compile(
     r"^(?:there\s+(?:has|have)\s+been|there\s+(?:is|are|was|were)|what(?:'s|\s+is)?\s+"
     r"(?:happened|happening|going\s+on)(?:\s+(?:yesterday|today|recently|lately|this\s+week"
@@ -3722,6 +3760,15 @@ class AgentManager:
             # Small models fix calls far better when shown the exact valid usage.
             message = toolcall.correction(spec, str(exc)) if spec is not None else f"Error: {exc}"
             return refuse_shown(message, message.splitlines()[0], "read")
+        if name == "delegate" and (model := _named_delegate(turn.message)):
+            chosen = item["args"]["model"]
+            if chosen and chosen != model:
+                return refuse_shown(
+                    f"Delegation is restricted to {model} by the user's request. "
+                    "If that model is unavailable, report that to the user.",
+                    f"Delegation restricted to {model}", spec.risk,
+                )
+            item["args"]["model"] = model  # An omitted model would otherwise trigger automatic selection.
         # Repaired JSON would save a truncated file. A call read out of the reply's text whose JSON closed
         # by itself is whole: the model wrote it and then ran on to the length limit, and refusing it cost
         # a chat its one right call. A call from the engine may have been closed by the engine, so it stays refused.
