@@ -15,7 +15,7 @@ import pytest
 from mind_pack import make_pack
 
 from kiwibro import routing
-from kiwibro.llm import ChatResult, ContextLimitError
+from kiwibro.llm import ChatResult, ContextLimitError, LLMError
 from kiwibro.mind import KIWIMIND
 from kiwibro.mind.client import MindRequestError
 from kiwibro.mind.conductor import Conductor, Settings
@@ -401,6 +401,41 @@ def test_a_2x_pack_keeps_the_engine_and_conductor_it_had(tmp_path: Path) -> None
     try:
         assert mind.engine == "wasm"
         assert type(mind.conductor) is Conductor
+    finally:
+        mind.stop()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("error_kind", ["connection", "stream"])
+def test_spark_failure_switches_to_legacy_only_before_any_text(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, partial: bool, error_kind: str) -> None:
+    primary = make_pack3(tmp_path / "app")
+    make_pack(tmp_path / "source", version="2.0.1").rename(primary / "legacy")
+    mind = Mind(tmp_path / "app", helper=lambda: None, helper_stream=lambda **_: ChatResult(),
+                runtime=runtime, node="/bin/true")
+    shown: list[str] = []
+
+    def fail(**kwargs: Any) -> ChatResult:
+        if partial:
+            kwargs["on_delta"]("Started.")
+        raise LLMError(error_kind, "engine stopped")
+
+    def succeed(**kwargs: Any) -> ChatResult:
+        kwargs["on_delta"]("Legacy.")
+        return ChatResult(content="Legacy.")
+
+    monkeypatch.setattr(mind.conductor, "stream", fail)
+    monkeypatch.setattr(mind.legacy_conductor, "stream", succeed)
+    kwargs = {"messages": [{"role": "user", "content": "Hello."}], "on_delta": shown.append}
+    try:
+        assert mind.describe()["active"] == "primary"
+        if partial:
+            with pytest.raises(LLMError, match="engine stopped"):
+                mind.stream(**kwargs)
+            assert shown == ["Started."] and mind.describe()["active"] == "primary"
+        else:
+            assert mind.stream(**kwargs).content == "Legacy."
+            assert shown == ["Legacy."] and mind.describe()["active"] == "legacy"
     finally:
         mind.stop()
 

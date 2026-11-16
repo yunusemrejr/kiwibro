@@ -1,9 +1,9 @@
-"""The little helper: a stock Qwen3-0.6B that runs on the CPU and takes the background jobs off Kiwi Mind.
+"""A CPU-only Qwen3-0.6B worker for small utility jobs.
 
 Memory extraction and conversation summaries used to run on Kiwi Mind's 4B model, on the graphics chip that
 writes the replies. The little helper has a llama-server of its own, started on the first such job, on two CPU
-threads, with thinking off. It leaves after a few idle minutes and with the app. Replies, routes and side
-questions never come here.
+threads, with thinking off. Kiwi Mind can point a worker at a trained GGUF or use the stock local model.
+Workers leave after a few idle minutes and with the app. Replies and route decisions stay with the conductor.
 
 It is an optional extra: with no model file, no llama.cpp or a server that will not start, ``Little`` says so
 once and the callers keep using Kiwi Mind, as they did before.
@@ -112,8 +112,13 @@ class Little:
     def __init__(
         self, data_dir: str | Path | None, runtime: Callable[[], LlamaRuntime | None],
         chat_busy: Callable[[], bool] = lambda: False, *, idle_stop_s: float = IDLE_STOP_S,
+        model_file: Callable[[], Path | None] | None = None, model_name: str = MODEL_NAME,
+        log_name: str = "little.log",
     ) -> None:
         self.data_dir = Path(data_dir).expanduser() if data_dir is not None else None
+        self._model_file = model_file
+        self._model_name = model_name
+        self._log_name = log_name
         self._runtime = runtime
         self._chat_busy = chat_busy
         self._idle_stop_s = idle_stop_s
@@ -130,6 +135,8 @@ class Little:
 
     @property
     def path(self) -> Path | None:
+        if self._model_file is not None:
+            return self._model_file()
         if self.data_dir is None:
             return None
         found = [self.data_dir / "models" / name for name in MODEL_FILES]
@@ -137,7 +144,7 @@ class Little:
 
     @property
     def log_path(self) -> Path | None:
-        return self.data_dir / "mind" / "little.log" if self.data_dir is not None else None
+        return self.data_dir / "mind" / self._log_name if self.data_dir is not None else None
 
     def available(self) -> bool:
         """Whether the model file is there (a server that failed to start is a separate matter: see ``describe``)."""
@@ -152,7 +159,7 @@ class Little:
         running = self._running if self.alive() else None
         return {
             "available": self.available(),
-            "model": MODEL_NAME,
+            "model": self._model_name,
             "running": running is not None,
             "pid": running.pid if running else None,
             "port": running.port if running else None,
@@ -334,7 +341,8 @@ class Little:
         from ..engine import _SPAWNER, _die_with_parent, _free_port
 
         path = self.path
-        assert path is not None  # available() was true
+        if path is None or not path.is_file():
+            raise LittleError("the model file is not there")
         runtime = self._runtime()
         if runtime is None:
             raise LittleError("llama.cpp was not found")
@@ -372,7 +380,7 @@ class Little:
         running = _Running(process, port, key, time.time(), elapsed, threading.Event())
         threading.Thread(target=self._reap, args=(running,), name="kiwibro-little-idle", daemon=True).start()
         log.info("little helper started (%s, pid %d, port %d, %d threads, CPU) in %d ms",
-                 MODEL_NAME, process.pid, port, THREADS, elapsed)
+                 self._model_name, process.pid, port, THREADS, elapsed)
         return running
 
     def _open_log(self) -> Any:

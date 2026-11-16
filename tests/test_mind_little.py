@@ -29,18 +29,22 @@ MESSAGES = [{"role": "system", "content": "Keep notes."}, {"role": "user", "cont
 class FakeLittle:
     """Stands in for Little inside Kiwi Mind."""
 
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, *, text: str = "little answer") -> None:
         self.error = error
+        self.text = text
         self.calls: list[dict[str, Any]] = []
 
     def complete(self, messages: Any, **kwargs: Any) -> Completion:
         self.calls.append({"messages": messages, **kwargs})
         if self.error is not None:
             raise self.error
-        return Completion(text="little answer", finish_reason="stop")
+        return Completion(text=self.text, finish_reason="stop")
 
     def stop(self) -> None:
         pass
+
+    def available(self) -> bool:
+        return True
 
 
 class FakeConductor:
@@ -158,6 +162,31 @@ def test_a_little_helper_that_cannot_take_a_job_leaves_it_to_kiwi_mind(
     with background("summary"):
         assert client.complete(model=KIWIMIND, messages=MESSAGES).text == "kiwi mind answer"
     assert len(little.calls) == 1 and conductor.calls == 1
+
+
+def test_trained_memory_expert_gets_the_short_prompt_and_explicit_abstention(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, mind, stock, conductor = client_with(tmp_path, monkeypatch)
+    trained = FakeLittle(text="none")
+    mind.memory_expert = trained
+    prompt = [MESSAGES[0], {"role": "assistant", "content": "example"}, MESSAGES[-1]]
+    with background("memory", messages=prompt, convert=lambda _text: '{"ops": []}'):
+        assert client.complete_json(model=KIWIMIND, messages=MESSAGES) == {"ops": []}
+    assert trained.calls[0]["messages"] == MESSAGES
+    assert not stock.calls and conductor.calls == 0
+
+
+@pytest.mark.parametrize("error", [LittleError("no server"), None])
+def test_unavailable_or_bad_expert_uses_stock_memory_prompt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception | None) -> None:
+    client, mind, stock, conductor = client_with(tmp_path, monkeypatch)
+    trained = FakeLittle(error)
+    mind.memory_expert = trained
+    prompt = [MESSAGES[0], {"role": "assistant", "content": "example"}, MESSAGES[-1]]
+    with background("memory", messages=prompt, convert=lambda _text: '{"ops": []}'):
+        assert client.complete_json(model=KIWIMIND, messages=MESSAGES) == {"ops": []}
+    assert trained.calls[0]["messages"] == MESSAGES
+    assert stock.calls[0]["messages"] == prompt and conductor.calls == 0
 
 
 def test_a_reply_that_came_first_reaches_the_memory_job_as_cancelled(tmp_path: Path) -> None:

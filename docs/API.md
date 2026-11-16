@@ -26,8 +26,8 @@ the runtime fields of `/api/version` below; `started_at` is when the current ser
 started (Unix seconds, renewed by a self-update). `online` is whether the internet is
 reachable right now: a TCP probe to public addresses, remembered for a short while
 (`kiwibro/connectivity.py`; `KIWIBRO_OFFLINE=1` or `0` in the environment forces the answer).
-`mind` is Kiwi Mind's state: `usable`, `running` and `pid`; a build without Kiwi Mind
-answers `{"usable": false, "running": false, "pid": null}`.
+`mind` reports `usable`, `running` and `pid` for the active Kiwi Mind pack, plus the stock
+worker in `little`. Installed extra packs add `legacy` and `memory_expert` health fields.
 
 ### `GET /api/version`
 Cheap poll (no model call): which code this process serves.
@@ -165,8 +165,9 @@ Kiwi Mind is usable (`GET /api/mind`); otherwise `none` is an unknown id.
 
 ## Kiwi Mind
 
-Kiwibro's own model (`kiwibro/mind/`): a pack downloaded once and a host process that
-serves it. Everything here answers `404 not_found` in a build without Kiwi Mind.
+Kiwibro's own model (`kiwibro/mind/`) uses a primary Spark pack, an optional legacy Qwen
+pack for chat fallback, and an optional trained memory expert. Each installs independently.
+Everything here answers `404 not_found` in a build without Kiwi Mind.
 
 ### `GET /api/mind`
 What Kiwi Mind is and whether it can be used. The answer has no `ok` field.
@@ -186,10 +187,18 @@ picture layers, so Kiwi Mind reads pictures itself. `node` is the Node.js binary
 runs on: `null` for a 3.x pack, or when none was found. `running`, `pid` and `rss_bytes` are the
 host process (`rss_bytes` `null` when it is not running). `skills` lists the skill names the
 pack carries. `helper` is the model that answers hard cases, `{id, name}`, or `null`.
-`download` is `null` or the download state below.
+`active` is `primary`, `legacy`, or `null` when neither pack can answer. When the legacy pack
+leads, the version, engine and process fields describe it. `primary` always reports the
+primary pack's installation status and any problem with its runtime.
+
+`legacy` and `memory_expert` report `installed`, `ok`, `reason`, `version`, `bytes`, whether
+their process is `running`, and their own `download` state. The top-level `download` reports
+the primary pack's progress.
 
 ### `POST /api/mind/download`
-Starts the pack download into `<data>/mind/`, or resumes one that was interrupted.
+Starts or resumes the selected pack using the optional `target` query parameter.
+The default `primary` downloads to `<data>/mind/`, `legacy` to `<data>/mind/legacy/`,
+and `memory` to `<data>/mind/experts/`.
 `{"ok": true, "download": {"state": "running", "done_bytes": 120000000,
 "total_bytes": 2608165792}}`. A download already running is returned as it is.
 
@@ -199,7 +208,7 @@ and continues from it after a dropped connection; it takes its final name only w
 and SHA-256 match the manifest.
 
 ### `POST /api/mind/download/cancel`
-`{"ok": true, "download": {...}}`; `ok` is false when no download is running. The download
+`{"ok": true, "download": {...}}` for the same optional `target`. `ok` is false when no download is running. The download
 stops at its next block and its state becomes `cancelled`; the partial files are kept for the
 next attempt.
 

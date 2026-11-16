@@ -320,20 +320,25 @@ def mind_status() -> Response:
     return jsonify(mind.describe())
 
 
-@bp.post("/api/mind/download")
-def mind_download() -> Response:
+def _mind_download_pack() -> Any:
     mind = _mind(services())
     if mind is None:
         raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
-    return jsonify({"ok": True, "download": mind.pack.start_download()})
+    pack = mind.download_pack(request.args.get("target", "primary"))
+    if pack is None:
+        raise ApiError("invalid_target", "Choose primary, legacy, or memory.")
+    return pack
+
+
+@bp.post("/api/mind/download")
+def mind_download() -> Response:
+    return jsonify({"ok": True, "download": _mind_download_pack().start_download()})
 
 
 @bp.post("/api/mind/download/cancel")
 def mind_download_cancel() -> Response:
-    mind = _mind(services())
-    if mind is None:
-        raise ApiError("not_found", "Kiwi Mind is not part of this build.", 404)
-    return jsonify({"ok": mind.pack.cancel_download(), "download": mind.pack.download_state()})
+    pack = _mind_download_pack()
+    return jsonify({"ok": pack.cancel_download(), "download": pack.download_state()})
 
 
 @bp.post("/api/models/context")

@@ -27,6 +27,12 @@ const STRENGTH_TEXT = { full: "Full strength", half: "Half strength", off: "Swit
 // Kiwi Mind's size on disk (the real pack), used until the download reports its total.
 const MIND_BYTES = 2608165792;
 const MIND_SENTENCE = "Kiwibro's own model. It runs every chat and picks its skill by itself.";
+const MIND_EXPERTS = [
+  { target: "legacy", key: "legacy", label: "Legacy Qwen expert", bytes: 487066520,
+    description: "Answers offline when the primary Kiwi Mind runtime is unavailable. Uses Node.js." },
+  { target: "memory", key: "memory_expert", label: "Memory expert", bytes: 396704608,
+    description: "A trained Qwen3-0.6B model that extracts durable memories in the background. Uses llama.cpp." },
+];
 const MIND_HELPERS = "Optional. A helper writes the answers Kiwi Mind marks as heavy.";
 const NO_HELPER = "none";
 
@@ -373,17 +379,28 @@ export function createModelsView({ dialog, api, getState, actions }) {
   }
 
   function mindRunning() {
-    return state.mind?.download?.state === "running";
+    return ["primary", ...MIND_EXPERTS.map(({ target }) => target)]
+      .some((target) => mindDownloadState(state.mind, target)?.state === "running");
   }
 
-  function mindTotal(download) {
-    return Number(download?.total_bytes) || MIND_BYTES;
+  function mindDownloadState(mind, target) {
+    if (target === "primary") return mind?.download;
+    return mind?.[MIND_EXPERTS.find((expert) => expert.target === target)?.key]?.download;
+  }
+
+  function mindTotal(download, target) {
+    return Number(download?.total_bytes) || (target === "primary" ? MIND_BYTES :
+      MIND_EXPERTS.find((expert) => expert.target === target)?.bytes || 0);
   }
 
   /** The state that changes what the page shows. A change rebuilds the blocks; progress moves in place. */
   function mindShape(mind) {
     if (!mind) return "none";
-    return `${mind.usable}|${mind.installed}|${mind.reason}|${mind.download?.state || ""}`;
+    const experts = MIND_EXPERTS.map(({ key }) => {
+      const expert = mind[key];
+      return [expert?.ok, expert?.running, expert?.download?.state];
+    });
+    return JSON.stringify([mind.active, mind.usable, mind.installed, mind.reason, mind.download?.state, experts]);
   }
 
   function setMind(mind) {
@@ -394,14 +411,19 @@ export function createModelsView({ dialog, api, getState, actions }) {
       renderSetup();
       renderLibrary();
     } else {
-      for (const node of body.querySelectorAll(".mdl-mind")) updateMindProgress(node, mind?.download);
+      for (const node of body.querySelectorAll(".mdl-mind")) {
+        updateMindProgress(node, mindDownloadState(mind, node.dataset.target));
+      }
     }
     ensurePolling();
   }
 
   async function pollMind(session) {
     const mind = await loadMind();
-    if (session === state.session) setMind(mind);
+    if (session !== state.session) return;
+    const wasRunning = mindRunning();
+    setMind(mind);
+    if (wasRunning && !mindRunning()) notify();
   }
 
   function renderMind() {
@@ -416,7 +438,17 @@ export function createModelsView({ dialog, api, getState, actions }) {
     ];
     if (mind.usable) {
       children.push(mindFacts(mind));
-    } else if (!mind.installed) {
+      if (mind.active === "legacy") {
+        children.push(el("p", { class: "mdl-text", text: "The legacy Qwen expert is available to answer chats." }));
+        if (mind.primary?.reason) children.push(el("p", { class: "mdl-text", text: mind.primary.reason }));
+        if (!mind.primary?.installed || mind.download?.state === "running" ||
+            /damaged|incomplete/i.test(mind.primary?.reason || "")) {
+          children.push(...mindInstallNodes(mind, "Download primary Kiwi Mind"));
+        }
+      } else if (mind.download?.state === "running") {
+        children.push(mindProgress(mind.download));
+      }
+    } else if (!mind.installed || mind.download?.state === "running") {
       children.push(...mindInstallNodes(mind));
     } else {
       children.push(notice(mind.reason));
@@ -429,6 +461,11 @@ export function createModelsView({ dialog, api, getState, actions }) {
         ]));
       }
     }
+    for (const expert of MIND_EXPERTS) {
+      if (mind[expert.key]) children.push(mindExpertCard(expert, mind[expert.key]));
+    }
+    const stack = mindStackAction(mind);
+    if (stack) children.push(stack);
     return el("section", { class: "panel-section mdl-kiwimind" }, children);
   }
 
@@ -441,15 +478,15 @@ export function createModelsView({ dialog, api, getState, actions }) {
   }
 
   /** Not installed: the download button, the download in progress, or the error with a retry. */
-  function mindInstallNodes(mind) {
+  function mindInstallNodes(mind, defaultLabel = "Get Kiwi Mind") {
     const download = mind.download;
     if (download?.state === "running") return [mindProgress(download)];
-    const label = { error: "Try again", cancelled: "Continue download" }[download?.state] || "Get Kiwi Mind";
+    const label = { error: "Try again", cancelled: "Continue download" }[download?.state] || defaultLabel;
     const size = [];
     if (download?.state === "cancelled") {
-      size.push(el("span", { class: "mdl-mind-size", text: mindPartText(download) }));
+      size.push(el("span", { class: "mdl-mind-size", text: mindPartText(download, "primary") }));
     } else if (download?.state !== "error") {
-      size.push(el("span", { class: "mdl-mind-size", text: mindMB(mindTotal(download)) }));
+      size.push(el("span", { class: "mdl-mind-size", text: mindMB(mindTotal(download, "primary")) }));
     }
     const nodes = [];
     if (download?.state === "error") nodes.push(notice(download.error || "The download did not finish."));
@@ -460,15 +497,65 @@ export function createModelsView({ dialog, api, getState, actions }) {
     return nodes;
   }
 
-  function mindPartText(download) {
-    return `${Math.round((Number(download.done_bytes) || 0) / MIB)} of ${mindMB(mindTotal(download))}`;
+  function mindExpertCard(expert, state) {
+    const children = [
+      el("div", { class: "mdl-meta", text: expert.label }),
+      el("p", { class: "mdl-text", text: expert.description }),
+    ];
+    const download = state.download;
+    if (download?.state === "running") {
+      children.push(mindProgress(download, expert.target, expert.label));
+    } else if (state.ok) {
+      children.push(el("p", { class: "mdl-text", text: `${formatBytes(state.bytes)} on disk · ${state.running ? "Running" : "Starts when needed"}` }));
+    } else {
+      if (download?.state === "error") children.push(notice(download.error || "The download did not finish."));
+      if (state.installed && state.reason) children.push(notice(state.reason));
+      const label = download?.state === "cancelled" ? "Resume download" : "Download";
+      const button = actionButton(`${label} ${expert.label.toLowerCase()}`, "btn btn-ghost",
+        (node) => startMindDownload(node, expert.target));
+      const bytes = mindTotal(download, expert.target);
+      const size = bytes ? [el("span", { class: "mdl-mind-size", text: formatBytes(bytes) })] : [];
+      children.push(el("div", { class: "mdl-actions mdl-mind-actions" }, [button, ...size]));
+    }
+    return el("div", { class: "mdl-facts" }, children);
   }
 
-  function mindProgress(download) {
-    const node = el("div", { class: "mdl-progress mdl-mind" }, [
+  function mindStackAction(mind) {
+    if (!mind.primary || MIND_EXPERTS.some(({ key }) => !mind[key]) || mindRunning()) return null;
+    const targets = MIND_EXPERTS.filter(({ key }) => !mind[key].ok).map(({ target }) => target);
+    if (!mind.primary.installed || /damaged|incomplete/i.test(mind.primary.reason || "")) targets.unshift("primary");
+    if (targets.length < 2) return null;
+    const sizes = targets.map((target) => mindTotal(mindDownloadState(mind, target), target));
+    const size = sizes.every(Boolean) ? [el("span", { class: "mdl-mind-size",
+      text: formatBytes(sizes.reduce((total, bytes) => total + bytes, 0)) })] : [];
+    return el("div", { class: "mdl-actions mdl-mind-actions" }, [
+      actionButton("Install complete Kiwi Mind", "btn btn-primary", (button) => attempt(button, async () => {
+        const session = state.session;
+        const results = await Promise.allSettled(targets.map((target) => api.mindDownload(target)));
+        if (session !== state.session) return;
+        for (let index = 0; index < results.length; index++) {
+          const result = results[index];
+          if (result.status === "fulfilled") setMindDownload(targets[index], result.value.download);
+        }
+        await pollMind(session);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed) throw failed.reason;
+      })),
+      ...size,
+    ]);
+  }
+
+  function mindPartText(download, target) {
+    const total = mindTotal(download, target);
+    return total ? `${formatBytes(download.done_bytes)} of ${mindMB(total)}` : "Checking download size…";
+  }
+
+  function mindProgress(download, target = "primary", label = "Kiwi Mind") {
+    const node = el("div", { class: "mdl-progress mdl-mind", dataset: { target } }, [
       el("div", { class: "mdl-progress-top" }, [
         el("span", { class: "mdl-progress-label" }),
-        actionButton("Cancel", "btn btn-ghost", cancelMindDownload),
+        actionButton("Cancel", "btn btn-ghost", (button) => cancelMindDownload(button, target),
+          { "aria-label": `Cancel ${label} download` }),
       ]),
       el("div", { class: "bar" }, [el("span")]),
     ]);
@@ -478,23 +565,35 @@ export function createModelsView({ dialog, api, getState, actions }) {
 
   function updateMindProgress(node, download) {
     if (download?.state !== "running") return;
-    const total = mindTotal(download);
+    const total = mindTotal(download, node.dataset.target);
     const done = Number(download.done_bytes) || 0;
-    node.querySelector(".mdl-progress-label").textContent = mindPartText(download);
-    node.querySelector(".bar > span").style.width = `${Math.min(100, (done / total) * 100)}%`;
+    node.querySelector(".mdl-progress-label").textContent = mindPartText(download, node.dataset.target);
+    node.querySelector(".bar > span").style.width = `${total ? Math.min(100, (done / total) * 100) : 0}%`;
   }
 
-  async function startMindDownload(button) {
+  function setMindDownload(target, download) {
+    const key = MIND_EXPERTS.find((expert) => expert.target === target)?.key;
+    setMind(key ? { ...state.mind, [key]: { ...state.mind[key], download } } : { ...state.mind, download });
+  }
+
+  async function startMindDownload(button, target = "primary") {
     await attempt(button, async () => {
-      const result = await api.mindDownload();
-      setMind({ ...state.mind, download: result.download });
+      const session = state.session;
+      const result = await api.mindDownload(target);
+      if (session !== state.session) return;
+      setMindDownload(target, result.download);
+      if (result.download?.state === "done") {
+        await pollMind(session);
+        notify();
+      }
     });
   }
 
-  async function cancelMindDownload(button) {
+  async function cancelMindDownload(button, target = "primary") {
     await attempt(button, async () => {
-      const result = await api.mindCancel();
-      setMind({ ...state.mind, download: result.download });
+      const session = state.session;
+      const result = await api.mindCancel(target);
+      if (session === state.session) setMindDownload(target, result.download);
     });
   }
 

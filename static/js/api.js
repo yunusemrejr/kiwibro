@@ -221,8 +221,8 @@ export const api = {
   // Models on this computer, the Hugging Face catalogue, downloads and the engine build.
   library: () => request("/api/library"),
   // Kiwi Mind's download.
-  mindDownload: () => request("/api/mind/download", { method: "POST", body: {} }),
-  mindCancel: () => request("/api/mind/download/cancel", { method: "POST", body: {} }),
+  mindDownload: (target = "primary") => request(`/api/mind/download?target=${encodeURIComponent(target)}`, { method: "POST", body: {} }),
+  mindCancel: (target = "primary") => request(`/api/mind/download/cancel?target=${encodeURIComponent(target)}`, { method: "POST", body: {} }),
   deleteModel: (id) => request("/api/library/models", { method: "DELETE", body: { id } }),
   resetAdapter: (path) => request("/api/library/adapters/reset", { method: "POST", body: { path } }),
   deleteAdapter: (path) => request("/api/library/adapters", { method: "DELETE", body: { path } }),

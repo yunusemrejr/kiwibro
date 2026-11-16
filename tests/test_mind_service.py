@@ -23,7 +23,7 @@ from kiwibro.llm import ChatResult, ContextLimitError, LLMClient, LLMError, Turn
 from kiwibro.mind import KIWIMIND, render
 from kiwibro.mind.client import HostGone, MindRequestError
 from kiwibro.mind.conductor import Conductor, Holdback, Settings
-from kiwibro.mind.pack import Pack
+from kiwibro.mind.pack import LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, Pack
 
 needs_node = pytest.mark.skipif(node_path() is None, reason="node is not installed")
 
@@ -406,12 +406,14 @@ class FakeHub:
     def __init__(self, files: dict[str, bytes], *, break_after: int | None = None) -> None:
         self.files = files
         self.break_after = break_after
+        self.paths: list[str] = []
         self.ranges: list[str | None] = []
         hub = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
-                name = self.path.split("/resolve/main/", 1)[-1]
+                hub.paths.append(self.path)
+                name = self.path.split("/resolve/", 1)[-1].partition("/")[2]
                 body = hub.files.get(name)
                 if body is None:
                     self.send_response(404)
@@ -725,6 +727,58 @@ def test_the_api_downloads_the_pack_and_reports_progress(with_mind: Any, tmp_pat
         shown = with_mind.client.get("/api/mind").get_json()
         assert shown["download"]["state"] == "done" and shown["download"]["done_bytes"] == shown["bytes"]
         assert shown["installed"] is True and (shown["usable"] is True or "Node.js" in shown["reason"])
+    finally:
+        hub.close()
+
+
+def test_legacy_download_uses_an_immutable_revision_and_can_answer_without_primary(
+        with_mind: Any, tmp_path: Path) -> None:
+    hub = FakeHub(pack_files(tmp_path))
+    try:
+        mind = with_mind.mind
+        mind.legacy_pack.base_url = hub.url
+        started = with_mind.client.post("/api/mind/download?target=legacy").get_json()
+        assert started["ok"] is True
+        assert wait_download(mind.legacy_pack)["state"] == "done"
+        assert all(f"/resolve/{LEGACY_REVISION}/" in path for path in hub.paths)
+        assert mind.legacy_pack.dir == mind.pack.dir / "legacy"
+        assert mind.pack.manifest() is None
+        shown = with_mind.client.get("/api/mind").get_json()
+        assert shown["legacy"]["ok"] and not shown["legacy"]["running"]
+        if not node_path():
+            assert not shown["usable"]
+            return
+        assert shown["usable"] and shown["active"] == "legacy" and shown["engine"] == "wasm"
+        assert not shown["vision"] and not shown["primary"]["installed"]
+        result = mind.complete([{"role": "user", "content": "Hi."}], max_tokens=8, temperature=0.0)
+        assert result.usage and mind.legacy_host.alive() and not mind.host.alive()
+        assert with_mind.client.get("/health").get_json()["mind"]["legacy"]["active"]
+    finally:
+        hub.close()
+
+
+def test_memory_expert_download_verifies_its_own_manifest_and_weights(with_mind: Any) -> None:
+    data = b"test gguf"
+    manifest = {"name": "kiwimind-memory-expert", "version": "1.0.0", "engine": "llama",
+                "base": "Qwen/Qwen3-0.6B", "job": "memory",
+                "files": {MEMORY_FILE: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}}}
+    hub = FakeHub({"experts/manifest.json": json.dumps(manifest).encode(),
+                   f"experts/{MEMORY_FILE}": b"bad! gguf"})
+    try:
+        mind = with_mind.mind
+        mind.memory_pack.base_url = hub.url
+        assert with_mind.client.post("/api/mind/download?target=other").status_code == 400
+        assert with_mind.client.post("/api/mind/download?target=memory").get_json()["ok"]
+        assert "checksum" in wait_download(mind.memory_pack)["error"]
+        assert not mind.memory_expert.available()
+        hub.files[f"experts/{MEMORY_FILE}"] = data
+        assert with_mind.client.post("/api/mind/download?target=memory").get_json()["ok"]
+        assert wait_download(mind.memory_pack)["state"] == "done"
+        assert all(f"/resolve/{MEMORY_REVISION}/experts/" in path for path in hub.paths)
+        assert mind.memory_expert.path == mind.pack.dir / "experts" / MEMORY_FILE
+        shown = with_mind.client.get("/api/mind").get_json()["memory_expert"]
+        assert shown["available"] and not shown["running"] and shown["bytes"] == len(data)
+        assert mind.pack.manifest() is None
     finally:
         hub.close()
 

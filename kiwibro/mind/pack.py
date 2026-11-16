@@ -21,6 +21,9 @@ import requests
 log = logging.getLogger(__name__)
 
 REPO = "yunusemrejr/kiwimind"
+LEGACY_REVISION = "b1bf460c962f9f14a938e82bafdf15f299af3fdd"
+MEMORY_REVISION = "main"
+MEMORY_FILE = "memory-qwen3-0.6b-q4_k_m.gguf"
 HF_URL = "https://huggingface.co"
 MANIFEST = "manifest.json"
 TRUNK = "kiwimind-trunk.fkm"
@@ -67,10 +70,17 @@ def _safe_name(name: str) -> str:
 
 class Pack:
     def __init__(self, data_dir: str | Path, *, base_url: str | None = None, repo: str = REPO,
-                 session: requests.Session | None = None) -> None:
+                 session: requests.Session | None = None, subdir: str = "", revision: str = "main",
+                 prefix: str = "", entry: str | None = None, expected: dict[str, str] | None = None) -> None:
         self.dir = Path(data_dir).expanduser() / "mind"
+        if subdir:
+            self.dir /= _safe_name(subdir)
         self.base_url = (base_url or os.environ.get("KIWIMIND_HF_URL") or HF_URL).rstrip("/")
         self.repo = repo
+        self.revision = revision
+        self.prefix = _safe_name(prefix) + "/" if prefix else ""
+        self.entries = (entry,) if entry else (TRUNK, TRUNK3)
+        self.expected = dict(expected or {})
         self._session = session if session is not None else requests.Session()
         self._lock = threading.Lock()
         self._memo: tuple[tuple[Any, ...], PackState] | None = None
@@ -80,12 +90,17 @@ class Pack:
     # --- what is installed ---------------------------------------------------
 
     def manifest(self) -> dict[str, Any] | None:
+        return self._manifest(self.dir / MANIFEST)
+
+    def _manifest(self, path: Path) -> dict[str, Any] | None:
         try:
-            data = json.loads((self.dir / MANIFEST).read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         files = data.get("files") if isinstance(data, dict) else None
-        if not isinstance(files, dict) or not (TRUNK in files or TRUNK3 in files):
+        if not isinstance(files, dict) or not any(entry in files for entry in self.entries):
+            return None
+        if any(data.get(key) != value for key, value in self.expected.items()):
             return None
         return data
 
@@ -217,7 +232,7 @@ class Pack:
             job.thread.join(5)
 
     def _url(self, name: str) -> str:
-        return f"{self.base_url}/{self.repo}/resolve/main/{_safe_name(name)}"
+        return f"{self.base_url}/{self.repo}/resolve/{self.revision}/{self.prefix}{_safe_name(name)}"
 
     def _get(self, name: str, offset: int) -> requests.Response:
         headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
@@ -275,16 +290,23 @@ class _Download:
     def _download_all(self) -> None:
         pack = self.pack
         pack.dir.mkdir(parents=True, exist_ok=True)
-        # The manifest first: it says what else to fetch. A new one replaces an old one only once complete.
-        self._fetch(MANIFEST, None, None, count=False)
-        manifest = pack.manifest()
+        # Validate the manifest for this target before replacing any installed files.
+        pending = pack.path(MANIFEST + ".part")
+        self._transfer(MANIFEST, pending, 0, None, False)
+        manifest = pack._manifest(pending)
         if manifest is None:
             raise PackError("The download is not a Kiwi Mind pack.")
-        files = {_safe_name(name): info for name, info in manifest["files"].items()}
-        self._set(total=sum(int(info["bytes"]) for info in files.values()))
-        for name, info in sorted(files.items(), key=lambda item: item[0] != TOKENIZER):
+        try:
+            files = {_safe_name(name): (int(info["bytes"]), str(info["sha256"]))
+                     for name, info in manifest["files"].items()}
+        except (TypeError, KeyError, ValueError) as exc:
+            raise PackError("The pack lists invalid file metadata.") from exc
+        if any(size <= 0 or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+               for size, digest in files.values()) or {MANIFEST, pending.name, CHECK_CACHE} & files.keys():
+            raise PackError("The pack lists invalid file metadata.")
+        self._set(total=sum(size for size, _digest in files.values()))
+        for name, (size, digest) in sorted(files.items(), key=lambda item: item[0] != TOKENIZER):
             target = pack.path(name)
-            size, digest = int(info["bytes"]), str(info["sha256"])
             if target.exists() and target.stat().st_size == size:
                 try:  # a retrained pack has files of the same size and other content
                     same = _sha256(target, self.stop) == digest
@@ -295,6 +317,9 @@ class _Download:
                         self.done += size
                     continue
             self._fetch(name, size, digest)
+        if self.stop.is_set():
+            raise _Cancelled
+        os.replace(pending, pack.path(MANIFEST))
 
     def _fetch(self, name: str, size: int | None, digest: str | None, *, count: bool = True) -> None:
         pack = self.pack

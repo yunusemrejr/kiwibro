@@ -591,7 +591,7 @@ class LLMClient:
     ) -> ChatResult:
         conversation, events = _take_turn()
         if model == KIWIMIND:  # open_call is Kiwi Mind's: other models ignore it
-            return self.mind().conductor.stream(
+            return self.mind().stream(
                 messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens, on_delta=on_delta,
                 abort=abort, conversation=conversation, events=events, open_call=open_call,
             )
@@ -705,7 +705,7 @@ class LLMClient:
         the request mid-prefill."""
         conversation, _events = _take_turn()
         if model == KIWIMIND:
-            self.mind().conductor.warm(messages, tools, conversation)
+            self.mind().warm(messages, tools, conversation)
             return
         with self._serving(model) as base:
             payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
@@ -869,7 +869,7 @@ class LLMClient:
         extra: Mapping[str, Any] | None = None,
         abort: threading.Event | None = None,
     ) -> Completion:
-        if self.mind().usable() and model in ("", KIWIMIND):
+        if model in ("", KIWIMIND) and self.mind().usable():
             # Utility work goes to the selected helper when there is one, else to Kiwi Mind itself. A picture
             # put to Kiwi Mind by name is its own to look at when its pack has vision layers.
             helper = self.helper()
@@ -878,8 +878,7 @@ class LLMClient:
                     little = self._little_complete(messages, max_tokens, temperature, abort)
                     if little is not None:
                         return little
-                return self.mind().conductor.complete(messages, max_tokens=max_tokens, temperature=temperature,
-                                                      abort=abort)
+                return self.mind().complete(messages, max_tokens=max_tokens, temperature=temperature, abort=abort)
             model = helper["id"]
         if extra is None:
             # Non-streaming calls are utility work (summaries, memory, titles, helpers):
@@ -963,18 +962,33 @@ class LLMClient:
         job = current_job()
         if job is None or _has_pictures(messages):
             return None
-        try:
-            done = self.mind().little.complete(
-                job.messages or messages, max_tokens=max_tokens, temperature=temperature, abort=abort,
-                defer=job.defer, as_json=job.as_json,
-            )
-        except LittleError as exc:
-            log.debug("a %s job stays on Kiwi Mind: %s", job.kind, exc)
-            return None
-        if job.convert is not None:
-            text = done.text.rpartition("\n")[0] if done.finish_reason == "length" else done.text  # no cut-off line
-            done = Completion(text=job.convert(text), usage=done.usage, finish_reason="stop")
-        return done
+        mind = self.mind()
+        trained = (job.kind == "memory" and job.messages is not None and job.convert is not None
+                   and not job.as_json and mind.memory_expert.available())
+        workers = (mind.memory_expert, mind.little) if trained else (mind.little,)
+        for worker in workers:
+            try:
+                prompt = job.messages or messages
+                if worker is mind.memory_expert:
+                    # The expert learned the direct prompt. The stock model keeps the examples.
+                    prompt = [prompt[0], prompt[-1]]
+                done = worker.complete(
+                    prompt, max_tokens=max_tokens, temperature=temperature, abort=abort,
+                    defer=job.defer, as_json=job.as_json,
+                )
+                if job.convert is None:
+                    return done
+                text = done.text.rpartition("\n")[0] if done.finish_reason == "length" else done.text
+                converted = job.convert(text)
+                if worker is mind.memory_expert and (
+                    done.finish_reason == "length"
+                    or (text.strip().casefold() != "none" and not json.loads(converted).get("ops"))
+                ):
+                    raise LittleError("the memory expert did not return a complete grounded result")
+                return Completion(text=converted, usage=done.usage, finish_reason="stop")
+            except LittleError as exc:
+                log.debug("trying the next worker for a %s job: %s", job.kind, exc)
+        return None
 
     def complete_json(
         self,
