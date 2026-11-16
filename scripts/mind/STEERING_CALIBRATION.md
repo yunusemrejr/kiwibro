@@ -105,6 +105,51 @@ are correlated, and alternate valid decisions can miss a strict oracle.
 Validate actual file and browser effects and permission boundaries through
 the application harness before shipping the head.
 
+### Stage the selected 300-step export
+
+From the replay checkout, use `final_recovery_campaign` to reuse these steps
+for the selected 300-step mixed-reasoning export. Use `variant=standard` for
+`kiwi-mind-gemma4-mixed-q4_k_m.gguf` or `variant=down` for
+`kiwi-mind-gemma4-mixed-q4-down.gguf`. Create a separate work directory per
+variant. Set `runtime_id` to the recorded server build, projector hash and
+launch settings for that variant.
+
+```sh
+exports=/content/kiwimind-successor
+variant=standard
+campaign="$exports/recovery-final-$variant"
+endpoint=http://127.0.0.1:18835
+python -m scripts.mind.final_recovery_campaign stage "$exports" "$campaign" \
+  --variant "$variant" --runtime-id "$runtime_id"
+python -m scripts.mind.final_recovery_campaign baseline "$campaign" --endpoint "$endpoint"
+```
+
+The stage records the checked GGUF SHA-256, the merged training report and all
+probe digests in `campaign.json`. Serve its `artifact` under its `model.name`
+before running the baseline command. The selected model's 72 training and 24
+calibration traces are collected first. The original 36 test probes are kept
+for comparison to prior results.
+
+On the machine preparing the Colab CPU job, use the campaign's
+`campaign.json`, `probes/`, and `baseline/` directories with the authored
+training folder referenced by `corpus`. Then transfer the collected
+`candidate.json.gz` back to the replay environment.
+
+```sh
+python -m scripts.mind.final_recovery_campaign fit-job "$campaign" "$corpus"
+colab --config "$colab_config" run -s kiwi-final-recovery --timeout 165 "$campaign/fit.py" > "$campaign/fit.log"
+python -m scripts.mind.train_workflows collect "$campaign/fit.log" "$campaign/candidate.json.gz" \
+  > "$campaign/fit-report.json"
+python -m scripts.mind.final_recovery_campaign paired "$campaign" "$campaign/candidate.json.gz" --endpoint "$endpoint"
+```
+
+`paired` evaluates calibration first. When the policy selects a label present
+in the fresh blind set, it runs both 36-case blind arms and saves
+`paired-report.json`. Complete, verified replays are reused on retry. A
+campaign with no eligible interventions records abstention and skips the
+remaining generation. These steps attach to an existing server and leave
+the model's launch and shutdown with the operator.
+
 To inspect lineage or adjudicate steering disagreements, export any arm with
 `python -m scripts.mind.calibration_traces import PROBES REPLAY TRACES --artifact-sha256 "$artifact_sha"`.
 Each imported response retains its observation and failure IDs, outcome, and
