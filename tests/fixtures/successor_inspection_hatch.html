@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inspection housing</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1rem; background: #f5f1eb; color: #242a2c; font: 1rem system-ui; }
+  main { max-width: 32rem; margin: auto; }
+  h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+  #scene {
+    display: grid; place-items: center; height: 246px; overflow: hidden;
+    perspective: 620px; border-radius: .75rem; background: #e2ddd3;
+  }
+  .housing {
+    position: relative; width: 74%; max-width: 250px; aspect-ratio: 8 / 5;
+    transform-style: preserve-3d; transform: rotateX(32deg) rotateZ(-9deg);
+  }
+  #base, #lid { position: absolute; inset: 0; border-radius: .5rem; }
+  #base {
+    padding: .75rem; color: #e1e7e7; background: #31454d; border: .65rem solid #4f5b60;
+    box-shadow: 3px 12px #293339; transform: translateZ(-12px);
+  }
+  .tray { display: grid; gap: .5rem; grid-template-columns: 2fr 1fr; margin-top: 1rem; }
+  .tray i { height: 2.4rem; border: 1px solid #95b3b7; border-radius: .25rem; background: #163741; }
+  #lid {
+    padding: 1.2rem; color: #442310; background: #d78b4c; border: .35rem solid #a5562d;
+    transform: rotateX(0deg); transform-origin: center top;
+    box-shadow: inset 0 0 0 2px #edbb8d;
+  }
+  .housing.open #lid { transform: rotateX(65deg); }
+  button {
+    margin-top: 1rem; min-height: 44px; padding: .35rem .9rem;
+    border: 1px solid #37535f; border-radius: .4rem; background: #263e4a; color: white; font: inherit;
+  }
+  button:focus-visible { outline: 3px solid #995423; outline-offset: 3px; }
+</style>
+<main>
+  <h1>Inspection housing</h1>
+  <div id="scene" aria-label="Three-dimensional housing with a hinged service lid" role="img">
+    <div class="housing">
+      <div id="base">Inspection bay<div class="tray" aria-hidden="true"><i></i><i></i></div></div>
+      <div id="lid">Service lid</div>
+    </div>
+  </div>
+  <button id="hatch" type="button" aria-expanded="false" aria-controls="scene">Open hatch</button>
+</main>
+<script>
+  const housing = document.querySelector(".housing");
+  const hatch = document.getElementById("hatch");
+  hatch.addEventListener("click", () => {
+    const open = housing.classList.toggle("open");
+    hatch.setAttribute("aria-expanded", String(open));
+    hatch.textContent = open ? "Close hatch" : "Open hatch";
+  });
+</script>
+</html>

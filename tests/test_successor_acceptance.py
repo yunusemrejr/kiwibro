@@ -17,18 +17,23 @@ import ast
 import base64
 import hashlib
 import io
+import json
 import os
 import re
+import shlex
+import socket
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from kiwibro import create_app, pagecheck, tools
+from kiwibro.browser_render import _page_socket
 from kiwibro.llm import ChatResult, Completion
 from test_backend import Env, SSEStream, tool_call_result
 
@@ -355,3 +360,195 @@ button.addEventListener("click", () => {{
         assert (780, 320) in seen_dimensions
         assert len(rendered) == 2 and "wider than the screen" in rendered[0]
     render_controls(env.workspace)
+
+
+@pytest.fixture
+def offline_chrome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    chrome = pagecheck.find_chrome()
+    if not chrome:
+        pytest.skip("Chrome is required for the 3D artifact check.")
+    # The app tool and the independent oracle both use Chrome with the same
+    # refused proxy, including for loopback, and no direct DNS or WebRTC.
+    with socket.socket() as blocked:
+        blocked.bind(("127.0.0.1", 0))
+        flags = [
+            "--disable-background-networking", "--disable-extensions", "--disable-quic",
+            "--disable-sync", "--no-pings", "--host-resolver-rules=MAP * ~NOTFOUND",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--proxy-bypass-list=<-loopback>",
+            f"--proxy-server=http://127.0.0.1:{blocked.getsockname()[1]}",
+        ]
+        wrapper = tmp_path / "offline-chrome"
+        wrapper.write_text(f'#!/bin/sh\nexec {shlex.join([chrome, *flags])} "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o700)
+        monkeypatch.setattr(pagecheck, "find_chrome", lambda: str(wrapper))
+        monkeypatch.setenv("KIWIBRO_OFFLINE", "1")
+        yield wrapper
+
+
+HATCH_STATE = """(() => {
+    const byId = id => document.getElementById(id);
+    const rect = node => node.getBoundingClientRect().toJSON();
+    const lid = byId("lid"), button = byId("hatch");
+    const style = getComputedStyle(lid);
+    const matrix = style.transform === "none" ? new DOMMatrix() : new DOMMatrix(style.transform);
+    const originY = parseFloat(style.transformOrigin.split(" ")[1]);
+    let perspective = false;
+    for (let element = lid.parentElement; element; element = element.parentElement) {
+        if (getComputedStyle(element).perspective !== "none") perspective = true;
+    }
+    return {
+        width: innerWidth, contentWidth: document.documentElement.scrollWidth,
+        active: document.activeElement.id, expanded: button.getAttribute("aria-expanded"),
+        namedButton: button.tagName === "BUTTON" && !!(button.getAttribute("aria-label") || button.textContent).trim(),
+        control: rect(button), scene: rect(byId("scene")), base: rect(byId("base")), lid: rect(lid),
+        depth: matrix.m23, hingeY: originY, lidHeight: lid.offsetHeight, perspective
+    };
+})()"""
+
+
+def check_hatch(chrome: Path, page: Path) -> None:
+    """Observe three steady poses and trusted keyboard activation at phone size."""
+    import websocket
+
+    width, height = pagecheck.PHONE
+    deadline = time.monotonic() + 18
+    with tempfile.TemporaryDirectory(prefix="kiwi-hatch-chrome-") as profile, subprocess.Popen([
+        str(chrome), "--headless=new", "--no-first-run", "--no-default-browser-check",
+        "--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--hide-scrollbars",
+        f"--user-data-dir={profile}", "--remote-debugging-port=0", "about:blank",
+    ], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
+        ws = None
+        try:
+            ws = _page_socket(Path(profile), process, deadline)
+            assert ws is not None, "Chrome's local control endpoint did not start"
+            sequence = 0
+            errors = []
+
+            def command(method: str, **params) -> dict:
+                nonlocal sequence
+                sequence += 1
+                ws.send(json.dumps({"id": sequence, "method": method, "params": params}))
+                while time.monotonic() < deadline:
+                    try:
+                        packet = json.loads(ws.recv())
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    if packet.get("id") == sequence:
+                        assert "error" not in packet, packet
+                        return packet["result"]
+                    event = packet.get("method")
+                    detail = packet.get("params", {})
+                    if event == "Runtime.exceptionThrown" or (
+                        event == "Runtime.consoleAPICalled" and detail.get("type") == "error"
+                    ):
+                        errors.append(detail)
+                pytest.fail(f"Timed out waiting for Chrome command {method}")
+
+            def evaluate(expression: str, *, await_promise: bool = False):
+                result = command("Runtime.evaluate", expression=expression,
+                                 returnByValue=True, awaitPromise=await_promise)
+                assert "exceptionDetails" not in result, result
+                return result["result"].get("value")
+
+            def key(name: str, code: int) -> None:
+                args = {"key": name, "code": name, "windowsVirtualKeyCode": code}
+                if name == "Enter":
+                    command("Input.dispatchKeyEvent", type="keyDown", text="\r", unmodifiedText="\r", **args)
+                else:
+                    command("Input.dispatchKeyEvent", type="rawKeyDown", **args)
+                command("Input.dispatchKeyEvent", type="keyUp", **args)
+
+            def screenshot(bounds: dict) -> Image.Image:
+                png = command("Page.captureScreenshot", format="png")["data"]
+                with Image.open(io.BytesIO(base64.b64decode(png))) as image:
+                    return image.convert("RGB").crop(tuple(
+                        round(bounds[edge]) for edge in ("left", "top", "right", "bottom")
+                    ))
+
+            command("Runtime.enable")
+            command("Network.enable")
+            command("Network.setBlockedURLs", urls=["http://*", "https://*", "ws://*", "wss://*"])
+            command("Emulation.setDeviceMetricsOverride", width=width, height=height,
+                    deviceScaleFactor=1, mobile=True)
+            command("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "reduce"}])
+            assert not command("Page.navigate", url=page.resolve().as_uri()).get("errorText")
+            while evaluate("document.readyState") != "complete" or evaluate("location.href") != page.resolve().as_uri():
+                assert time.monotonic() < deadline
+                time.sleep(0.03)
+            closed = evaluate(HATCH_STATE)
+            assert closed["width"] == width and closed["contentWidth"] <= width, closed
+            control = closed["control"]
+            assert closed["namedButton"] and control["width"] >= 40 and control["height"] >= 40, closed
+            assert 0 <= control["left"] < control["right"] <= width, control
+            assert 0 <= control["top"] < control["bottom"] <= height, control
+            assert closed["expanded"] == "false", closed
+            bounds = closed["scene"]
+            assert 0 <= bounds["left"] < bounds["right"] <= width, bounds
+            assert 0 <= bounds["top"] < bounds["bottom"] <= height, bounds
+            assert closed["base"]["width"] >= 50 and closed["lid"]["width"] >= 50 and closed["lidHeight"] >= 50, closed
+            assert closed["perspective"] and abs(closed["hingeY"]) <= 5, closed
+            key("Tab", 9)
+            focused = evaluate(HATCH_STATE)
+            assert focused["active"] == "hatch" and focused["expanded"] == "false", focused
+            assert focused["depth"] == closed["depth"], focused
+            initial_pixels = screenshot(bounds)
+            assert initial_pixels.getcolors(maxcolors=1) is None, "The initial scene is blank"
+
+            # Reduced motion should reach the next pose on the next paint.
+            painted = "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+            key("Enter", 13)
+            evaluate(painted, await_promise=True)
+            opened = evaluate(HATCH_STATE)
+            assert opened["active"] == "hatch" and opened["expanded"] == "true", opened
+            assert abs(opened["depth"] - closed["depth"]) >= 0.35, (closed, opened)
+            assert any(abs(opened["lid"][edge] - closed["lid"][edge]) >= 8
+                       for edge in ("left", "top", "right", "bottom")), (closed, opened)
+            assert all(abs(opened["base"][edge] - closed["base"][edge]) <= 1
+                       for edge in ("left", "top", "right", "bottom")), (closed, opened)
+            opened_pixels = screenshot(bounds)
+
+            key("Enter", 13)
+            evaluate(painted, await_promise=True)
+            restored = evaluate(HATCH_STATE)
+            assert restored["active"] == "hatch" and restored["expanded"] == "false", restored
+            assert abs(restored["depth"] - closed["depth"]) <= 0.02, (closed, restored)
+            restored_pixels = screenshot(bounds)
+            assert not errors, errors
+        finally:
+            if ws is not None:
+                ws.close(timeout=0)
+            pagecheck._quit(process)
+            process.wait(timeout=3)
+
+    summed = initial_pixels.width * initial_pixels.height
+    changed = ImageChops.difference(initial_pixels, opened_pixels).convert("L").histogram()
+    returned = ImageChops.difference(initial_pixels, restored_pixels).convert("L").histogram()
+    assert sum(changed[20:]) > 0.03 * summed, "The hinge moved in CSS without visibly changing the scene."
+    assert sum(returned[20:]) < 0.005 * summed, "Closing did not restore the initial rendered pose."
+
+
+def test_builds_and_checks_an_interactive_3d_hatch(acceptance: Env, offline_chrome: Path) -> None:
+    env = acceptance
+    filename = "inspection-hatch.html"
+    if env.fake:
+        reference = Path(__file__).with_name("fixtures") / "successor_inspection_hatch.html"
+        env.fake.stream_script = [
+            call(1, "write_file", path=filename, content=reference.read_text(encoding="utf-8")),
+            ChatResult(content=f"Saved and checked {filename}."),
+        ]
+    events, _ = turn(
+        env,
+        "Save inspection-hatch.html, a single self-contained HTML inspection housing. Show an inspection bay "
+        "under a service lid. Use CSS perspective and real 3D transforms so the lid opens toward the rear "
+        "on its top-edge hinge while the base stays fixed. Give the scene, base and lid the IDs scene, base and lid. "
+        "Start closed. Use a single labeled native button with ID hatch that opens and closes the lid, keeps "
+        "keyboard focus, and sets aria-expanded for the current state. Make the button at least 40 × 40 px and "
+        "the scene and controls fit a 360 px phone without horizontal scrolling. Hold each pose until activated. "
+        "Transitions may take up to 250 ms and should be immediate if reduced motion is requested. Use inline CSS "
+        "and JS only. Check the saved page using look_at_page.",
+        {"write_file", "read_file", "apply_patch", "replace_in_file", "look_at_page"},
+        allowed_paths={filename},
+    )
+    assert any(event == "tool_result" and data["name"] == "look_at_page" and data["ok"] for event, data in events)
+    assert (env.workspace / "screenshots" / "look-inspection-hatch.png").is_file()
+    check_hatch(offline_chrome, env.workspace / filename)
