@@ -240,3 +240,25 @@ Each output row gives stock and prototype milliseconds. Use `q4_k`, `q5_0`, or `
 The upstream GPU expert cache accepts GPU-assigned layers whose complete expert bank uses host buffers. Upstream `CPU_REPACK` buffers lack that host flag. The cache requires room for six data slots and a guard slot per layout group. Positive CPU miss sharing adds six zero slots per group and has additional limits for batching, live LoRA and rotated expert weights. Slots are shared among compatible layers, and large batches bypass the cache. Inspect the reported cache hits, misses and uploaded MiB at shutdown or record route IDs through `LLAMA_MOE_CACHE_TRACE`. [Pinned MoE cache implementation](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/src/llama-moe-cache.cpp#L399)
 
 A width-preserving quantization control can try Q4_0 or IQ4_NL for the 16 Q5_0 down matrices from the original BF16 weights. It leaves the other 14 down matrices in Q8_0 and reduces the GGUF by about 302.5 MiB. Both formats align to 32 values, so this comparison needs no width change. The impact on output quality, native tool accuracy and throughput remains to be measured.
+
+## Long chat on the desktop
+
+An isolated app test seeded 18,490 estimated history tokens, then requested an
+exact directory and release checkpoint from the first turn. With the 28-step
+pilot, the automatic GPU arm lost its Vulkan device during the recovery turn.
+The runtime started a CPU server, and the turn failed to recover the details.
+
+In opt-in extractive mode, SQLite recall supplied exact earlier passages and
+the app skipped model-generated summaries. Both forced CPU runs returned the
+directory and checkpoint and left the workspace intact. Both omitted the
+explicit read-only wording required by acceptance.
+
+| CPU history profile | Recovery prompt tokens | Recovery turn |
+| --- | ---: | ---: |
+| Original extractive window | 2,874 | 178.9 s |
+| Shorter recent window | 2,237 | 78.3 s |
+
+Desktop load differed between runs. The prompt token counts show the shorter
+window's direct effect. Its tradeoff is greater reliance on exact recall for
+information outside the recent messages. The setting stays optional.
+[Acceptance commands](../../docs/MIND-FINALIST-ACCEPTANCE.md)
