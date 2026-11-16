@@ -168,11 +168,24 @@ def test_a_later_step_keeps_the_first_steps_skill_and_is_not_weighed_again() -> 
     call = {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}}
     ask(cond, messages=[SYSTEM, {"role": "user", "content": "hi"},
                         {"role": "assistant", "content": "", "tool_calls": [call]},
-                        {"role": "tool", "tool_call_id": "c1", "content": "some text"}])
+                        {"role": "tool", "tool_call_id": "c1", "content": "some text"}], tools=TOOLS)
     assert len(client.route_calls) == 2
     second = client.route_calls[1]
     assert second["skill"] == "code" and second["weigh"] is False
     assert client.bodies[1]["skill"] == "code"
+
+
+@pytest.mark.parametrize(("tools", "open_call", "action"), [(None, False, "say"), (TOOLS, True, "act")])
+def test_a_retry_with_a_fixed_action_reuses_the_skill_without_routing(tools, open_call, action) -> None:
+    client = FakeClient()
+    cond = conductor(client)
+    ask(cond)
+    ask(cond, tools=tools, open_call=open_call)
+    body = client.bodies[-1]
+    assert len(client.route_calls) == 1
+    assert body["skill"] == "code"
+    assert f"<think>code light {action}</think>" in body["prompt"]
+    assert bool(body.get("grammar")) == open_call
 
 
 def test_a_new_user_message_is_weighed_again() -> None:

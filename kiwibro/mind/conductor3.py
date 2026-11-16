@@ -149,6 +149,10 @@ class Conductor3(Conductor):
             first = not (state.skill and state.users == len(asks))
             kept = "" if first else state.skill
             hard = state.hard
+        if kept and (open_call or not tools):
+            # The skill and weight are fixed. A forced call, or the absence of
+            # tools, also fixes the last route word, so go straight to generation.
+            return kept, False, tools and open_call, hard
         answer: dict[str, Any] = {}
         looking = bool(first and pictures and asks and render3.images(asks[-1]))
         if looking:
