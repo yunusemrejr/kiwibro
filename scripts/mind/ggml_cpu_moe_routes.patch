@@ -1,0 +1,43 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index a76af84..b511424 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1600,6 +1600,38 @@ static void ggml_compute_forward_mul_mat_id(
+     const int n_ids = ids->ne[0]; // n_expert_used
+     const int n_as  = ne02;       // n_expert
+
++    // Each worker owns one expert projection for the single decode token.
++    // Keep the same dot and activation quantizer. Skip the shared expert
++    // buckets, internal barrier and dynamic row queue.
++    const bool gate_up = type == GGML_TYPE_Q4_K && ne00 == 2816 && ne01 == 1408 && ne11 == 1;
++    const bool down = (type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q8_0) && ne00 == 704 && ne01 == 2816 && ne11 == 6;
++    if ((gate_up || down) && !params->use_ref && nth == 6 && n_ids == 6 &&
++            ids->ne[1] == 1 && ne12 == 1 && ne13 == 1 && src1->type == GGML_TYPE_F32) {
++        const char * route_workers = getenv("GGML_KIWI_MOE_ROUTE_WORKERS");
++        if (route_workers != NULL && strcmp(route_workers, "1") == 0 && !ggml_is_numa()) {
++            const int32_t expert = *(const int32_t *) ((const char *) ids->data + ith * ids->nb[0]);
++            float * out = (float *) ((char *) dst->data + ith * nb1);
++            if (expert == -1) {
++                memset(out, 0, ne01 * sizeof(float));
++                return;
++            }
++            GGML_ASSERT(expert >= 0 && expert < n_as);
++            union {
++                block_q8_0 q8_0[704 / QK8_0];
++                block_q8_K q8_K[2816 / QK_K];
++            } scratch;
++            void * activation = gate_up ? (void *) scratch.q8_K : (void *) scratch.q8_0;
++            const float * input = (const float *) ((const char *) src1->data + (gate_up ? 0 : ith * nb11));
++            from_float(input, activation, ne00);
++            const char * weights = (const char *) src0->data + expert * nb02;
++            ggml_vec_dot_t const vec_dot = type_traits_cpu[type].vec_dot;
++            for (int64_t row = 0; row < ne01; ++row) {
++                vec_dot(ne00, out + row, 0, weights + row * nb01, 0, activation, 0, 1);
++            }
++            return;
++        }
++    }
++
+     void * wdata_cur = params->wdata;
+
+     if (src1->type != vec_dot_type) {

@@ -93,7 +93,7 @@ done
 
 Compare the BF16 sources or identical frozen-expert storage in Colab to isolate channel removal. Then compare default Q4_K_M on the target laptop to measure the combined width and format effect. An additional 512 arm can pass `--tensor-type-file` to keep the original per-layer down formats. Build the type file with one exact regex per down weight, such as `^blk\.0\.ffn_down_exps\.weight$=q5_0`, using the verified 704 GGUF header to choose each type. Use fresh width-specific statistics if applying an importance matrix.
 
-Run only one server at a time. Use the same runtime, backend, context, one slot, projector, sampler, token budget, prompts and held-out probes for both GGUFs. Bind the model and runtime identities to the result. Run `scripts.mind.replay_successor` on the same frozen probes at seed 7530 and `scripts.mind.bench_successor` for uncached and cached TTFT, decode rate and peak RAM. Check exact tool calls, visual fixtures, retrieval, and full workspace episodes before choosing a candidate. The table above is a footprint estimate. The 512 candidate has no full-model quality or latency measurements yet.
+Run only one server at a time. Use the same runtime, backend, context, one slot, projector, sampler, token budget, prompts and held-out probes for both GGUFs. Bind the model and runtime identities to the result. Run `scripts.mind.replay_successor` on the same frozen probes at seed 7530 and `scripts.mind.bench_successor` for uncached and cached TTFT, decode rate and peak RAM. Check exact tool calls, visual fixtures, retrieval, and full workspace episodes before choosing a candidate. The table above is a footprint estimate. The static 512 export scored 0 of 25 available exact next-action probes in Colab with thinking off, so it stays experimental. Its local full-model latency remains unmeasured.
 
 ### Tied projection Vulkan experiment
 
@@ -154,3 +154,48 @@ filler lines, placing dense weight operations on Vulkan and experts in host
 memory passed all four probes in 136.9 seconds. Adding a 1,024 MiB expert
 cache brought that shorter test to 61.0 seconds. Profile timings include
 different desktop load. They record candidate behavior on this laptop.
+
+## One worker per routed expert
+
+The opt-in patch `ggml_cpu_moe_routes.patch` assigns each of six CPU workers one expert projection for one decode token. It uses the original activation quantizer and dot kernel. This avoids the shared route buckets, internal barrier and dynamic row queue. It applies to plain Q4_K fused gate/up and Q5_0 or Q8_0 down weights at the 704-width pilot's shapes, with the existing CPU repacked kernels selected first when available. Other shapes or thread counts use the stock path.
+
+The standalone benchmark maps one actual expert tensor from the 704 pilot at a time. It alternates the stock and opt-in paths in one build and checks every output bit. Each type had four runs covering 140 single-token inputs apiece, including masked slots and repeated IDs. Two-token and four-worker control graphs also agreed bit for bit. The three types together covered 23.65 million single-token output values.
+
+Each timed run used 120 seeded route/input pairs and one hardware thread per physical core on the Ryzen 5 7530U. Repeating the same sequence with the execution order inverted lets each input compare stock and candidate at the same position within its pair. The first arm has a smaller chance of loading the active weights from the paired arm's preceding run. The table uses the median of the two runs with the relevant order for each input, followed by the median across inputs. Negative paired change indicates a slowdown.
+
+| Weight | First position stock → prototype | Median paired gain | Second position stock → prototype | Median paired gain |
+| --- | ---: | ---: | ---: | ---: |
+| Q4_K gate/up | 0.729 → 0.739 ms | −0.24% | 0.357 → 0.363 ms | −0.69% |
+| Q5_0 down | 0.503 → 0.522 ms | −3.83% | 0.232 → 0.228 ms | +1.43% |
+| Q8_0 down | 0.693 → 0.701 ms | +0.89% | 0.340 → 0.327 ms | +3.29% |
+
+The paired timings show no consistent operator-level gain large enough to justify a full-model trial. KiwiBro uses its stock CPU backend.
+
+### Reproduce the operator benchmark
+
+Use a clean b12443 source tree and the CMake options above. Apply the route patch, build `ggml-cpu-haswell`, and compile the standalone benchmark:
+
+```sh
+git -C "$llama_source" apply "$kiwibro_source/scripts/mind/ggml_cpu_moe_routes.patch"
+cmake --build "$llama_build" --target ggml-cpu-haswell --parallel 2
+cc -O3 -std=gnu11 -Wall -Wextra -Werror -I "$llama_source/ggml/include" \
+  "$kiwibro_source/scripts/mind/bench_moe_routes.c" -L "$llama_build/bin" \
+  -l:libggml-cpu-haswell.so -lggml-base -o "$bench"
+```
+
+Read absolute tensor offsets from the pilot GGUF with the pinned `GGUFReader`. The measured 11,105,979,328-byte pilot used `blk.0.ffn_gate_up_exps.weight` at 821439424, `blk.3.ffn_down_exps.weight` at 1790612448, and `blk.0.ffn_down_exps.weight` at 648672192. Confirm the format, shape, and offsets again if using another export. Run the selected tensor once per command, repeating the order with `--reverse` twice and then the original order:
+
+```sh
+OMP_PROC_BIND=true LD_LIBRARY_PATH="$llama_build/bin" taskset -c "$physical_cpus" \
+  "$bench" "$gguf" "$offset" "$kind" 120
+OMP_PROC_BIND=true LD_LIBRARY_PATH="$llama_build/bin" taskset -c "$physical_cpus" \
+  "$bench" "$gguf" "$offset" "$kind" 120 --reverse
+```
+
+Each output row gives stock and prototype milliseconds. Use `q4_k`, `q5_0`, or `q8_0` as the kind. On the test host the six physical CPUs were represented by `0,2,4,6,8,10`.
+
+### GPU cache and quantization controls
+
+The upstream GPU expert cache accepts GPU-assigned layers whose complete expert bank uses host buffers. Upstream `CPU_REPACK` buffers lack that host flag. The cache requires room for six data slots and a guard slot per layout group. Positive CPU miss sharing adds six zero slots per group and has additional limits for batching, live LoRA and rotated expert weights. Slots are shared among compatible layers, and large batches bypass the cache. Inspect the reported cache hits, misses and uploaded MiB at shutdown or record route IDs through `LLAMA_MOE_CACHE_TRACE`. [Pinned MoE cache implementation](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/src/llama-moe-cache.cpp#L399)
+
+A width-preserving quantization control can try Q4_0 or IQ4_NL for the 16 Q5_0 down matrices from the original BF16 weights. It leaves the other 14 down matrices in Q8_0 and reduces the GGUF by about 302.5 MiB. Both formats align to 32 values, so this comparison needs no width change. The impact on output quality, native tool accuracy and throughput remains to be measured.
