@@ -4,11 +4,13 @@
 Use --case interaction to warm one app instance and measure short chat, a file
 read and a same-chat render follow-up. Adjust --interaction-repeats (default 5).
 First text is the arrival of displayable assistant text in the app's SSE stream.
+Failed rounds are recorded and later rounds proceed once the application is idle.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -52,7 +54,11 @@ def interaction_summary(turns: list[dict], repeats: int) -> dict:
     steps = {}
     for step in ("text", "file", "render"):
         observed = [row for row in turns if row["step"] == step]
-        verified = [row for row in observed if row["verified"]]
+        skipped = [row for row in observed if row.get("skip_reason")]
+        attempted = [row for row in observed if not row.get("skip_reason")]
+        verified = [row for row in attempted if row["verified"]]
+        failures = Counter(row.get("failure_kind", "timeout" if row.get("timed_out") else "unverified")
+                           for row in attempted if not row["verified"])
         warm = [row for row in verified if not (native := row.get("native_execution")) or (
             native["backend_before"] is not None and native["backend_before"] == native["backend_after"]
             and native.get("reused", True) and not native["launches"] and not native["gpu_fallbacks"]
@@ -62,15 +68,46 @@ def interaction_summary(turns: list[dict], repeats: int) -> dict:
             samples = sorted(row[key] for row in warm if row.get(key) is not None)
             metrics[key] = {"n": len(samples), "p50": statistics.median(samples) if samples else None,
                             "p90": samples[math.ceil(len(samples) * 0.9) - 1] if samples else None}
-        steps[step] = {"observed": len(observed), "verified": len(verified), "warm_verified": len(warm),
-                       "timeouts": sum(bool(row.get("timed_out")) for row in observed), "metrics": metrics}
+        steps[step] = {"observed": len(observed), "attempted": len(attempted), "verified": len(verified),
+                       "warm_verified": len(warm), "failed": len(attempted) - len(verified), "skipped": len(skipped),
+                       "unreported": max(0, repeats - len(observed)), "failure_counts": dict(failures),
+                       "skip_counts": dict(Counter(row["skip_reason"] for row in skipped)),
+                       "timeouts": sum(bool(row.get("timed_out")) for row in attempted), "metrics": metrics}
     return {"planned_per_step": repeats, "p90_method": "nearest-rank", "steps": steps}
+
+
+def append_journal(result: dict) -> None:
+    if journal := os.environ.get(JOURNAL):
+        with Path(journal).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(result) + "\n")
+
+
+def collect_journal(journal: Path, report: dict, interaction_repeats: int | None) -> None:
+    partial_turns = []
+    for line in journal.read_text(encoding="utf-8").splitlines() if journal.exists() else ():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            report["unfinished_evidence_write"] = True
+            continue
+        if "interaction_turn" in row:
+            partial_turns.append(row["interaction_turn"])
+        else:
+            report["phases"].append(row)
+    if not report["phases"] and not report["suite_timed_out"]:
+        report["driver_failure"] = {"phase": "pytest_initialization", "kind": "no_scenarios_reported"}
+    if interaction_repeats is not None:
+        turns = next((row["turns"] for row in report["phases"]
+                      if row["scenario"] == "interaction" and row["phase"] == "call"), None)
+        report["interaction"] = interaction_summary(turns if turns is not None else partial_turns, interaction_repeats)
+        if turns is None and partial_turns:
+            report["interaction"]["partial_turns"] = partial_turns
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
     report = yield
-    if not (journal := os.environ.get(JOURNAL)) or item.name not in ROWS:
+    if not os.environ.get(JOURNAL) or item.name not in ROWS:
         return report
     label, assets = ROWS[item.name]
     result = {"scenario": label, "phase": report.when, "outcome": report.outcome,
@@ -94,9 +131,9 @@ def pytest_runtest_makereport(item, call):
             "FileNotFoundError": "missing_file",
             "PermissionError": "permission",
             "AssertionError": "assertion",
+            "InteractionBusy": "turn_still_active",
         }.get(info.typename if info else "", "test_failure")
-    with Path(journal).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(result) + "\n")
+    append_journal(result)
     return report
 
 
@@ -191,6 +228,18 @@ def staged_inputs(data: Path, server: Path) -> dict:
             "projector_sha256": files[manifest["vision"]["file"]]["sha256"], "server_sha256": sha256(server)}
 
 
+def cpu_pressure_avg10() -> float | None:
+    try:
+        for line in Path("/proc/pressure/cpu").read_text(encoding="utf-8").splitlines():
+            if line.startswith("some "):
+                for field in line.split()[1:]:
+                    if field.startswith("avg10="):
+                        return float(field.removeprefix("avg10="))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def run(args, scratch: Path, report: dict) -> None:
     for folder in ("home", "tmp"):
         (scratch / folder).mkdir()
@@ -219,6 +268,7 @@ def run(args, scratch: Path, report: dict) -> None:
     nodes = [f"{CASES[label][0]}::{CASES[label][1]}" for label in args.case]
     command = [sys.executable, "-m", "pytest", "-q", "-p", "scripts.mind.accept_finalist", *nodes]
     root = Path(__file__).resolve().parents[2]
+    cpu_pressure_start = cpu_pressure_avg10()
     started = time.monotonic()
     with subprocess.Popen(command, cwd=root, env=environment, start_new_session=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT) as process:
@@ -231,22 +281,12 @@ def run(args, scratch: Path, report: dict) -> None:
             except BaseException:
                 abort_suite(process)
                 raise
-    report.update(elapsed_ms=round((time.monotonic() - started) * 1000), returncode=process.returncode,
-                  resources=samples.report())
-    rows = journal.read_text().splitlines() if journal.exists() else []
-    if not rows and not report["suite_timed_out"]:
-        report["driver_failure"] = {"phase": "pytest_initialization", "kind": "no_scenarios_reported"}
-    for line in rows:
-        try:
-            report["phases"].append(json.loads(line))
-        except ValueError:
-            report["unfinished_evidence_write"] = True
-    if "interaction" in args.case:
-        turns = next((row["turns"] for row in report["phases"]
-                      if row["scenario"] == "interaction" and row["phase"] == "call"), [])
-        report["interaction"] = interaction_summary(turns, args.interaction_repeats)
-    report["passed"] = process.returncode == 0 and {row["scenario"] for row in report["phases"]
-                        if row["phase"] == "call" and row["outcome"] == "passed"} == set(args.case)
+    resources = samples.report()
+    resources["cpu_pressure_some_avg10"] = {"start": cpu_pressure_start, "finish": cpu_pressure_avg10()}
+    report.update(elapsed_ms=round((time.monotonic() - started) * 1000), returncode=process.returncode, resources=resources)
+    collect_journal(journal, report, args.interaction_repeats if "interaction" in args.case else None)
+    passed = {row["scenario"] for row in report["phases"] if row["phase"] == "call" and row["outcome"] == "passed"}
+    report["passed"] = not report["suite_timed_out"] and process.returncode == 0 and passed == set(args.case)
 
 
 def main() -> int:
