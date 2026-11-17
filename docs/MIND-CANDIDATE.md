@@ -150,6 +150,11 @@ projector, SHA-256 manifest, architecture report and training receipt. This
 Hugging Face revision is a candidate build under evaluation.
 [Published checkpoint](https://huggingface.co/yunusemrejr/kiwimind/tree/95b697df83df010340724363ffad535b6ce93c1f/candidate)
 
+The pinned Colab restore bundle contains the intermediate adapter weights,
+router calibration and export sources for rebuilding the 300-step checkpoint.
+Its SHA-256 is `f464a43c6a9ebbbf40d911f7e3ddf5cf1fd294cbf77f9897dcc633972443c040`.
+[Colab restore bundle](https://huggingface.co/yunusemrejr/kiwimind/blob/26ff7bb6fc8dd1386086247918a3e2585a3d8175/experiments/training/restore-300.tar.gz)
+
 The three versions ran serially on the same Colab L4 and b12443 CUDA build with
 one 24,576-token slot and the same projector. Each mode scored 26 held-out
 next actions using full answers. Turn time includes prefill and generation.
@@ -175,6 +180,13 @@ finished in 274 seconds. The independent interaction check rejected its
 initial status element. The hatch rendered after 285 seconds and the turn
 reached the 300-second limit before acceptance could check its controls.
 [Native acceptance checks](MIND-FINALIST-ACCEPTANCE.md)
+
+The [interactive training generator](../scripts/mind/interactive_artifact_shard.py)
+produces 16 separate synthetic cases and eight input screenshots. Chrome
+verifies exact initial text, keyboard and pointer activation, focus, and
+360-pixel layout. Eight cases also check that the 3D component moves around
+the correct axis while its base stays still. These cases are separate from the
+held-out dashboard and hatch acceptance tests.
 
 ### Repository task adapter
 

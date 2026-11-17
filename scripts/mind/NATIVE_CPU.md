@@ -332,3 +332,22 @@ extractive window and six CPU threads. The recovery turn used 2,244 prompt
 tokens and took 86.5 seconds. It returned the exact directory, checkpoint and
 read-only constraint, and the workspace was unchanged.
 [Acceptance commands](../../docs/MIND-FINALIST-ACCEPTANCE.md)
+
+## Smaller model control on the Ryzen laptop
+
+The Qwen3.5-4B control used the pinned Q4_K_M build and matching Q8_0 projector,
+3.40 GB together. The same managed b12443 runtime used Vulkan and a single
+8,192-token slot. The warmed app ran three rounds with reasoning Off. Linux
+CPU pressure `some avg10` was 6.73% at start and 7.75% at finish.
+[Exact Qwen GGUF files](https://huggingface.co/ggml-org/Qwen3.5-4B-GGUF/tree/8d43d974efc48399cb58957ad49c8b26bf5a109c)
+
+| App workload | Verified | First text p50 / p90 | Completion p50 / p90 |
+| --- | ---: | ---: | ---: |
+| Short reply | 3/3 | 6.34 / 9.42 s | 11.29 / 14.39 s |
+| Exact file read | 3/3 | 9.54 / 23.06 s | 15.74 / 28.91 s |
+| Follow-up HTML edit and phone render | 2/3 | 118.75 / 119.91 s | 118.75 / 119.91 s |
+
+The one unsuccessful render turn timed out at 120 seconds. The exact-read
+tool result arrived at 36 ms median before generation. The small sample
+describes this run. It does not isolate the model's speed from the harness
+and the selected backend.
