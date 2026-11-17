@@ -300,6 +300,14 @@ and lost one research case. These are GPU next-action checks. The compact
 pack remains experimental while the laptop workflow checks continue.
 [Verified E4B pack](https://huggingface.co/yunusemrejr/kiwimind/tree/0f67f744e973c3992c17dc13106becbcb49e16b3/candidate) · [Model card and raw comparison](https://huggingface.co/yunusemrejr/kiwimind/blob/3cda458fa8720d0f9d9e50c41dbe3bde3c259aea/README.md)
 
+Colab also fitted the workflow classifier using the reviewed authored
+workflow examples. On the separate 26-request classifier test it scored
+21 exact labels, compared with seven for the rules. The candidate remains
+disabled pending an app-level routing benefit. The recovery fit abstained
+because all 16 eligible calibration cases already passed with the E4B
+export. The other eight cases were abstention controls.
+[Workflow classifier and recovery receipt](https://huggingface.co/yunusemrejr/kiwimind/tree/346732571e2df99adb664a21cc71d91d9c317f51/experiments/e4b-classifiers)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts

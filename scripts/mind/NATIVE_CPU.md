@@ -457,3 +457,14 @@ stopped after generating over 100 tokens at about 0.65 tokens per second.
 These isolated requests establish that both exports can run the three
 probes on CPU. The whole-model speed comparison needs matched load and
 repeated app turns.
+
+The compact pack then passed all nine app checks in three warm repetitions.
+Peak native RSS was 7.43 GiB and sampled native swap was zero. CPU pressure
+`some avg10` was 18.31% at start and 16.34% at finish. Desktop load also
+varied within and between the stock and compact runs.
+
+| Operation | Compact first text p50 / p90 | Compact completion p50 / p90 |
+| --- | ---: | ---: |
+| Short reply | 6.76 / 7.00 s | 8.90 / 9.60 s |
+| Exact field from a local file | 41 / 45 ms | 42 / 46 ms |
+| HTML edit and verified phone render | 42.91 / 104.96 s | 42.91 / 104.96 s |
