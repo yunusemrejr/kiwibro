@@ -478,3 +478,33 @@ produced a real Chrome render at 174.65 seconds and timed out. Its saved
 HTML contained the queue name and build code. An independent 360-pixel
 test also found that the page missed the exact initial status. The 3D
 hatch timed out without a saved file.
+
+### Compaction-only E4B
+
+With the same CPU placement, context, six threads and reasoning Off, the
+compaction-only trunk passed two of five deeper app scenarios. Extractive
+history was enabled and repository tools used Auto. Peak native RSS was
+7.47 GiB. Sampled native swap was zero.
+
+| Scenario | App evidence | Turn time |
+| --- | --- | ---: |
+| Nested repository | Read both consumers and stopped before opening the shared implementation | 215.18 s |
+| Long history | Recovered exact directory and checkpoint with the workspace unchanged | 183.59 s after the opening turn |
+| Stale table path | Corrected the failed tool call, read the current TSV and returned the expected result | 271.14 s |
+| Dashboard from screenshot | Timed out before saving the page or producing a render | 303.03 s |
+| Interactive 3D hatch | Timed out before saving the page | 300.04 s |
+
+The long-history turn used 2,233 prompt tokens after about 18,490 estimated
+tokens of earlier history. The native server spent 69.77 seconds on prompt
+evaluation and generated 94 tokens in 113.64 seconds. In the dashboard run
+the separate image description took 212.62 seconds before the first round
+with tools. The repository run started before automatic reads of verified
+shared Python imports were added. These results keep the pack experimental.
+[Ryzen acceptance report](https://huggingface.co/yunusemrejr/kiwimind/blob/7f744fc9a57a60cf133a82ababa783ae6927535a/variants/e4b-activation-compacted/evals/ryzen-deep-app-cpu.json)
+
+The pinned `llama-bench` used one warmed model, 256 tokens of context
+before decoding and 12 measured output tokens per arm. In run order, six
+workers reached 3.05 tokens/s, four reached 4.35 and 4.45 tokens/s, and six
+reached 4.04 tokens/s. CPU pressure `some avg10` varied from 7.2% to 19.2%.
+This short synthetic run exercises decode. Application latency and quality
+need their own comparison before changing the managed thread count.
