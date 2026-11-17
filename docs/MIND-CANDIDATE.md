@@ -168,6 +168,13 @@ trying nonexistent paths. A verified-directory recovery step brought it to
 129.9 seconds on a separate run, with the correct file still unidentified.
 [Laptop measurements](../scripts/mind/NATIVE_CPU.md#long-chat-on-the-desktop)
 
+With immediate post-write inspection, the laptop saved desktop and phone
+browser evidence for both the dashboard and the 3D hatch. The dashboard turn
+finished in 274 seconds. The independent interaction check rejected its
+initial status element. The hatch rendered after 285 seconds and the turn
+reached the 300-second limit before acceptance could check its controls.
+[Native acceptance checks](MIND-FINALIST-ACCEPTANCE.md)
+
 ### Repository task adapter
 
 A separate 88-step Colab L4 run tuned a rank-16 adapter from the merged
@@ -190,6 +197,7 @@ The GGUF adapter has SHA-256
 The 300 steps are in the trunk and the additional 88 are in the optional adapter.
 Compare repository outcomes with the adapter at zero and an active scale on
 the same trunk. Record adapter effect and runtime cost before enabling it for users.
+[Published adapter and classifier artifacts](https://huggingface.co/yunusemrejr/kiwimind/tree/392fb41cd581b08520c65f047d28e269c28d0e8e/experiments)
 
 ## Verify before changing the local launcher
 
