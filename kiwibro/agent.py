@@ -423,6 +423,7 @@ class Turn:
     failing_tools: set[str] = field(default_factory=set)  # the tools that failed in that streak
     missing_reads: set[Path] = field(default_factory=set)
     checked_missing_read_folder: bool = False
+    successful_table_calls: set[tuple[Path, str]] = field(default_factory=set)
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -981,6 +982,11 @@ class AgentManager:
             if native_reads and outcomes and all((outcome.meta or {}).get("repeated_missing_read") for outcome in outcomes):
                 self._say(turn, model, "I stopped after the read retried a path that the workspace reported missing.",
                           {"checked_by_kiwibro": True}, "missing_read")
+                self._close_plan(turn, model)
+                break
+            if (native_reads and outcomes and all((outcome.meta or {}).get("repeated_table_result") for outcome in outcomes)
+                    and (turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text)))):
+                self._answer_anyway(turn, model, prepared, None, text_mode=False)
                 self._close_plan(turn, model)
                 break
             if turn.truncated_writes > refused_before:
@@ -3352,7 +3358,7 @@ class AgentManager:
             turn.emit("delta", {"text": text})
         message = self.db.add_message(turn.conversation_id, "assistant", text, model=model, meta=meta)
         turn.last_message_id = message["id"]
-        turn.reply_text = text
+        turn.reply_text = "\n".join(filter(None, (turn.reply_text.strip(), text)))
 
     def _answer_late_notes(self, turn: Turn, settings: dict[str, Any]) -> None:
         """A steering note reached the turn after its last generation had read the chat. It is answered here, as
@@ -3596,6 +3602,13 @@ class AgentManager:
             else:
                 result, duration = outcomes[item["id"]]
             turn.tool_calls_made += 1
+            if recover_reads and item["name"] == "analyze_table" and item["result"] is None:
+                signature = tools.tool_call_signature("analyze_table", item["args"])
+                key = (item["workspace"].root, signature)
+                if result.ok:
+                    turn.successful_table_calls.add(key)
+                else:
+                    turn.successful_table_calls.discard(key)
             if result.ok:
                 turn.tools_ok.append(item["name"])
                 if item["name"] == "note" and item["args"].get("action") in ("save", "append"):
@@ -3904,11 +3917,14 @@ class AgentManager:
         seen = turn.tool_signatures.get(signature, 0)
         turn.tool_signatures[signature] = seen + 1
         if seen >= 2:
-            return refuse(
+            stopped = refuse(
                 "Error: this exact tool call was already made twice this turn with the "
                 "same arguments. Use the earlier result, change the arguments, or move on.",
                 "Duplicate tool call stopped",
             )
+            if name == "analyze_table" and (workspace.root, signature) in turn.successful_table_calls:
+                stopped["result"].meta["repeated_table_result"] = True
+            return stopped
         if requires:
             allow_key = decision.allow_key if decision.can_always else None
             if not self._request_approval(turn, name, spec.risk, shown_args, decision.payload(), allow_key=allow_key):
