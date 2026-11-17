@@ -144,6 +144,11 @@ parts of the workflow.
 
 ### Matched replay results
 
+The published 300-step standard pack includes the text weights, matching vision
+projector, SHA-256 manifest, architecture report and training receipt. This
+Hugging Face revision is a candidate build under evaluation.
+[Published checkpoint](https://huggingface.co/yunusemrejr/kiwimind/tree/95b697df83df010340724363ffad535b6ce93c1f/candidate)
+
 The three versions ran serially on the same Colab L4 and b12443 CUDA build with
 one 24,576-token slot and the same projector. Each mode scored 26 held-out
 next actions using full answers. Turn time includes prefill and generation.
