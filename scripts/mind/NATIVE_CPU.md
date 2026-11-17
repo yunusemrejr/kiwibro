@@ -408,6 +408,6 @@ The follow-up HTML request spent another 87.63 seconds processing 1,595
 prompt tokens and reached 183 generated tokens before the 300-second cap.
 That request used adapter scale zero. A later run verified that the image
 caption stayed at scale zero while the user's HTML request used scale 0.8.
-In the earlier suite,
-the 3D hatch took 285.94 seconds to produce a Chrome render at scale 0.8
+That attempt also timed out after trying to read the absent destination.
+The 3D hatch took 285.94 seconds to produce a Chrome render at scale 0.8
 and timed out before independent interaction verification.
