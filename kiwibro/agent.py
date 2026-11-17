@@ -355,6 +355,23 @@ _NATIVE_READ = re.compile(
 _LITERAL_VALUE_LINE = re.compile(
     rf"(?P<label>{_LITERAL_FIELD}):[ \t]+(?P<value>[+-]?[A-Za-z0-9]+(?:[ ._-][A-Za-z0-9]+)*)[ \t]*",
 )
+_REPO_INSPECTION = re.compile(
+    r"""^(?:please[ \t]+)?in[ \t]+(?P<quote>[`"']?)(?P<path>(?:\./)?(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)+)"""
+    r"(?P=quote),[ \t]+(?:please[ \t]+)?(?:inspect|trace|review)[ \t]+(?P<subject>.+)$",
+    re.I | re.S,
+)
+_REPO_OTHER_ACTION = re.compile(
+    r"(?:^|[.!?;,\n]|\b(?:and|then|also|before|after|to)\b)\s*(?:please\s+)?"
+    r"(?:add|alter|apply|build|change|commit|compile|copy|create|delete|deploy|download|edit|execute|"
+    r"fix|format|generate|implement|install|launch|modify|move|open|patch|publish|push|refactor|remove|rename|"
+    r"replace|rewrite|run|save|send|switch|test|update|upload|write)\b",
+    re.I,
+)
+_REPO_LIST_REFUSAL = re.compile(
+    r"\b(?:do not|don['’]t|never|skip|without)\s+(?:list(?:ing)?|scan(?:ning)?|inventory|open(?:ing)?)\b|"
+    r"\b(?:only\s+(?:read|inspect)|(?:read|inspect)\s+only)\b",
+    re.I,
+)
 _RENDER_REQUEST = re.compile(
     r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:"
     r"use\s+`?look_at_page`?\s+to\s+(?:check|verify|inspect)\b|"
@@ -911,9 +928,10 @@ class AgentManager:
         # A question the computer answers is never also a web search: "today" in a question about the
         # user's own disk is no reason to search the web.
         searched = self._search_first(turn, settings) if not (answered or scene or browsed or looked) else False
-        read = self._native_read_first(turn, settings, model_info, tool_list, literal_field=literal_field) if not (
-            answered or scene or browsed or looked or searched
-        ) else False
+        read = False
+        if not (answered or scene or browsed or looked or searched):
+            read = (self._native_read_first(turn, settings, model_info, tool_list, literal_field=literal_field)
+                    or self._native_repo_first(turn, model_info, tool_list))
         if answered or scene or searched or looked or browsed or read:
             self._raise_if_aborted(turn)
             if scene == "ended" or (not scene and turn.reply_text.strip()):  # answered without generation
@@ -2283,13 +2301,15 @@ class AgentManager:
         self._say(turn, model, said, {"checked_by_kiwibro": True}, "note")
         return True
 
-    def _call_first(self, turn: Turn, name: str, args: dict[str, Any]) -> ToolResult:
+    def _call_first(
+        self, turn: Turn, name: str, args: dict[str, Any], *, automatic_workspace: Path | None = None,
+    ) -> ToolResult:
         """Record and execute an app-selected call through the same gates as a model call."""
         call = {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
                 "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
         message = self.db.add_message(turn.conversation_id, "assistant", "", tool_calls=[call], model=turn.model)
         turn.last_message_id = message["id"]
-        result = self._handle_tool_call(turn, call, self._settings())
+        result = self._handle_tool_call(turn, call, self._settings(), automatic_workspace=automatic_workspace)
         self._raise_if_aborted(turn)
         return result
 
@@ -2332,6 +2352,52 @@ class AgentManager:
                         for step in following:
                             step.done = True
                         self._say(turn, str(turn.model), value, {"checked_by_kiwibro": True}, "read_file")
+        return True
+
+    def _native_repo_first(
+        self, turn: Turn, model_info: dict[str, Any] | None, tool_list: list[dict[str, Any]] | None,
+    ) -> bool:
+        """Put one observed directory inventory ahead of a native repo inspection."""
+        if (not _native_mind(turn.model, model_info) or turn.goal or turn.attachments or turn.reaction is not None
+                or turn.plan is not None or not any(tool["function"]["name"] == "list_files" for tool in tool_list or [])):
+            return False
+        found = _REPO_INSPECTION.fullmatch(turn.message.strip())
+        if found is None:
+            return False
+        subject = found["subject"]
+        if "/" in subject or "```" in subject or _REPO_OTHER_ACTION.search(subject) or _REPO_LIST_REFUSAL.search(subject):
+            return False
+        settings = self._settings()
+        if (settings.get("tool_profile") not in (None, "auto") or not settings.get("agent_enabled", True)
+                or tools.permission_mode(settings, "list_files") != "auto"
+                or safemode.gate(self.db, turn.conversation_id, "list_files").refusal):
+            return False
+        if self._drain_steering(turn):
+            turn.prompt_changed = True
+            return False
+        workspace = self._workspace(turn.conversation_id)
+        root = workspace.root
+        if str(root) != turn.safety.get("workspace"):
+            return False
+        try:
+            relative = Path(found["path"])
+            folder = workspace.resolve(found["path"], must_exist=True)
+            if folder != root / relative or not folder.is_dir():
+                return False
+        except (SandboxError, OSError, RuntimeError):
+            return False
+        with turn.steering_lock:
+            received = turn.steering_received
+        if received:
+            if self._drain_steering(turn):
+                turn.prompt_changed = True
+            return False
+        self._raise_if_aborted(turn)
+        result = self._call_first(turn, "list_files", {"path": relative.as_posix()}, automatic_workspace=root)
+        if self._drain_steering(turn):
+            turn.prompt_changed = True
+        if result.ok:
+            turn.inference["repo_listed_first"] = True
         return True
 
     def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
@@ -3596,13 +3662,15 @@ class AgentManager:
 
     # --- tools & approvals -------------------------------------------------
 
-    def _handle_tool_call(self, turn: Turn, call: dict[str, Any], settings: dict[str, Any]) -> ToolResult:
+    def _handle_tool_call(
+        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, automatic_workspace: Path | None = None,
+    ) -> ToolResult:
         """Single-call convenience wrapper (see _handle_tool_calls)."""
-        return self._handle_tool_calls(turn, [call], settings)[0]
+        return self._handle_tool_calls(turn, [call], settings, automatic_workspace=automatic_workspace)[0]
 
     def _handle_tool_calls(
         self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any], *, recover_reads: bool = False,
-        written_html: set[str] | None = None,
+        written_html: set[str] | None = None, automatic_workspace: Path | None = None,
     ) -> list[ToolResult]:
         """Validate, approve and run one round of tool calls.
 
@@ -3663,7 +3731,8 @@ class AgentManager:
         def prepare(index: int, call: dict[str, Any]) -> dict[str, Any]:
             self._raise_if_aborted(turn)
             cut_off = turn.truncated_calls and index == len(calls) - 1
-            item = self._prepare_tool_call(turn, call, settings, cut_off=cut_off, native=recover_reads)
+            item = self._prepare_tool_call(turn, call, settings, cut_off=cut_off, native=recover_reads,
+                                           automatic_workspace=automatic_workspace)
             prepared_calls.append(item)
             return item
 
@@ -3908,6 +3977,7 @@ class AgentManager:
 
     def _prepare_tool_call(
         self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False, native: bool = False,
+        automatic_workspace: Path | None = None,
     ) -> dict[str, Any]:
         """Rescue, validate, safety-check and approve one call (no execution)."""
         rescued = toolcall.prepare_call(call, tools.TOOL_SPECS)
@@ -3995,24 +4065,39 @@ class AgentManager:
         if pacing:
             return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
         workspace, state = self._workspace(turn.conversation_id), turn.safety
+        if automatic_workspace is not None and workspace.root != automatic_workspace:
+            return refuse_shown("The workspace changed before the automatic check.", "Workspace changed", spec.risk)
+        if automatic_workspace is not None and turn.steering_received:
+            return refuse_shown("The user sent a new instruction before the automatic check.", "Steered", spec.risk)
         safe = safemode.gate(self.db, turn.conversation_id, name)
         if safe.refusal:  # a safe copy refuses some tools whatever the autonomy setting says
             return refuse_shown(f"Error: {safe.refusal}", safe.refusal, spec.risk)
         route = None if safe.active else turn.routes.get(item["id"]) or (
             turn.plan.route(name, item["args"], workspace) if turn.plan is not None else None)
+        if automatic_workspace is not None and route is not None:
+            return refuse_shown("The automatic check must stay in this workspace.", "Workspace changed", spec.risk)
         if route is not None:  # a file or folder the user named outside the workspace
             workspace, item["args"], item["location"] = route.workspace, route.args, route.shown
             turn.safety.setdefault("counters", {"writes": 0, "deletes": 0})  # shared by the copy below
             state = {**turn.safety, "workspace": str(workspace.root)}
         elif name in plan.ROUTED_TOOLS and isinstance(item["args"].get("path"), str):
             try:  # outside the workspace and not named by the user: refuse now, never ask for a call that cannot run
-                workspace.resolve(item["args"]["path"])
+                resolved = workspace.resolve(item["args"]["path"])
+                if automatic_workspace is not None and resolved != automatic_workspace / item["args"]["path"]:
+                    return refuse_shown("The directory changed before the automatic check.", "Directory changed", spec.risk)
             except SandboxError as exc:
                 return refuse_shown(f"Error: {exc}. {prompts.OUTSIDE_HINT}", str(exc), spec.risk)
         item["workspace"] = workspace
+        current_settings = self._settings()
         decision = safety.decide(
-            self._settings(), name, item["args"], workspace=workspace, turn_state=state, risk=spec.risk
+            current_settings, name, item["args"], workspace=workspace, turn_state=state, risk=spec.risk
         )
+        if automatic_workspace is not None and (
+            current_settings.get("tool_profile") not in (None, "auto") or not current_settings.get("agent_enabled", True)
+            or tools.permission_mode(current_settings, name) != "auto"
+            or decision.mode != "auto"
+        ):
+            return refuse_shown("The automatic check requires Auto permission.", "Automatic check skipped", spec.risk)
         if (decision.mode != "deny" and route is None
                 and self._repeated_missing_read(turn, name, item["args"], workspace)):
             stopped = refuse_shown(
