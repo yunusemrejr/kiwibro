@@ -199,17 +199,20 @@ def turn(
     env: Env, prompt: str, allowed: set[str], *, allowed_paths: set[str] | None = None,
     command: tuple[str, str] | None = None, attachments: list[dict] | None = None,
     conversation_id: str | None = None, observer: Callable[[dict], None] | None = None,
+    tool_profile: str = "full",
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
     native_log = getattr(env, "native_log", None) if observer else None
     start_records = len(native_log.records) if native_log is not None else 0
     backend_before = managed_backend(env) if native_log is not None else None
+    native_engine = env.svc.llm.direct_engine() if native_log is not None else None
+    native_before = native_engine.loaded(NATIVE_MODEL) if native_engine is not None else None
     # Keep generated code in scratch space. The test driver may approve only
     # the predeclared test invocation and edits to the requested fixture file.
     writes = {"apply_patch", "replace_in_file", "write_file"}
     permissions = {name: ("ask" if name in writes | {"run_command"} else "auto") if name in allowed else "deny"
                    for name in tools.tool_names()}
     env.settings_patch({"autonomy": "supervised", "memory_enabled": False, "temperature": 0,
-                        "tool_profile": "full", "max_tool_rounds": 16,
+                        "tool_profile": tool_profile, "max_tool_rounds": 16,
                         "reasoning": os.environ.get("KIWIBRO_ACCEPTANCE_REASONING", "off"),
                         "permissions": permissions})
     payload: dict[str, Any] = {"message": prompt}
@@ -221,9 +224,24 @@ def turn(
     if env.fake is None:
         payload["model"] = KIWIMIND if native else os.environ["KIWIBRO_ACCEPTANCE_MODEL"]
     started = time.monotonic()
+    timing = dict.fromkeys(("first_text_ms", "first_verified_tool_ms", "first_render_ms", "done_ms"))
+
+    def observe_frame(event: str, data: dict[str, Any]) -> None:
+        elapsed = round((time.monotonic() - started) * 1000)
+        if event in ("delta", "rewrite") and isinstance(data.get("text"), str) and data["text"].strip():
+            if timing["first_text_ms"] is None:
+                timing["first_text_ms"] = elapsed
+        if event == "tool_result" and data["ok"] and data["name"] in allowed:
+            if timing["first_verified_tool_ms"] is None:
+                timing["first_verified_tool_ms"] = elapsed
+            if data["name"] == "look_at_page" and timing["first_render_ms"] is None:
+                timing["first_render_ms"] = elapsed
+        if event == "done" and not data.get("aborted"):
+            timing["done_ms"] = elapsed
+
     response = env.client.post("/api/chat", json=payload, buffered=False)
     assert response.status_code == 200, response.get_data(as_text=True)
-    stream = SSEStream(response).start()
+    stream = SSEStream(response, on_frame=observe_frame if observer else None).start()
     timeout = float(os.environ.get("KIWIBRO_ACCEPTANCE_TURN_TIMEOUT", 45 if env.fake else 300))
     deadline = started + timeout
     handled = set()
@@ -256,6 +274,7 @@ def turn(
     finally:
         with stream._lock:
             observed = list(stream.events)
+            observed_timing = dict(timing)
         meta = next((data for event, data in observed if event == "meta"), {})
         if not stream.done.is_set():
             if active := meta.get("conversation_id"):
@@ -265,6 +284,7 @@ def turn(
             done = next((data for event, data in observed if event == "done"), {})
             stats = {
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
+                **observed_timing,
                 "timed_out": timed_out, "context": {key: value for key, value in meta.get("context", {}).items()
                                                      if key in {"used", "budget", "percent"}},
                 "usage": done.get("usage"), "same_chat": not conversation_id or meta.get("conversation_id") == conversation_id,
@@ -278,6 +298,7 @@ def turn(
                 stats["native_execution"] = {
                     "backend_before": backend_before,
                     "backend_after": managed_backend(env),
+                    "reused": native_before is not None and native_engine.loaded(NATIVE_MODEL) is native_before,
                     **native_transitions(native_log.records[start_records:]),
                 }
             observer(stats)

@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Run isolated KiwiBro finalist acceptance and write evidence without chat text."""
+"""Run isolated KiwiBro finalist acceptance and write evidence without chat text.
+
+Use --case interaction to warm one app instance and measure short chat, a file
+read and a same-chat render follow-up. Adjust --interaction-repeats (default 5).
+First text is the arrival of displayable assistant text in the app's SSE stream.
+"""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
 import site
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -24,6 +31,7 @@ JOURNAL = "KIWIBRO_FINALIST_JOURNAL"
 PLACEMENT = "KIWIBRO_ACCEPTANCE_PLACEMENT"
 DIRECT_GPU = {"auto": "auto", "cpu": "off"}
 EXTRACTIVE_HISTORY = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
+INTERACTION_REPEATS = "KIWIBRO_ACCEPTANCE_INTERACTION_REPEATS"
 SUPPLEMENT = "tests/test_finalist_acceptance.py"
 ACCEPTANCE = "tests/test_successor_acceptance.py"
 CASES = {
@@ -35,7 +43,28 @@ CASES = {
     "hatch": (ACCEPTANCE, "test_builds_and_checks_an_interactive_3d_hatch",
               ("inspection-hatch.html", "screenshots/look-inspection-hatch.png")),
 }
+DEFAULT_CASES = tuple(CASES)
+CASES["interaction"] = ("tests/test_interaction_acceptance.py", "test_warm_app_interaction", ())
 ROWS = {name: (label, assets) for label, (_, name, assets) in CASES.items()}
+
+
+def interaction_summary(turns: list[dict], repeats: int) -> dict:
+    steps = {}
+    for step in ("text", "file", "render"):
+        observed = [row for row in turns if row["step"] == step]
+        verified = [row for row in observed if row["verified"]]
+        warm = [row for row in verified if not (native := row.get("native_execution")) or (
+            native["backend_before"] is not None and native["backend_before"] == native["backend_after"]
+            and native.get("reused", True) and not native["launches"] and not native["gpu_fallbacks"]
+        )]
+        metrics = {}
+        for key in ("first_text_ms", "first_verified_tool_ms", "first_render_ms", "done_ms"):
+            samples = sorted(row[key] for row in warm if row.get(key) is not None)
+            metrics[key] = {"n": len(samples), "p50": statistics.median(samples) if samples else None,
+                            "p90": samples[math.ceil(len(samples) * 0.9) - 1] if samples else None}
+        steps[step] = {"observed": len(observed), "verified": len(verified), "warm_verified": len(warm),
+                       "timeouts": sum(bool(row.get("timed_out")) for row in observed), "metrics": metrics}
+    return {"planned_per_step": repeats, "p90_method": "nearest-rank", "steps": steps}
 
 
 @pytest.hookimpl(wrapper=True)
@@ -185,6 +214,8 @@ def run(args, scratch: Path, report: dict) -> None:
         })
         if args.extractive_history:
             environment[EXTRACTIVE_HISTORY] = "1"
+    if "interaction" in args.case:
+        environment[INTERACTION_REPEATS] = str(args.interaction_repeats)
     nodes = [f"{CASES[label][0]}::{CASES[label][1]}" for label in args.case]
     command = [sys.executable, "-m", "pytest", "-q", "-p", "scripts.mind.accept_finalist", *nodes]
     root = Path(__file__).resolve().parents[2]
@@ -210,6 +241,10 @@ def run(args, scratch: Path, report: dict) -> None:
             report["phases"].append(json.loads(line))
         except ValueError:
             report["unfinished_evidence_write"] = True
+    if "interaction" in args.case:
+        turns = next((row["turns"] for row in report["phases"]
+                      if row["scenario"] == "interaction" and row["phase"] == "call"), [])
+        report["interaction"] = interaction_summary(turns, args.interaction_repeats)
     report["passed"] = process.returncode == 0 and {row["scenario"] for row in report["phases"]
                         if row["phase"] == "call" and row["outcome"] == "passed"} == set(args.case)
 
@@ -225,6 +260,7 @@ def main() -> int:
     parser.add_argument("--extractive-history", action="store_true",
                         help="Enable experimental native extractive history compaction.")
     parser.add_argument("--case", action="append", choices=CASES)
+    parser.add_argument("--interaction-repeats", type=int, default=5, help="Warm interaction rounds (1–20).")
     parser.add_argument("--history-tokens", type=int, default=18000)
     parser.add_argument("--reasoning", choices=("off", "on"), default="off")
     parser.add_argument("--turn-timeout", type=int, default=300)
@@ -236,7 +272,9 @@ def main() -> int:
         parser.error("Backend placement and extractive history only apply to a native run.")
     if not 1000 <= args.history_tokens <= 65536 or min(args.turn_timeout, args.suite_timeout) < 1:
         parser.error("Expected a history budget of 1000–65536 and positive timeouts.")
-    args.case = list(dict.fromkeys(args.case or CASES))
+    if not 1 <= args.interaction_repeats <= 20:
+        parser.error("Expected 1–20 interaction rounds.")
+    args.case = list(dict.fromkeys(args.case or DEFAULT_CASES))
     if args.native_data:
         args.native_data, args.server = args.native_data.expanduser().resolve(), args.server.expanduser().resolve()
     result = {"mode": "scripted" if args.scripted else "native", "passed": False,

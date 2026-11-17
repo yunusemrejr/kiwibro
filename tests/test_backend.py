@@ -10,7 +10,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -236,11 +236,12 @@ def collect_sse(response: Any, timeout: float = 15.0) -> tuple[list[tuple[str, d
 class SSEStream:
     """Consume an SSE response on a background thread so tests can act mid-stream."""
 
-    def __init__(self, response: Any) -> None:
+    def __init__(self, response: Any, on_frame: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         self.events: list[tuple[str, dict[str, Any]]] = []
         self.raw = ""
         self.done = threading.Event()
         self._lock = threading.Lock()
+        self._on_frame = on_frame
         self.thread = threading.Thread(target=self._run, args=(response,), daemon=True)
 
     def start(self) -> "SSEStream":
@@ -260,6 +261,8 @@ class SSEStream:
                     if parsed is None:
                         continue
                     with self._lock:
+                        if self._on_frame is not None:
+                            self._on_frame(*parsed)
                         self.events.append(parsed)
                     if parsed[0] in ("done", "error"):
                         self.done.set()
