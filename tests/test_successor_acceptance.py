@@ -406,7 +406,7 @@ def test_stale_data_path_and_typed_argument_recovery(acceptance: Env, record_pro
             call(5, "analyze_table", path=path, where='status == "failed"', aggregate="count"),
             ChatResult(content=f"Failed: 2 of 7 rows in {path}."),
         ]
-    _events, messages = turn(
+    events, messages = turn(
         env,
         f"The handoff names {old}. Try that path first. If it fails, find the current TSV "
         "inside shipments/round-2 and report the number of failed status rows out of the total. "
@@ -419,7 +419,17 @@ def test_stale_data_path_and_typed_argument_recovery(acceptance: Env, record_pro
     assert re.search(r"\b2\b.*\b7\b|\b7\b.*\b2\b", assistant, re.S), assistant
     assert path in assistant
     observed = [row for row in messages if row["role"] == "tool"]
-    assert any(row["tool_name"] == "analyze_table" and "2 rows matched" in row["content"] for row in observed)
+    source_calls = {row["id"] for event, row in events if event == "tool_call"
+                    and row["name"] == "analyze_table" and row["args"].get("path") == path}
+    source_success = {row["id"] for event, row in events if event == "tool_result" and row["ok"]}
+    source_results = [row["content"] for row in observed if row.get("tool_call_id") in source_calls & source_success]
+    assert any(
+        "2 rows matched" in content or (
+            re.search(r"(?m)^Rows: 7;", content)
+            and re.search(r"(?m)^- status \([^\n]+\):[^\n]*\n +top:[^\n]*\bfailed \(2\)", content)
+        )
+        for content in source_results
+    )
     if env.fake:
         errors = [row["content"] for row in observed if row["tool_name"] == "analyze_table"][:2]
         assert len(errors) == 2 and "limit" in errors[0] and ("does not exist" in errors[1] or "not found" in errors[1])
