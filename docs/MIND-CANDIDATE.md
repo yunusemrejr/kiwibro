@@ -60,6 +60,14 @@ checks the expert report against the actual GGUF. How it works reads the checked
 expert counts, intermediate expert width when compacted, file sizes and context
 from this pack.
 
+To stage a task LoRA, add `--adapter`, `--adapter-sha256`,
+`--adapter-trunk-sha256`, `--adapter-task code` and an optional
+`--adapter-scale 0.8` to the staging command. The LoRA's export provenance must
+identify the exact serving trunk SHA-256. Kiwi Mind loads the registered adapter
+at zero scale and selects its scale per request using the existing task router.
+If adapter startup fails, the managed engine retries with the verified trunk.
+[llama.cpp per-request LoRA settings](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/tools/server/README.md)
+
 ## Train and export on Colab
 
 Build the [KiwiBro curriculum](../scripts/mind/agent_corpus.py) with

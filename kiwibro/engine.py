@@ -116,6 +116,7 @@ class LocalModel:
     projector: str | None = None
     aliases: tuple[str, ...] = ()
     source: str = SOURCE_FOLDER
+    pack_adapters: tuple[adapters_mod.Adapter, ...] = ()
 
     @property
     def deletable(self) -> bool:
@@ -828,6 +829,8 @@ class DirectEngine:
         """The adapters that fit ``model`` (same architecture and base), at most MAX_ADAPTERS."""
         if model.embeddings or model.id in self._bad_adapters:
             return ()
+        if model.id in self._managed:
+            return model.pack_adapters
         fit = [a for a in self.adapters() if adapters_mod.fits(a, model.arch, model.name, model.id, model.repo)]
         return tuple(fit[:adapters_mod.MAX_ADAPTERS])
 
@@ -1060,7 +1063,7 @@ class DirectEngine:
         self._make_room(model)
         last: EngineError | None = None
         attempts = [(runtime, spec) for runtime in runtimes[:RUNTIME_TRIES] for spec in (True, False)]
-        loras = () if model.id in self._managed else self.adapters_for(model)
+        loras = self.adapters_for(model)
         if loras:  # an adapter that does not fit must never keep the model from starting
             attempts.insert(1, (attempts[0][0], attempts[0][1]))
         for index, (runtime, speculative) in enumerate(attempts):
@@ -1078,6 +1081,8 @@ class DirectEngine:
                 continue
             except EngineError as exc:
                 last = exc
+                if loras and model.id in self._managed:
+                    continue  # optional managed adapter: retry the verified trunk alone
                 break
             with self._lock:
                 self._servers[model.id] = server

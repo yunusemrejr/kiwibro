@@ -9,11 +9,14 @@ import json
 from pathlib import Path
 import tempfile
 
+from kiwibro.adapters import ALWAYS, TASKS
 from kiwibro.gguf import read_metadata, summarize
-from kiwibro.mind.pack import TRUNK3
+from kiwibro.mind.native_generic import registered_lora
+from kiwibro.mind.pack import PackError, TRUNK3
 from scripts.mind.prune_gemma4 import BASE, BASE_REVISION
 
 EXPERT_FIELDS = ("experts_before", "experts_after", "top_k_before", "top_k_after")
+ADAPTER_FILE = "task-adapter.gguf"
 
 
 def _file(source: Path, expected: str | None) -> dict[str, int | str]:
@@ -32,7 +35,14 @@ def stage(
     model: Path, projector: Path, output: Path, *, version: str, context: int,
     architecture: dict | None = None, training: dict | None = None,
     model_digest: str | None = None, projector_digest: str | None = None,
+    adapter: Path | None = None, adapter_digest: str | None = None,
+    adapter_trunk_digest: str | None = None, adapter_tasks: tuple[str, ...] = (), adapter_scale: float | None = None,
 ) -> dict:
+    if adapter is None and (adapter_digest is not None or adapter_trunk_digest is not None
+                            or adapter_tasks or adapter_scale is not None):
+        raise ValueError("LoRA registration requires an explicit adapter file.")
+    if adapter is not None and (not adapter_trunk_digest or not adapter_tasks):
+        raise ValueError("LoRA registration requires its training/export trunk SHA-256 and task labels.")
     model = model.resolve(strict=True)
     projector = projector.resolve(strict=True)
     meta = read_metadata(model)
@@ -94,6 +104,18 @@ def stage(
         "quant": hints["quantization"], "model": TRUNK3, "vision": {"file": "vision.gguf"},
         "capabilities": {"tools": True, "thinking": hints["thinking"]}, "expert_bank": bank, "files": files,
     }
+    if adapter is not None:
+        if adapter_trunk_digest != files[TRUNK3]["sha256"]:
+            raise ValueError("The LoRA binding does not match the trunk's exact SHA-256.")
+        adapter = adapter.resolve(strict=True)
+        files[ADAPTER_FILE] = _file(adapter, adapter_digest)
+        try:
+            entry = registered_lora(adapter, read_metadata(adapter), arch=hints["arch"], base=BASE,
+                                    tasks=list(adapter_tasks), scale=1.0 if adapter_scale is None else adapter_scale)
+        except PackError as exc:
+            raise ValueError(str(exc)) from exc
+        manifest["lora"] = {"file": ADAPTER_FILE, "trunk_sha256": adapter_trunk_digest,
+                            "tasks": list(entry.tasks), "scale": entry.scale}
     if training is not None:
         manifest["training"] = {key: training[key] for key in ("mode", "steps", "total_steps", "corpus_sha256")
                                 if key in training}
@@ -104,6 +126,8 @@ def stage(
         candidate.mkdir()
         (candidate / TRUNK3).symlink_to(model)
         (candidate / "vision.gguf").symlink_to(projector)
+        if adapter is not None:
+            (candidate / ADAPTER_FILE).symlink_to(adapter)
         (candidate / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         candidate.rename(output)
     return manifest
@@ -120,12 +144,20 @@ def main() -> None:
     parser.add_argument("--training", type=Path)
     parser.add_argument("--model-sha256")
     parser.add_argument("--projector-sha256")
+    parser.add_argument("--adapter", type=Path, help="Explicit native task LoRA GGUF to stage.")
+    parser.add_argument("--adapter-sha256")
+    parser.add_argument("--adapter-trunk-sha256", help="Exact serving trunk SHA-256 from adapter provenance.")
+    parser.add_argument("--adapter-task", action="append", choices=(*TASKS, ALWAYS), default=[])
+    parser.add_argument("--adapter-scale", type=float)
     args = parser.parse_args()
     architecture = json.loads(args.architecture.read_text()) if args.architecture else None
     training = json.loads(args.training.read_text()) if args.training else None
     print(json.dumps(stage(args.model, args.projector, args.output, version=args.version, context=args.context,
                            architecture=architecture, training=training, model_digest=args.model_sha256,
-                           projector_digest=args.projector_sha256), indent=2), flush=True)
+                           projector_digest=args.projector_sha256, adapter=args.adapter,
+                           adapter_digest=args.adapter_sha256, adapter_trunk_digest=args.adapter_trunk_sha256,
+                           adapter_tasks=tuple(args.adapter_task), adapter_scale=args.adapter_scale),
+                     indent=2), flush=True)
 
 
 if __name__ == "__main__":

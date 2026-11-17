@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import requests
 
+from .. import adapters, gguf
 from ..config import MEMORY_KINDS
 from ..engine import SOURCE_MIND, DirectEngine, LocalModel
-from ..llm import ChatResult, Completion, LLMClient, LLMError, TurnAborted
+from ..llm import ADAPTERS_OFF, ChatResult, Completion, LLMClient, LLMError, TurnAborted
 from .conductor import Events, has_images
 from .pack import TRUNK3, Pack, PackError
 
@@ -21,6 +24,7 @@ NATIVE_FORMAT = "native-gguf"
 # Keep the public Kiwi Mind identity distinct from the internal engine alias.
 NATIVE_MODEL = "kiwimind-native"
 DEFAULT_CTX = 8192
+_SHA256 = re.compile(r"[a-f0-9]{64}")
 MEMORY_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -137,6 +141,59 @@ def _training_steps(manifest: Mapping[str, Any]) -> int | None:
     return None
 
 
+def registered_lora(
+    path: Path, metadata: Mapping[str, Any], *, arch: str, base: str, tasks: Any, scale: Any,
+) -> adapters.Adapter:
+    """Build the task adapter from the registered metadata and GGUF header."""
+    if (metadata.get("general.type") != "adapter" or metadata.get("adapter.type") != "lora"
+            or not isinstance(arch, str) or not arch or metadata.get("general.architecture") != arch):
+        raise PackError("The native LoRA must be a GGUF adapter for the model's architecture.")
+    if (not isinstance(tasks, list) or not tasks
+            or any(task not in (*adapters.TASKS, adapters.ALWAYS) for task in tasks)
+            or len(set(tasks)) != len(tasks)):
+        raise PackError("The native LoRA has invalid task labels.")
+    if type(scale) not in (int, float) or not 0 <= scale <= 2:
+        raise PackError("The native LoRA scale must be a number from zero to two.")
+    return adapters.Adapter(str(path), str(metadata.get("general.name") or path.stem),
+                            arch, base, tuple(tasks), float(scale))
+
+
+@lru_cache(maxsize=8)
+def _checked_header(path: Path, sha256: str) -> dict[str, Any]:
+    # Called only after Pack.check. Key by the checked digest so a new artifact
+    # at the same path gets a new header without rereading vocabulary each round.
+    return gguf.read_metadata(path)
+
+
+def _pack_adapters(pack: Pack, manifest: dict, trunk: str, vision: str | None) -> tuple[adapters.Adapter, ...]:
+    if "lora" not in manifest:
+        return ()
+    entry = manifest["lora"]
+    filename = entry.get("file") if isinstance(entry, dict) else None
+    files = manifest["files"]
+    if not isinstance(filename, str) or not filename.endswith(".gguf") or filename not in files:
+        raise PackError("The native LoRA must name a checksummed GGUF file in this pack.")
+    path = pack.path(filename)
+    if path == pack.path(trunk) or (vision is not None and str(path) == vision):
+        raise PackError("The native LoRA must be a separate GGUF file.")
+    binding = entry.get("trunk_sha256")
+    if (not isinstance(binding, str) or not _SHA256.fullmatch(binding)
+            or binding != files[trunk]["sha256"]):
+        raise PackError("The native LoRA must bind to this pack's exact trunk SHA-256.")
+    checksum = files[filename]["sha256"]
+    if not isinstance(checksum, str) or not _SHA256.fullmatch(checksum) or checksum == binding:
+        raise PackError("The native LoRA must have its own SHA-256 in this pack.")
+    try:
+        model_arch = _checked_header(pack.path(trunk), binding).get("general.architecture")
+        metadata = _checked_header(path, checksum)
+    except (OSError, gguf.GGUFError) as exc:
+        raise PackError("The native LoRA or trunk GGUF header could not be read.") from exc
+    if model_arch != manifest.get("arch"):
+        raise PackError("The native LoRA manifest architecture disagrees with the trunk GGUF.")
+    return (registered_lora(path, metadata, arch=model_arch, base=str(manifest.get("base") or ""),
+                            tasks=entry.get("tasks"), scale=entry.get("scale")),)
+
+
 def describe_pack(pack: Pack) -> NativeModel:
     """Build an engine model from an independently verified native pack."""
     manifest = pack.manifest()
@@ -171,6 +228,7 @@ def describe_pack(pack: Pack) -> NativeModel:
             publisher=base.partition("/")[0], repo=base, params=str(manifest.get("params") or ""),
             quantization=str(manifest.get("quant") or ""), context_length=ctx,
             tools=True, thinking=thinking, thinking_toggle=thinking, source=SOURCE_MIND,
+            pack_adapters=_pack_adapters(pack, manifest, trunk, projector),
         ),
         thinking and capabilities.get("reasoning_effort") is True,
         _expert_bank(manifest),
@@ -250,7 +308,7 @@ class NativeConductor:
         abort: threading.Event | None = None, response_format: dict[str, Any] | None = None,
     ) -> Completion:
         # Streaming preserves cancellation during prefill, including for schema-constrained utilities.
-        extra: dict[str, Any] = {"reasoning_effort": "none"}
+        extra: dict[str, Any] = {"reasoning_effort": "none", ADAPTERS_OFF: True}
         if response_format is not None:
             extra["response_format"] = response_format
         result = self.stream(messages=messages, tools=None, max_tokens=max_tokens, temperature=temperature,

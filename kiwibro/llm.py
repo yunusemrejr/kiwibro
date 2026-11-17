@@ -378,22 +378,27 @@ class LLMClient:
             return by_id[chosen]
         return by_id.get(self.direct_engine().canonical(chosen)) if self.direct_on() else None
 
+    def _adapter_model(self, model: str) -> str | None:
+        if model == KIWIMIND:
+            from .mind.native_generic import NATIVE_MODEL
+
+            return NATIVE_MODEL if self.mind().native_mode else None
+        return model if self.direct_on() else None
+
     def has_adapters(self, model: str) -> bool:
         """Whether ``model`` is running with task adapters loaded."""
-        if not self.direct_on():
-            return False
         try:
-            server = self.direct_engine().loaded(model)
+            native_id = self._adapter_model(model)
+            server = self.direct_engine().loaded(native_id) if native_id is not None else None
         except Exception:  # noqa: BLE001
             return False
         return bool(server is not None and server.adapters)
 
     def adapters_on(self, model: str, messages: list[dict[str, Any]], task: str | None = None) -> list[Any]:
-        """The task adapters a request with these messages runs with (none when attached)."""
-        if not self.direct_on():
-            return []
+        """The local task adapters a request with these messages runs with."""
         try:
-            return self.direct_engine().adapters_on(model, messages, task)
+            native_id = self._adapter_model(model)
+            return self.direct_engine().adapters_on(native_id, messages, task) if native_id is not None else []
         except Exception:  # noqa: BLE001 - adapters are optional; never break a turn over them
             return []
 
