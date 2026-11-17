@@ -63,8 +63,9 @@ _TOOL_HINT = {"web": "web_search", "write": "write_file", "run": "run_command", 
 _CODE = re.compile(r"```.*?```", re.S)
 # Greetings and thanks only: "ok" or "great" often means "go ahead" and needs the tools.
 _SMALL_TALK = re.compile(
-    r"^(?:hi|hello|hey|yo|hiya|thanks?(?:\s+(?:you|a lot|so much))?|thx|ty|cheers|good\s+(?:morning|afternoon|evening|night)|"
-    r"bye|goodbye|see\s+you|how\s+are\s+you(?:\s+doing)?|what'?s\s+up)[\s.!?,]*(?:kiwi(?:bro)?)?[\s.!?]*$",
+    r"^(?:(?:hi|hello|hey|yo|hiya|thanks?(?:\s+(?:you|a lot|so much))?|thx|ty|cheers|good\s+(?:morning|afternoon|evening|night)|"
+    r"bye|goodbye|see\s+you|how\s+are\s+you(?:\s+doing)?|what'?s\s+up)[\s.!?,]*(?:kiwi(?:bro)?)?|"
+    r"(?:please\s+)?say\s+(?:hi|hello|hey)(?:\s+in\s+(?:exactly\s+)?(?:one|a)\s+(?:short\s+)?sentence)?)[\s.!?]*$",
     re.I,
 )
 # Over-splitting is safe: a fragment that is not an instruction is glued back on.

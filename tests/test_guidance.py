@@ -20,6 +20,8 @@ def test_each_kind_of_request_gets_its_own_line() -> None:
     assert guidance.select("what is the average of 3, 9 and 12") == ["compute"]
     assert guidance.select("take a screenshot") == ["desktop"]
     assert guidance.select("draw a chart of my spending") == ["visual"]
+    assert "css_hinge" in guidance.select("Make an HTML lid with CSS perspective and a horizontal hinge.")
+    assert "css_hinge" not in guidance.select("Make a diagram of the hinge in this machine.")
     assert guidance.select("what did I tell you last time about my trip") == ["memory"]
     assert guidance.select("what is my dog's name?") == ["about_user"]
     assert guidance.select("where do I live?") == ["about_user"]

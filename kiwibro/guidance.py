@@ -73,6 +73,10 @@ SNIPPETS: dict[str, str] = {
         "chart, diagram or small UI. 3D scenes, 3D objects, particle fields, 3D charts and canvas "
         "animations have kits (component search/use)."
     ),
+    "css_hinge": (
+        "Place the CSS transform origin on the hinge edge. Rotate about X for a horizontal edge and Y for a "
+        "vertical edge. Fit the full scene and controls, including their borders and padding, within the requested viewport."
+    ),
     "attachments": (
         "Attached files: the message starts with a note per file (its workspace path and a description by "
         "a vision model or by code). Treat it as what you see; use the path with your tools for more."
@@ -147,6 +151,8 @@ _VISUAL = re.compile(
     r"flowchart|ui|widget|infographic)\b",
     re.I,
 )
+_CSS_HINGE = re.compile(r"\bhinge(?:d|s)?\b", re.I)
+_SPATIAL_CSS = re.compile(r"\b(?:perspective|transforms?|rotate[xy]|3d)\b", re.I)
 
 
 def select(
@@ -191,6 +197,8 @@ def select(
         keys.add("notes")
     if _VISUAL.search(text):
         keys.add("visual")
+    if re.search(r"\bCSS\b", text, re.I) and _CSS_HINGE.search(text) and _SPATIAL_CSS.search(text):
+        keys.add("css_hinge")
     if not tools:
         keys -= TOOL_SNIPPETS
     return [k for k in SNIPPETS if k in keys]

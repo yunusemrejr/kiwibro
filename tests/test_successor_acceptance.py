@@ -52,7 +52,7 @@ from kiwibro.llm import ChatResult, Completion
 from kiwibro.mind import KIWIMIND
 from kiwibro.mind.native_generic import NATIVE_FORMAT, NATIVE_MODEL, describe_pack
 from kiwibro.mind.pack import CHECK_CACHE, MANIFEST, Pack, PackError
-from scripts.mind.accept_finalist import DIRECT_GPU, PLACEMENT
+from scripts.mind.accept_finalist import DIRECT_GPU, MANAGED_RUNTIME, PLACEMENT
 from test_backend import Env, SSEStream, tool_call_result
 
 PKG = "stack/packages/queue_policy/policy.py"
@@ -115,6 +115,13 @@ def acceptance(
         monkeypatch.setenv("KIWIBRO_OWN_MODELS_ONLY", "1")
         monkeypatch.delenv("KIWIBRO_MODELS_DIR", raising=False)
         monkeypatch.setenv("KIWIBRO_OFFLINE", "1")
+        if runtime_name := os.environ.get(MANAGED_RUNTIME):
+            assert runtime_name in {"b12443-cpu", "b12443-vulkan"}
+            runtime = data_dir / "runtime"
+            runtime.mkdir()
+            server = Path(os.environ["KIWIBRO_LLAMA_SERVER"])
+            (runtime / runtime_name).symlink_to(server.parent, target_is_directory=True)
+            monkeypatch.delenv("KIWIBRO_LLAMA_SERVER")
         server_url = ""
     else:
         address = urlsplit(endpoint)
@@ -305,10 +312,12 @@ def turn(
             if native:
                 stats["native_reply"] = "model" if native_model_reply else "direct_read" if direct_read_reply else None
             if native_log is not None:
+                native_after = native_engine.loaded(NATIVE_MODEL)
                 stats["native_execution"] = {
                     "backend_before": backend_before,
                     "backend_after": managed_backend(env),
-                    "reused": native_before is not None and native_engine.loaded(NATIVE_MODEL) is native_before,
+                    "reused": native_before is not None and native_after is native_before,
+                    "draft_mtp": native_after is not None and "draft-mtp" in native_after.process.args,
                     **native_transitions(native_log.records[start_records:]),
                 }
             observer(stats)

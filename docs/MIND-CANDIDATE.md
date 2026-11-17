@@ -333,7 +333,7 @@ projector and head occupy 6.02 GB. The managed b12443 CPU server can draft
 up to two tokens per step in one slot and verify them with the trunk.
 An adapter that can activate uses ordinary decoding. A draft startup
 failure retries with the same trunk and projector.
-[Measured draft decoding](../scripts/mind/NATIVE_CPU.md#compact-e4b-multi-token-prediction-on-cpu)
+[Verified CPU draft pack](https://huggingface.co/yunusemrejr/kiwimind/tree/bfbcc8ddc1d4902ddd71ee4a6d14b373c76ca31c/variants/e4b-cpu-mtp) · [Measured draft decoding](../scripts/mind/NATIVE_CPU.md#compact-e4b-multi-token-prediction-on-cpu)
 
 ## Verify before changing the local launcher
 

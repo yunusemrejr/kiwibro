@@ -578,3 +578,11 @@ layout when asked for 360 pixels and the hinge origin at the middle of
 the lid. It stopped at the viewport assertion before exercising the
 control.
 [3D app run](https://huggingface.co/yunusemrejr/kiwimind/blob/38b93e244a1a26fb81336b284dfa36208091cff8/variants/e4b-activation-compacted/evals/ryzen-mtp-3d-hatch.json)
+
+The direct-image probe with drafting passed the dashboard acceptance in
+187.85 seconds. Its real Chrome interaction check verified the exact
+initial status and the button's pressed state after activation. The same
+verified pack started with drafting through the normal managed server on
+the laptop. **How it works → Kiwi Mind** displayed the 6.02 GB pack, the
+8,192-wide layers, vision and draft decoding.
+[Passing dashboard probe](https://huggingface.co/yunusemrejr/kiwimind/blob/bfbcc8ddc1d4902ddd71ee4a6d14b373c76ca31c/variants/e4b-cpu-mtp/evals/ryzen-direct-image-mtp.json)

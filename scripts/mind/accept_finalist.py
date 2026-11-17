@@ -33,6 +33,8 @@ JOURNAL = "KIWIBRO_FINALIST_JOURNAL"
 PLACEMENT = "KIWIBRO_ACCEPTANCE_PLACEMENT"
 DIRECT_GPU = {"auto": "auto", "cpu": "off"}
 EXTRACTIVE_HISTORY = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
+DIRECT_IMAGE = "KIWIBRO_NATIVE_DIRECT_IMAGE"
+MANAGED_RUNTIME = "KIWIBRO_ACCEPTANCE_MANAGED_RUNTIME"
 INTERACTION_REPEATS = "KIWIBRO_ACCEPTANCE_INTERACTION_REPEATS"
 REPOSITORY_PROFILE = "KIWIBRO_ACCEPTANCE_REPOSITORY_PROFILE"
 SUPPLEMENT = "tests/test_finalist_acceptance.py"
@@ -224,9 +226,13 @@ def staged_inputs(data: Path, server: Path) -> dict:
     if manifest["format"] != "native-gguf" or manifest["engine"] != "llama":
         raise ValueError("Expected a staged native GGUF pack")
     files = manifest["files"]
-    return {"pack_manifest_sha256": hashlib.sha256(raw).hexdigest(), "context": int(manifest["ctx"]),
-            "model_sha256": files[manifest["model"]]["sha256"], "staged_model_bytes": int(files[manifest["model"]]["bytes"]),
-            "projector_sha256": files[manifest["vision"]["file"]]["sha256"], "server_sha256": sha256(server)}
+    checksums = {"pack_manifest_sha256": hashlib.sha256(raw).hexdigest(), "context": int(manifest["ctx"]),
+                 "model_sha256": files[manifest["model"]]["sha256"],
+                 "staged_model_bytes": int(files[manifest["model"]]["bytes"]),
+                 "projector_sha256": files[manifest["vision"]["file"]]["sha256"], "server_sha256": sha256(server)}
+    if draft := manifest.get("mtp"):
+        checksums["draft_sha256"] = files[draft["file"]]["sha256"]
+    return checksums
 
 
 def cpu_pressure_avg10() -> float | None:
@@ -264,6 +270,10 @@ def run(args, scratch: Path, report: dict) -> None:
         })
         if args.extractive_history:
             environment[EXTRACTIVE_HISTORY] = "1"
+        if args.direct_image:
+            environment[DIRECT_IMAGE] = "1"
+        if args.managed_runtime:
+            environment[MANAGED_RUNTIME] = args.managed_runtime
     if "interaction" in args.case:
         environment[INTERACTION_REPEATS] = str(args.interaction_repeats)
     if "repo" in args.case:
@@ -302,6 +312,10 @@ def main() -> int:
                         help="Use the app's automatic backend selection or force CPU in its isolated settings.")
     parser.add_argument("--extractive-history", action="store_true",
                         help="Enable experimental native extractive history compaction.")
+    parser.add_argument("--direct-image", action="store_true",
+                        help="Test the native direct attachment prompt.")
+    parser.add_argument("--managed-runtime", choices=("b12443-cpu", "b12443-vulkan"),
+                        help="Install the supplied runtime directory into the isolated app's owned runtime tree.")
     parser.add_argument("--case", action="append", choices=CASES)
     parser.add_argument("--interaction-repeats", type=int, default=5, help="Warm interaction rounds (1–20).")
     parser.add_argument("--repository-profile", choices=("full", "auto"), default="full",
@@ -313,8 +327,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.scripted == bool(args.native_data or args.server) or (not args.scripted and not (args.native_data and args.server)):
         parser.error("Use --scripted, or provide both --native-data and --server.")
-    if args.scripted and (args.placement != "auto" or args.extractive_history):
-        parser.error("Backend placement and extractive history only apply to a native run.")
+    if args.scripted and (args.placement != "auto" or args.extractive_history or args.direct_image or args.managed_runtime):
+        parser.error("Backend placement, native prompt and managed runtime options require native data.")
     if not 1000 <= args.history_tokens <= 65536 or min(args.turn_timeout, args.suite_timeout) < 1:
         parser.error("Expected a history budget of 1000–65536 and positive timeouts.")
     if not 1 <= args.interaction_repeats <= 20:
@@ -326,6 +340,7 @@ def main() -> int:
               "cases": args.case, "reasoning": args.reasoning, "history_tokens_target": args.history_tokens,
               "placement": None if args.scripted else args.placement,
               "extractive_history": args.extractive_history,
+              "direct_image": args.direct_image, "managed_runtime": args.managed_runtime,
               "repository_profile": args.repository_profile if "repo" in args.case else None,
               "turn_timeout_s": args.turn_timeout, "suite_timeout_s": args.suite_timeout,
               "suite_timed_out": False, "phases": [], "host": host_info()}
@@ -334,6 +349,8 @@ def main() -> int:
             if args.native_data:
                 if not os.access(args.server, os.X_OK):
                     raise ValueError("The supplied server is not executable")
+                if args.managed_runtime and args.server.name != "llama-server":
+                    raise ValueError("The managed runtime must contain the executable llama-server")
                 result["inputs"] = staged_inputs(args.native_data, args.server)
             with tempfile.TemporaryDirectory(prefix="kiwibro-finalist-") as folder:
                 run(args, Path(folder), result)

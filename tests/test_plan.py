@@ -158,6 +158,8 @@ def test_search_helpers() -> None:
     assert plan.search_terms("fetch_page", {"url": "https://x.org"}) == frozenset()
     assert plan.is_small_talk("hi") and plan.is_small_talk("Thanks a lot!") and not plan.is_small_talk("continue")
     assert not plan.is_small_talk("ok") and not plan.is_small_talk("great")  # often "go ahead"
+    assert plan.is_small_talk("Say hello in exactly one short sentence.")
+    assert not plan.is_small_talk("Say hello, then read README.md.")
 
 
 # --- the agent loop -------------------------------------------------------------------
