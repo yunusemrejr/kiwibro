@@ -7,11 +7,11 @@ from test_backend (no network, temporary data dir).
 from __future__ import annotations
 
 import json
-from typing import Any
+from threading import Event
 
 import pytest
 
-from test_backend import Env, chat_events
+from test_backend import Env, chat_events, collect_sse
 
 from kiwibro.agent import is_small_talk_title
 from kiwibro.llm import ChatResult, LLMError
@@ -61,6 +61,55 @@ def test_retry_after_a_failed_turn_reuses_the_stored_message(env: Env) -> None:
     assert env.svc.db.list_messages(cid)[-1]["content"] == "Here is how PHP closures work."
     retry_request = _request_text(env, 1)
     assert retry_request.count("explain PHP closures") == 1  # the model saw the question once
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "aborted", "code_answer"])
+def test_terminal_chat_frame_follows_cleanup_and_allows_immediate_retry(
+        env: Env, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    agent = env.svc.agent
+    cleanup = agent._cleanup
+    cleaning, release = Event(), Event()
+    first = []
+
+    def hold_first_cleanup(turn):
+        if not first:
+            first.append(turn)
+            cleaning.set()
+            assert release.wait(5)
+        cleanup(turn)
+
+    monkeypatch.setattr(agent, "_cleanup", hold_first_cleanup)
+    env.fake.stream_script = {
+        "success": [ChatResult(content="The first reply.")],
+        "error": [LLMError("stream", "The connection was interrupted.")],
+        "aborted": [("abort_partial",)],
+        "code_answer": [],
+    }[outcome]
+    message = "/goal" if outcome == "code_answer" else "explain PHP closures"
+    response = env.client.post("/api/chat", json={"message": message}, buffered=False)
+    assert response.status_code == 200
+    try:
+        assert cleaning.wait(5)
+        (turn,) = first
+        # The stream is paused at its initial frame. The worker cannot enqueue
+        # the terminal frame while the test holds its cleanup.
+        with turn.queue.mutex:
+            assert all(item[0] not in ("done", "error") for item in turn.queue.queue)
+        busy = env.new_client().post("/api/chat", json={"message": "Next request.", "conversation_id": turn.conversation_id})
+        assert busy.status_code == 409 and busy.get_json()["error"]["code"] == "busy"
+        steer = env.new_client().post("/api/chat/steer", json={"message": "Too late.", "conversation_id": turn.conversation_id})
+        assert steer.status_code == 409 and steer.get_json()["error"]["code"] == "not_busy"
+    finally:
+        release.set()
+    events, _ = collect_sse(response)
+    kind, terminal = events[-1]
+    assert kind == ("error" if outcome == "error" else "done")
+    if kind == "done":
+        assert terminal["aborted"] == (outcome == "aborted")
+    env.fake.stream_script = [ChatResult(content="The next reply.")]
+    events, _ = chat_events(env, "Next request.", conversation_id=turn.conversation_id)
+    assert events[-1][0] == "done"
 
 
 def test_resending_an_unanswered_message_stores_it_once(env: Env) -> None:

@@ -537,7 +537,7 @@ class Turn:
     has_usage: bool = False
     approval_ids: list[str] = field(default_factory=list)
     finished: bool = False
-    done_sent: bool = False
+    terminal: tuple[str, dict[str, Any]] | None = None
     tool_signatures: dict[str, int] = field(default_factory=dict)
     tool_calls_made: int = 0
     failure_streak: int = 0  # consecutive failed tool calls (loop breaker)
@@ -638,6 +638,10 @@ class Turn:
 
     def emit(self, event: str, data: dict[str, Any]) -> None:
         self.queue.put((event, data))
+
+    def finish(self, event: str, data: dict[str, Any]) -> None:
+        """Stage the terminal frame for publication after the chat becomes available."""
+        self.terminal = (event, data)
 
 
 class AgentManager:
@@ -825,7 +829,7 @@ class AgentManager:
                     data = {**data, "text": "".join(texts)}
                 yield self._frame(event, data)
         finally:
-            if not turn.done_sent:
+            if not turn.finished:
                 turn.abort.set()
 
     # --- worker ------------------------------------------------------------
@@ -845,9 +849,13 @@ class AgentManager:
                 log.exception("turn crashed for %s", turn.conversation_id)
                 self._finish_error(turn, "internal", "Something went wrong while generating the reply.")
         finally:
-            self._show_repeats_again(turn)
-            safemode.commit_turn(self.db, turn)
-            self._cleanup(turn)
+            with turn.steering_lock:
+                turn.steering_open = False
+            try:
+                self._show_repeats_again(turn)
+                safemode.commit_turn(self.db, turn)
+            finally:
+                self._cleanup(turn)
 
     def _show_repeats_again(self, turn: Turn) -> None:
         """The answers left out of this turn's new attempt were fine answers to their own questions: the next
@@ -866,16 +874,13 @@ class AgentManager:
         with self._locks_guard:
             self._turns.pop(turn.conversation_id, None)
             lock = self._locks.get(turn.conversation_id)
-        if lock is not None and lock.locked():
-            try:
+            # Keep each chat's lock object so callers that already hold a reference use the same lock.
+            self._turn_activity_at = time.monotonic()
+            turn.finished = True
+            if lock is not None and lock.locked():
                 lock.release()
-            except RuntimeError:  # pragma: no cover - defensive
-                pass
-        # Lock objects are intentionally kept in memory (one per conversation ever
-        # used). Dropping and recreating them could let two turns race on a chat.
-        self._turn_activity_at = time.monotonic()
-        turn.finished = True
-        turn.done_sent = True
+        if turn.terminal is not None:
+            turn.queue.put(turn.terminal)
         turn.queue.put(None)
 
     def _execute(self, turn: Turn) -> None:
@@ -1258,11 +1263,10 @@ class AgentManager:
         self._report_nothing_done(turn, model)
         self._goal_line(turn, model)
 
-        # Final answer phase. Title is deterministic-first so `done` stays fast; memory
-        # extraction runs in a daemon thread after `done` (the stream closes immediately,
-        # the UI refreshes its memory count from /api/bootstrap or /api/memories later).
+        # Title is deterministic so the terminal frame stays fast. Memory extraction
+        # waits in the background for the chat to finish and the engine to be idle.
         self._raise_if_aborted(turn)
-        self._show_repeats_again(turn)  # before "done": the next message may follow at once
+        self._show_repeats_again(turn)
         late = self._drain_steering(turn, last=True)
         for _ in range(LATE_NOTE_PASSES):  # notes that arrived after the last reply had read the chat
             if not late:
@@ -1273,8 +1277,7 @@ class AgentManager:
         self._insert_usage(turn, model)
         if turn.inference.get("said_by_kiwibro") != "read_file" or turn.steering_received:
             self._start_memory_extraction(turn.conversation_id, model)
-        safemode.commit_turn(self.db, turn)  # recorded before "done", so a review right after sees the step
-        turn.emit(
+        turn.finish(
             "done",
             {
                 "message_id": turn.last_message_id or turn.user_message_id,
@@ -1338,7 +1341,7 @@ class AgentManager:
         turn.reply_text = text
         turn.inference["said_by_kiwibro"] = "goal"
         turn.emit("delta", {"text": text})
-        turn.emit("done", {
+        turn.finish("done", {
             "message_id": reply["id"], "aborted": False, "model": model, "usage": self._usage_payload(turn),
             "stats": {"tool_calls": 0, "tool_rounds": 0,
                       "duration_ms": int((time.monotonic() - turn.started_at) * 1000)},
@@ -1604,7 +1607,7 @@ class AgentManager:
         turn.reply_text = text
         turn.inference["english_only"] = found.code
         turn.emit("delta", {"text": text})
-        turn.emit("done", {
+        turn.finish("done", {
             "message_id": reply["id"], "aborted": False, "model": model, "usage": self._usage_payload(turn),
             "stats": {"tool_calls": 0, "tool_rounds": 0,
                       "duration_ms": int((time.monotonic() - turn.started_at) * 1000)},
@@ -4682,7 +4685,7 @@ class AgentManager:
                 )
                 turn.last_message_id = message["id"]
             self._insert_usage(turn, turn.model or "")
-            turn.emit(
+            turn.finish(
                 "done",
                 {
                     "message_id": turn.last_message_id or turn.user_message_id,
@@ -4708,7 +4711,7 @@ class AgentManager:
                 turn.last_message_id = saved["id"]
             self._insert_usage(turn, turn.model or "")
             recoverable = code in ("connection", "timeout", "stream", "server", "no_model")
-            turn.emit(
+            turn.finish(
                 "error",
                 {"message": message, "code": code, "recoverable": recoverable},
             )
