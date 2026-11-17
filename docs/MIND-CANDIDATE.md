@@ -342,6 +342,27 @@ lets one validated uploaded image travel with the current user request.
 The app reserves room for the image and keeps it attached during tool rounds
 and context retries. The stored chat keeps the attachment path.
 
+### Hinge training examples
+
+The hinge shard contains 20 first-write tool trajectories and eight held-out
+requests from separate mechanism families. It covers all four hinge edges.
+Chrome checks the hinge anchors, moving edge, controls and layout at 360 and
+800 pixels. Prepare and verify the authored files before fitting.
+
+```bash
+python3 -m scripts.mind.hinge_shard prepare /path/to/hinge-data
+python3 -m scripts.mind.hinge_shard verify /path/to/hinge-data
+```
+
+The compactor can rebuild the same tensor slices from the archived channel
+receipt and the pinned source checkpoint using `--channel-selection`.
+Keep the held-out requests separate from the fit mixture.
+
+A Colab L4 fit used the 20 hinge episodes and 12 earlier text, tool and image
+episodes. It completed 48 rank-8 LoRA steps. The exported F16 adapter is
+29,573,024 bytes and binds to the original compact trunk. Its behavior is
+checked on independently held-out scenes and the earlier workflow replay.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
