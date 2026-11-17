@@ -218,6 +218,27 @@ from 1.61 to 2.08 seconds. These arms applied the requested scale to every
 probe. Automatic routing still needs whole-repository validation on the laptop.
 [Published adapter and classifier artifacts](https://huggingface.co/yunusemrejr/kiwimind/tree/392fb41cd581b08520c65f047d28e269c28d0e8e/experiments)
 
+### Visual and 3D task adapter
+
+A second rank-16 adapter trained for 96 steps on a Colab L4 from the merged
+300-step checkpoint. The fit used two original episodes per family at seed
+`6113`, the 20 reasoning episodes, and the 16 Chrome-checked interactive
+episodes. Place the image files beside the resulting JSONL under `images/`.
+The 64-row mixture has SHA-256
+`23e8de5032b87bd5537a8c47d6cf3a363cb61d92d61d32001de83a0b6f8ee20c`.
+
+```bash
+python3 -m scripts.mind.fit_gemma4 mixed-merged corpus/visual-mixed-train.jsonl visual-adapter \
+  --mode l4-lora --steps 96 --per-family 96 --max-tokens 3072 --seed 6119 --lr 2e-5
+python3 llama.cpp/convert_lora_to_gguf.py --base mixed-merged --outtype f16 \
+  --outfile kiwi-visual-lora-f16.gguf visual-adapter
+```
+
+The export trained on dashboard startup and repair, exact live status and
+keyboard focus, mobile rendering, and fixed-base 3D mechanisms. It has SHA-256
+`f15389b8f7c39e98c53d9652f882b2e6251303a0e635ef1505629aa67957a993`.
+The repository and visual adapters attach independently to the 300-step trunk.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
