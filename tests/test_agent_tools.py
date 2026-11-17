@@ -82,6 +82,12 @@ def test_validation_rejects_bad_args():
     assert ok["action"] == "add" and ok["priority"] == "high"
 
 
+def test_model_requested_page_look_validates_its_path():
+    assert tools.validate_args("look_at_page", {"path": "handoff.html"}) == {"path": "handoff.html"}
+    with pytest.raises(ValueError, match="path must be a string"):
+        tools.validate_args("look_at_page", {"path": ["handoff.html"]})
+
+
 # --- codebase ---------------------------------------------------------------------
 
 

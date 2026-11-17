@@ -1199,7 +1199,7 @@ def validate_args(name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
             "context_lines": _as_int(args.get("context_lines"), "context_lines", 0, 0, 3),
             "max_results": _as_int(args.get("max_results"), "max_results", 50, 1, 100),
         }
-    if name == "file_outline":
+    if name in ("file_outline", "look_at_page"):
         return {"path": _as_str(args.get("path"), "path")}
     if name == "write_file":
         return {
