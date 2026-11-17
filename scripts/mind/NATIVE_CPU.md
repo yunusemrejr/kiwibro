@@ -468,3 +468,13 @@ varied within and between the stock and compact runs.
 | Short reply | 6.76 / 7.00 s | 8.90 / 9.60 s |
 | Exact field from a local file | 41 / 45 ms | 42 / 46 ms |
 | HTML edit and verified phone render | 42.91 / 104.96 s | 42.91 / 104.96 s |
+
+The 112-step merged pack failed its five deeper app scenarios. Repository
+diagnosis read both consumers and stopped before opening their shared
+implementation. The history scenario timed out on its opening turn, before
+the long history was seeded. The model found and analyzed the recovered
+table, and its final answer missed the required result. The dashboard
+produced a real Chrome render at 174.65 seconds and timed out. Its saved
+HTML contained the queue name and build code. An independent 360-pixel
+test also found that the page missed the exact initial status. The 3D
+hatch timed out without a saved file.
