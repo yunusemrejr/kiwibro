@@ -298,6 +298,7 @@ b12443 CUDA, one 24,576-token slot and the same projector in all arms.
 The Off arm gained one browser, one native-code and one architecture case
 and lost one research case. These are GPU next-action checks. The compact
 pack remains experimental while the laptop workflow checks continue.
+[Verified E4B pack](https://huggingface.co/yunusemrejr/kiwimind/tree/0f67f744e973c3992c17dc13106becbcb49e16b3/candidate) · [Model card and raw comparison](https://huggingface.co/yunusemrejr/kiwimind/blob/3cda458fa8720d0f9d9e50c41dbe3bde3c259aea/README.md)
 
 ## Verify before changing the local launcher
 
