@@ -411,3 +411,22 @@ caption stayed at scale zero while the user's HTML request used scale 0.8.
 That attempt also timed out after trying to read the absent destination.
 The 3D hatch took 285.94 seconds to produce a Chrome render at scale 0.8
 and timed out before independent interaction verification.
+
+## Gemma 4 E4B control
+
+The upstream E4B Q4_K_M trunk and F16 projector together occupy 6.33 GB.
+The unmodified control used the managed b12443 engine with one 8,192-token
+slot, six CPU threads and reasoning Off. It passed three warm repetitions
+per operation. Peak native RSS was 7.72 GiB and sampled native swap was zero.
+[Pinned upstream E4B GGUF and projector](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/tree/fbc327a2e009dc5fbb127ae5461459d2d7d2a7a9)
+
+| Operation | First text p50 / p90 | Completion p50 / p90 |
+| --- | ---: | ---: |
+| Short reply | 11.32 / 15.34 s | 12.68 / 18.75 s |
+| Exact field from a local file | 35 / 36 ms | 35 / 36 ms |
+| HTML edit and verified phone render | 73.95 / 113.37 s | 73.95 / 113.37 s |
+
+The file read used the checked application path. The rendered cases ran
+native generation, performed the edit and returned a real Chrome result.
+CPU pressure `some avg10` was 49.26% at start and 23.22% at finish. These
+figures describe that app run under desktop load.
