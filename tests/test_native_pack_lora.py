@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiwibro.agent import AgentManager, Turn
 from kiwibro.engine import DirectEngine, EngineError, Runtime
-from kiwibro.llm import ADAPTERS_OFF, LLMClient
+from kiwibro.llm import ADAPTERS_OFF, ADAPTER_TASK, LLMClient
 from kiwibro.mind import KIWIMIND
 from kiwibro.mind.native_generic import NATIVE_MODEL, describe_pack
 from kiwibro.mind.pack import MANIFEST, TRUNK3, Pack, PackError
@@ -79,6 +80,20 @@ def test_candidate_status_exposes_only_checked_task_adapter_details(adapter_pack
     adapter_pack.path(ADAPTER_FILE).write_bytes(b"broken")
     status = mind.describe()
     assert not status["usable"] and "task_adapter" not in status
+
+
+@pytest.mark.parametrize(("request_text", "caption", "expected"), [
+    ("Read the attached dashboard and save handoff.html", "The header says Ready.", "code"),
+    ("Describe the screenshot.", "The window contains code for index.html.", ""),
+])
+def test_native_task_routing_reads_the_request_ahead_of_the_attachment_note(request_text, caption, expected):
+    agent = SimpleNamespace(llm=SimpleNamespace(has_adapters=lambda model: True))
+    turn = Turn("chat", request_text, KIWIMIND, attachments=["screenshot.png"])
+    prepared = SimpleNamespace(model_info={"engine": "native-gguf"}, messages=[
+        {"role": "user", "content": f"{caption}\n\n{request_text}"},
+        {"role": "assistant", "content": ""},
+    ])
+    assert AgentManager._adapter_extra(agent, turn, KIWIMIND, prepared) == {ADAPTER_TASK: expected}
 
 
 @pytest.mark.parametrize(("edit", "message"), [

@@ -3412,7 +3412,13 @@ class AgentManager:
         if turn.adapter_task is None:
             if not self.llm.has_adapters(model):
                 return {}  # none loaded with this model (or it is still starting): nothing to pin
-            turn.adapter_task = adapters.task_of(prepared.messages)
+            messages = prepared.messages
+            if turn.attachments and _native_mind(model, prepared.model_info):
+                # Native attachment notes precede the request. Classify the user's own text.
+                latest_user = next((index for index in range(len(messages) - 1, -1, -1)
+                                    if messages[index].get("role") == "user"), len(messages))
+                messages = [*messages[:latest_user], {"role": "user", "content": turn.message}]
+            turn.adapter_task = adapters.task_of(messages)
         return {ADAPTER_TASK: turn.adapter_task}
 
     def _try_without_adapters(self, turn: Turn, model: str, prepared: PreparedContext) -> bool:
