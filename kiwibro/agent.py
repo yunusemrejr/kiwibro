@@ -379,7 +379,8 @@ _RENDER_REQUEST = re.compile(
     r"render\s+of\s+the\s+(?:page|file)|saved\s+page\s+(?:(?:using|with)\s+`?look_at_page|in\s+the\s+browser))\b)",
     re.I,
 )
-_PAGE_CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
+_CODE_FENCES = re.compile(r"```.*?(?:```|\Z)", re.S)
+_COMMAND_CWD = re.compile(r"in[ \t]+(.+)|with[ \t]+(.+)[ \t]+as[ \t]+the[ \t]+working[ \t]+directory", re.I)
 _RENDER_REFUSAL = re.compile(
     r"\b(?:do not|don['’]t|never|skip|without)\b[^.!?;\n]{0,80}\b(?:check\w*|verif\w*|inspect\w*|"
     r"look\s+at|render\w*|preview\w*|look_at_page)\b", re.I,
@@ -407,6 +408,30 @@ def _literal_read_value(result: ToolResult, field: str, path: str) -> str | None
     if found is not None and found["label"].lower().split() == field.lower().split():
         return found["value"]
     return None
+
+
+def _command_directories(message: str, command: str) -> list[str | None]:
+    """Find directory clauses attached to a literal `Run <command>` instruction."""
+    literal = re.escape(command)
+    pattern = re.compile(
+        rf"(?:^|\r?\n|(?<=[.!?])[ \t]+)[ \t]*(?:(?:\d{{1,2}}[.)]|[-*])[ \t]+)?"
+        rf"(?i:(?:(?:please|then)[ \t]+)*run)[ \t]+"
+        rf"(?:`{literal}`|{literal})(?P<tail>[ \t]+[^\r\n]*?)?(?=\r?\n|[.!?](?:\s|\Z)|\Z)"
+    )
+    directories = []
+    visible = _CODE_FENCES.sub("", message)
+    for match in pattern.finditer(visible):
+        suffix = match["tail"] or ""
+        tail = suffix.strip()
+        folder = _COMMAND_CWD.fullmatch(tail)
+        if folder:
+            directories.append(folder[1] or folder[2])
+        elif tail.lower() == "in":
+            explicit_root = suffix[-1:].isspace() and visible[match.end():].startswith(".")
+            directories.append("." if explicit_root else "")
+        elif not tail:
+            directories.append(None)  # a second, unscoped run makes the omitted cwd ambiguous
+    return directories
 
 
 def _file_stamps(workspace: Workspace, paths: list[str]) -> tuple[tuple[Path, int, int, int, int, int], ...]:
@@ -960,7 +985,7 @@ class AgentManager:
             )
             self._raise_if_aborted(turn)
 
-        render_requested = _RENDER_REQUEST.search(_PAGE_CODE_BLOCK.sub("", turn.message))
+        render_requested = _RENDER_REQUEST.search(_CODE_FENCES.sub("", turn.message))
         for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
             if round_index > 0:
@@ -1305,7 +1330,7 @@ class AgentManager:
         if page is None:
             stuck = pages.unfinished() if message is not None else None
             if stuck is not None:  # the problems were named and nothing was changed: more looks would say the same
-                if native and _RENDER_REQUEST.search(_PAGE_CODE_BLOCK.sub("", turn.message)) and (
+                if native and _RENDER_REQUEST.search(_CODE_FENCES.sub("", turn.message)) and (
                     _PAGE_REPLY_REQUEST.search(turn.message) or (turn.plan is not None and turn.plan.remaining())
                 ):
                     if not stuck.said:
@@ -3757,6 +3782,11 @@ class AgentManager:
         def run_one(item: dict[str, Any]) -> tuple[ToolResult, int]:
             started = time.monotonic()
             name, args = item["name"], item["args"]
+            if item.get("cwd_from_request"):
+                try:
+                    self._check_command_directory(turn, self._workspace(turn.conversation_id), Path(args["cwd"]))
+                except ValueError as exc:
+                    return ToolResult(ok=False, content=str(exc), preview="Working directory changed"), 0
             context = ToolContext(
                 workspace=item["workspace"] or self._workspace(turn.conversation_id),
                 memory=self.memory,
@@ -4054,6 +4084,45 @@ class AgentManager:
         if changed:
             item["notes"] = [*item["notes"], f"searched for \"{fixed}\" so the query names its subject"]
 
+    @staticmethod
+    def _check_command_directory(turn: Turn, workspace: Workspace, relative: Path) -> None:
+        if turn.steering_received:
+            raise ValueError("The request changed. Give run_command an explicit cwd.")
+        try:
+            root = workspace.root
+            if str(root) != turn.safety.get("workspace"):
+                raise ValueError("The workspace changed. Give run_command an explicit cwd.")
+            directory = workspace.resolve(relative, must_exist=True)
+            if directory == root / relative and directory.is_dir():
+                return
+        except (SandboxError, OSError, RuntimeError):
+            pass
+        raise ValueError("The named working directory must be an existing folder inside this workspace.")
+
+    def _requested_command_cwd(self, turn: Turn, args: dict[str, Any]) -> str | None:
+        command = args.get("command")
+        if ("cwd" in args or not isinstance(command, str) or not 0 < len(command) <= 4000
+                or command != command.strip() or any(char in command for char in "\r\n`")):
+            return None
+        directories = _command_directories(turn.message, command)
+        if all(directory is None for directory in directories):
+            return None
+        relative_paths = set()
+        for directory in directories:
+            source = (directory or "").strip()
+            quoted = len(source) >= 2 and source[0] in ("`", "'", '"') and source[-1] == source[0]
+            value = source[1:-1] if quoted else source
+            path = Path(value)
+            if (not re.fullmatch(r"[A-Za-z0-9_./ -]+" if quoted else r"[A-Za-z0-9_./-]+", value)
+                    or value != value.strip() or path.is_absolute() or ".." in path.parts):
+                raise ValueError("The command's working directory is ambiguous or outside the workspace. Specify cwd.")
+            relative_paths.add(path)
+        if len(relative_paths) != 1:
+            raise ValueError("The request names more than one working directory for this command. Specify cwd.")
+        relative, = relative_paths
+        self._check_command_directory(turn, self._workspace(turn.conversation_id), relative)
+        return relative.as_posix()
+
     def _prepare_tool_call(
         self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False, native: bool = False,
         automatic_workspace: Path | None = None,
@@ -4112,7 +4181,12 @@ class AgentManager:
         try:
             if rescued.error or spec is None:
                 raise ValueError(rescued.error or f"unknown tool: {name}")
-            item["args"] = tools.validate_args(name, rescued.args)
+            if native and name == "run_command" and not cut_off and not rescued.damaged:
+                cwd = self._requested_command_cwd(turn, rescued.args)
+                if cwd is not None:
+                    item["args"] = {**rescued.args, "cwd": cwd}
+                    item["cwd_from_request"] = True
+            item["args"] = tools.validate_args(name, item["args"])
             self._anchor_searches(turn, item)
         except ValueError as exc:
             if cut_off and spec is not None and spec.risk in ("write", "exec") and not (turn.text_calls and not rescued.damaged):
@@ -4144,6 +4218,12 @@ class AgentManager:
         if pacing:
             return refuse_shown(pacing, pacing.split(":")[0], spec.risk)
         workspace, state = self._workspace(turn.conversation_id), turn.safety
+        if item.get("cwd_from_request"):
+            try:
+                self._check_command_directory(turn, workspace, Path(item["args"]["cwd"]))
+            except ValueError as exc:
+                return refuse_shown(str(exc), "Working directory changed", spec.risk)
+            workspace = Workspace(workspace.root)
         if automatic_workspace is not None and workspace.root != automatic_workspace:
             return refuse_shown("The workspace changed before the automatic check.", "Workspace changed", spec.risk)
         if automatic_workspace is not None and turn.steering_received:
