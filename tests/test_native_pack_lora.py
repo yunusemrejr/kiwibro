@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from types import SimpleNamespace
@@ -125,6 +126,48 @@ def test_managed_server_uses_only_pack_adapter_and_retries_trunk(adapter_pack, t
         assert engine.adapters_for(model) == ()
     finally:
         engine.shutdown()
+
+
+@pytest.mark.parametrize(("subdir", "flags", "enabled"), [
+    ("candidate", {"--lora-scaled"}, True),
+    ('with,"punctuation"', {"--lora-scaled"}, True),
+    ("with:colon", {"--lora-scaled"}, False),
+    ("candidate", {"--lora", "--lora-init-without-apply"}, False),
+    ("candidate", set(), False),
+], ids=["global-zero", "csv-path", "colon-path", "legacy-flags", "unknown-flags"])
+def test_managed_launch_exposes_only_adapters_loaded_at_global_zero(
+    adapter_pack, tmp_path, monkeypatch, subdir, flags, enabled,
+):
+    pack = Pack(tmp_path, subdir=subdir)
+    if pack.dir != adapter_pack.dir:
+        adapter_pack.dir.rename(pack.dir)
+    model = describe_pack(pack).model
+    engine = DirectEngine(lambda: {"direct_threads": 2}, tmp_path)
+    runtime = Runtime("/unused/llama-server", "b12443", "cpu", "custom")
+    engine._flags[runtime.path] = frozenset(flags)
+    process = SimpleNamespace(pid=1)
+    launches = []
+
+    def popen(args, **_kwargs):
+        launches.append(args)
+        return process
+
+    monkeypatch.setattr("kiwibro.engine.gpu_devices", lambda _runtime: [])
+    monkeypatch.setattr("kiwibro.engine._SPAWNER", SimpleNamespace(run=lambda spawn: spawn()))
+    monkeypatch.setattr("kiwibro.engine.subprocess.Popen", popen)
+    monkeypatch.setattr(engine, "_write_pid", lambda _server: None)
+    monkeypatch.setattr(engine, "_wait_ready", lambda _server: None)
+    server = engine._launch(runtime, model, 8192, 1, loras=model.pack_adapters)
+
+    (args,) = launches
+    assert "--lora" not in args and "--lora-init-without-apply" not in args
+    if enabled:
+        field = args[args.index("--lora-scaled") + 1]
+        assert next(csv.reader([field])) == [f"{pack.path(ADAPTER_FILE)}:0"]
+        assert server.adapters == model.pack_adapters
+    else:
+        assert "--lora-scaled" not in args
+        assert server.adapters == ()
 
 
 def test_public_native_alias_routes_adapter_and_keeps_utility_requests_unadapted(adapter_pack, tmp_path, monkeypatch):

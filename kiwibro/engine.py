@@ -628,7 +628,7 @@ class Server:
     threads: int
     log_path: str
     gpu: str = ""  # the GPU it offloads to ("" on the CPU)
-    adapters: tuple[Any, ...] = ()  # LoRA adapters loaded with it, in --lora order (request ids)
+    adapters: tuple[Any, ...] = ()  # LoRA adapters in launch order (request ids)
     started_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.monotonic)
     in_flight: int = 0
@@ -669,7 +669,12 @@ def _runtime_env(runtime: Runtime) -> dict[str, str]:
     return env
 
 
-def lora_capable(flags: frozenset[str]) -> bool:
+def _can_load_loras(flags: frozenset[str], model: LocalModel, adapters: tuple[Any, ...]) -> bool:
+    if not adapters or model.embeddings:
+        return False
+    if model.source == SOURCE_MIND:
+        # The scaled argument splits the decoded CSV field at every colon.
+        return "--lora-scaled" in flags and all(":" not in adapter.path for adapter in adapters)
     return not flags or {"--lora", "--lora-init-without-apply"} <= flags
 
 
@@ -707,11 +712,18 @@ def server_args(
         args += ["--sleep-idle-seconds", str(idle_sleep_s)]
     if model.embeddings:
         return args + ["--embeddings", "--parallel", "1"]
-    if adapters and lora_capable(flags):
-        # Loaded at scale 0; each request then says which one is on (adapters.py).
-        for adapter in adapters:
-            args += ["--lora", adapter.path]
-        args.append("--lora-init-without-apply")
+    if _can_load_loras(flags, model, adapters):
+        if model.source == SOURCE_MIND:
+            # Requests without a lora field use the server's global scales.
+            for adapter in adapters:
+                path_scale = f"{adapter.path}:0"
+                if ',' in path_scale or '"' in path_scale:
+                    path_scale = '"' + path_scale.replace('"', '""') + '"'
+                args += ["--lora-scaled", path_scale]
+        else:
+            for adapter in adapters:
+                args += ["--lora", adapter.path]
+            args.append("--lora-init-without-apply")
     args += ["--parallel", str(parallel)]
     if has("--kv-unified") and parallel > 1:
         args.append("--kv-unified")  # one KV pool: a long chat may use most of the window
@@ -1101,13 +1113,14 @@ class DirectEngine:
         port = _free_port()
         devices = gpu_devices(runtime)
         offload = self._gpu_on() and model.id not in self._unavailable_gpu if devices else None
+        flags = self._flags[runtime.path]
+        if not _can_load_loras(flags, model, loras):
+            loras = ()
         args = server_args(
-            runtime, self._flags[runtime.path], model, port=port, api_key=self.api_key,
+            runtime, flags, model, port=port, api_key=self.api_key,
             context_length=context_length, parallel=parallel, threads=threads, cache_ram_mb=self._cache_ram_mb(),
             speculative=speculative, offload=offload, adapters=loras, idle_sleep_s=idle_sleep_seconds(),
         )
-        if not lora_capable(self._flags[runtime.path]):
-            loras = ()
         log_path = self._log_path(model)
         gpu = devices[0].name if offload else ""
         log.info("direct engine: starting %s (%s, ctx %d, %d slots, %d threads%s)",
