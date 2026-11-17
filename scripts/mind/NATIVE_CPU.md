@@ -502,9 +502,27 @@ with tools. The repository run started before automatic reads of verified
 shared Python imports were added. These results keep the pack experimental.
 [Ryzen acceptance report](https://huggingface.co/yunusemrejr/kiwimind/blob/7f744fc9a57a60cf133a82ababa783ae6927535a/variants/e4b-activation-compacted/evals/ryzen-deep-app-cpu.json)
 
+The repository rerun with shared-source reads opened the expected file and
+reported its exact path in 72.24 seconds. The follow-up changed only that
+file and all four independent fixture tests passed. Git HEAD and the index
+were preserved. The app acceptance still failed because the model appended
+the folder to its shell command. All three attempts were stopped before
+execution. The `run_command` schema now shows separate command and working
+directory fields.
+[Repository rerun](https://huggingface.co/yunusemrejr/kiwimind/blob/b9c5febd84c5c8af7b4493aebbfe34ef08a7bd31/variants/e4b-activation-compacted/evals/ryzen-repo-shared-source.json)
+
+An isolated direct-image probe sent the screenshot with the model's tool
+catalog and skipped the initial caption. It produced a 360-pixel render
+with the exact queue, build code and initial status in 275.85 seconds.
+The independent interaction check found that the generated page omitted
+the requested `state` element ID. This probe used a temporary attachment
+path through the app and did not enable a new default.
+[Direct-image probe](https://huggingface.co/yunusemrejr/kiwimind/blob/f4e91b8c33fc2c6e1917dcc6c8b5d428dae0e664/variants/e4b-activation-compacted/evals/ryzen-direct-image-probe.json)
+
 The pinned `llama-bench` used one warmed model, 256 tokens of context
 before decoding and 12 measured output tokens per arm. In run order, six
 workers reached 3.05 tokens/s, four reached 4.35 and 4.45 tokens/s, and six
 reached 4.04 tokens/s. CPU pressure `some avg10` varied from 7.2% to 19.2%.
 This short synthetic run exercises decode. Application latency and quality
 need their own comparison before changing the managed thread count.
+[Decode benchmark](https://huggingface.co/yunusemrejr/kiwimind/blob/f4e91b8c33fc2c6e1917dcc6c8b5d428dae0e664/variants/e4b-activation-compacted/evals/ryzen-decode-threads.json)
