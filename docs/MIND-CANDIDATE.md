@@ -16,6 +16,14 @@ the authenticated local engine. A chat marked Private skips memory capture and e
 
 ## Stage and run an isolated candidate
 
+The verified 6.02 GB candidate is available from the model repository's main
+branch under `candidate/`. A KiwiBro build with candidate support can fetch it
+through `POST /api/mind/download?target=candidate`. This installs the files in
+the candidate directory. Start KiwiBro with `KIWIMIND_CANDIDATE=1` to select
+that pack. Multi-token prediction requires a supported managed llama.cpp
+runtime.
+[Published candidate pack](https://huggingface.co/yunusemrejr/kiwimind/tree/ec1aeaa8ecc42a404e9eab94bb32c90b8196c62c/candidate)
+
 Use a llama.cpp build that supports the candidate GGUF architecture and its native chat
 template. Choose a GGUF and its matching projector from the same candidate build. Record
 their source revision and check their SHA-256 values against the artifact publisher's
