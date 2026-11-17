@@ -252,6 +252,36 @@ architecture observation regressed. The visual adapter remains experimental.
 
 [Visual adapter, training receipt, and paired replay](https://huggingface.co/yunusemrejr/kiwimind/tree/b2791d427512803e58ff9c07e186865d1bde41ee/experiments/visual-lora)
 
+### Dense Gemma 4 E4B experiment
+
+The E4B experiment retains the 42-layer decoder, 2,560-wide hidden stream,
+per-layer embeddings, shared attention keys and values, tokenizer and
+matching vision projector. The Colab L4 calibration gathered feed-forward
+activations from eight text, eight tool-use, and eight image episodes.
+Within each layer, the retained channels determine the gate and up rows
+and the down columns. This changes the width from
+10,240 to 8,192 and removes 660,602,880 weights from the dense layers.
+
+Colab completed 112 assistant-only rank-8 training steps on the compact
+checkpoint, with 18 text, 62 tool, and 32 image targets. These accounted for
+6,931 supervised tokens. The training receipt is tied to the 582-episode
+mixture `9d7a45b1e2a4e860375f50ef1b825075fc9e54c31fb6221816ccd23a9f64d117`.
+The four commands below run with Transformers `5.23.0` and PEFT `0.21.3`
+on Colab. The source directory is the pinned E4B snapshot directory under
+`snapshots/4ecc2ba63bcac23ba4a767fc87025b1450f84c9c`. Use an environment
+without the incompatible optional torchao `0.10.0` package.
+
+```bash
+python3 -m scripts.mind.recover_e4b calibrate "$e4b_source" "$e4b_train" calibration
+python3 -m scripts.mind.compact_e4b "$e4b_source" compact-e4b \
+  --base-revision 4ecc2ba63bcac23ba4a767fc87025b1450f84c9c \
+  --activation-scores calibration/scores.npy
+python3 -m scripts.mind.recover_e4b fit compact-e4b "$e4b_train" e4b-adapter --steps 112
+python3 -m scripts.mind.recover_e4b merge compact-e4b e4b-adapter merged-e4b
+```
+
+[Pinned E4B base checkpoint](https://huggingface.co/google/gemma-4-E4B-it/tree/4ecc2ba63bcac23ba4a767fc87025b1450f84c9c)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
