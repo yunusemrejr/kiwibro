@@ -5,7 +5,6 @@ import os
 
 import pytest
 
-from kiwibro import pagecheck
 from kiwibro.llm import ChatResult
 from scripts.mind.accept_finalist import INTERACTION_REPEATS, interaction_summary
 from test_successor_acceptance import acceptance, call, offline_chrome, turn, verified_native_pack, write  # noqa: F401
@@ -23,7 +22,7 @@ def measured(record_property, step, repeat):
 
 
 @pytest.mark.skipif(not os.environ.get(INTERACTION_REPEATS), reason="Select --case interaction in accept_finalist.")
-def test_warm_app_interaction(acceptance, offline_chrome, record_property):
+def test_warm_app_interaction(acceptance, offline_chrome, record_property):  # noqa: F811
     repeats = int(os.environ[INTERACTION_REPEATS])
     assert 1 <= repeats <= 20
     env = acceptance

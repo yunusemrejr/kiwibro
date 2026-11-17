@@ -347,7 +347,7 @@ _NATIVE_TEXT = frozenset({
 })
 _NATIVE_READ = re.compile(
     r"""^read\s+(?:(?:the\s+)?file\s+)?(?P<path>\x60[^\x60\n]+\x60|"[^"\n]+"|'[^'\n]+'|[^\s,;]+?)"""
-    r"(?:\s+with\s+(?:the\s+)?(?:file-reading tool|read_file))?"
+    r"(?:\s+with\s+(?:the\s+)?(?:file[- ]reading tool|read_file))?"
     r"(?:\.\s+reply\s+with\s+[^.,;!?\n]+)?[.!?]?$", re.I,
 )
 _RENDER_REQUEST = re.compile(

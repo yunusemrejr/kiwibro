@@ -143,6 +143,9 @@ def test_native_auto_scopes_only_clear_local_text_reads(env: Env) -> None:
     hello = Turn("c", "Hello!", KIWIMIND)
     assert agent._tool_list(KIWIMIND, settings, INFO, turn=hello) is None
     assert agent._tool_list(KIWIMIND, settings, INFO, turn=Turn("c", READ_REQUEST, KIWIMIND))
+    spoken = Turn("c", "Read release.txt with the file reading tool. Reply with the exact marker.", KIWIMIND)
+    spoken.plan = plan.build(spoken.message, env.workspace)
+    assert tool_names(agent._tool_list(KIWIMIND, settings, INFO, turn=spoken)) == ["read_file"]
 
 
 def test_profiles_permissions_and_native_schema_budget(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
