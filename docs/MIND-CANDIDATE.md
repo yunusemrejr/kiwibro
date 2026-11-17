@@ -308,6 +308,12 @@ because all 16 eligible calibration cases already passed with the E4B
 export. The other eight cases were abstention controls.
 [Workflow classifier and recovery receipt](https://huggingface.co/yunusemrejr/kiwimind/tree/346732571e2df99adb664a21cc71d91d9c317f51/experiments/e4b-classifiers)
 
+The same activated-channel checkpoint before the 112-step fit scored 7/26
+with reasoning Off and 8/26 with reasoning On in the matched Colab replay.
+This comparison keeps the same expert-free 8,192-wide dense layers and
+isolates the effect of fitting and merging. A separate 29.6 MB F16 LoRA
+export binds to that exact compact trunk for request-level evaluation.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
