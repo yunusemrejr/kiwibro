@@ -614,3 +614,10 @@ and finished in 15.87 seconds with reasoning On. An earlier app build used
 reasoning Off. The input-token counts show the effect of the narrower
 greeting route. The trials used different reasoning settings.
 [GPU Auto smoke test](https://huggingface.co/yunusemrejr/kiwimind/blob/c3ca9938dd0346231076f908628eacf792c194c9/variants/e4b-cpu-mtp/evals/ryzen-auto-greeting.json)
+
+With GPU Auto and reasoning On, the extended 3D run rendered at 299.71
+seconds and reached its 480-second deadline. Independent Chrome inspection
+confirmed the 360-pixel layout and closed state. The lid's transform origin
+was 179 pixels from the top of the 358-pixel lid. The check stopped at
+the hinge assertion before operating the button.
+[GPU Auto 3D report](https://huggingface.co/yunusemrejr/kiwimind/blob/a83ae81bb1fd71f5e88b44381dbdb288c13468cb/variants/e4b-cpu-mtp/evals/ryzen-auto-hatch-reasoning-on.json)
