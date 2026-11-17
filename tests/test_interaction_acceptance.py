@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiwibro.agent import Turn
 from kiwibro.llm import ChatResult
 from scripts.mind.accept_finalist import INTERACTION_REPEATS, JOURNAL, append_journal, collect_journal, interaction_summary
 from test_native_literal_read import native_read  # noqa: F401 - scripted native model identity
@@ -140,9 +139,10 @@ def test_interaction_exact_read_requires_direct_reply_evidence(env, native_read,
     fake = env.fake
     monkeypatch.setattr(env, "fake", None)
     monkeypatch.setenv(NATIVE_DATA, str(env.workspace))
-    original_emit = Turn.emit
+    agent = env.svc.agent
+    original_frame = agent._frame
 
-    def emit(self, event, data):
+    def frame(event, data):
         if event == "done" and altered_evidence == "usage":
             data = {**data, "usage": {"completion_tokens": 1}}
         if event == "done" and altered_evidence == "wrong_model":
@@ -151,9 +151,9 @@ def test_interaction_exact_read_requires_direct_reply_evidence(env, native_read,
             data = {**data, "inference": {"said_by_kiwibro": "look"}}
         if event == "tool_result" and altered_evidence == "failed_read":
             data = {**data, "ok": False}
-        original_emit(self, event, data)
+        return original_frame(event, data)
 
-    monkeypatch.setattr(Turn, "emit", emit)
+    monkeypatch.setattr(agent, "_frame", frame)
     observed = []
     options = {"tool_profile": "auto", "observer": observed.append}
     if altered_evidence != "no_opt_in":
