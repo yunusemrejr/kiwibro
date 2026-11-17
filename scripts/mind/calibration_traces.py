@@ -332,7 +332,8 @@ def join(probes: Path, report: Path, artifact_hash: str) -> tuple[dict, list[dic
         question = case["messages"][1]["content"]
         facts = steer.Facts(question=question, tools=frozenset(x["function"]["name"] for x in case["tools"]),
                             tools_ran=int(oracle["status"] in ("ok", "stale")), model=meta["model"])
-        verdict = steer.review(result["answer"], facts) if result["answer"] and complete(result) else None
+        verdict = (steer.review(result["answer"], facts, final=not actual["tool_calls"])
+                   if result["answer"] and complete(result) else None)
         if not complete(result):
             outcome = "incomplete_generation"
         elif passed:
