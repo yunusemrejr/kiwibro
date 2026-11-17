@@ -16,9 +16,11 @@ from tests.test_mind_native_generic import pack_at
 DRAFT = "mtp.gguf"
 FLAGS = frozenset({
     "--device", "--mmproj", "--no-mmproj-offload", "--spec-type", "--spec-draft-model",
-    "--spec-draft-n-max", "--spec-draft-ngl", "--spec-draft-device", "--lora-scaled",
+    "--spec-draft-n-max", "--spec-draft-ngl", "--spec-draft-device", "--gpu-layers", "--lora-scaled",
 })
 RUNTIME = engine.Runtime("/unused/llama-server", "b12443", "cpu", "kiwibro")
+RENOIR = engine.Device("Vulkan0", "AMD Radeon Graphics (RADV RENOIR)", 20019, 16395)
+DISCRETE = engine.Device("Vulkan1", "AMD Radeon RX 7800 XT (RADV NAVI32)", 16384, 12000)
 ATTENTION = {
     "head_count_kv": 2, "key_length": 512, "value_length": 512,
     "key_length_swa": 256, "value_length_swa": 256, "sliding_window": 512,
@@ -144,32 +146,86 @@ def test_mtp_rejects_wrong_artifact_or_interface(mtp_pack, monkeypatch):
         native.describe_pack(mtp_pack)
 
 
-@pytest.mark.parametrize("failure", [engine._Crashed, engine.EngineError])
-def test_mtp_startup_failure_retries_without_a_draft(mtp_pack, tmp_path, monkeypatch, failure):
-    model = native.describe_pack(mtp_pack).model
-    direct = engine.DirectEngine(lambda: {"direct_threads": 6}, tmp_path)
-    direct._flags[RUNTIME.path] = FLAGS
-    monkeypatch.setattr(direct, "_runtimes", lambda: [RUNTIME])
-    monkeypatch.setattr(direct, "adapters_for", lambda _model: ())
-    monkeypatch.setattr(direct, "_write_pid", lambda _server: None)
-    monkeypatch.setattr("kiwibro.engine._SPAWNER", SimpleNamespace(run=lambda spawn: spawn()))
-    launches, killed = [], []
-    monkeypatch.setattr(direct, "_kill", killed.append)
+@pytest.fixture
+def launches(monkeypatch):
+    captured = []
 
     def popen(args, **_kwargs):
-        launches.append(args)
+        captured.append(args)
         return SimpleNamespace()
+
+    monkeypatch.setattr("kiwibro.engine._SPAWNER", SimpleNamespace(run=lambda spawn: spawn()))
+    monkeypatch.setattr("kiwibro.engine.subprocess.Popen", popen)
+    return captured
+
+
+@pytest.mark.parametrize(("devices", "version", "adapter_scale", "packed", "drafts_on_cpu"), [
+    ((RENOIR,), "b12443", None, True, True),
+    ((RENOIR, DISCRETE), "b12443", None, True, False),
+    ((DISCRETE, RENOIR), "b12443", None, True, False),
+    ((replace(RENOIR, name="AMD Radeon Graphics"),), "b12443", None, True, False),
+    ((RENOIR,), "b12442", None, True, False),
+    ((RENOIR,), "b12443", 0.8, True, False),
+    ((RENOIR,), "b12443", None, False, False),
+], ids=["only-renoir", "another-gpu", "renoir-second", "unknown-gpu", "other-build", "active-lora", "no-draft"])
+def test_auto_prefers_mtp_only_with_the_verified_renoir_profile(
+    mtp_pack, tmp_path, monkeypatch, launches, devices, version, adapter_scale, packed, drafts_on_cpu,
+):
+    model = native.describe_pack(mtp_pack).model
+    if not packed:
+        model = replace(model, pack_mtp=None)
+    runtime = replace(RUNTIME, kind="vulkan", version=version)
+    settings = {"direct_threads": 6, "direct_gpu": "auto"}
+    direct = engine.DirectEngine(lambda: settings, tmp_path)
+    direct._flags[runtime.path] = FLAGS
+    monkeypatch.setattr(engine, "gpu_devices", lambda _runtime: devices)
+    monkeypatch.setattr(direct, "_write_pid", lambda _server: None)
+    monkeypatch.setattr(direct, "_wait_ready", lambda _server: None)
+    loras = (() if adapter_scale is None else (SimpleNamespace(scale=adapter_scale, path="/fake/lora.gguf"),))
+
+    server = direct._launch(runtime, model, 8192, 1, loras=loras)
+
+    (args,) = launches
+    assert settings["direct_gpu"] == "auto"
+    if drafts_on_cpu:
+        assert args[args.index("--device") + 1] == "none"
+        assert args[args.index("--spec-type") + 1] == "draft-mtp"
+        assert "--gpu-layers" not in args
+        assert not server.gpu
+    else:
+        assert "--device" not in args and "--spec-draft-model" not in args
+        assert args[args.index("--gpu-layers") + 1] == "999"
+        assert server.gpu == devices[0].name
+    assert server.adapters == loras
+
+
+@pytest.mark.parametrize("failure", [engine._Crashed, engine.EngineError])
+@pytest.mark.parametrize("auto_renoir", [False, True])
+def test_mtp_startup_failure_retries_without_a_draft(mtp_pack, tmp_path, monkeypatch, failure, auto_renoir, launches):
+    model = native.describe_pack(mtp_pack).model
+    runtime = replace(RUNTIME, kind="vulkan") if auto_renoir else RUNTIME
+    direct = engine.DirectEngine(lambda: {"direct_threads": 6}, tmp_path)
+    direct._flags[runtime.path] = FLAGS
+    monkeypatch.setattr(engine, "gpu_devices", lambda _runtime: (RENOIR,) if auto_renoir else ())
+    monkeypatch.setattr(direct, "_runtimes", lambda: [runtime])
+    monkeypatch.setattr(direct, "adapters_for", lambda _model: ())
+    monkeypatch.setattr(direct, "_write_pid", lambda _server: None)
+    killed = []
+    monkeypatch.setattr(direct, "_kill", killed.append)
 
     def wait_ready(_server):
         if len(launches) == 1:
             raise failure("draft startup failed")
 
-    monkeypatch.setattr("kiwibro.engine.subprocess.Popen", popen)
     monkeypatch.setattr(direct, "_wait_ready", wait_ready)
     try:
-        assert direct._start(model, 8192, 1).model is model
+        server = direct._start(model, 8192, 1)
+        assert server.model is model
         assert len(launches) == 2 and len(killed) == 1
         assert "--spec-draft-model" in launches[0]
         assert "--spec-type" not in launches[1] and "--mmproj" in launches[1]
+        if auto_renoir:
+            assert "--gpu-layers" not in launches[0] and "--gpu-layers" in launches[1]
+            assert server.gpu == RENOIR.name
     finally:
         direct.shutdown()

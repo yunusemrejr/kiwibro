@@ -77,6 +77,9 @@ SPEC_TYPE = "ngram-mod"
 NATIVE_CPU_DRAFT = (
     ("--spec-ngram-mod-n-match", "24"), ("--spec-ngram-mod-n-min", "48"), ("--spec-ngram-mod-n-max", "64"),
 )
+NATIVE_MTP_FLAGS = frozenset({
+    "--device", "--spec-type", "--spec-draft-model", "--spec-draft-n-max", "--spec-draft-ngl", "--spec-draft-device",
+})
 UNSUPPORTED_KEYS = frozenset({"ttl", "draft_model"})  # knobs llama.cpp has no use for
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _QUANT = re.compile(r"(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|F16|BF16|F32|MXFP4)(?:$|[-_.])", re.IGNORECASE)
@@ -679,6 +682,21 @@ def _can_load_loras(flags: frozenset[str], model: LocalModel, adapters: tuple[An
     return not flags or {"--lora", "--lora-init-without-apply"} <= flags
 
 
+def _native_mtp_eligible(
+    runtime: Runtime, flags: frozenset[str], model: LocalModel, *, parallel: int, speculative: bool,
+    adapters: tuple[Any, ...],
+) -> bool:
+    """Check the packed E4B draft profile before deciding its placement."""
+    return (
+        speculative and bool(model.pack_mtp) and model.source == SOURCE_MIND and model.arch == "gemma4"
+        and not model.embeddings and parallel == 1 and runtime.own and runtime.version == "b12443"
+        and NATIVE_MTP_FLAGS <= flags
+        and (not model.projector or {"--mmproj", "--no-mmproj-offload"} <= flags)
+        # Server-side MTP cannot opt out on individual requests that activate a LoRA.
+        and all(adapter.scale == 0 for adapter in adapters)
+    )
+
+
 def idle_sleep_seconds() -> int:
     try:
         return max(0, int(os.environ.get("KIWIBRO_IDLE_SLEEP_S", IDLE_SLEEP_S)))
@@ -754,19 +772,10 @@ def server_args(
         args.append("--metrics")
     if model.projector and has("--mmproj"):
         args += ["--mmproj", model.projector]
-    mtp_flags = {"--device", "--spec-type", "--spec-draft-model", "--spec-draft-n-max",
-                 "--spec-draft-ngl", "--spec-draft-device"}
-    if model.projector:
-        mtp_flags.update(("--mmproj", "--no-mmproj-offload"))
-    native_mtp = (
-        speculative and model.pack_mtp and model.source == SOURCE_MIND and model.arch == "gemma4"
-        and parallel == 1 and runtime.own and runtime.version == "b12443"
-        and (offload is False or (offload is None and runtime.kind == "cpu"))
-        and mtp_flags <= flags
-        # Server-side MTP cannot opt out on individual requests that activate a LoRA.
-        and (not load_loras or all(adapter.scale == 0 for adapter in adapters))
-    )
-    if native_mtp:
+    on_cpu = offload is False or (offload is None and runtime.kind == "cpu")
+    if on_cpu and model.pack_mtp and _native_mtp_eligible(
+        runtime, flags, model, parallel=parallel, speculative=speculative, adapters=adapters if load_loras else (),
+    ):
         args += ["--spec-type", "draft-mtp", "--spec-draft-model", model.pack_mtp,
                  "--spec-draft-n-max", "2", "--spec-draft-ngl", "0", "--spec-draft-device", "none"]
         if model.projector:
@@ -1130,13 +1139,22 @@ class DirectEngine:
     ) -> Server:
         if runtime.path not in self._flags:
             self._flags[runtime.path] = _flags_of(runtime)
-        threads = int(self._settings().get("direct_threads") or 0) or physical_cores()
+        settings = self._settings()
+        threads = int(settings.get("direct_threads") or 0) or physical_cores()
         port = _free_port()
         devices = gpu_devices(runtime)
-        offload = self._gpu_on() and model.id not in self._unavailable_gpu if devices else None
+        gpu_mode = settings.get("direct_gpu", "auto")
+        offload = gpu_mode != "off" and model.id not in self._unavailable_gpu if devices else None
         flags = self._flags[runtime.path]
         if not _can_load_loras(flags, model, loras):
             loras = ()
+        # Keep E4B on its measured CPU draft profile on the tested single-GPU Ryzen laptop.
+        if (offload and gpu_mode == "auto" and runtime.kind == "vulkan" and len(devices) == 1
+                and (devices[0].id, devices[0].name) == ("Vulkan0", "AMD Radeon Graphics (RADV RENOIR)")
+                and _native_mtp_eligible(runtime, flags, model, parallel=parallel, speculative=speculative,
+                                         adapters=loras)):
+            log.info("direct engine: choosing CPU drafting for %s on RADV Renoir", model.id)
+            offload = False
         args = server_args(
             runtime, flags, model, port=port, api_key=self.api_key,
             context_length=context_length, parallel=parallel, threads=threads, cache_ram_mb=self._cache_ram_mb(),
