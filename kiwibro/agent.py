@@ -350,6 +350,23 @@ _NATIVE_READ = re.compile(
     r"(?:\s+with\s+(?:the\s+)?(?:file-reading tool|read_file))?"
     r"(?:\.\s+reply\s+with\s+[^.,;!?\n]+)?[.!?]?$", re.I,
 )
+_RENDER_REQUEST = re.compile(
+    r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:"
+    r"use\s+`?look_at_page`?\s+to\s+(?:check|verify|inspect)\b|"
+    r"(?:check|verify|inspect|look at)\s+(?:the\s+)?(?:saved\s+render|rendered\s+(?:page|output)|"
+    r"render\s+of\s+the\s+(?:page|file)|saved\s+page\s+(?:(?:using|with)\s+`?look_at_page|in\s+the\s+browser))\b)",
+    re.I,
+)
+_PAGE_CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
+_RENDER_REFUSAL = re.compile(
+    r"\b(?:do not|don['’]t|never|skip|without)\b[^.!?;\n]{0,80}\b(?:check\w*|verif\w*|inspect\w*|"
+    r"look\s+at|render\w*|look_at_page)\b", re.I,
+)
+_PAGE_REPLY_REQUEST = re.compile(
+    r"\b(?:tell me|let me know|give me|reply with)\b|\?|"
+    r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:report|reply|answer|explain|summari[sz]e)\b",
+    re.I,
+)
 
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
@@ -428,6 +445,7 @@ class Turn:
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
     steering_notes: list[str] = field(default_factory=list)
+    steering_received: bool = False
     attachments: list[dict[str, Any]] = field(default_factory=list)
     steering_lock: threading.Lock = field(default_factory=threading.Lock)
     system_prompt: str = ""
@@ -617,6 +635,7 @@ class AgentManager:
             if not turn.steering_open:  # the turn has read its last note: say so rather than lose this one
                 return False
             turn.steering_notes.append(note[:4000])
+            turn.steering_received = True
         return True
 
     def _drain_steering(self, turn: Turn, *, last: bool = False) -> list[str]:
@@ -847,7 +866,7 @@ class AgentManager:
             max_rounds = config.TOOL_ROUNDS_RANGE[1]
 
         answered = self._answer_first(turn, model)
-        scene = self._scene_first(turn, model) if not answered else False
+        scene = self._scene_first(turn, model, native=_native_mind(model, model_info)) if not answered else False
         browsed = self._browser_first(turn) if not (answered or scene) else False
         looked = self._look_first(turn, settings) if not (answered or scene or browsed) else False
         # A question the computer answers is never also a web search: "today" in a question about the
@@ -873,6 +892,7 @@ class AgentManager:
             )
             self._raise_if_aborted(turn)
 
+        render_requested = _RENDER_REQUEST.search(_PAGE_CODE_BLOCK.sub("", turn.message))
         for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
             if round_index > 0:
@@ -947,9 +967,10 @@ class AgentManager:
             turn.partial_reasoning = ""
             if result.content:
                 turn.reply_text += "\n" + result.content
+            native = _native_mind(model, prepared.model_info)
             if not result.tool_calls:
                 if round_index < max_rounds - 1:
-                    outcome = self._look_or_review(turn, model, settings, result.content, assistant_message)
+                    outcome = self._look_or_review(turn, model, result.content, assistant_message, native=native)
                     if outcome == "more":
                         continue
                     if outcome == "ended":
@@ -976,15 +997,19 @@ class AgentManager:
             turn.truncated_calls = result.finish_reason == "length"
             turn.text_calls = result.text_calls
             refused_before = turn.truncated_writes
-            native_reads = _native_mind(model, prepared.model_info)
-            outcomes = self._handle_tool_calls(turn, result.tool_calls, settings, recover_reads=native_reads)
+            written_html: set[str] | None = (
+                set() if native and round_index < max_rounds - 1 and render_requested
+                else None
+            )
+            outcomes = self._handle_tool_calls(turn, result.tool_calls, settings, recover_reads=native,
+                                               written_html=written_html)
             self._raise_if_aborted(turn)
-            if native_reads and outcomes and all((outcome.meta or {}).get("repeated_missing_read") for outcome in outcomes):
+            if native and outcomes and all((outcome.meta or {}).get("repeated_missing_read") for outcome in outcomes):
                 self._say(turn, model, "I stopped after the read retried a path that the workspace reported missing.",
                           {"checked_by_kiwibro": True}, "missing_read")
                 self._close_plan(turn, model)
                 break
-            if (native_reads and outcomes and all((outcome.meta or {}).get("repeated_table_result") for outcome in outcomes)
+            if (native and outcomes and all((outcome.meta or {}).get("repeated_table_result") for outcome in outcomes)
                     and (turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text)))):
                 self._answer_anyway(turn, model, prepared, None, text_mode=False)
                 self._close_plan(turn, model)
@@ -1009,8 +1034,16 @@ class AgentManager:
                 turn.reply_text += "\n" + turn.done_note
                 turn.inference["said_by_kiwibro"] = "note"
                 break
+            if written_html and all(result.ok and not (result.meta or {}).get("syntax_error") for result in outcomes):
+                outcome = self._look_after_write(turn, model, written_html)
+                if outcome == "more":
+                    continue
+                if outcome == "ended":
+                    self._close_plan(turn, model)
+                    break
             if turn.finished_files and turn.plan is None:
-                outcome = self._look_or_review(turn, model, settings, "", None) if round_index < max_rounds - 1 else ""
+                outcome = (self._look_or_review(turn, model, "", None, native=native)
+                           if round_index < max_rounds - 1 else "")
                 if outcome == "more":
                     continue
                 if outcome == "ended":
@@ -1154,27 +1187,44 @@ class AgentManager:
         else:
             turn.pages.note_changed(target)
 
-    def _look_or_review(self, turn: Turn, model: str, settings: dict[str, Any], content: str,
-                        message: dict[str, Any] | None) -> str:
+    def _look_after_write(self, turn: Turn, model: str, written_html: set[str]) -> str:
+        due = [page.path for page in turn.pages.pages.values() if page.dirty]
+        if len(due) != 1 or due[0] not in written_html or turn.pages.unfinished() is not None:
+            return ""
+        # Only model text can satisfy an explicitly requested answer. Check the plan
+        # before our automatic inspection adds any similarly worded text to the reply.
+        needs_reply = (turn.goal or _PAGE_REPLY_REQUEST.search(turn.message)
+                       or (turn.plan is not None and turn.plan.unmet(turn.reply_text)))
+        outcome = self._look_or_review(turn, model, "", None, native=True)
+        return "more" if outcome == "ended" and needs_reply else outcome
+
+    def _look_or_review(self, turn: Turn, model: str, content: str,
+                        message: dict[str, Any] | None, *, native: bool) -> str:
         """The turn would end here. A page it wrote or changed is looked at first, and a goal turn checks its other
         work. "more": the model gets another round; "ended": Kiwibro has said the last line; "": nothing to do."""
         if turn.abort.is_set():
             return ""
         try:
-            return self._looking(turn, model, content, message)
+            return self._looking(turn, model, content, message, native=native)
         except TurnAborted:
             raise
         except Exception:  # a check must never break a turn
             log.warning("turn %s: the look at the page failed", turn.conversation_id, exc_info=True)
             return ""
 
-    def _looking(self, turn: Turn, model: str, content: str, message: dict[str, Any] | None) -> str:
+    def _looking(self, turn: Turn, model: str, content: str, message: dict[str, Any] | None, *, native: bool) -> str:
         pages = turn.pages
         limit = pageloop.GOAL_LOOKS if turn.goal else pageloop.LOOKS
         page = pages.due()
         if page is None:
             stuck = pages.unfinished() if message is not None else None
             if stuck is not None:  # the problems were named and nothing was changed: more looks would say the same
+                if native and _RENDER_REQUEST.search(_PAGE_CODE_BLOCK.sub("", turn.message)) and (
+                    _PAGE_REPLY_REQUEST.search(turn.message) or (turn.plan is not None and turn.plan.remaining())
+                ):
+                    if not stuck.said:
+                        self._stop_looking(turn, model, stuck, "", None)
+                    return ""
                 self._stop_looking(turn, model, stuck, content, message)
                 return "ended"
             return self._review_goal(turn, content, message)
@@ -1185,17 +1235,34 @@ class AgentManager:
             return "ended"
         line = prompts.LOOK_FIRST.format(file=page.path) if page.looks == 0 else prompts.LOOK_AGAIN
         args = {"path": page.path}
+        settings = self._settings()
+        decision = None
+        if native:
+            with turn.steering_lock:
+                if turn.steering_received:
+                    return ""
+            if (not settings.get("agent_enabled", True) or _RENDER_REFUSAL.search(turn.message)
+                    or page.workspace.root != self._workspace(turn.conversation_id).root
+                    or safety.permission(settings, "look_at_page") != "auto"
+                    or safemode.gate(self.db, turn.conversation_id, "look_at_page").refusal):
+                return ""
+            decision = safety.decide(settings, "look_at_page", args, workspace=page.workspace,
+                                     turn_state=turn.safety, risk="read")
+            if decision.mode != "auto":
+                return ""
         call = {"id": f"call_{uuid.uuid4().hex[:24]}", "type": "function",
                 "function": {"name": "look_at_page", "arguments": json.dumps(args)}}
         phase, label = tools.phase_for("look_at_page")
         turn.emit("status", {"phase": phase, "label": label})
         context = ToolContext(
             workspace=page.workspace, memory=self.memory, search=self.search, conversation_id=turn.conversation_id,
-            llm=self.llm, current_model=turn.model, notes=self.notes, settings=self._settings(),
+            llm=self.llm, current_model=turn.model, notes=self.notes, settings=settings,
             look=self._look_options(turn, page.kit),
         )
         started = time.monotonic()
-        result = tools.execute_tool("look_at_page", args, context)  # nothing is stored before it has run
+        self._raise_if_aborted(turn)
+        with safety.applied(decision):
+            result = tools.execute_tool("look_at_page", args, context)  # nothing is stored before it has run
         duration = int((time.monotonic() - started) * 1000)
         self._raise_if_aborted(turn)
         # What the user sees: the line, then the look. A reply that already claimed the page was done is taken back.
@@ -1444,7 +1511,7 @@ class AgentManager:
         self._say(turn, str(turn.model), said, {"checked_by_kiwibro": True}, "browser")
         return True
 
-    def _scene_first(self, turn: Turn, model: str) -> str:
+    def _scene_first(self, turn: Turn, model: str, *, native: bool) -> str:
         """Build a scene when the request fits the component's complete command syntax."""
         if (turn.facts is None or "component" not in turn.facts.tools
                 or turn.reaction is not None or turn.attachments):
@@ -1456,7 +1523,7 @@ class AgentManager:
         if "component" in turn.tools_ok:
             turn.kit_called_for = False  # any remaining work starts from the file on disk
             turn.inference["scene_started"] = True
-            return self._look_or_review(turn, model, self._settings(), "", None) or "continue"
+            return self._look_or_review(turn, model, "", None, native=native) or "continue"
         return "continue"
 
     def _redo_on_web(self, turn: Turn, reaction: Any) -> bool:
@@ -3481,6 +3548,7 @@ class AgentManager:
 
     def _handle_tool_calls(
         self, turn: Turn, calls: list[dict[str, Any]], settings: dict[str, Any], *, recover_reads: bool = False,
+        written_html: set[str] | None = None,
     ) -> list[ToolResult]:
         """Validate, approve and run one round of tool calls.
 
@@ -3641,6 +3709,11 @@ class AgentManager:
                 self._note_changed(turn, item)
                 if item["name"] in plan.WRITE_TOOLS and item["name"] != "convert_document":
                     result = self._check_written(turn, item, result)
+                    if written_html is not None and not item["location"]:
+                        meta = result.meta or {}
+                        path = meta.get("path")
+                        if path in turn.pages.pages and not meta.get("syntax_error"):
+                            written_html.add(path)
             if item["notes"]:  # show small models how their call was corrected
                 result = replace(result, content=f"{result.content}\n[Kiwibro fixed this call: {'; '.join(item['notes'][:4])}]")
             if item["location"] and result.ok:  # ran in a folder the user named, outside the workspace
