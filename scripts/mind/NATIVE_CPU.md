@@ -593,3 +593,16 @@ at finish. The preceding run, with endpoint samples of about 37% and 43%,
 timed out before saving a file. Both runs used the staged draft-enabled
 pack and required exact output and real browser interaction.
 [Passing managed dashboard](https://huggingface.co/yunusemrejr/kiwimind/blob/6dc08374523b43c649df98b75cee187411a9f767/variants/e4b-cpu-mtp/evals/ryzen-managed-image.json) · [Higher desktop load](https://huggingface.co/yunusemrejr/kiwimind/blob/6dc08374523b43c649df98b75cee187411a9f767/variants/e4b-cpu-mtp/evals/ryzen-managed-image-desktop-load.json)
+
+All nine warm interaction checks passed with reasoning On. They used the
+managed CPU draft-enabled pack. Peak sampled native RSS was 7.61 GiB and
+the sampled process used no swap. CPU pressure `some avg10` was 13.47% at
+startup and 11.11% at finish.
+
+| Operation | First text p50 / p90 | Completion p50 / p90 |
+| --- | ---: | ---: |
+| Short reply | 6.38 / 7.46 s | 6.96 / 8.42 s |
+| Exact field from a local file | 33 / 41 ms | 34 / 43 ms |
+| Follow-up HTML edit and verified phone render | 44.24 / 49.40 s | 44.24 / 49.40 s |
+
+[Reasoning On interaction report](https://huggingface.co/yunusemrejr/kiwimind/blob/0f93473fbb1015bfa3bc92684f1f7aea534c1e0e/variants/e4b-cpu-mtp/evals/ryzen-reasoning-on-warm.json)
