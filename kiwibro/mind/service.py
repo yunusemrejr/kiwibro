@@ -392,6 +392,9 @@ class Mind:
                     "capabilities": {"tools": model.tools, "thinking": model.thinking,
                                      "reasoning_effort": candidate.reasoning_effort},
                 }
+                if model.pack_adapters:
+                    adapter = model.pack_adapters[0]
+                    details["task_adapter"] = {"tasks": list(adapter.tasks), "scale": adapter.scale}
             return {**pack, **status, **details, "active": "candidate" if status["usable"] else None,
                     "node": None, "rss_bytes": _rss(status["pid"]) if status["pid"] else None,
                     "helper": None, "download": self.candidate_pack.download_state()}

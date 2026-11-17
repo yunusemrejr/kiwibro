@@ -70,6 +70,17 @@ def test_stage_binds_exact_trunk_and_verifies_the_adapter_payload(adapter_pack, 
         describe_pack(adapter_pack)
 
 
+def test_candidate_status_exposes_only_checked_task_adapter_details(adapter_pack, tmp_path, monkeypatch):
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()
+    monkeypatch.setattr(mind, "runtime", lambda: object())
+    assert mind.describe()["task_adapter"] == {"tasks": ["code"], "scale": 0.8}
+
+    adapter_pack.path(ADAPTER_FILE).write_bytes(b"broken")
+    status = mind.describe()
+    assert not status["usable"] and "task_adapter" not in status
+
+
 @pytest.mark.parametrize(("edit", "message"), [
     ({"file": "unregistered.gguf"}, "checksummed"),
     ({"file": TRUNK3}, "separate"),

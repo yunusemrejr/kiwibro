@@ -200,6 +200,8 @@ With `KIWIMIND_CANDIDATE=1`, the response describes the native GGUF pack. It rep
 `base`, `architecture`, `quant`, `ctx`, `bytes`, `vision` and `capabilities` for
 tools, thinking and reasoning effort. The optional `expert_bank` object reports
 `experts_before`, `experts_after`, `top_k_before` and `top_k_after`.
+When a checked pack registers a task LoRA, `task_adapter` reports its `tasks`
+and configured `scale`. A registered adapter may stay at zero for a request.
 [Candidate manifest and verification](MIND-CANDIDATE.md)
 
 ### `POST /api/mind/download`

@@ -1312,6 +1312,7 @@ function nativeStops(mind) {
   const checked = caps.tools === true;
   const context = checked && Number.isSafeInteger(mind.ctx) && mind.ctx > 0 ? fmt(mind.ctx) : "";
   const disk = checked ? packSize(mind.bytes) : "";
+  const adapterTasks = checked ? mind.task_adapter?.tasks ?? [] : [];
   const modelRows = [
     ...(known ? [["Base model", source]] : []),
     ...(mind.architecture ? [["GGUF architecture", mind.architecture]] : []),
@@ -1319,7 +1320,10 @@ function nativeStops(mind) {
       ["Starting architecture", `${bank.experts_before} stored per layer, ${bank.top_k_before} selected per token.`]] : []),
     ...(bank?.width_after ? [["Expert intermediate width", `${bank.width_after} channels per expert, from ${bank.width_before}.`]] : []),
     ...(checked && Number.isSafeInteger(mind.training_steps) && mind.training_steps > 0 ?
-      [["Adapter training", `${fmt(mind.training_steps)} cumulative optimizer steps recorded in the pack.`]] : []),
+      [["Trunk training", `${fmt(mind.training_steps)} cumulative optimizer steps recorded in the trunk.`]] : []),
+    ...(adapterTasks.length ? [["Task LoRA", adapterTasks.includes("*") ?
+      "The checked pack registers an adapter for chat. Utility requests use the trunk."
+      : `The checked pack registers an adapter for ${adapterTasks.join(", ")}. It can switch on per request.`]] : []),
     ...(caps.tools ? [["Function calling", "The model's chat template sends structured calls to Kiwibro. The app checks the tool name, arguments and permissions."]] : []),
     ...(mind.vision ? [["Vision", "The matching vision projector lets the same model read attached images."]] : []),
     ...(caps.thinking ? [["Reasoning", caps.reasoning_effort ?
@@ -1337,7 +1341,7 @@ function nativeStops(mind) {
       fact: disk ? `The verified pack occupies ${disk} on disk.` : "The Models panel shows the candidate's installation status.",
       tech: { model: gemma ? [...modelRows, ["Shared expert", "Gemma also uses a shared expert. The figure shows the routed bank in one layer."]] : modelRows, app: [
         ["Local runtime", "llama.cpp serves the candidate on an authenticated loopback address."],
-        ["Pack verification", "The manifest lists the checksums of the weights and any vision projector."],
+        ["Pack verification", "The manifest lists the checksums of the weights, any vision projector and any task adapter."],
         ...(mind.reason ? [["Runtime status", mind.reason]] : []),
       ] },
       build: sparse ? (svg) => expertRouting(svg, bank) : bigPicture,
@@ -1677,7 +1681,7 @@ export function createHowView({ dialog, getMind = () => null }) {
     }
     const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
       mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
-      mind.capabilities, mind.vision, mind.expert_bank, mind.training_steps,
+      mind.capabilities, mind.vision, mind.expert_bank, mind.training_steps, mind.task_adapter,
     ]) : null;
     if (built && nextKey === nativeKey) return false;
     const previous = stops[index]?.title;

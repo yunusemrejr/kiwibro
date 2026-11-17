@@ -368,7 +368,8 @@ loader and a render node are present (`runtime.wants_vulkan`), otherwise the CPU
     two chat turns moved the chat's state out and back (with a small cache it was lost: a full
     3.5k-token re-read). Kept in place, when the KV pool is full llama.cpp purges the least
     recently used idle slot, which was the background one in testing.
-  - Adapters (§4.5) add `--lora <file>` and `--lora-init-without-apply`.
+  - Task adapters (§4.5) load at startup. Native Kiwi Mind registers a checksummed
+    adapter for its exact trunk and uses `--lora-scaled <file>:0` to set the server default.
 - **GPU offload.** On a GPU build with acceleration on, `--gpu-layers auto` puts every layer that
   fits on the GPU (`999` on builds without `--fit`). With acceleration off (`direct_gpu: off`),
   a GPU build gets `--device none`.
@@ -1346,7 +1347,9 @@ picture, a kit notice left on the screen. Code now looks before the turn ends.
   plain sentences with no example values; the picture is compared with a second one two seconds
   later; in goal mode a phone-width render and a yes/no question to the vision model are added.
   Without Chrome the look says so and is not counted against the page.
-- **The loop.** `_look_or_review` runs at the point where a turn would end. `Pages` (in
+- **The loop.** `_look_or_review` runs at the point where a turn would end. Native Kiwi Mind
+  can also inspect a single newly written workspace page immediately when requested and allowed.
+  `Pages` (in
   `pageloop.py`) holds the pages the turn wrote; a stylesheet or script next to one makes it due
   again. A page that is due is looked at; Kiwibro says its own constant lines (`prompts.LOOK_*`)
   around the look; with problems, the verdict opens the model's next message, so the prompt keeps
