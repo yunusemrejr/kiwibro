@@ -111,7 +111,7 @@ const state = {
   settings: null,
   models: [],
   currentModel: null,
-  mind: null, // GET /api/mind: { usable, installed, helper, ... } or null until loaded
+  mind: undefined, // GET /api/mind: undefined while loading, null when unavailable
   online: true, // health.online: false when the computer has no internet
   conversations: [],
   convFilter: "",
@@ -671,6 +671,10 @@ async function refreshModels({ quiet = false } = {}) {
     updateComposerState();
     return true;
   } catch (error) {
+    if (state.mind === undefined) {
+      state.mind = null;
+      howView?.refreshIfOpen();
+    }
     if (!quiet) toast(error?.message || "Couldn't refresh models", { tone: "error" });
     return false;
   }

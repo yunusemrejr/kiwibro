@@ -1648,7 +1648,7 @@ export function createHowView({ dialog, getMind = () => null }) {
   }
 
   dialog.addEventListener("keydown", (event) => {
-    if (event.target.closest("input, textarea")) return;
+    if (!built || event.target.closest("input, textarea")) return;
     if (event.key === "ArrowRight") go(index + 1);
     else if (event.key === "ArrowLeft") go(index - 1);
     else return;
@@ -1668,7 +1668,13 @@ export function createHowView({ dialog, getMind = () => null }) {
 
   function syncModel() {
     const mind = getMind();
-    if (!mind && built) return false;
+    if (!mind) {
+      if (!built) {
+        const text = mind === undefined ? "Checking the installed Kiwi Mind pack…" : "Kiwi Mind details are unavailable.";
+        body.replaceChildren(el("p", { class: "how-lines", role: "status", text }));
+      }
+      return false;
+    }
     const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
       mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
       mind.capabilities, mind.vision, mind.expert_bank, mind.training_steps,
@@ -1688,7 +1694,7 @@ export function createHowView({ dialog, getMind = () => null }) {
     open() {
       syncModel();
       openSheet(dialog);
-      go(index);
+      if (built) go(index);
     },
     refreshIfOpen() {
       if (dialog.open && syncModel()) go(index);
