@@ -1273,7 +1273,7 @@ class AgentManager:
 
     # --- looking at the pages a turn made ----------------------------------------------------
 
-    def _look_options(self, turn: Turn, kit: str = "") -> pagecheck.Options:
+    def _look_options(self, turn: Turn, workspace: Workspace, path: str, kit: str = "") -> pagecheck.Options:
         """What this request expects of a page: the kit's own checks, what the message names, and in goal mode
         the phone look and the goal itself."""
         try:
@@ -1285,6 +1285,10 @@ class AgentManager:
             phone=bool(turn.goal) or pagecheck.wants_phone(turn.message),
             not_text=made.not_text if made else (),
             goal=turn.goal,
+            expected_ids=(
+                pagecheck.requested_ids(_CODE_FENCES.sub("", turn.message), workspace, path)
+                if not turn.steering_received and str(workspace.root) == turn.safety.get("workspace") else ()
+            ),
         )
 
     @staticmethod
@@ -1411,7 +1415,7 @@ class AgentManager:
         context = ToolContext(
             workspace=page.workspace, memory=self.memory, search=self.search, conversation_id=turn.conversation_id,
             llm=self.llm, current_model=turn.model, notes=self.notes, settings=settings,
-            look=self._look_options(turn, page.kit),
+            look=self._look_options(turn, page.workspace, page.path, page.kit),
         )
         started = time.monotonic()
         self._raise_if_aborted(turn)
@@ -3890,8 +3894,9 @@ class AgentManager:
                     self._check_command_directory(turn, self._workspace(turn.conversation_id), Path(args["cwd"]))
                 except ValueError as exc:
                     return ToolResult(ok=False, content=str(exc), preview="Working directory changed"), 0
+            workspace = item["workspace"] or self._workspace(turn.conversation_id)
             context = ToolContext(
-                workspace=item["workspace"] or self._workspace(turn.conversation_id),
+                workspace=workspace,
                 memory=self.memory,
                 search=self.search,
                 conversation_id=turn.conversation_id,
@@ -3902,8 +3907,8 @@ class AgentManager:
                 must_mention=turn.must_mention,
                 deep=turn.own_search,
                 settings=self._settings(),
-                look=self._look_options(turn, turn.finished_kit) if name == "look_at_page" else None,
-                replace=self._replaceable(turn, name, args, item["workspace"] or self._workspace(turn.conversation_id)),
+                look=self._look_options(turn, workspace, args["path"], turn.finished_kit) if name == "look_at_page" else None,
+                replace=self._replaceable(turn, name, args, workspace),
             )
             risk = tools.TOOL_SPECS[name].risk
             if recover_reads and risk in ("write", "exec"):

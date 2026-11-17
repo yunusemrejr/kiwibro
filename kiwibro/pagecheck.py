@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -59,9 +60,37 @@ _MOTION = re.compile(
     re.IGNORECASE)
 _PHONE = re.compile(r"\b(?:phones?|mobile|responsive|smartphone)\b", re.IGNORECASE)
 _ANSWER = re.compile(r"^\W*(yes|no)\b[\W]*", re.IGNORECASE)
+_HTML_PATH = re.compile(
+    r"(?<![\w:/~.-])(?:\./)?(?:[\w-][\w.-]*/)*[\w-][\w.-]*\.html?(?![\w/?&#-]|\.(?!\s|$))", re.I,
+)
+_CLAUSE = r"(?:^|[,;]|\b(?:and|then)\b)\s*(?:please\s+)?"
+_PAGE_REQUEST = re.compile(_CLAUSE + r"(?:build|check|create|inspect|look at|make|render|save|verify|write)\b", re.I)
+_ID_REQUEST = re.compile(
+    _CLAUSE + r"(?:add|assign|build|check|confirm|create|ensure|give|include|make|provide|save|verify|write)\b|"
+    + _CLAUSE + r"change\s+the\s+(?:visible\s+)?(?:content|label|status|text)\b",
+    re.I,
+)
+_ID_EXCLUSION = re.compile(
+    _CLAUSE + r"(?:delete|remove|rename|change\s+(?:the\s+)?id)\b|"
+    r"\b(?:do not|don['’]t|without|example|snippet|selector|placeholder|literal text|maybe|optional|if possible)\b",
+    re.I,
+)
+_ID_REFERENCE = re.compile(r"\b(?:comment|describe|explain|log|mention|print|quote|say|says)\b", re.I)
+_QUOTED_TEXT = re.compile(r"""`[^`]*`|"[^"]*"|(?<!\w)'[^']*'(?!\w)|“[^”]*”|‘[^’]*’""")
+_SENTENCE = re.compile(_QUOTED_TEXT.pattern + r"|(?P<boundary>(?<=[.!?;])\s+|\n+)")
+_DOM_ID_VALUE = r"[A-Za-z_][A-Za-z0-9_-]{0,47}"
+_DOM_ID = re.compile(
+    r"(?<![\w<])(?:element|button|input|control|select|form|link|label|div|span|section|canvas|panel)\s+"
+    rf"""(?:with\s+)?(?:an?\s+)?(?:`id[ \t]*=[ \t]*(?P<code_quote>["'])(?P<code>{_DOM_ID_VALUE})(?P=code_quote)`|"""
+    rf"""id[ \t]*=[ \t]*(?P<attr_quote>["'])(?P<attr>{_DOM_ID_VALUE})(?P=attr_quote)|"""
+    rf"""id\s+(?P<quote>[`'"]?)(?P<name>{_DOM_ID_VALUE})(?P=quote))(?=$|[\s,;!?)]|\.(?:\s|$))""",
+    re.I | re.ASCII,
+)
+MAX_EXPECTED_IDS = 6
 
 # Runs before any page script: records what goes wrong and what moves, then reports once near the end of the time budget.
-_PROBE = """(function(){var P="@PREFIX@",E=[],F=[],C=[],queued=false,sent=false;
+_PROBE = """(function(){var P="@PREFIX@",I=@IDS@,E=[],F=[],C=[],queued=false,sent=false;
+var byId=document.getElementById.bind(document);
 function s(v){return String(v==null?"":v).slice(0,300)}
 addEventListener("error",function(e){var t=e.target;
 if(t&&t!==window&&(t.src||t.href)){F.push({u:String(t.src||t.href),m:t.type==="module"})}
@@ -78,7 +107,8 @@ var el=b?[].filter.call(b.querySelectorAll("*"),function(n){return !/^(SCRIPT|ST
 var scene=window.sceneReport&&window.sceneReport.motion;
 var motion=scene&&{planned:scene.planned===true,observed:scene.observed===true,rendered:Number(scene.rendered)||0,waiting:scene.waiting===true};
 var live=queued||!!(document.getAnimations&&document.getAnimations().some(function(a){return a.playState==="running"}));
-console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),motion:motion,live:live,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0)})))}
+var ids=I.map(function(id){return !!byId(id)});
+console.log(P+encodeURIComponent(JSON.stringify({e:E.slice(0,4),f:F.slice(0,6),c:C.slice(0,3),motion:motion,live:live,text:t.slice(0,4000),vis:vis.slice(0,4000),tl:t.trim().length,cv:cv,md:md,el:el,w:innerWidth,sw:Math.max(d.scrollWidth,b?b.scrollWidth:0),ids:ids})))}
 setTimeout(report,@MS@);})();""".replace("\n", "")  # one line: the page's own line numbers stay what they were
 
 
@@ -101,6 +131,7 @@ class Options:
     phone: bool = False  # the phone look is asked for: it is also looked at 360 px wide
     not_text: tuple[str, ...] = ()  # texts the page must not show (a kit's notice that its values were not understood)
     goal: str = ""  # goal mode: the picture is also asked whether it shows this
+    expected_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -172,6 +203,47 @@ def wants_motion(message: str) -> bool:
 
 def wants_phone(message: str) -> bool:
     return bool(_PHONE.search(message or ""))
+
+
+def requested_ids(message: str, workspace: Workspace, path: str) -> tuple[str, ...]:
+    """Recognize explicit element IDs for one named HTML output or verification target."""
+    filenames = set(_HTML_PATH.findall(message))
+    if len(filenames) != 1:
+        return ()
+    filename = next(iter(filenames))
+    # Find sentence breaks outside quoted excerpts only.
+    sentences = []
+    start = 0
+    for match in _SENTENCE.finditer(message):
+        if match["boundary"]:
+            sentences.append(message[start:match.start()])
+            start = match.end()
+    sentences.append(message[start:])
+    direct = [_QUOTED_TEXT.sub(lambda match: " " * len(match[0]), sentence) for sentence in sentences]
+    if (any(_ID_EXCLUSION.search(text) for text in direct)
+            or not any(_PAGE_REQUEST.search(text[:sentence.index(filename)])
+                       for sentence, text in zip(sentences, direct) if filename in sentence)):
+        return ()
+    try:
+        if workspace.resolve(path) != workspace.resolve(filename):
+            return ()
+    except (SandboxError, OSError, RuntimeError):
+        return ()
+    ids: dict[str, None] = {}
+    for sentence, text in zip(sentences, direct):
+        if "<" in text or ">" in text or "?" in text:
+            continue
+        for match in _DOM_ID.finditer(sentence):
+            if text[match.start()].isspace():  # the element description itself is quoted
+                continue
+            prefix = text[:match.start()]
+            requests = list(_ID_REQUEST.finditer(prefix))
+            if not requests or _ID_REFERENCE.search(prefix, requests[-1].end()):
+                continue
+            ids[match["code"] or match["attr"] or match["name"]] = None
+            if len(ids) == MAX_EXPECTED_IDS:
+                return tuple(ids)
+    return tuple(ids)
 
 
 # --- findings -----------------------------------------------------------------------------------
@@ -379,14 +451,17 @@ def _quit(process: subprocess.Popen) -> None:
         process.kill()
 
 
-def chrome_render(page: Path, png: Path, width: int, height: int, budget_ms: int) -> Render:
+def chrome_render(
+    page: Path, png: Path, width: int, height: int, budget_ms: int, *, expected_ids: tuple[str, ...] = (),
+) -> Render:
     """Open ``page`` in a fresh headless Chrome, run it for ``budget_ms`` of page time and save the picture."""
     chrome = find_chrome()
     if chrome is None:
         return Render(error="Chrome is not installed")
     nonce = secrets.token_hex(4)
     prefix = f"KBLOOK{nonce}:"
-    probe = _PROBE.replace("@PREFIX@", prefix).replace("@MS@", str(max(budget_ms - 200, 100)))
+    ids = json.dumps(expected_ids).replace("<", "\\u003c")
+    probe = _PROBE.replace("@PREFIX@", prefix).replace("@MS@", str(max(budget_ms - 200, 100))).replace("@IDS@", ids)
     try:
         source = page.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -539,6 +614,21 @@ def _from_report(report: dict[str, Any], page: Path, flat: bool | None) -> list[
     return found
 
 
+def _check_ids(result: Look, report: dict[str, Any], ids: tuple[str, ...], size: str) -> bool:
+    sampled = report.get("ids")
+    if not isinstance(sampled, list) or len(sampled) != len(ids) or any(type(item) is not bool for item in sampled):
+        result.could_not = result.could_not or f"the requested element IDs could not be checked at {size}"
+        return False
+    missing = [f'"{name}"' for name, found in zip(ids, sampled) if not found]
+    if missing:
+        names = f'element {"ID" if len(missing) == 1 else "IDs"} {join_words(missing)}'
+        result.findings.append(Finding(
+            "dom_id", f"The rendered page at {size} is missing requested {names}.",
+            f"the rendered page at {size} is missing {names}", f"the rendered page at {size} now contains {names}",
+        ))
+    return not missing
+
+
 def _notices(report: dict[str, Any], not_text: tuple[str, ...]) -> list[Finding]:
     lines = [line.strip() for line in str(report.get("text") or "").splitlines() if line.strip()]
     found = []
@@ -571,7 +661,8 @@ def look(
 ) -> Look:
     """Look at one HTML file of the workspace. ``render`` and ``eyes`` stand in for Chrome and for a model that can see."""
     options = options or Options()
-    render = render or chrome_render
+    if render is None:
+        render = partial(chrome_render, expected_ids=options.expected_ids) if options.expected_ids else chrome_render
     target = workspace.resolve(path, must_exist=True)
     if not target.is_file() or target.suffix.lower() not in HTML_SUFFIXES:
         raise SandboxError(f"{workspace.public(target)} is not an HTML file")
@@ -637,16 +728,20 @@ def look(
                 result.findings.append(STILL)
             elif same is None:
                 result.could_not = result.could_not or "the motion frames could not be compared"
+        ids_present = bool(options.expected_ids) and _check_ids(result, report or {}, options.expected_ids, result.sizes[0])
         phone_fits = False
         if options.phone:
             small = render(target, Path(scratch) / "phone.png", *PHONE, BUDGET_MS)
             narrow = small.report or {}
             if not small.error and narrow.get("w") == PHONE[0] and narrow.get("sw"):
                 result.sizes += (f"{PHONE[0]}x{PHONE[1]}",)
+                if options.expected_ids:
+                    ids_present = _check_ids(result, narrow, options.expected_ids, result.sizes[1]) and ids_present
                 phone_fits = int(narrow["sw"]) <= PHONE[0]
                 if not phone_fits:
                     result.findings.append(WIDE)
             else:
+                ids_present = False
                 result.could_not = result.could_not or "the phone viewport could not be checked"
         kept.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(picture, kept)
@@ -661,6 +756,10 @@ def look(
                 result.confirmed.append("it moves")
             if phone_fits:
                 result.confirmed.append("it fits a phone screen")
+            if ids_present:
+                names = join_words([f'"{name}"' for name in options.expected_ids])
+                label = "element ID" if len(options.expected_ids) == 1 else "element IDs"
+                result.confirmed.append(f"it contains {label} {names}")
     _see(result, options, eyes)
     return result
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiwibro import safemode, tools
+from kiwibro import pagecheck, safemode, tools
 from kiwibro.llm import ChatResult
 from kiwibro.mind import KIWIMIND
 from kiwibro.sandbox import Workspace
@@ -12,7 +12,7 @@ import test_backend
 import test_page_loop
 from test_backend import Env, SSEStream, chat_events, tool_call_result
 from test_page_loop import FIXED, PAGE, looks, shown, write
-from test_pagecheck import CLEAN, script_error
+from test_pagecheck import CLEAN, Fake, script_error
 
 env = test_backend.env
 chrome = test_page_loop.chrome
@@ -59,6 +59,28 @@ def test_native_early_render_result_reaches_repair_round(env: Env, native_page, 
     assert len(env.fake.stream_calls) == 2
     assert any("spin is not defined" in message.get("content", "")
                for message in env.fake.stream_calls[1]["messages"] if message["role"] == "tool")
+
+
+def test_native_render_delivers_exact_dom_id_failure_before_the_repair_round(env: Env, native_page, monkeypatch):
+    fake = Fake({**CLEAN, "ids": [True, False]}, {**CLEAN, "ids": [True, True]})
+
+    def render(*args, expected_ids=()):
+        assert expected_ids == ("acknowledge", "state")
+        return fake(*args)
+
+    monkeypatch.setattr(pagecheck, "chrome_render", render)
+    request = (
+        "Save index.html. Provide a button id acknowledge. "
+        "When activated, change the visible status element id state to Finished. Check the saved render."
+    )
+    env.fake.stream_script = [write("index.html", PAGE, "call_1"), write("index.html", FIXED, "call_2")]
+    events, _ = chat_events(env, request)
+    assert [data["name"] for event, data in events if event == "tool_result"] == [
+        "write_file", "look_at_page", "write_file", "look_at_page",
+    ]
+    assert 'missing requested element ID "state"' in looks(env)[0]["content"]
+    assert 'missing requested element ID "state"' in env.fake.stream_calls[1]["messages"][-1]["content"]
+    assert 'it contains element IDs "acknowledge" and "state"' in looks(env)[1]["content"]
 
 
 @pytest.mark.parametrize("look", ["ask", "deny"])

@@ -74,6 +74,89 @@ def look(workspace: Workspace, fake: Fake, options: Options | None = None, **kwa
     return pagecheck.look(workspace, "index.html", options, render=fake, **kwargs)
 
 
+def test_requested_ids_apply_to_the_named_html_page(workspace: Workspace) -> None:
+    request = (
+        "Save a self-contained ./app/index.html. Provide a keyboard-focusable button id confirm. "
+        "When activated, set aria-pressed=true and change the visible status element id state to Complete. "
+        'Verify the input with `id="user_Name"` in the rendered page.'
+    )
+    assert pagecheck.requested_ids(request, workspace, "app/index.html") == ("confirm", "state", "user_Name")
+    assert pagecheck.requested_ids(request, workspace, "index.html") == ()
+
+
+def test_requested_ids_exclude_prose_mentions_in_the_same_sentence(workspace: Workspace) -> None:
+    request = "Save index.html. Provide a button id accept and leave a comment that says button id quoted."
+    assert pagecheck.requested_ids(request, workspace, "index.html") == ("accept",)
+
+
+@pytest.mark.parametrize("literal", [
+    '"button id demo is documentation"', "“button id demo is documentation”",
+    "`button id demo is documentation`", '"Instructions. Add a button id demo and explain its role."',
+])
+def test_requested_ids_distinguish_quoted_excerpts_from_quoted_names(workspace: Workspace, literal: str) -> None:
+    request = f'Save index.html. Include label text {literal} and add a button id "save".'
+    assert pagecheck.requested_ids(request, workspace, "index.html") == ("save",)
+
+
+@pytest.mark.parametrize("request_text", [
+    "Explain what button id dismiss means in index.html.",
+    "Save index.html. Add a code example showing button id dismiss.",
+    "Save index.html. Include the literal markup `<button id='dismiss'>Dismiss</button>`.",
+    'The instructions say "press the key and save index.html". Add a button id dismiss.',
+    "Save index.html, then rename button id dismiss to cancel.",
+    "Save index.html and remove the element id dismiss.",
+    "Save index.html. Include a button id dismiss if possible.",
+    "Save index.html and admin.html. Include a button id dismiss.",
+    "Use a button id dismiss.",
+])
+def test_requested_ids_skip_unscoped_or_nonrequired_identifiers(workspace: Workspace, request_text: str) -> None:
+    assert pagecheck.requested_ids(request_text, workspace, "index.html") == ()
+
+
+def test_a_picture_without_dom_evidence_cannot_confirm_requested_ids(workspace: Workspace) -> None:
+    found = look(workspace, Fake(), Options(expected_ids=("view-state",)))
+    assert found.picture and not found.findings
+    assert "the requested element IDs could not be checked" in found.could_not
+    assert "No problems found" not in found.report()
+
+
+@pytest.mark.skipif(pagecheck.find_chrome() is None, reason="Chrome is not installed here")
+def test_the_real_browser_checks_dynamic_dom_and_exact_missing_ids(workspace: Workspace) -> None:
+    page = workspace.root / "index.html"
+    source = (
+        '<!doctype html><html><meta charset="utf-8"><title>Controls</title><body>'
+        '<h1>Account settings</h1><p id="view-state">Ready</p>'
+        '<script>document.getElementById = () => document.body;'
+        'setTimeout(() => { const node = document.createElement("button");'
+        'node.id = ["open", "control"].join("-"); node.textContent = "Open"; document.body.append(node); }, 50);'
+        '</script></body></html>'
+    )
+    page.write_text(source, encoding="utf-8")
+    found = pagecheck.look(workspace, "index.html", Options(expected_ids=("open-control", "View-State")))
+    assert found.picture and not found.could_not
+    assert [(item.code, item.text) for item in found.findings] == [
+        ("dom_id", 'The rendered page at 1280x800 is missing requested element ID "View-State".'),
+    ]
+    assert "No problems found" not in found.report()
+    assert "open-control" not in source and page.read_text(encoding="utf-8") == source
+
+
+def test_requested_ids_report_which_viewport_is_missing_the_element(workspace: Workspace) -> None:
+    fake = Fake({**CLEAN, "ids": [True]})
+
+    def render(page, png, width, height, budget_ms):
+        result = fake(page, png, width, height, budget_ms)
+        if width == pagecheck.PHONE[0]:
+            result.report["ids"] = [False]
+        return result
+
+    found = pagecheck.look(workspace, "index.html", Options(phone=True, expected_ids=("view-state",)), render=render)
+    assert [item.code for item in found.findings] == ["dom_id"]
+    assert '360x740 is missing requested element ID "view-state"' in found.report()
+    assert "it fits a phone screen" in found.confirmed
+    assert not any("it contains" in fact for fact in found.confirmed)
+
+
 def test_a_script_error_is_named_with_the_line_it_is_on(workspace: Workspace) -> None:
     found = look(workspace, Fake(script_error(2)))
     assert [item.code for item in found.findings] == ["script"]
