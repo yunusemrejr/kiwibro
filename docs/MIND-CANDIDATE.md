@@ -162,8 +162,34 @@ next actions using full answers. Turn time includes prefill and generation.
 All 156 requests completed. The compressed exports had shorter medians and
 missed four more cases than stock with reasoning On. On the Ryzen laptop, the
 standard export passed exact recall after 18,490 estimated tokens of history.
-The repository diagnosis timed out after repeatedly trying nonexistent paths.
+After the repeated-call guard was added, the table-recovery scenario passed
+in 295.3 seconds on CPU. The repository diagnosis initially timed out
+trying nonexistent paths. A verified-directory recovery step brought it to
+129.9 seconds on a separate run, with the correct file still unidentified.
 [Laptop measurements](../scripts/mind/NATIVE_CPU.md#long-chat-on-the-desktop)
+
+### Repository task adapter
+
+A separate 88-step Colab L4 run tuned a rank-16 adapter from the merged
+300-step checkpoint. It covered repository discovery, scoped fixes, and command
+success, failure and denial. It used 24 verified [repository traces](../scripts/mind/repo_discovery_shard.py),
+two original episodes per family sampled at seed `6015`, and the 20 reasoning
+episodes from the supplement. Append the reasoning episodes and repository traces
+in that order to the original sample. The 72-row training input has SHA-256
+`175231701ada72a87f98a091ad899b8cc3dc559209ff1fd33e76d90a05af355f`.
+
+```bash
+python3 -m scripts.mind.fit_gemma4 mixed-merged corpus/repo-mixed-train.jsonl repo-adapter \
+  --mode l4-lora --steps 88 --per-family 96 --max-tokens 3072 --seed 6017 --lr 2e-5
+python3 llama.cpp/convert_lora_to_gguf.py --base mixed-merged --outtype f16 \
+  --outfile kiwi-repo-lora-f16.gguf repo-adapter
+```
+
+The GGUF adapter has SHA-256
+`259d93f0e610c3526147afee3182ce163674a63b6dacab77e2dcdf4bc12b5729`.
+The 300 steps are in the trunk and the additional 88 are in the optional adapter.
+Compare repository outcomes with the adapter at zero and an active scale on
+the same trunk. Record adapter effect and runtime cost before enabling it for users.
 
 ## Verify before changing the local launcher
 
