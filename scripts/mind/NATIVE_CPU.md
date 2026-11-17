@@ -606,3 +606,11 @@ startup and 11.11% at finish.
 | Follow-up HTML edit and verified phone render | 44.24 / 49.40 s | 44.24 / 49.40 s |
 
 [Reasoning On interaction report](https://huggingface.co/yunusemrejr/kiwimind/blob/0f93473fbb1015bfa3bc92684f1f7aea534c1e0e/variants/e4b-cpu-mtp/evals/ryzen-reasoning-on-warm.json)
+
+GPU Auto selected the managed CPU drafting path when b12443 reported
+only RADV Renoir. A one-sentence greeting request used 315 prompt tokens
+and finished in 15.87 seconds with reasoning On. An earlier app build used
+2,959 prompt tokens and took 56.73 seconds for the same request with
+reasoning Off. The input-token counts show the effect of the narrower
+greeting route. The trials used different reasoning settings.
+[GPU Auto smoke test](https://huggingface.co/yunusemrejr/kiwimind/blob/c3ca9938dd0346231076f908628eacf792c194c9/variants/e4b-cpu-mtp/evals/ryzen-auto-greeting.json)
