@@ -351,3 +351,15 @@ The one unsuccessful render turn timed out at 120 seconds. The exact-read
 tool result arrived at 36 ms median before generation. The small sample
 describes this run. It does not isolate the model's speed from the harness
 and the selected backend.
+
+## Exact fields from text files
+
+For a request that asks for only a named field in a single-line `.txt` record,
+the native app can return the matching plain scalar from its authorized read.
+The call and result stay in the chat. Other reads continue through model
+generation.
+
+Twelve distinct records passed through the standard candidate's isolated app
+on the Ryzen laptop. Time to the verified read result was 50.6 ms p50 and
+74.4 ms p90. Completion was 51.3 ms p50 and 74.6 ms p90. The server launch
+sentinel verified that these requests needed no model process.
