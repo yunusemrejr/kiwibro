@@ -381,3 +381,12 @@ tool, screenshot and exact-copy check passed in both placements.
 CPU pressure `some avg10` at startup was 7.96% and 19.70% respectively. These
 single requests establish a placement for the next app trials. The three
 probes cover isolated capabilities.
+
+The managed CPU app then passed three warm repetitions. Completion p50 / p90
+was 6.13 / 6.26 seconds for short replies, 32 / 36 ms for direct field reads,
+and 21.61 / 23.00 seconds for edits with a verified phone render. Each of the
+five deeper cases failed. The nested-repository diagnosis ended after 117.7
+seconds without reading the shared implementation. The visual dashboard
+case ended after 98.0 seconds without a file. The 3D hatch produced a Chrome
+screenshot after 131.5 seconds and timed out before the interaction check.
+Exact history recall and table recovery also missed their acceptance checks.
