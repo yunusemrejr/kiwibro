@@ -13,8 +13,10 @@ from kiwibro.context import estimate_messages
 from kiwibro.llm import ChatResult
 from kiwibro.mind import KIWIMIND
 from kiwibro.mind.native_generic import NativeChatClient
-from test_backend import Env, SSEStream, chat_events, env, tool_call_result  # noqa: F401
+import test_backend
+from test_backend import Env, SSEStream, chat_events, tool_call_result
 
+env = test_backend.env
 INFO = {"id": KIWIMIND, "engine": "native-gguf", "tools": True, "context": 8192,
         "reasoning": {"allowed_options": ["off", "on"], "default": "off"}}
 READ_REQUEST = "Read release.txt with the file-reading tool. Reply with the exact release verification marker in that file."
@@ -172,13 +174,14 @@ def test_warm_schema_meter_counts_the_rendered_template_once(monkeypatch: pytest
     engine = SimpleNamespace(api_key="schema-token-meter-test", loaded=lambda _name: SimpleNamespace(url="http://127.0.0.1:9"))
     native = NativeChatClient(lambda: engine)
     catalog = tools.tool_defs_for("minimal")
-    post = Mock()
-    monkeypatch.setattr("kiwibro.mind.native_generic.requests.post", post)
+    request = Mock()
+    monkeypatch.setattr("kiwibro.mind.native_generic.loopback_request", request)
     assert native.schema_tokens(catalog) is None
-    post.assert_not_called()
+    request.assert_not_called()
     native.direct_engine()
 
-    def response(_url, *, json, **_):
+    def response(method, _url, *, json, **_):
+        assert method == "POST"
         response = Mock()
         response.__enter__ = lambda _self: response
         response.__exit__ = lambda *_args: None
@@ -188,6 +191,6 @@ def test_warm_schema_meter_counts_the_rendered_template_once(monkeypatch: pytest
             response.json.return_value = {"tokens": [0] * (137 if json["content"] == "with schemas" else 17)}
         return response
 
-    post.side_effect = response
+    request.side_effect = response
     assert native.schema_tokens(catalog) == 120 and native.schema_tokens(catalog) == 120
-    assert post.call_count == 4
+    assert request.call_count == 4

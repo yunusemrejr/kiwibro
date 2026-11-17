@@ -39,6 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from urllib.parse import urlsplit
 
 import requests
 
@@ -88,6 +89,17 @@ _PR_SET_PDEATHSIG = 1
 
 class EngineError(Exception):
     """A calm, user-facing reason the engine cannot serve a request."""
+
+
+def loopback_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """Talk to a managed model directly, independent of external proxy and auth settings."""
+    destination = urlsplit(url)
+    if (destination.scheme != "http" or destination.hostname not in ("127.0.0.1", "::1")
+            or destination.username is not None):
+        raise requests.exceptions.InvalidURL("The managed model must use a literal loopback address.")
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.request(method, url, allow_redirects=False, **kwargs)
 
 
 NO_RUNTIME = "Kiwibro's engine is not installed yet. Open Models and choose Install engine."
@@ -1199,7 +1211,7 @@ class DirectEngine:
             if not server.alive():
                 raise _Crashed(f"llama.cpp stopped while loading {server.model.id}: {self._log_tail(server)}")
             try:
-                response = requests.get(f"{server.url}/health", timeout=2, headers=headers)
+                response = loopback_request("GET", f"{server.url}/health", timeout=2, headers=headers)
                 if response.status_code == 200:
                     return
             except requests.RequestException:

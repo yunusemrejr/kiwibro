@@ -15,7 +15,7 @@ import requests
 
 from .. import adapters, gguf
 from ..config import MEMORY_KINDS
-from ..engine import SOURCE_MIND, DirectEngine, LocalModel
+from ..engine import SOURCE_MIND, DirectEngine, LocalModel, loopback_request
 from ..llm import ADAPTERS_OFF, ChatResult, Completion, LLMClient, LLMError, TurnAborted
 from .conductor import Events, has_images
 from .pack import TRUNK3, Pack, PackError
@@ -99,11 +99,12 @@ def _template_tokens(url: str, key: str, encoded: str) -> int | None:
     }
     headers = {"Authorization": f"Bearer {key}"}
     try:
-        with requests.post(f"{url}/apply-template", json=body, headers=headers, timeout=1) as response:
+        with loopback_request("POST", f"{url}/apply-template", json=body, headers=headers, timeout=1) as response:
             response.raise_for_status()
             prompt = response.json()["prompt"]
-        with requests.post(f"{url}/tokenize", json={"content": prompt, "add_special": False, "parse_special": True},
-                           headers=headers, timeout=1) as response:
+        with loopback_request("POST", f"{url}/tokenize",
+                              json={"content": prompt, "add_special": False, "parse_special": True},
+                              headers=headers, timeout=1) as response:
             response.raise_for_status()
             tokens = response.json()["tokens"]
     except (requests.RequestException, KeyError, ValueError, TypeError):

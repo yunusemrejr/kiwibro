@@ -199,14 +199,15 @@ def test_public_chat_prefill_and_memory_share_the_authenticated_local_engine(
         assert engine.find(model_id).id == NATIVE_MODEL
         return SimpleNamespace(url="http://127.0.0.1:9999")
 
-    def post(url: str, *, json: dict[str, Any], headers: dict[str, str], **_kwargs: Any) -> Reply:
+    def request(method: str, url: str, *, json: dict[str, Any], headers: dict[str, str], **_kwargs: Any) -> Reply:
+        assert method == "POST"
         assert headers["Authorization"] == f"Bearer {engine.api_key}"
         calls.append((url, json))
         return text_reply('{"ops": []}' if "response_format" in json else "Native answer.")
 
     monkeypatch.setattr(engine, "acquire", acquire)
     monkeypatch.setattr(engine, "release", lambda server: None)
-    monkeypatch.setattr("kiwibro.llm.requests.post", post)
+    monkeypatch.setattr("kiwibro.engine.loopback_request", request)
 
     events: list[tuple[str, dict[str, Any]]] = []
     bind_turn("chat1", lambda name, detail: events.append((name, detail)))
@@ -245,7 +246,8 @@ def test_lost_device_stops_native_gpu_and_only_retries_before_output(
     monkeypatch.setattr(runner, "acquire", lambda model: runner._servers.setdefault(model, cpu))
     monkeypatch.setattr(runner, "release", lambda server: None)
 
-    def post(url: str, **_kwargs: Any) -> Reply:
+    def request(method: str, url: str, **_kwargs: Any) -> Reply:
+        assert method == "POST"
         urls.append(url)
         if url.startswith(cpu.url):
             assert killed == [gpu]
@@ -255,7 +257,7 @@ def test_lost_device_stops_native_gpu_and_only_retries_before_output(
         output = [{"choices": [{"delta": {"content": "Partial"}}]}] if partial else []
         return Reply(*output, error)
 
-    monkeypatch.setattr("kiwibro.llm.requests.post", post)
+    monkeypatch.setattr("kiwibro.engine.loopback_request", request)
     if partial:
         with pytest.raises(LLMError, match="graphics device"):
             client.stream_chat(model=KIWIMIND, messages=MESSAGES, on_delta=deltas.append)

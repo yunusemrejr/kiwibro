@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -425,13 +426,13 @@ class LLMClient:
         return stopped + (self._mind.stop_idle(min_idle_s) if self._mind is not None else 0)
 
     @contextmanager
-    def _serving(self, model: str) -> Iterator[str]:
-        """The base URL that serves ``model``: a server of our own held busy for the
-        request (started just in time), or the attached one."""
-        if not self.direct_on():
-            yield self.server_url()
+    def _serving(self, model: str) -> Iterator[tuple[str, Callable[..., requests.Response]]]:
+        """The model URL and its transport, with any managed server held busy for the request."""
+        attached = self.server_url()
+        if attached:
+            yield attached, requests.post
             return
-        from .engine import EngineError
+        from .engine import EngineError, loopback_request
 
         engine = self.direct_engine()
         try:
@@ -439,7 +440,7 @@ class LLMClient:
         except EngineError as exc:
             raise LLMError("engine", str(exc)) from exc
         try:
-            yield server.url
+            yield server.url, partial(loopback_request, "POST")
         finally:
             engine.release(server)
 
@@ -621,7 +622,7 @@ class LLMClient:
         base = url = ""  # set by _serving below, before attempt() runs
         generated = False
 
-        def attempt(with_tools: bool) -> ChatResult:
+        def attempt(with_tools: bool, post: Callable[..., requests.Response]) -> ChatResult:
             nonlocal generated
             payload = self._payload(
                 model, messages, tools if with_tools else None, temperature, max_tokens, stream=True,
@@ -631,7 +632,7 @@ class LLMClient:
             tool_acc: dict[int, dict[str, Any]] = {}
             finished = threading.Event()
             try:
-                with requests.post(
+                with post(
                     url,
                     json=payload,
                     stream=True,
@@ -693,15 +694,15 @@ class LLMClient:
 
         def run() -> ChatResult:
             nonlocal base, url
-            with self._serving(model) as base:
+            with self._serving(model) as (base, post):
                 url = f"{base}/v1/chat/completions"
                 try:
-                    return attempt(use_tools)
+                    return attempt(use_tools, post)
                 except ToolsUnsupportedError:
                     if not use_tools:
                         raise
                     log.info("model %s rejected tools; retrying without tools", model)
-                    result = attempt(False)
+                    result = attempt(False, post)
                     result.tools_disabled = True
                     return result
 
@@ -746,11 +747,11 @@ class LLMClient:
             native = {"extra": extra, "abort": abort} if mind.native_mode else {}
             mind.warm(messages, tools, conversation, **native)
             return
-        with self._serving(model) as base:
+        with self._serving(model) as (base, post):
             payload = self._payload(model, messages, tools, 0.0, 1, stream=True, extra=extra)
             finished = threading.Event()
             try:
-                with requests.post(
+                with post(
                     f"{base}/v1/chat/completions", json=payload, stream=True,
                     timeout=(CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
                     headers=self._headers({"Accept": "text/event-stream"}),
@@ -949,7 +950,7 @@ class LLMClient:
                 text=streamed.content or streamed.reasoning or "", usage=streamed.usage,
                 finish_reason=streamed.finish_reason,
             )
-        with self._serving(model) as base:
+        with self._serving(model) as (base, post):
             url = f"{base}/v1/chat/completions"
             payload = self._payload(
                 model, messages, None, temperature, max_tokens, stream=False,
@@ -958,7 +959,7 @@ class LLMClient:
             last_error: LLMError | None = None
             for attempt in range(retries + 1):
                 try:
-                    response = requests.post(
+                    response = post(
                         url,
                         json=payload,
                         timeout=(CONNECT_TIMEOUT, read_timeout),
@@ -1217,9 +1218,9 @@ class LLMClient:
         """Embed texts via ``/v1/embeddings``; returns vectors in input order."""
         if not texts:
             return []
-        with self._serving(model) as base:
+        with self._serving(model) as (base, post):
             try:
-                response = requests.post(
+                response = post(
                     f"{base}/v1/embeddings",
                     json={"model": model, "input": texts},
                     timeout=(CONNECT_TIMEOUT, read_timeout),

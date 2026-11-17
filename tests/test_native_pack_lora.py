@@ -209,12 +209,13 @@ def test_public_native_alias_routes_adapter_and_keeps_utility_requests_unadapted
     monkeypatch.setattr(runner, "_kill", lambda _server: None)
     requests = []
 
-    def post(url, *, json, **_kwargs):
+    def request(method, url, *, json, **_kwargs):
+        assert method == "POST"
         assert url == "http://127.0.0.1:9999/v1/chat/completions"
         requests.append(json)
         return text_reply("Done.")
 
-    monkeypatch.setattr("kiwibro.llm.requests.post", post)
+    monkeypatch.setattr("kiwibro.engine.loopback_request", request)
     code = [{"role": "user", "content": "Fix the bug in this Python function."}]
     writing = [{"role": "user", "content": "Draft a short poem."}]
     assert client.has_adapters(KIWIMIND)
