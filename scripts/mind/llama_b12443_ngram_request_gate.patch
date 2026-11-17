@@ -1,0 +1,52 @@
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -80,6 +80,7 @@
+     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
+     bool return_tokens   = false;
+     bool return_progress = false;
++    bool ngram_mod_enabled = true;
+
+     int32_t sse_ping_interval = 30; // seconds between SSE comment pings while the stream stays silent, -1 disables
+
+diff --git a/tools/server/server-schema.cpp b/tools/server/server-schema.cpp
+--- a/tools/server/server-schema.cpp
++++ b/tools/server/server-schema.cpp
+@@ -195,6 +195,16 @@
+     //
+     // Speculative decoding params
+     //
++
++    add((new field_bool("speculative.ngram_mod.enabled", params.ngram_mod_enabled))
++        ->set_desc("Allow drafting for this request when ngram-mod is the sole configured method")
++        ->set_handler([](field_eval_context & ctx, const json & data) {
++            const bool enabled = data.at("speculative.ngram_mod.enabled").get<bool>();
++            const auto & types = ctx.params.speculative.types;
++            if (types.size() == 1 && types.front() == COMMON_SPECULATIVE_TYPE_NGRAM_MOD) {
++                ctx.params.ngram_mod_enabled = enabled;
++            }
++        }));
+
+     // TODO: to keep things simple, we disable speculative parameter adjustments for now
+ #if 0
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -583,7 +583,7 @@
+     int get_n_draft_max() const {
+         GGML_ASSERT(task);
+
+-        if (!can_speculate()) {
++        if (!can_speculate() || !task->params.ngram_mod_enabled) {
+             return 0;
+         }
+
+@@ -4771,7 +4771,7 @@
+                 // prompt evaluated for next-token prediction
+                 slot.state = SLOT_STATE_GENERATING;
+
+-                if (slot.can_speculate()) {
++                if (slot.can_speculate() && slot.task->params.ngram_mod_enabled) {
+                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
+                 }
+             } else if (slot.state != SLOT_STATE_GENERATING) {

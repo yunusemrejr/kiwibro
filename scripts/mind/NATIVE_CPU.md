@@ -196,6 +196,47 @@ python3 -m scripts.mind.bench_successor \
   --output cpu-arm.json
 ```
 
+### Request-scoped n-gram drafting experiment
+
+The pinned b12443 server disables its original request-level speculative settings
+in the schema. The optional [request patch](llama_b12443_ngram_request_gate.patch)
+adds the flat JSON boolean `"speculative.ngram_mod.enabled": false`. Its scope
+is a single completion on a server launched with `--spec-type ngram-mod`.
+Omitted, null and true values keep existing behavior. Requests on a server
+configured with another or mixed draft methods keep their existing behavior as
+well. Slot state and server-wide resources still follow the runtime's normal
+lifecycle. This skips n-gram prompt indexing and draft generation for that
+request.
+
+Apply the patch to a clean [b12443 source tree](https://github.com/ggml-org/llama.cpp/tree/301db633702f1d2c107d4feaa4268f07c0b508c5)
+and configure a Ninja build with the server tools enabled. The changed
+translation units compile on their own:
+
+```sh
+git -C "$llama_source" apply "$kiwibro_source/scripts/mind/llama_b12443_ngram_request_gate.patch"
+cmake -S "$llama_source" -B "$llama_build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g0" \
+  -DGGML_NATIVE=OFF -DGGML_VULKAN=OFF -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_COMMON=ON \
+  -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF
+ninja -C "$llama_build" -j1 \
+  tools/server/CMakeFiles/server-context.dir/server-schema.cpp.o \
+  tools/server/CMakeFiles/server-context.dir/server-context.cpp.o
+```
+
+The patched request parser was tested directly for default, null, true,
+false, malformed, plain, MTP and mixed-method cases. A live check still needs
+a separately built release server. Launch it on loopback with the same draft
+flags as above and `--metrics`. Send the same exact-copy prompt with the
+boolean false, true and omitted on one server. Use temperature zero and
+`cache_prompt: false` for each request. Sample
+`llamacpp:spec_decode_num_draft_tokens_total` and
+`llamacpp:spec_decode_num_accepted_tokens_total` from `/metrics` before and
+after each completion. Both deltas should be zero for false and positive for
+the enabled copy probe, with identical exact output. Measure short tool and
+vision controls separately against the stock no-draft server. KiwiBro's
+runtime selection stays on its existing path.
+
 ## One worker per routed expert
 
 The opt-in patch `ggml_cpu_moe_routes.patch` assigns each of six CPU workers one expert projection for one decode token. It uses the original activation quantizer and dot kernel. This avoids the shared route buckets, internal barrier and dynamic row queue. It applies to plain Q4_K fused gate/up and Q5_0 or Q8_0 down weights at the 704-width pilot's shapes, with the existing CPU repacked kernels selected first when available. Other shapes or thread counts use the stock path.
