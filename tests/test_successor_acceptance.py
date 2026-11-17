@@ -46,7 +46,7 @@ from urllib.parse import urlsplit
 import pytest
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
-from kiwibro import create_app, pagecheck, tools
+from kiwibro import components, create_app, pagecheck, tools
 from kiwibro.browser_render import _page_socket
 from kiwibro.llm import ChatResult, Completion
 from kiwibro.mind import KIWIMIND
@@ -216,7 +216,8 @@ def turn(
     # Keep generated code in scratch space. The test driver may approve only
     # the predeclared test invocation and edits to the requested fixture file.
     writes = {"apply_patch", "replace_in_file", "write_file"}
-    permissions = {name: ("ask" if name in writes | {"run_command"} else "auto") if name in allowed else "deny"
+    gated = writes | {"component", "run_command"}
+    permissions = {name: ("ask" if name in gated else "auto") if name in allowed else "deny"
                    for name in tools.tool_names()}
     env.settings_patch({"autonomy": "supervised", "memory_enabled": False, "temperature": 0,
                         "tool_profile": tool_profile, "max_tool_rounds": 16,
@@ -264,6 +265,10 @@ def turn(
             for approval in approvals:
                 identity, name, args = approval["approval_id"], approval["tool"], approval["args"]
                 permitted = name in writes and args.get("path") in (allowed_paths or set())
+                if name == "component" and "component" in allowed:
+                    permitted = (args.get("action") == "use" and args.get("name") == components.HINGED_PANEL
+                                 and args.get("path") in (None, "", ".")
+                                 and (args.get("values") or {}).get("filename") in (allowed_paths or set()))
                 if name == "run_command" and command:
                     permitted = (args.get("command"), args.get("cwd")) == command and simple_policy(env.workspace)
                 if time.monotonic() >= deadline:
@@ -775,7 +780,7 @@ def test_builds_and_checks_an_interactive_3d_hatch(acceptance: Env, offline_chro
         "the scene and controls fit a 360 px phone without horizontal scrolling. Hold each pose until activated. "
         "Transitions may take up to 250 ms and should be immediate if reduced motion is requested. Use inline CSS "
         "and JS only. Check the saved page using look_at_page.",
-        {"write_file", "read_file", "apply_patch", "replace_in_file", "look_at_page"},
+        {"write_file", "read_file", "apply_patch", "replace_in_file", "look_at_page", "component"},
         allowed_paths={filename},
         observer=lambda stats: record_property("turn", {"step": "build_hatch", **stats}),
     )

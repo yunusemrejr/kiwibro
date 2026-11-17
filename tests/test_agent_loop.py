@@ -95,6 +95,47 @@ def test_a_named_supported_scene_is_built_and_checked_without_a_model(env: Env, 
     assert done["inference"]["looked"] == "good"
 
 
+def test_a_named_hinged_panel_is_created_and_reviewed_without_generation(env: Env,
+                                                                        monkeypatch: pytest.MonkeyPatch):
+    from kiwibro import pagecheck
+    from test_pagecheck import Fake
+
+    monkeypatch.setattr(pagecheck, "chrome_render", Fake())
+    message = "Create `inspection.html` as a 3D hinged panel with a left-edge hinge."
+    events, _ = chat_events(env, message)
+    page = env.workspace / "inspection.html"
+    written = page.read_bytes()
+    assert not env.fake.stream_calls
+    assert [(data["name"], data["ok"]) for kind, data in events if kind == "tool_result"] == [
+        ("component", True), ("look_at_page", True),
+    ]
+
+    retry, _ = chat_events(env, message)
+    assert page.read_bytes() == written
+    assert not env.fake.stream_calls
+    assert any(kind == "delta" and "already exists" in data["text"] for kind, data in retry)
+
+
+def test_explicit_panel_fast_path_leaves_custom_requirements_for_model(env: Env):
+    env.fake.stream_script = [ChatResult(content="This mechanism needs a custom layout.")]
+    chat_events(env, "Create hatch.html as a 3D hinged panel with a left hinge, also add a geared hinge.")
+    assert env.fake.stream_calls
+    assert "web/hinged-panel" not in env.fake.stream_calls[0]["messages"][-1]["content"]
+    assert not (env.workspace / "hatch.html").exists()
+
+
+def test_long_hinge_brief_offers_the_component_to_the_model(env: Env):
+    message = (
+        "Save hatch.html as an inspection scene with a bottom-edge hinge, keyboard control and an offline preview. "
+        + "Draw an inspection hatch in CSS. " * 17
+    )
+    assert len(message) > 600
+    env.fake.stream_script = [ChatResult(content="I'll use the hinge component for the panel.")]
+    chat_events(env, message)
+    first = env.fake.stream_calls[0]
+    assert 'name="web/hinged-panel"' in first["messages"][-1]["content"]
+
+
 def test_an_explicit_browser_open_reports_the_landed_url_without_a_model(env: Env, monkeypatch: pytest.MonkeyPatch):
     from kiwibro import tools
 

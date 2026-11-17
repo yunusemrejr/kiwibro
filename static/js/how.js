@@ -366,7 +366,7 @@ function readyParts(root) {
     root.append(tile);
     return tile;
   });
-  text(root, 240, 216, "77 ready parts", "hw-t-tan");
+  text(root, 240, 216, "78 ready parts", "hw-t-tan");
   const chosen = text(root, 240, 236, "picked by code, not by the model");
   const model = box(root, 420, 152, 88, 96, "Model", "", 152);
   const card = s("rect", { class: "hw-part is-on", x: -13, y: -9, width: 26, height: 18, rx: 4 });
@@ -1118,15 +1118,16 @@ const STOPS = [
     title: "Ready parts",
     question: "Why does it not start from a blank page?",
     lines:
-      "Writing a page, a script or a test file from nothing is slow for a small model, and that is where it slips. So Kiwibro keeps a shelf of 77 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Code reads your message, picks the part that fits and hands it to the model along with your words.",
+      "Kiwibro keeps a shelf of 78 ready parts. A [[kit]] is a set of working starter files with a few blanks to fill. A [[recipe]] is a short list of proven steps for a job such as fixing a bug or checking a price. Phrase matching selects a relevant component for the model. A complete request like ‘Create hatch.html as a 3D hinged panel with a top hinge’ can run directly.",
     fact: "The same idea covers small exact questions. A model reads word pieces, not letters, so the r's in strawberry are counted by code and the model is given the count.",
     tech: {
       model: [["Component tool", "Kiwi Mind was trained on the component tool and what it answers, so it knows how to fill a kit and follow a recipe."]],
       app: [
         ["Matching by phrase", "Each part lists the phrases that call for it. The words must come in order and close together, and a kit also needs a word like make or build. The longest phrase wins; a tie picks nothing."],
-        ["47 kits", "Web pages, 3D scenes, music, dashboards, tables, charts, flowcharts, servers, terminal apps, command-line tools, scripts, tests and Ubuntu apps. Files pass the same safety checks as other writes."],
+        ["48 kits", "Web pages, 3D scenes, music, dashboards, tables, charts, flowcharts, servers, terminal apps, command-line tools, scripts, tests and Ubuntu apps. Files pass the same safety checks as other writes."],
         ["30 recipes", "For code, the browser, the terminal, documents and data. The steps use Kiwibro's tools and arrive with the message."],
         ["3D and animation", "The scene kit handles supported actors, movement, sky and ground. Requests outside that set use a custom scene. Page checks look for load errors, layout and visible motion. The 3D kit exposes actor motion separately from camera movement."],
+        ["Hinged panel", "The offline panel swings about one fixed edge. A native button opens and closes it, with keyboard support and reduced motion. The kit creates a new HTML file and uses the workspace preview."],
         ["Exact answers", "Standalone arithmetic and unit conversions use the calculator directly. Longer problems can include code-computed values in context. The physics reference supplies formulas and assumptions for supported topics."],
       ],
     },

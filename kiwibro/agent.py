@@ -415,6 +415,15 @@ _NATIVE_LITERAL_REPLY = re.compile(
     r"`[^`\r\n]{1,128}`|\"[^\"\r\n]{1,128}\"|“[^”\r\n]{1,128}”)",
     re.I,
 )
+_HINGED_PANEL_REQUEST = re.compile(
+    r"(?:please\s+)?(?:create|make|build)\s+(?P<quote>`?)"
+    r"(?P<filename>[a-z0-9][a-z0-9_-]{0,95}\.html?)(?P=quote)\s+as\s+a\s+(?:3d\s+)?"
+    r"hinged\s+panel\s+with\s+a\s+(?P<edge>top|bottom|left|right)(?:-edge)?\s+hinge\.?",
+    re.I,
+)
+_HTML_BUILD_START = re.compile(
+    r"^\s*(?:please\s+)?(?:create|make|build|save|write)\s+[^\r\n]{0,100}?\.html?\b", re.I,
+)
 
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
@@ -1310,8 +1319,9 @@ class AgentManager:
             made = components.default_library().get(kit) if kit else None
         except components.ComponentError:
             made = None
+        moves = bool(made and made.name != "web/scene-3d" and made.moves) or pagecheck.wants_motion(turn.message)
         return pagecheck.Options(
-            moves=bool(made and made.name != "web/scene-3d" and made.moves) or pagecheck.wants_motion(turn.message),
+            moves=moves and kit != components.HINGED_PANEL,
             phone=bool(turn.goal) or pagecheck.wants_phone(turn.message),
             not_text=made.not_text if made else (),
             goal=turn.goal,
@@ -1704,6 +1714,22 @@ class AgentManager:
         if (turn.facts is None or "component" not in turn.facts.tools
                 or turn.reaction is not None or turn.attachments):
             return ""
+        hinge = _HINGED_PANEL_REQUEST.fullmatch(turn.message.strip()) if not turn.goal else None
+        if hinge is not None:
+            values = {"filename": hinge["filename"], "edge": hinge["edge"].lower()}
+            result = self._call_first(turn, "component", {"action": "use", "name": components.HINGED_PANEL,
+                                                          "values": values})
+            if result.ok:
+                turn.kit_called_for = False
+                turn.inference["scene_started"] = True
+                reviewed = self._look_or_review(turn, model, "", None, native=native)
+                if reviewed:
+                    return reviewed
+                said = prompts.KIT_MADE.format(files=values["filename"])
+            else:
+                said = f"Could not create {values['filename']}. {result.content}"
+            self._say(turn, model, said, {"checked_by_kiwibro": True}, "kit")
+            return "ended"
         values = components.scene_request(turn.message)
         if values is None or not values.get("filename"):
             return ""
@@ -3538,6 +3564,10 @@ class AgentManager:
             return ""
         try:
             fitting = components.suggest(f"make {turn.message}" if turn.goal else turn.message)  # a goal asks for it to be made
+            if fitting is None and len(turn.message) <= 2048 and _HTML_BUILD_START.match(turn.message):
+                hinge = components.default_library().get(components.HINGED_PANEL)
+                if components.called_for(hinge, turn.message):
+                    fitting = hinge  # a structured HTML brief may be longer than generic component matching accepts
             turn.kit_called_for = fitting is not None and fitting.kind == components.KIT and (
                 fitting.name != "web/scene-3d" or components.scene_request(turn.message) is not None
             )

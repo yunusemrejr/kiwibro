@@ -45,7 +45,7 @@ itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is 
 - **Safe copy.** Point Kiwibro at a folder and it works in a sandboxed copy. Your folder
   changes only after you have read what changed and the git command that undoes it. It
   never deletes: deletions come as commands for you to run.
-- **Components.** 77 ready parts, from a web page to a 3D scene, a music loop or a terminal app to a GTK app for Ubuntu, that any model
+- **Components.** 78 ready parts, from a web page to a 3D scene, a music loop or a terminal app to a GTK app for Ubuntu, that any model
   can search and build on instead of starting from a blank page.
 - **Looks at what it makes.** Before a reply about a page is final, Kiwibro opens the page in
   Chrome, says what is wrong (a script error, a blank picture, a notice left on screen) and has it

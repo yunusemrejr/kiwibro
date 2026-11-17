@@ -27,7 +27,7 @@ An extractive sweep keeps the current user request, steering notes and tool sequ
 - **Repository** first asks for a read-only diagnosis. It then asks for a repair in the same chat, using the earlier finding. The driver checks the exact file set changed, the original Git HEAD and index, and all four fixture tests.
 - **History** records an early constraint in a chat, seeds about 18,000 estimated tokens of later synthetic notes, and asks for the earlier directory and checkpoint. It checks exact recovery, the compaction boundary, and the untouched workspace. Use `--history-tokens` to repeat the check at another size.
 - **Table recovery** checks the exact source and totals against a successful operation on the current TSV. A whole-column profile with exact category counts and a filtered row count both provide evidence.
-- **Artifacts** run the app renderer and independent browser checks. The report includes hashes and sizes of files that were actually produced.
+- **Artifacts** run the app renderer and independent browser checks. The hatch can use the hinged-panel component with the requested filename. The report includes hashes and sizes of files that were actually produced.
 
 The report includes setup, execution and teardown outcomes, the staged artifact and runtime digests, elapsed time, timeouts, and sampled RAM, swap and GPU memory. Per-turn terminal status and SSE error codes distinguish a completed turn without usage from an interrupted turn. A pass requires every selected scenario to finish and pass. The driver uses temporary app state and an isolated home and reports fixture metrics without chat text, environment values or absolute paths. `--scripted` exercises the runner and postcondition checks without model inference.
 

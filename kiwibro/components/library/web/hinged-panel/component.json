@@ -1,0 +1,30 @@
+{
+  "name": "web/hinged-panel",
+  "kind": "kit",
+  "title": "Hinged panel",
+  "summary": "One offline HTML demonstration of a rectangular panel swinging about a specified edge on a stationary frame.",
+  "when": "Use for a single illustrative hatch, flap, or door and a top, bottom, left, or right edge hinge. The panel opens on a labeled control and starts closed. Choose it when the blanks cover the requested design and behavior.",
+  "blanks": {
+    "filename": {"about": "Output file name ending in .html or .htm, without a folder", "default": "index.html"},
+    "edge": {"about": "Single fixed hinge edge: top, bottom, left, or right", "default": "top"},
+    "title": {"about": "Short page title", "default": "Hinged panel"},
+    "part": {"about": "Plain name of the moving part", "default": "panel"},
+    "detail": {"about": "Plain text revealed when the panel opens", "default": "The opening behind the panel is exposed."},
+    "angle": {"about": "Opening angle in whole degrees from 35 through 80", "default": "56"},
+    "direction": {"about": "Free edge swings toward or away from the viewer", "default": "toward"},
+    "button_label": {"about": "Stable accessible name of the toggle button", "default": "Open or close panel"},
+    "closed_label": {"about": "Visible status text while closed", "default": "Closed"},
+    "open_label": {"about": "Visible status text while open", "default": "Open"},
+    "scene_id": {"about": "HTML ID of the scene (a letter followed by letters, numbers, hyphens, or underscores)", "default": "scene"},
+    "frame_id": {"about": "HTML ID of the fixed frame", "default": "frame"},
+    "leaf_id": {"about": "HTML ID of the moving leaf", "default": "leaf"},
+    "toggle_id": {"about": "HTML ID of the native control button", "default": "toggle"},
+    "status_id": {"about": "HTML ID of the visible status", "default": "status"},
+    "detail_id": {"about": "HTML ID of the revealed detail element", "default": "inside"}
+  },
+  "next": "Use look_at_page if requested to check the saved page. The button moves the panel between its two poses.",
+  "match": ["single hinged panel", "hinged panel kit", "hinged hatch", "edge hinge", "edge hinged", "hinged panel"],
+  "unless": ["existing page", "exploded view", "cutaway", "CAD", "multiple hinges", "hinge chain", "geared hinge", "WebGL", "three.js"],
+  "finished": true,
+  "change": "For a later edit, read the saved file and make a scoped edit in place. The original component creates new files only."
+}

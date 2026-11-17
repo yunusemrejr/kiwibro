@@ -117,7 +117,7 @@ kiwibro/
 │   ├── remote.py             # SSH remote hosts: run, upload, download
 │   ├── workspaces.py         # per-conversation working folders
 │   ├── components.py         # the component library: search, show, use
-│   ├── components/library/   # 77 kits and recipes, one folder each (plain data)
+│   ├── components/library/   # 78 kits and recipes, one folder each (plain data)
 │   ├── knowledge.py          # the knowledge base: a read-only reference, searched by code
 │   ├── knowledge/base/       # 24 topic files of short entries (plain Markdown)
 │   │   # safety
@@ -1303,8 +1303,8 @@ use it, blanks, next step) and, for a kit, a `files/` tree.
 - **Kinds.** A *kit* is a set of starter files whose contents and names may carry
   `{{blank}}` placeholders; a *recipe* is a list of proven steps written in terms of
   Kiwibro's own tools.
-- **Areas.** 77 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
-  service, 3D scene, music loop), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
+- **Areas.** 78 components: `web/` (page, site, form, app shell, PWA, Flask API, FastAPI
+  service, 3D scene, hinged panel, music loop), `ui/` (dashboard, data table, chart, flowchart, dialog and toast, navigation, settings,
   gallery, and a UI review recipe), `code/` (Python CLI and package, terminal app with curses, Node CLI and server, C
   program, SQLite store, API client, scraper, Docker files, test starters, and recipes to
   fix a bug, add a feature, refactor, review, explain a project and repair failing tests),

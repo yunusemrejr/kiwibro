@@ -130,6 +130,14 @@ class CheckpointStore:
         self.prune()
         return batch
 
+    def snapshot_created(self, path: Path, display: str, *, conversation_id: str, tool: str) -> str | None:
+        """Make an exclusively created file undoable after its first write succeeds."""
+        row = (uuid.uuid4().hex[:12], conversation_id, tool, str(path), display, 0, None, 0, None, time.time())
+        with self._lock:
+            batch = self._insert([row])
+        self.prune()
+        return batch
+
     def history(self, conversation_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

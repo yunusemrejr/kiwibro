@@ -122,7 +122,7 @@ def tiny(tmp_path: Path) -> components.Library:
 
 
 def test_every_manifest_loads_with_the_required_keys():
-    assert len(MANIFESTS) == 77
+    assert len(MANIFESTS) == 78
     for path in MANIFESTS:
         data = manifest(path)
         for key in ("name", "kind", "title", "summary", "when", "blanks", "next"):
@@ -146,7 +146,7 @@ def test_every_manifest_loads_with_the_required_keys():
 def test_library_matches_the_reference_catalog(train):
     reference = {name: (blanks, summary) for name, blanks, summary in train.COMPONENTS}
     library = {component.name: component for component in components.Library(LIBRARY).all()}
-    assert set(library) == set(reference)
+    assert set(library) == set(reference) | {components.HINGED_PANEL}
     for name, (blanks, summary) in reference.items():
         wanted = [key.strip() for key in blanks.split(",") if key.strip()]
         assert list(library[name].blanks) == wanted, name

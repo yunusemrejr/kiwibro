@@ -20,9 +20,12 @@ import logging
 import os
 import re
 from collections.abc import Collection
+from contextlib import ExitStack
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from . import checkpoints, config
 from .sandbox import SandboxError, Workspace
@@ -33,6 +36,7 @@ LIBRARY_ROOT = Path(__file__).parent / "components" / "library"
 ACTIONS = ("search", "list", "show", "use")
 KINDS = ("kit", "recipe")
 KIT = "kit"
+HINGED_PANEL = "web/hinged-panel"
 MAX_RESULTS = 6
 _UNSET = "Nothing was written. Choose another folder with path, or move that file first."
 _USE_HINT = 'To use one: component(action="use", name="<name>", path="<folder>", values={...})'
@@ -382,6 +386,18 @@ def scene_request(message: str) -> dict[str, str] | None:
 
 def advice(component: Component) -> str:
     """What the turn note says about a suggested component: a kit's call, or a recipe's steps."""
+    if component.name == HINGED_PANEL:
+        return (
+            f"{SUGGEST_HEADER}\n"
+            "For a single rectangular hatch on a stationary frame, use "
+            'component(action="use", name="web/hinged-panel", '
+            'values={"filename":"panel.html","edge":"top","title":"Panel"}). '
+            "Use the requested file and edge (top, bottom, left, or right). "
+            "Set direction to toward or away, and angle to whole degrees (35–80), if specified. "
+            "For requested labels use part, detail, button_label, closed_label or open_label. "
+            "For requested IDs use scene_id, frame_id, leaf_id, toggle_id, status_id or detail_id. "
+            "The panel starts closed and moves only on activation. Use write_file for a different mechanism."
+        )
     if component.kind == KIT:
         values = ", ".join(f'"{key}": "..."' for key in component.blanks)
         call = (
@@ -507,6 +523,94 @@ def _blank_values(component: Component, values: dict[str, str]) -> tuple[dict[st
     return filled, [key for key in values if key not in component.blanks], notes
 
 
+_HINGE_EDGES = ("top", "bottom", "left", "right")
+_HINGE_DIRECTIONS = ("toward", "away")
+_HINGE_LABELS = ("title", "part", "detail", "button_label", "closed_label", "open_label")
+_HINGE_IDS = ("scene_id", "frame_id", "leaf_id", "toggle_id", "status_id", "detail_id")
+_HTML_ID = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}")
+
+
+def _hinge_values(component: Component, values: dict[str, str]) -> dict[str, str]:
+    filled, extra, _notes = _blank_values(component, values)
+    if extra:
+        raise ComponentError(_left_out(component, extra))
+    if not _HTML_FILENAME.fullmatch(filled["filename"]):
+        raise ComponentError('filename must be a single .html or .htm file name, such as "panel.html".')
+    for name, choices in (("edge", _HINGE_EDGES), ("direction", _HINGE_DIRECTIONS)):
+        filled[name] = filled[name].strip().lower()
+        if filled[name] not in choices:
+            raise ComponentError(f"{name} must be one of {', '.join(choices)}.")
+    angle = filled["angle"]
+    if not re.fullmatch(r"[0-9]{2}", angle) or not 35 <= int(angle) <= 80:
+        raise ComponentError("angle must be a whole number from 35 through 80.")
+    if any(not _HTML_ID.fullmatch(filled[key]) for key in _HINGE_IDS):
+        raise ComponentError("Use IDs of up to 64 letters, digits, hyphens, or underscores starting with a letter.")
+    if len({filled[key] for key in _HINGE_IDS}) != len(_HINGE_IDS):
+        raise ComponentError("Each element ID must be different.")
+    if "button_label" not in values:
+        filled["button_label"] = f"Open or close {filled['part'].strip()}"
+    for name in _HINGE_LABELS:
+        label = filled[name].strip()
+        limit = 80 if name == "part" else 160
+        if not label or not label.isprintable() or len(label) > limit:
+            raise ComponentError(f"{name} must be a single line of 1–{limit} characters.")
+        filled[name] = escape(label)
+    return filled
+
+
+def _publish_new_page(root: Path, relative: Path, text: str) -> None:
+    """Write a complete page at a workspace path without replacing an existing entry."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as resources:
+        directory = os.open(root, flags)
+        resources.callback(os.close, directory)
+        for part in relative.parts[:-1]:
+            try:
+                os.mkdir(part, dir_fd=directory)
+            except FileExistsError:
+                pass
+            directory = os.open(part, flags, dir_fd=directory)
+            resources.callback(os.close, directory)
+        temp = f".kiwibro-{uuid4().hex}.tmp"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.link(temp, relative.name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        finally:
+            try:
+                os.unlink(temp, dir_fd=directory)
+            except OSError:
+                log.warning("could not remove the hinge page temporary file", exc_info=True)
+
+
+def _use_hinged_panel(component: Component, values: dict[str, str], workspace: Workspace,
+                      path: str | None, conversation_id: str | None, data_dir: str | Path | None) -> str:
+    filled = _hinge_values(component, values)
+    folder = Path(path or ".")
+    if folder.is_absolute() or ".." in folder.parts:
+        raise ComponentError("Choose a folder relative to the workspace.")
+    relative = folder / filled["filename"]
+    source = component.folder / "files" / "index.html"
+    root = workspace.root
+    text = _fill(source.read_text(encoding="utf-8"), filled)
+    try:
+        _publish_new_page(root, relative, text)
+    except FileExistsError as exc:
+        raise ComponentError(f"{relative} already exists. {_UNSET}") from exc
+    except OSError as exc:
+        raise ComponentError(f"Could not create {relative}: {exc.strerror or exc}.") from exc
+    if conversation_id:
+        try:
+            checkpoints.store_for(Path(data_dir or config.data_dir())).snapshot_created(
+                root / relative, relative.as_posix(), conversation_id=conversation_id, tool="component"
+            )
+        except Exception:
+            log.warning("checkpoint after creating %s failed", component.name, exc_info=True)
+    where = "the workspace" if folder == Path(".") else folder.as_posix()
+    return f"Used {component.name} in {where}: 1 file written\n{relative} ({len(text.splitlines())} lines)\nNext: {component.next}"
+
+
 def _kit_plan(
     component: Component, values: dict[str, str], folder: Path, workspace: Workspace
 ) -> list[tuple[Path, Path, str]]:
@@ -565,6 +669,8 @@ def use(
     if not wanted:
         raise ComponentError("use needs name.")
     component = (library or default_library()).get(wanted)
+    if component.name == HINGED_PANEL:
+        return _use_hinged_panel(component, values or {}, workspace, path, conversation_id, data_dir)
     filled, extra, notes = _blank_values(component, values or {})
     if component.kind != KIT:
         return _describe(component)

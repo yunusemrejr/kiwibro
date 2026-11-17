@@ -364,6 +364,16 @@ on the Ryzen laptop. Time to the verified read result was 50.6 ms p50 and
 74.4 ms p90. Completion was 51.3 ms p50 and 74.6 ms p90. The server launch
 sentinel verified that these requests needed no model process.
 
+## Explicit literal replies
+
+Native Auto omits tool schemas for a self-contained instruction to repeat a
+supplied literal. Kiwi Mind still writes the reply. Both replays of `Respond in
+exactly one word: Hello` returned `Hello` on the compact E4B CPU draft pack with
+Reasoning On. Prompt tokens went from 2,959 to 308, measured prefill from 52.69
+to 5.69 seconds, and completion from 61.00 to 6.11 seconds. Each arm used one
+uncached prompt on an already loaded model. Linux CPU load varied.
+[Matched app replay](https://huggingface.co/yunusemrejr/kiwimind/blob/ce77901db366b4b173cee91ee8c0c52d7f7aa6fc/variants/e4b-cpu-mtp/evals/ryzen-literal-output-autoprofile.json)
+
 ## Liquid AI placement control
 
 LFM2.5-VL-3B Q4_K_M and its matching Q8_0 projector occupied 2.26 GB. The

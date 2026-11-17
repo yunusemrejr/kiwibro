@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  * { box-sizing: border-box }
+  body {
+    margin: 0;
+    background: #eef0f1;
+    color: #18272e;
+    font: 1rem/1.5 Inter, system-ui, sans-serif;
+  }
+  main { max-inline-size: 42rem; padding: clamp(1rem, 5vw, 2.5rem); margin-inline: auto; overflow-wrap: anywhere }
+  h1 { margin: 0; font-size: clamp(1.5rem, 6vw, 2.3rem); line-height: 1.2 }
+  .scene {
+    display: grid;
+    place-items: center;
+    min-block-size: 15rem;
+    margin-block-start: 1rem;
+    background: radial-gradient(ellipse at center, #fff, #e4e8ea);
+    border: 1px solid #c9d1d5;
+    border-radius: .5rem;
+    perspective: 650px;
+  }
+  .assembly {
+    position: relative;
+    inline-size: min(62%, 16rem);
+    aspect-ratio: 8 / 5;
+    transform-style: preserve-3d;
+  }
+  .frame, .leaf { position: absolute; inset: 0; border-radius: 3px }
+  .frame {
+    box-shadow: 0 0 0 9px #6b808b, 0 0 0 11px #293940;
+    transform: translateZ(-3px);
+    transform-style: preserve-3d;
+  }
+  .frame::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 12% 20%, #a4afb6 0 2px, transparent 3px),
+      radial-gradient(circle at 88% 80%, #a4afb6 0 2px, transparent 3px),
+      repeating-linear-gradient(90deg, #263842 0 17px, #324751 17px 19px);
+    transform: translateZ(-260px);
+  }
+  .leaf {
+    background: linear-gradient(148deg, #fff9, transparent 65%), #7699a5;
+    box-shadow: inset 0 0 0 2px #e4ecefaa, inset 0 -5px #27364066;
+    transform-origin: var(--pivot);
+    transform: var(--closed-pose);
+    transform-style: preserve-3d;
+    transition: transform 160ms ease;
+  }
+  .leaf::after {
+    content: "";
+    position: absolute;
+    inset: 33% 28%;
+    border: 1px solid #24394299;
+    border-radius: 2px;
+    background: repeating-linear-gradient(0deg, transparent 0 6px, #293e4a66 6px 8px);
+  }
+  .scene[data-open] .leaf { transform: var(--open-pose) }
+  .scene[data-direction="away"] { --travel: calc(-1 * var(--swing)) }
+  .scene[data-direction="toward"] { --travel: var(--swing) }
+  .scene[data-edge="top"] {
+    --pivot: 50% 0%;
+    --closed-pose: rotateX(0deg);
+    --open-pose: rotateX(var(--travel));
+  }
+  .scene[data-edge="bottom"] {
+    --pivot: 50% 100%;
+    --closed-pose: rotateX(0deg);
+    --open-pose: rotateX(calc(-1 * var(--travel)));
+  }
+  .scene[data-edge="left"] {
+    --pivot: 0% 50%;
+    --closed-pose: rotateY(0deg);
+    --open-pose: rotateY(calc(-1 * var(--travel)));
+  }
+  .scene[data-edge="right"] {
+    --pivot: 100% 50%;
+    --closed-pose: rotateY(0deg);
+    --open-pose: rotateY(var(--travel));
+  }
+  .barrel {
+    position: absolute;
+    border-radius: 3px;
+    background: linear-gradient(var(--barrel-tone, 0deg), #536771, #d8e2e6 55%, #536771);
+    transform: translateZ(0);
+    box-shadow: 0 0 0 1px #283c45;
+  }
+  [data-edge="top"] .barrel, [data-edge="bottom"] .barrel { inset-inline: 13%; block-size: 6px }
+  [data-edge="left"] .barrel, [data-edge="right"] .barrel { inset-block: 13%; inline-size: 6px; --barrel-tone: 90deg }
+  [data-edge="top"] .barrel { inset-block-start: -3px }
+  [data-edge="bottom"] .barrel { inset-block-end: -3px }
+  [data-edge="left"] .barrel { inset-inline-start: -3px }
+  [data-edge="right"] .barrel { inset-inline-end: -3px }
+  .status { margin: .75rem 0 }
+  button {
+    border: 1px solid #243c47;
+    border-radius: .35rem;
+    min-block-size: 44px;
+    padding: .5rem .9rem;
+    background: #25434f;
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    max-inline-size: 100%;
+    overflow-wrap: anywhere;
+  }
+  button:focus-visible { outline: 3px solid #267268; outline-offset: 3px }
+  @media (prefers-reduced-motion: reduce) { .leaf { transition: none } }
+</style>
+<main>
+  <h1>{{title}}</h1>
+  <div class="scene" id="{{scene_id}}" data-edge="{{edge}}" data-direction="{{direction}}"
+       style="--swing: {{angle}}deg" aria-hidden="true">
+    <div class="assembly">
+      <div class="frame" id="{{frame_id}}"></div>
+      <div class="leaf" id="{{leaf_id}}"></div>
+      <div class="barrel"></div>
+    </div>
+  </div>
+  <p class="status" id="{{status_id}}" role="status" data-closed="{{closed_label}}" data-opened="{{open_label}}">{{closed_label}}</p>
+  <button type="button" id="{{toggle_id}}" aria-expanded="false"
+          aria-controls="{{detail_id}}">{{button_label}}</button>
+  <p id="{{detail_id}}" hidden>{{detail}}</p>
+</main>
+<script>
+  const scene = document.getElementById("{{scene_id}}");
+  const toggle = document.getElementById("{{toggle_id}}");
+  const status = document.getElementById("{{status_id}}");
+  const detail = document.getElementById(toggle.getAttribute("aria-controls"));
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") === "false";
+    scene.toggleAttribute("data-open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    status.textContent = open ? status.dataset.opened : status.dataset.closed;
+    detail.hidden = !open;
+  });
+</script>
+</html>

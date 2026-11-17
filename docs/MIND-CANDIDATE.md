@@ -1,9 +1,13 @@
 # Native Kiwi Mind candidate
 
-The candidate runs a checked GGUF pack through its native llama.cpp chat template. Gemma 4
-26B A4B is a sparse mixture of experts. A learned router selects a subset of expert networks
-for each token. Its vision projector provides image input and its chat template supports
-structured tool calls. [Gemma 4 model card](https://huggingface.co/google/gemma-4-26B-A4B-it)
+The laptop candidate runs a checked Gemma 4 E4B GGUF through its native llama.cpp chat template.
+It uses narrower feed-forward layers, its matching vision projector and an optional draft head
+for CPU generation. The pack supports structured tool calls and direct image input.
+[Gemma 4 E4B model card](https://huggingface.co/google/gemma-4-E4B-it)
+
+The separate 26B A4B experiment uses a sparse mixture of experts. A learned router selects a
+subset of expert networks for each token. Its Colab training and export are documented below.
+[Gemma 4 26B A4B model card](https://huggingface.co/google/gemma-4-26B-A4B-it)
 
 KiwiBro uses its existing tool catalog, argument validation, approval controls, evidence
 checks, and SQLite memory and notes. Chat, vision and schema-constrained memory requests share
@@ -360,8 +364,18 @@ Keep the held-out requests separate from the fit mixture.
 
 A Colab L4 fit used the 20 hinge episodes and 12 earlier text, tool and image
 episodes. It completed 48 rank-8 LoRA steps. The exported F16 adapter is
-29,573,024 bytes and binds to the original compact trunk. Its behavior is
-checked on independently held-out scenes and the earlier workflow replay.
+29,573,024 bytes and binds to the original compact trunk. Neither scale passed
+the Chrome checks on the eight held-out scenes. At scale 0.8, complete first
+writes fell from eight to four and frozen workflow passes from eight to six
+out of 26. The adapter stays disabled.
+[Training and held-out results](https://huggingface.co/yunusemrejr/kiwimind/tree/ce77901db366b4b173cee91ee8c0c52d7f7aa6fc/experiments/e4b-hinge)
+
+KiwiBro also includes an offline component for a single rectangular panel on
+a fixed frame. Send `Create hatch.html as a 3D hinged panel with a top hinge`
+to create and preview it. The component accepts all four edges, uses a native
+button, and keeps both hinge anchors fixed. It creates a new file in the
+workspace and records the write for Undo. Longer briefs can use the same
+component with explicit element IDs, labels, angle and swing direction.
 
 ## Verify before changing the local launcher
 
