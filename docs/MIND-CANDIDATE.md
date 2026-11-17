@@ -64,8 +64,9 @@ To stage a task LoRA, add `--adapter`, `--adapter-sha256`,
 `--adapter-trunk-sha256`, `--adapter-task code` and an optional
 `--adapter-scale 0.8` to the staging command. The LoRA's export provenance must
 identify the exact serving trunk SHA-256. Kiwi Mind loads the registered adapter
-at zero scale and selects its scale per request using the existing task router.
-If adapter startup fails, the managed engine retries with the verified trunk.
+at zero scale through the runtime's `--lora-scaled` flag and selects its scale per
+request using the existing task router. If adapter startup fails or that flag is
+unavailable, the managed engine starts with the verified trunk.
 [llama.cpp per-request LoRA settings](https://github.com/ggml-org/llama.cpp/blob/301db633702f1d2c107d4feaa4268f07c0b508c5/tools/server/README.md)
 
 ## Train and export on Colab
@@ -195,8 +196,14 @@ python3 llama.cpp/convert_lora_to_gguf.py --base mixed-merged --outtype f16 \
 The GGUF adapter has SHA-256
 `259d93f0e610c3526147afee3182ce163674a63b6dacab77e2dcdf4bc12b5729`.
 The 300 steps are in the trunk and the additional 88 are in the optional adapter.
-Compare repository outcomes with the adapter at zero and an active scale on
-the same trunk. Record adapter effect and runtime cost before enabling it for users.
+
+The verified GGUF loaded on the pinned Colab L4 runtime at scale zero. On
+26 held-out next actions per arm, setting scale `0.8` recovered one of two
+repository cases with reasoning Off. The overall score remained 6/26 and
+median time went from 0.94 to 0.95 seconds. With reasoning On the repository
+score stayed 1/2, overall score went from 7/26 to 4/26, and median time went
+from 1.61 to 2.08 seconds. These arms applied the requested scale to every
+probe. Automatic routing still needs whole-repository validation on the laptop.
 [Published adapter and classifier artifacts](https://huggingface.co/yunusemrejr/kiwimind/tree/392fb41cd581b08520c65f047d28e269c28d0e8e/experiments)
 
 ## Verify before changing the local launcher
