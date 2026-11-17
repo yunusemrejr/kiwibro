@@ -515,14 +515,29 @@ An isolated direct-image probe sent the screenshot with the model's tool
 catalog and skipped the initial caption. It produced a 360-pixel render
 with the exact queue, build code and initial status in 275.85 seconds.
 The independent interaction check found that the generated page omitted
-the requested `state` element ID. This probe used a temporary attachment
-path through the app and did not enable a new default.
+the requested `state` element ID. The new render check reproduced that
+finding on the saved page at both 1280 and 360 pixels. The direct-image
+path remains an isolated experiment.
 [Direct-image probe](https://huggingface.co/yunusemrejr/kiwimind/blob/f4e91b8c33fc2c6e1917dcc6c8b5d428dae0e664/variants/e4b-activation-compacted/evals/ryzen-direct-image-probe.json)
 
 The pinned `llama-bench` used one warmed model, 256 tokens of context
 before decoding and 12 measured output tokens per arm. In run order, six
 workers reached 3.05 tokens/s, four reached 4.35 and 4.45 tokens/s, and six
 reached 4.04 tokens/s. CPU pressure `some avg10` varied from 7.2% to 19.2%.
-This short synthetic run exercises decode. Application latency and quality
-need their own comparison before changing the managed thread count.
+This short synthetic run exercises decode.
 [Decode benchmark](https://huggingface.co/yunusemrejr/kiwimind/blob/f4e91b8c33fc2c6e1917dcc6c8b5d428dae0e664/variants/e4b-activation-compacted/evals/ryzen-decode-threads.json)
+
+The paired HTTP replay used the same native trunk and projector and six
+batch threads in both runs. Each request passed its exact-output check.
+
+| Request | Six decode threads | Four decode threads |
+| --- | ---: | ---: |
+| Retrieve two tokens from a fresh 1,944-token prompt | 39.99 s | 50.36 s |
+| Repeat that request with cache reuse | 3.58 s | 3.92 s |
+| Copy 14 C declarations verbatim | 63.28 s | 58.90 s |
+
+The second retrieval processed one new prompt token. CPU pressure
+`some avg10` was 5.23% to 22.39% for six workers and 19.42% to 19.16% for
+four, measured at the endpoints of each arm. The managed runtime keeps
+its six-worker default on this laptop.
+[Native thread comparison](https://huggingface.co/yunusemrejr/kiwimind/blob/bdae04f40f80e3dffe6be66f139c2a590e43a887/variants/e4b-activation-compacted/evals/ryzen-native-cpu-threads.json)
