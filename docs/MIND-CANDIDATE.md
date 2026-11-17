@@ -370,6 +370,13 @@ writes fell from eight to four and frozen workflow passes from eight to six
 out of 26. The adapter stays disabled.
 [Training and held-out results](https://huggingface.co/yunusemrejr/kiwimind/tree/ce77901db366b4b173cee91ee8c0c52d7f7aa6fc/experiments/e4b-hinge)
 
+A separate 48-step Colab fit used compact `component` calls with the same
+rehearsal mixture. Neither scale produced an exact first call on the eight
+held-out requests. Both passed eight of 26 frozen workflow controls. That total
+includes two requests per scale beyond the context window. This adapter stays
+disabled.
+[Typed adapter and results](https://huggingface.co/yunusemrejr/kiwimind/tree/codex-gemma4-e4b-8192/experiments/e4b-typed-hinge)
+
 KiwiBro also includes an offline component for a single rectangular panel on
 a fixed frame. Send `Create hatch.html as a 3D hinged panel with a top hinge`
 to create and preview it. The component accepts all four edges, uses a native
