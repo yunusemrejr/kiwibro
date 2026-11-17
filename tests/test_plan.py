@@ -96,6 +96,36 @@ def test_constraints_are_not_answers_to_check(home: Path, tmp_path: Path) -> Non
     assert not built.checkable
 
 
+@pytest.mark.parametrize("condition", [
+    "When pressed, set aria-expanded=true.",
+    "When the panel opens, show the current status.",
+    "Once the control is active, change the label to Ready.",
+])
+def test_conditional_artifact_behavior_stays_in_the_plan_as_a_requirement(tmp_path: Path, condition: str) -> None:
+    built = plan.build(f"Create a local control-panel.html. {condition}", tmp_path)
+    assert [step.kind for step in built.steps] == ["write", "other"]
+    assert f"{condition} → do it as part of the work" in built.note()
+    assert "answer it in your reply" not in built.note()
+
+
+def test_actual_when_question_still_gets_an_answer_step(tmp_path: Path) -> None:
+    built = plan.build("Create control-panel.html. When the panel opens, what should visitors see?", tmp_path)
+    assert [step.kind for step in built.steps] == ["write", "answer"]
+    assert "When the panel opens, what should visitors see? → answer it in your reply" in built.note()
+
+
+def test_recognized_actions_keep_their_conditions_and_action_targets(tmp_path: Path) -> None:
+    built = plan.build(
+        "Create control-panel.html. When ready, run the smoke check. Once ready.txt exists, read results.txt.",
+        tmp_path,
+    )
+    assert [step.kind for step in built.steps] == ["write", "run", "read"]
+    assert built.steps[-1].target.path == tmp_path / "results.txt"
+    note = built.note()
+    assert "When ready, run the smoke check. → use run_command" in note
+    assert 'Once ready.txt exists, read results.txt. → read_file with path "results.txt"' in note
+
+
 def test_places_and_file_names_combine(home: Path, tmp_path: Path) -> None:
     built = plan.build("Write me a doc about kiwis and save it on my desktop as kiwis.md", tmp_path)
     assert len(built.steps) == 1  # "…and save it…" is the same deliverable

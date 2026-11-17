@@ -88,6 +88,7 @@ _ASK = re.compile(
 )
 _WANT = re.compile(r"\b(?:want|need|like|give\s+me|get\s+me)\b", re.I)
 _QUESTION = re.compile(r"^(?:what|how|why|when|where|who|which|is|are|was|were|can|could|does|do|did|should)\b", re.I)
+_CONDITIONAL = re.compile(r"^(?:when|once|if|after|before|unless|until)\s+[^,]+,\s*(.+)$", re.I)
 _WRITE_VERB = re.compile(r"\b(write|save|create|make|generate|draft|put|store|export|produce|prepare|compose|dump|jot)\b", re.I)
 _FILE_NOUN = re.compile(
     r"\b(files?|docs?|documents?|markdown|md|readme|txt|pdf|docx|spreadsheet|csv|json|html|note\s+file|text\s+file)\b", re.I
@@ -201,10 +202,19 @@ def _strip(fragment: str) -> str:
     return text
 
 
+def _conditional_action(text: str) -> str | None:
+    """Return the action after a leading condition, leaving real questions intact."""
+    found = _CONDITIONAL.match(text) if not text.endswith("?") else None
+    return _strip(found[1]) if found else None
+
+
 def _is_instruction(core: str) -> bool:
     # "php zeroshell?" is the user thinking aloud; a question to answer has a few words.
     asks = bool(_QUESTION.match(core)) or core.endswith("?")
-    return bool(directives.REQUEST.match(core)) or (asks and len(core.split()) >= 3)
+    action = _conditional_action(core)
+    return bool(directives.REQUEST.match(core) or (action and directives.REQUEST.match(action))) or (
+        asks and len(core.split()) >= 3
+    )
 
 
 def split_steps(message: str) -> list[str]:
@@ -279,6 +289,12 @@ def _checked(path: Path, is_dir: bool, workspace_root: Path) -> Target | None:
 
 def _kind(text: str, has_path: bool) -> str:
     core = _ASK.sub("", text)
+    action = _conditional_action(core)
+    if action is not None:
+        if not directives.REQUEST.match(action):
+            return "other"
+        core = _ASK.sub("", action)
+        has_path = bool(_PATH.search(core) or _PLACE.search(core))
     if _WRITE_VERB.search(core) and (has_path or _FILE_NOUN.search(core) or _PLACE.search(core)):
         return "write"
     if _WANT.search(core) and _PLACE.search(core) and not _READ_VERB.match(core):  # "I want a doc on my desktop"
@@ -287,6 +303,8 @@ def _kind(text: str, has_path: bool) -> str:
         return "run"
     if _SEARCH_VERB.search(core) and (_WEB_WORD.search(core) or not _LOCAL_WORD.search(core)):
         return "web"
+    if action is not None:
+        return "read" if has_path and _READ_VERB.match(core) else "other"
     if _WEB_WORD.search(core) and not _LOCAL_WORD.search(core):
         return "web"
     if _LIVE.search(core) and not _LOCAL_WORD.search(core) and not _OWN.search(core.replace("\u2019", "'")) \
@@ -462,7 +480,7 @@ def build(message: str, workspace_root: Path | str) -> TurnPlan | None:
     for text in split_steps(message):
         has_path = bool(_PATH.search(text)) or bool(_PLACE.search(text))
         kind = _kind(text, has_path)
-        target = _target(text, kind, root) if kind in ("write", "read") else None
+        target = _target(_conditional_action(text) or text, kind, root) if kind in ("write", "read") else None
         if steps and kind == "write" and steps[-1].kind == "write" and (
             target is None or steps[-1].target is None
         ) and re.match(r"^(?:save|put|store|place|export)\b", text, re.I):
