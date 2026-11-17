@@ -282,6 +282,23 @@ python3 -m scripts.mind.recover_e4b merge compact-e4b e4b-adapter merged-e4b
 
 [Pinned E4B base checkpoint](https://huggingface.co/google/gemma-4-E4B-it/tree/4ecc2ba63bcac23ba4a767fc87025b1450f84c9c)
 
+The exported Q4_K_M trunk is 4,902,294,208 bytes with SHA-256
+`e8d713c5833ddbfef0d28abc3185c688867eb46655299dff422c55d50c16bb9b`.
+The matching F16 projector brings the pack to 5.89 GB. **How it works**
+reports the checked width, layer count and training steps from this pack.
+
+The matched Colab replay used the same 26 held-out next actions, pinned
+b12443 CUDA, one 24,576-token slot and the same projector in all arms.
+
+| Reasoning | Stock → compact passes | Stock → compact median response |
+| --- | --- | --- |
+| Off | 5/26 → 7/26 | 0.86 s → 0.68 s |
+| On | 6/26 → 2/26 | 3.82 s → 2.01 s |
+
+The Off arm gained one browser, one native-code and one architecture case
+and lost one research case. These are GPU next-action checks. The compact
+pack remains experimental while the laptop workflow checks continue.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts

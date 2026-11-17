@@ -439,3 +439,21 @@ failed because the model omitted the explicitly requested working
 directory and its command was denied. The repair turn took 240.94 seconds
 including repeated denied attempts. CPU pressure `some avg10` was 7.70%
 at start and 8.33% at finish.
+
+### E4B placement and compact export
+
+Both E4B trunks passed three raw exact CPU probes through b12443 with six
+threads, one 8,192-token slot, reasoning Off, and the matching projector.
+
+| Probe | Stock E4B CPU | Compact E4B CPU | Stock E4B Vulkan |
+| --- | ---: | ---: | ---: |
+| Exact code search tool call | 8.93 s | 8.41 s | 33.63 s |
+| Read code from a screenshot | 12.28 s | 16.08 s | 25.33 s |
+| Copy 14 C declarations | 70.70 s | 253.32 s | stopped during generation |
+
+CPU pressure `some avg10` started at 13.94% for stock and 15.00% for compact.
+It reached 58.12% while compact code copy was running. The Vulkan copy was
+stopped after generating over 100 tokens at about 0.65 tokens per second.
+These isolated requests establish that both exports can run the three
+probes on CPU. The whole-model speed comparison needs matched load and
+repeated app turns.
