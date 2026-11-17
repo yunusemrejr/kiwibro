@@ -12,7 +12,7 @@ import pytest
 from kiwibro.context import estimate_tokens
 from kiwibro.llm import ChatResult, LLMError
 from kiwibro.mind.native_generic import NATIVE_MODEL
-from scripts.mind.accept_finalist import PLACEMENT
+from scripts.mind.accept_finalist import PLACEMENT, REPOSITORY_PROFILE
 from test_backend import env  # noqa: F401 - scripted app fixture
 from test_mind_native_generic import pack_at
 from test_successor_acceptance import (  # noqa: F401 - imported pytest fixtures
@@ -23,6 +23,7 @@ from test_successor_acceptance import (  # noqa: F401 - imported pytest fixtures
 
 def test_finalist_reviews_then_repairs_in_same_chat(acceptance, record_property):
     env = acceptance
+    profile = os.environ.get(REPOSITORY_PROFILE, "full")
     head = repo_fixture(env.workspace)
     contents = env.workspace / "stack"
     before = {path: digest for path, digest in snapshot(contents).items() if not path.startswith(".git/")}
@@ -43,7 +44,7 @@ def test_finalist_reviews_then_repairs_in_same_chat(acceptance, record_property)
         env,
         "In stack/, trace why the dispatch and audit services both ignore an explicit zero. "
         "Read their shared policy implementation and name its path. This first step is diagnosis only.",
-        reads, observer=lambda stats: record_property("turn", {"step": "diagnose", **stats}),
+        reads, tool_profile=profile, observer=lambda stats: record_property("turn", {"step": "diagnose", **stats}),
     )
     assert PKG in messages[-1]["content"]
     assert any(row.get("tool_name") in {"read_file", "read_files"} and ORIGINAL_LIMIT in row["content"]
@@ -56,6 +57,7 @@ def test_finalist_reviews_then_repairs_in_same_chat(acceptance, record_property)
         f"and explicit zero at zero. Leave the notes and examples untouched, and don't commit. Run {CHECK} in stack.",
         reads | {"apply_patch", "replace_in_file", "write_file", "run_command"},
         allowed_paths={PKG}, command=(CHECK, "stack"), conversation_id=first[0][1]["conversation_id"],
+        tool_profile=profile,
         observer=lambda stats: record_property("turn", {"step": "repair", **stats}),
     )
     final = run_fixture_tests(env.workspace)

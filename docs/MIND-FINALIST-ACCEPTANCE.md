@@ -12,6 +12,8 @@ The driver runs one scenario at a time. Pass `--case repo` or `--case history` t
 
 Run `--case interaction --interaction-repeats 5` to check warm responsiveness on one loaded engine. It measures short chat, a file read, and a same-chat HTML edit followed by a phone render. The report gives p50 and p90 across verified turns per operation, with timeout and verification counts. First visible text uses the application's SSE stream timestamp.
 
+Use `--case repo --repository-profile auto` to exercise the default tool profile on the same repository task. The report records the tool profile with the results.
+
 To compare automatic placement and CPU on the same artifact, repeat the command with the same llama-server executable and `--placement auto` or `--placement cpu`, using a new report path for each arm. CPU mode sets the isolated app's CPU preference before the first model request. Each recorded turn lists the managed backend before and after the turn, native server launch attempts, and any GPU device-loss fallback during the turn. These records describe the app's managed process selection. Use `--extractive-history` to enable the experimental compaction path and keep that setting fixed during a placement comparison.
 
 An extractive sweep keeps the current user request, steering notes and tool sequence together. It also keeps up to about 1,024 estimated tokens of complete earlier turns, within the available budget. More prior material must therefore come from the source-labelled excerpts or an exact recall from the stored transcript. This can shorten prefill at the cost of relying more on recall for follow-ups that leave their subject implicit.

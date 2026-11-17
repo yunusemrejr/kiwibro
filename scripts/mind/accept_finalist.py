@@ -34,6 +34,7 @@ PLACEMENT = "KIWIBRO_ACCEPTANCE_PLACEMENT"
 DIRECT_GPU = {"auto": "auto", "cpu": "off"}
 EXTRACTIVE_HISTORY = "KIWIBRO_NATIVE_EXTRACTIVE_HISTORY"
 INTERACTION_REPEATS = "KIWIBRO_ACCEPTANCE_INTERACTION_REPEATS"
+REPOSITORY_PROFILE = "KIWIBRO_ACCEPTANCE_REPOSITORY_PROFILE"
 SUPPLEMENT = "tests/test_finalist_acceptance.py"
 ACCEPTANCE = "tests/test_successor_acceptance.py"
 CASES = {
@@ -265,6 +266,8 @@ def run(args, scratch: Path, report: dict) -> None:
             environment[EXTRACTIVE_HISTORY] = "1"
     if "interaction" in args.case:
         environment[INTERACTION_REPEATS] = str(args.interaction_repeats)
+    if "repo" in args.case:
+        environment[REPOSITORY_PROFILE] = args.repository_profile
     nodes = [f"{CASES[label][0]}::{CASES[label][1]}" for label in args.case]
     command = [sys.executable, "-m", "pytest", "-q", "-p", "scripts.mind.accept_finalist", *nodes]
     root = Path(__file__).resolve().parents[2]
@@ -301,6 +304,8 @@ def main() -> int:
                         help="Enable experimental native extractive history compaction.")
     parser.add_argument("--case", action="append", choices=CASES)
     parser.add_argument("--interaction-repeats", type=int, default=5, help="Warm interaction rounds (1–20).")
+    parser.add_argument("--repository-profile", choices=("full", "auto"), default="full",
+                        help="Tool profile for the repository diagnosis and repair.")
     parser.add_argument("--history-tokens", type=int, default=18000)
     parser.add_argument("--reasoning", choices=("off", "on"), default="off")
     parser.add_argument("--turn-timeout", type=int, default=300)
@@ -321,6 +326,7 @@ def main() -> int:
               "cases": args.case, "reasoning": args.reasoning, "history_tokens_target": args.history_tokens,
               "placement": None if args.scripted else args.placement,
               "extractive_history": args.extractive_history,
+              "repository_profile": args.repository_profile if "repo" in args.case else None,
               "turn_timeout_s": args.turn_timeout, "suite_timeout_s": args.suite_timeout,
               "suite_timed_out": False, "phases": [], "host": host_info()}
     with args.report.open("x", encoding="utf-8") as output:
