@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import queue
@@ -372,6 +373,18 @@ _REPO_LIST_REFUSAL = re.compile(
     r"\b(?:only\s+(?:read|inspect)|(?:read|inspect)\s+only)\b",
     re.I,
 )
+_REPO_SHARED_SOURCE = re.compile(
+    r"(?:^|[.,!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:read|inspect|trace)\b"
+    r"[^.!?;\n]{0,80}\b(?:shared|common|imported)\b"
+    r"[^.!?;\n]{0,50}\b(?:implementation|definition|module|source|dependency)\b",
+    re.I,
+)
+_REPO_READ_REFUSAL = re.compile(
+    r"\b(?:do not|don['’]t|never|skip|without)\s+(?:read\w*|inspect\w*|follow\w*|trac\w*)\b|"
+    r"\b(?:only\s+(?:if|once|when|after)|unless|until|ask\s+(?:me|first)|wait\s+for\s+(?:me|my approval))\b",
+    re.I,
+)
+_DOTTED_PYTHON_MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+", re.ASCII)
 _RENDER_REQUEST = re.compile(
     r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:"
     r"use\s+`?look_at_page`?\s+to\s+(?:check|verify|inspect)\b|"
@@ -434,7 +447,10 @@ def _command_directories(message: str, command: str) -> list[str | None]:
     return directories
 
 
-def _file_stamps(workspace: Workspace, paths: list[str]) -> tuple[tuple[Path, int, int, int, int, int], ...]:
+_FileStamp = tuple[Path, int, int, int, int, int]
+
+
+def _file_stamps(workspace: Workspace, paths: list[str]) -> tuple[_FileStamp, ...]:
     """Identify current workspace file versions without re-reading their contents."""
     stamps = []
     try:
@@ -518,6 +534,8 @@ class Turn:
     evidence_epoch: int = 0
     repo_scope: Path | None = None
     visible_repo_reads: set[str] = field(default_factory=set)
+    repo_source_reads: dict[Path, tuple[_FileStamp, str | None]] = field(default_factory=dict)
+    repo_dependency_tried: bool = False
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -1117,7 +1135,25 @@ class AgentManager:
                     turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text))
                 ):
                     # A blocked repo repeat contributes no new facts. Reuse the prompt that still
-                    # contains the verified source reads, without appending another tool round.
+                    # contains the verified reads unless they lead to one explicitly requested dependency.
+                    dependency = self._repo_dependency(turn, prepared, tool_list) if repo_repeat else None
+                    if dependency:
+                        root, path, can_auto_read = dependency
+                        turn.repo_dependency_tried = True
+                        if can_auto_read:
+                            opened = self._call_first(turn, "read_file", {"path": path}, automatic_workspace=root)
+                            if opened.ok:
+                                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
+                                                               turn_context=turn_context)
+                                self._emit_context(turn, prepared)
+                        elif round_index < max_rounds - 1:
+                            turn.pending_review = (
+                                f"The verified sources share a local Python import at {path}. Read this "
+                                "implementation using read_file with normal permissions, then answer from the evidence."
+                            )
+                            continue
+                    if repo_repeat and turn.steering_received:
+                        continue
                     self._answer_anyway(turn, model, prepared, tool_list if repo_repeat else None,
                                         text_mode=False, repo_answer=repo_repeat)
                     if repo_repeat:
@@ -2448,6 +2484,66 @@ class AgentManager:
             turn.inference["repo_listed_first"] = True
             turn.repo_scope = folder
         return True
+
+    def _repo_dependency(
+        self, turn: Turn, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
+    ) -> tuple[Path, str, bool] | None:
+        """Find one common absolute import through current, fully visible source reads."""
+        scope = turn.repo_scope
+        request = _CODE_FENCES.sub("", turn.message)
+        if (scope is None or len(turn.repo_source_reads) < 2 or turn.repo_dependency_tried or turn.steering_received
+                or not _REPO_SHARED_SOURCE.search(request) or _REPO_READ_REFUSAL.search(request)
+                or not any(tool["function"]["name"] == "read_file" for tool in tool_list or [])):
+            return None
+        settings = self._settings()
+        permission = tools.permission_mode(settings, "read_file")
+        if (settings.get("tool_profile") not in (None, "auto") or not settings.get("agent_enabled", True)
+                or permission == "deny" or safemode.gate(self.db, turn.conversation_id, "read_file").refusal):
+            return None
+        workspace = self._workspace(turn.conversation_id)
+        root = workspace.root
+        if str(root) != turn.safety.get("workspace") or not scope.is_relative_to(root):
+            return None
+        visible = {row["tool_call_id"]: row.get("content") for row in prepared.messages
+                   if row["role"] == "tool" and row.get("tool_call_id")}
+        imports: dict[str, int] = {}
+        for path, (stamp, call_id) in list(turn.repo_source_reads.items())[-8:]:
+            source = visible.get(call_id)
+            if (path.suffix != ".py" or not isinstance(source, str) or len(source) > 8000 or "\n… [" in source
+                    or _file_stamps(workspace, [path.relative_to(root).as_posix()]) != (stamp,)):
+                continue
+            try:
+                tree = ast.parse(source)
+            except (SyntaxError, ValueError, RecursionError):
+                continue
+            required = {node.module for node in tree.body if isinstance(node, ast.ImportFrom)
+                        and not node.level and node.module and _DOTTED_PYTHON_MODULE.fullmatch(node.module)}
+            for module in required:
+                imports[module] = imports.get(module, 0) + 1
+        common = [module for module, count in imports.items() if count >= 2]
+        if not 1 <= len(common) <= 8:
+            return None
+        matches = []
+        try:
+            for module in common:
+                base = scope.joinpath(*module.split("."))
+                for path in (base.with_suffix(".py"), base / "__init__.py"):
+                    if workspace.resolve(path) != path:
+                        return None
+                    if path.is_file():
+                        matches.append(path)
+        except (SandboxError, OSError, RuntimeError):
+            return None
+        if len(matches) != 1 or matches[0] in turn.repo_source_reads:
+            return None
+        path = matches[0].relative_to(root).as_posix()
+        # Preflight on copied counters so only the ordinary tool path owns the action record.
+        state = {**turn.safety, "counters": dict(turn.safety.get("counters", {}))}
+        decision = safety.decide(settings, "read_file", {"path": path}, workspace=workspace,
+                                 turn_state=state, risk=tools.TOOL_SPECS["read_file"].risk)
+        if decision.mode == "deny" or turn.steering_received:
+            return None
+        return root, path, permission == "auto" and decision.mode == "auto"
 
     def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
         """The user asked for something code can do exactly as asked (keep a dictated note,
@@ -3808,6 +3904,7 @@ class AgentManager:
                 turn.evidence_epoch += 1
                 turn.successful_evidence_calls.clear()
                 turn.repo_scope = None
+                turn.repo_source_reads.clear()
             if risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
             elif item["decision"] is not None and item["decision"].targets:  # and what a command changes or removes
@@ -3833,6 +3930,12 @@ class AgentManager:
                               and not result.content.endswith("\n… [batch truncated]"))
                 if usable:
                     turn.successful_evidence_calls[key] = item["id"]
+                    if repo_read:
+                        args = item["args"]
+                        complete = (item["name"] == "read_file" and args.get("start") in (None, 1)
+                                    and args.get("end") is None)
+                        for stamp in stamps:
+                            turn.repo_source_reads[stamp[0]] = (stamp, item["id"] if complete else None)
                 else:
                     turn.successful_evidence_calls.pop(key, None)
             outcomes[item["id"]] = result, duration
