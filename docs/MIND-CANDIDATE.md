@@ -376,6 +376,11 @@ to create and preview it. The component accepts all four edges, uses a native
 button, and keeps both hinge anchors fixed. It creates a new file in the
 workspace and records the write for Undo. Longer briefs can use the same
 component with explicit element IDs, labels, angle and swing direction.
+On the Ryzen laptop, four complete component commands took 3.0–5.6 seconds
+through the app preview. Each output passed an independent geometry check at
+360 and 800 pixels. A free-form hatch request with reasoning enabled timed
+out at 280 seconds without a saved page.
+[Component and model replays](https://huggingface.co/yunusemrejr/kiwimind/tree/224f25ac1d85d27921f0341c035499b5d9a152c0/variants/e4b-cpu-mtp/evals)
 
 ## Verify before changing the local launcher
 

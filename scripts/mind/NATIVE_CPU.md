@@ -401,6 +401,15 @@ case ended after 98.0 seconds without a file. The 3D hatch produced a Chrome
 screenshot after 131.5 seconds and timed out before the interaction check.
 Exact history recall and table recovery also missed their acceptance checks.
 
+The newer LFM3-VL-2B Q4_K_M and Q8_0 projector total 1.30 GB. On CPU they
+read the screenshot correctly. The structured call included the exact tool
+arguments but also exposed reasoning text and an unmatched closing tag with
+reasoning Off. The run ended before the code-copy result. The screenshot took
+36.87 seconds and the tool probe took 86.52 seconds while Linux CPU pressure
+was substantially higher during generation, so these runs do not rank the
+two models' speed under the same load.
+[Pinned LFM3 files](https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/tree/1add221a5ea6c047fcf1eaaf2d247939d7cf8849) · [Shadow run](https://huggingface.co/yunusemrejr/kiwimind/blob/224f25ac1d85d27921f0341c035499b5d9a152c0/experiments/lfm3-vl-2b-shadow/ryzen-cpu.json)
+
 ## Compact 300-step candidate on deeper app turns
 
 With the repository repeat guard and default Auto tools, the read-only
