@@ -390,6 +390,7 @@ _PAGE_REPLY_REQUEST = re.compile(
     re.I,
 )
 _REQUESTED_REPEAT = re.compile(r"\b(?:twice|two times|two passes|repeat|again|re-?run|second pass)\b", re.I)
+_GEMMA_TOOL_MARKERS = ("<|tool_call>", "<tool_call|>")
 
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
@@ -1092,7 +1093,8 @@ class AgentManager:
                 ):
                     # A blocked repo repeat contributes no new facts. Reuse the prompt that still
                     # contains the verified source reads, without appending another tool round.
-                    self._answer_anyway(turn, model, prepared, None, text_mode=False, refresh_context=not repo_repeat)
+                    self._answer_anyway(turn, model, prepared, tool_list if repo_repeat else None,
+                                        text_mode=False, repo_answer=repo_repeat)
                     if repo_repeat:
                         turn.inference["repo_repeat_finished"] = True
                     self._close_plan(turn, model)
@@ -2668,11 +2670,12 @@ class AgentManager:
         nudge: str | None = None,
         cool: bool = False,
         open_call: bool = False,
+        answer_only: bool = False,
     ) -> ChatResult:
         settings = self._settings()
         if model != turn.model or turn.prompt_changed:  # who writes the turn changed since the caller read its state
             model, _prompt, tools_now, text_mode, prepared = self._state_for(turn)
-            tool_list = tools_now if tool_list is not None else None  # a caller that forbade tools still does
+            tool_list = tools_now if tool_list is not None and not answer_only else None
         if turn.lead and model == turn.lead and not turn.lead_said:
             turn.lead_said = True
             turn.emit("status", {"phase": "thinking", "label": f"{turn.lead_name} is taking over."})
@@ -2683,6 +2686,10 @@ class AgentManager:
         max_tokens = self._max_tokens(turn, prepared, settings)
         profile = inference.model_profile(model, prepared.model_info)
         native_mind = _native_mind(model, prepared.model_info)
+        if answer_only:
+            text_mode = open_call = False
+            if not native_mind:
+                tool_list = None
         budgets = inference.uses_budgets(profile, native_mind or self.llm.direct_on())
         if turn.thinking is None:  # decided once per turn: with the server a flip re-prefills everything
             turn.thinking = inference.turn_reasoning(
@@ -2693,7 +2700,7 @@ class AgentManager:
             )
             self._thinking[turn.conversation_id] = turn.thinking
         think = turn.thinking
-        must_act = round_index > 0 or (turn.plan is not None and bool(turn.plan.remaining()))
+        must_act = not answer_only and (round_index > 0 or (turn.plan is not None and bool(turn.plan.remaining())))
         if budgets:
             extra = inference.budget_payload(profile, think=think, must_act=must_act)
         else:
@@ -2724,7 +2731,8 @@ class AgentManager:
             if correction:
                 messages = [*messages, {"role": "user", "content": correction}]
             if overthought:  # act without thinking this once (also transient)
-                messages = [*messages, {"role": "user", "content": prompts.ACT_NOW.format(step=self._next_step(turn))}]
+                if not answer_only:
+                    messages = [*messages, {"role": "user", "content": prompts.ACT_NOW.format(step=self._next_step(turn))}]
                 if budgets:  # the runtime ignored the budget: switch thinking off in the template too
                     request_extra = {k: v for k, v in request_extra.items() if k != "reasoning_budget_message"}
                     request_extra["thinking_budget_tokens"] = 0
@@ -2739,13 +2747,16 @@ class AgentManager:
                 limit = inference.THINK_BUDGET_CHARS if think and must_act and not no_thinking else 0
             turn.think_chars, turn.think_budget = 0, limit
             request_extra = {**request_extra, **self._adapter_extra(turn, model, prepared)}
+            if answer_only and tool_list:
+                # Native llama.cpp keeps these schemas in the template and switches off tool parsing.
+                request_extra["tool_choice"] = "none"
             # Prepared context appends stable message objects. A full rebuild or
             # transient suffix creates new objects, which are counted afresh.
             reuse = inference.PREFIX_TRACKER.observe(
                 model, messages, tool_list, prompt_extra, memo=None if text_mode else turn.prefix_memo,
             )
             turn.timer = inference.RoundTimer()
-            turn.stream_filter = toolcall.StreamFilter()
+            turn.stream_filter = toolcall.StreamFilter(additional_openers=_GEMMA_TOOL_MARKERS if answer_only else ())
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
             turn.native_tool_charge = (
                 self._tool_tokens(model, tool_list, prepared.model_info)
@@ -2762,14 +2773,14 @@ class AgentManager:
                     max_tokens=max_tokens,
                     on_delta=self._delta_callback(turn),
                     on_reasoning=self._reasoning_callback(turn),
-                    on_rewrite=self._rewrite_callback(turn),
+                    on_rewrite=self._rewrite_callback(turn, answer_only=answer_only),
                     abort=turn.abort,
                     extra=request_extra or None,
                     open_call=open_call,
                 )
                 turn.timer.finish()
                 self._note_round(turn, round_index, think=think, reuse=reuse, result=result)
-                self._rescue_tool_calls(turn, result, settings)
+                self._rescue_tool_calls(turn, result, settings, answer_only=answer_only)
                 if kept:  # the stored reply is what the user saw: the good start, then the rest
                     result.content = f"{kept}\n\n{result.content.lstrip()}" if result.content.strip() else kept
                 return result
@@ -2790,7 +2801,7 @@ class AgentManager:
                     self._judge_adapters(turn, spoiled=False)
                     correction = prompts.STEER_NOTE.format(note=redirect.verdict.note)
                     # Told that it has the tool, a small model often says again that it cannot.
-                    open_call = open_call or (redirect.verdict.call and model == KIWIMIND
+                    open_call = open_call or (not answer_only and redirect.verdict.call and model == KIWIMIND
                                               and tool_list is not None and not text_mode)
                 turn.partial_text = ""
                 turn.emit("rewrite", {"text": "", "reasoning": ""})
@@ -2821,6 +2832,12 @@ class AgentManager:
                 turn.emit("rewrite", {"text": turn.partial_text, "reasoning": ""})
                 turn.emit("status", {"phase": "thinking", "label": "It started repeating itself. Trying again"})
             except ContextLimitError:
+                if answer_only and tool_list:
+                    tool_list = None
+                    if turn.partial_text or turn.partial_reasoning:
+                        turn.partial_text = turn.partial_reasoning = ""
+                        turn.emit("rewrite", {"text": "", "reasoning": ""})
+                    continue
                 attempts += 1
                 if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
                     log.info("context limit hit; summarised half the history and retrying")
@@ -2838,6 +2855,14 @@ class AgentManager:
                 turn.partial_text = ""
                 turn.partial_reasoning = ""
             except LLMError as exc:
+                if answer_only and exc.kind == "tools":
+                    if turn.partial_text or turn.partial_reasoning:
+                        turn.partial_text = turn.partial_reasoning = ""
+                        turn.emit("rewrite", {"text": "", "reasoning": ""})
+                    if tool_list:
+                        tool_list = None
+                        continue
+                    return ChatResult()
                 if turn.lead is None or model != turn.lead or turn.partial_text or turn.partial_reasoning:
                     raise
                 # The helper could not start, or failed before showing anything: Kiwi Mind finishes the turn.
@@ -2845,7 +2870,8 @@ class AgentManager:
                 turn.emit("status", {"phase": "thinking", "label": f"{turn.lead_name} could not answer. Kiwi Mind is answering."})
                 turn.lead, turn.model, turn.lead_lost = None, KIWIMIND, True
                 return self._stream_with_recovery(
-                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=nudge, cool=cool
+                    turn, model, prepared, tool_list, round_index, text_mode=text_mode, nudge=nudge, cool=cool,
+                    answer_only=answer_only,
                 )
 
     @staticmethod
@@ -2892,7 +2918,9 @@ class AgentManager:
         )
 
     @staticmethod
-    def _rescue_tool_calls(turn: Turn, result: ChatResult, settings: dict[str, Any]) -> None:
+    def _rescue_tool_calls(
+        turn: Turn, result: ChatResult, settings: dict[str, Any], *, answer_only: bool = False,
+    ) -> None:
         """Recover tool calls the model wrote as text; release stream text held back for nothing."""
         held_back, turn.stream_filter = turn.stream_filter, None
         if not result.tool_calls and settings.get("agent_enabled", True):
@@ -2901,6 +2929,13 @@ class AgentManager:
                 result.text_calls = True
                 log.info("turn %s: recovered %s tool call(s) written as text", turn.conversation_id, len(calls))
                 result.tool_calls, result.content = calls, cleaned
+        if answer_only:
+            # A parser without tool grammar can still put literal tool markup in its text.
+            held_call = held_back and held_back.held and not (
+                held_back.closer and held_back.held.startswith(held_back.closer)
+            )
+            if result.tool_calls or held_call or any(marker in result.content for marker in _GEMMA_TOOL_MARKERS):
+                raise LLMError("tools", "The model returned a tool call for a plain answer.")
         written = result.content
         result.content = toolcall.unwrap(written)  # "<output>400</output>" is the answer 400
         if held_back is not None:
@@ -2951,10 +2986,13 @@ class AgentManager:
             raise steer.Redirect(verdict)
 
     @staticmethod
-    def _rewrite_callback(turn: Turn) -> Callable[[str, str], None]:
+    def _rewrite_callback(turn: Turn, *, answer_only: bool = False) -> Callable[[str, str], None]:
         """The model wrote reasoning as plain text: show it as reasoning, keep the answer."""
 
         def on_rewrite(text: str, reasoning: str) -> None:
+            if answer_only:
+                turn.stream_filter = toolcall.StreamFilter(additional_openers=_GEMMA_TOOL_MARKERS)
+                text = turn.stream_filter.feed(text)
             turn.partial_text = text
             turn.partial_reasoning += reasoning
             turn.emit("rewrite", {"text": text, "reasoning": reasoning})
@@ -3546,19 +3584,23 @@ class AgentManager:
 
     def _answer_anyway(
         self, turn: Turn, model: str, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
-        text_mode: bool, *, refresh_context: bool = True,
+        text_mode: bool, *, repo_answer: bool = False,
     ) -> None:
         """The turn produced no words at all: ask once more for a plain answer, and if the
         model still says nothing, say so honestly instead of leaving an empty reply."""
         text = ""
         try:
-            if refresh_context:
+            nudge = prompts.ANSWER_NOW
+            if repo_answer:
+                nudge += (" Name relevant source files by their workspace-relative paths, preserving the exact "
+                          "directories and filenames from the successful read tool arguments.")
+            else:
                 prepared = self.context.extend(
                     prepared, turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
                 )
             turn.emit("status", {"phase": "thinking", "label": "Putting the answer together"})
             result = self._stream_with_recovery(
-                turn, model, prepared, tool_list, 1, text_mode=text_mode, nudge=prompts.ANSWER_NOW, cool=True
+                turn, model, prepared, tool_list, 1, text_mode=text_mode, nudge=nudge, cool=True, answer_only=repo_answer,
             )
             self._record_usage(turn, result, prepared)
             text = (result.content or "").strip()

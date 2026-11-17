@@ -1198,14 +1198,15 @@ class StreamFilter:
     at the end, with ``unwrap``, whether the reply really was wrapped.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, additional_openers: tuple[str, ...] = ()) -> None:
         self._pending = ""
         self.held = ""
         self.opener = ""  # the wrapper tag held back, with the blank space after it
         self._tag = ""
         self._opening = True  # nothing shown yet: the reply may still open with a wrapper tag
         self._after_opener = False
-        self._markers: tuple[str, ...] = _STREAM_OPENERS
+        self._call_openers = _STREAM_OPENERS + additional_openers
+        self._markers = self._call_openers
 
     @property
     def closer(self) -> str:
@@ -1222,7 +1223,7 @@ class StreamFilter:
             if opener:
                 self.opener = self._tag = opener
                 buffer = lead[len(opener):]
-                self._markers = _STREAM_OPENERS + (self.closer,)
+                self._markers = self._call_openers + (self.closer,)
                 self._after_opener = True
             elif any(tag.startswith(lead) for tag in _WRAP_OPENERS):
                 self._pending = buffer  # may still become a wrapper tag

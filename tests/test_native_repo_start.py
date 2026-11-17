@@ -2,15 +2,16 @@
 
 from io import BytesIO
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
 from kiwibro import safemode
-from kiwibro.llm import ChatResult
+from kiwibro.llm import ChatResult, ContextLimitError, LLMError
 from kiwibro.mind import KIWIMIND
 from kiwibro.sandbox import Workspace
 import test_backend
-from test_backend import Env, chat_events, collect_sse, tool_call_result
+from test_backend import Env, SSEStream, chat_events, collect_sse, tool_call_result
 from test_native_prompt import INFO
 
 env = test_backend.env
@@ -214,11 +215,99 @@ def test_native_repo_finishes_after_a_round_of_exact_verified_reads(env: Env, na
     ]
     assert len(env.fake.stream_calls) == 3
     final = env.fake.stream_calls[-1]
-    assert final["tools"] is None
+    assert final["tools"] == env.fake.stream_calls[-2]["tools"]
+    assert final["extra"]["tool_choice"] == "none" and not final["open_call"]
     assert events[-1][1]["inference"]["repo_repeat_finished"]
     assert any(row["role"] == "tool" and row["tool_call_id"] == "original" and "DEFAULT_SLOTS = 6" in row["content"]
                for row in final["messages"])
     assert not any(row.get("tool_call_id") == "repeat" for row in final["messages"])
+    assert "workspace-relative paths" in final["messages"][-1]["content"]
+    assert "successful read tool arguments" in final["messages"][-1]["content"]
+    assert SOURCE not in final["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("response", ["structured", "gemma_text", "tool_error", "context_limit"])
+def test_native_repo_final_falls_back_to_plain_generation_without_executing_calls(env: Env, native_repo, response: str):
+    raw_call = "<|tool_call>call:write_file{path:untouched.txt,content:bad}<tool_call|>"
+    bad = {
+        "structured": tool_call_result("write_file", {"path": "untouched.txt", "content": "bad"}, "unexpected"),
+        "gemma_text": ChatResult(content=raw_call),
+        "tool_error": LLMError("tools", "The model did not honor tool choice."),
+        "context_limit": ContextLimitError(),
+    }[response]
+    answer = f"The default is 6 in {SOURCE}."
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": SOURCE}, "original"),
+        tool_call_result("read_file", {"path": SOURCE}, "repeat"),
+        bad,
+        ChatResult(content=answer),
+    ]
+    events, raw = chat_events(env, ASK)
+    assert len(env.fake.stream_calls) == 4
+    constrained, fallback = env.fake.stream_calls[-2:]
+    assert constrained["tools"] == env.fake.stream_calls[1]["tools"] and constrained["extra"]["tool_choice"] == "none"
+    assert fallback["tools"] is None and "tool_choice" not in (fallback["extra"] or {}) and not fallback["open_call"]
+    assert [data["text"] for kind, data in events if kind == "delta"] == [answer]
+    assert all(data["name"] != "write_file" for kind, data in events if kind == "tool_call")
+    assert raw_call not in raw and not (env.workspace / "untouched.txt").exists()
+
+
+def test_native_repo_final_stays_plain_when_the_model_state_changes(env: Env, native_repo, monkeypatch: pytest.MonkeyPatch):
+    answer_anyway = env.svc.agent._answer_anyway
+    helper = "synthetic/helper"
+
+    def change_writer(turn, *args, **kwargs):
+        if kwargs.get("repo_answer"):
+            turn.model = helper
+        return answer_anyway(turn, *args, **kwargs)
+
+    monkeypatch.setattr(env.svc.agent, "_answer_anyway", change_writer)
+    monkeypatch.setattr(env.svc.llm, "model_info", lambda model: INFO if model == KIWIMIND else {
+        "id": model, "context": 8192, "tools": False,
+    })
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": SOURCE}, "original"),
+        tool_call_result("read_file", {"path": SOURCE}, "repeat"),
+        ChatResult(content=f"The default is 6 in {SOURCE}."),
+    ]
+    events, _ = chat_events(env, ASK)
+    assert events[-1][0] == "done"
+    final = env.fake.stream_calls[-1]
+    assert final["model"] == helper and final["tools"] is None and not final["open_call"]
+    assert "tool_choice" not in (final["extra"] or {})
+    assert any(row["role"] == "tool" for row in final["messages"])
+
+
+def test_native_repo_final_streams_prose_before_the_model_finishes(env: Env, native_repo, monkeypatch: pytest.MonkeyPatch):
+    prefix = "The default is 6 "
+    suffix = f"in {SOURCE}."
+    release = Event()
+    stream_chat = env.svc.llm.stream_chat
+
+    def split_final(**kwargs):
+        if (kwargs.get("extra") or {}).get("tool_choice") != "none":
+            return stream_chat(**kwargs)
+        result = stream_chat(**{**kwargs, "on_delta": None})
+        emit = kwargs["on_delta"]
+        emit(prefix)
+        assert release.wait(timeout=5), "The visible answer waited for the whole generation"
+        emit(suffix)
+        return result
+
+    monkeypatch.setattr(env.svc.llm, "stream_chat", split_final)
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": SOURCE}, "original"),
+        tool_call_result("read_file", {"path": SOURCE}, "repeat"),
+        ChatResult(content=prefix + suffix),
+    ]
+    stream = SSEStream(env.client.post("/api/chat", json={"message": ASK}, buffered=False)).start()
+    try:
+        assert stream.wait_for("delta", timeout=4)["text"] == prefix
+        assert not stream.done.is_set()
+    finally:
+        release.set()
+    events = stream.finish(timeout=4)
+    assert [data["text"] for kind, data in events if kind == "delta"] == [prefix, suffix]
 
 
 def test_native_repo_repeat_keeps_a_new_line_range_and_new_read_in_the_batch(env: Env, native_repo):
