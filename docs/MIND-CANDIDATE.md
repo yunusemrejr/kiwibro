@@ -326,6 +326,15 @@ The compact trunk and shared image projector total 5.93 GB. The separate
 adapter is included for replay with its scale set to zero in the pack.
 [Verified compaction-only pack](https://huggingface.co/yunusemrejr/kiwimind/tree/91f41a13a7519bfbd631e1937a70be83de411443/variants/e4b-activation-compacted)
 
+The experimental CPU pack can include the official E4B Q8_0 draft head.
+Its `mtp.file` points to the checked GGUF in `files`, and
+`mtp.trunk_sha256` binds the head to the installed trunk. Together the trunk,
+projector and head occupy 6.02 GB. The managed b12443 CPU server can draft
+up to two tokens per step in one slot and verify them with the trunk.
+An adapter that can activate uses ordinary decoding. A draft startup
+failure retries with the same trunk and projector.
+[Measured draft decoding](../scripts/mind/NATIVE_CPU.md#compact-e4b-multi-token-prediction-on-cpu)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts

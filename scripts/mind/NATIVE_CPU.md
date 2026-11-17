@@ -570,3 +570,11 @@ took 8.45 and 11.04 seconds respectively. This test establishes exact
 outputs and decoding measurements for these three short or repetitive
 requests. The deeper app workflows have their own acceptance checks.
 [Official draft head](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/blob/8903cb408c7df39cde2ed15fac397e6d7be92951/mtp-gemma-4-E4B-it-Q8_0.gguf) · [Exact-output measurements](https://huggingface.co/yunusemrejr/kiwimind/blob/a9e1b64d16f10c5bf9ffb3e7fa9faa9b6529269a/variants/e4b-activation-compacted/evals/ryzen-native-cpu-mtp.json)
+
+The isolated app run with drafting produced a 3D hatch file and its first
+Chrome render in 180.21 seconds. The turn hit the 300-second limit before
+completing. An independent check of the saved file reported a 363-pixel
+layout when asked for 360 pixels and the hinge origin at the middle of
+the lid. It stopped at the viewport assertion before exercising the
+control.
+[3D app run](https://huggingface.co/yunusemrejr/kiwimind/blob/38b93e244a1a26fb81336b284dfa36208091cff8/variants/e4b-activation-compacted/evals/ryzen-mtp-3d-hatch.json)

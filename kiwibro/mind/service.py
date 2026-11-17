@@ -388,6 +388,7 @@ class Mind:
                 details = {
                     "base": model.repo, "architecture": model.arch, "quant": model.quantization,
                     "vision": bool(model.projector), "expert_bank": candidate.expert_bank,
+                    "mtp": bool(model.pack_mtp),
                     "training_steps": candidate.training_steps, "feed_forward": candidate.feed_forward,
                     "capabilities": {"tools": model.tools, "thinking": model.thinking,
                                      "reasoning_effort": candidate.reasoning_effort},

@@ -203,6 +203,8 @@ tools, thinking and reasoning effort. The optional `expert_bank` object reports
 For a compact dense Gemma pack, `feed_forward` reports `layers`,
 `width_before` and `width_after` when the served GGUF header agrees with the
 layer count and current width.
+`mtp` reports whether the checked pack includes a compatible multi-token
+prediction head. Activation depends on the runtime, placement and adapter settings.
 When a checked pack registers a task LoRA, `task_adapter` reports its `tasks`
 and configured `scale`. A registered adapter may stay at zero for a request.
 [Candidate manifest and verification](MIND-CANDIDATE.md)

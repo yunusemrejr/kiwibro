@@ -1327,6 +1327,8 @@ function nativeStops(mind) {
     ...(adapterTasks.length ? [["Task LoRA", adapterTasks.includes("*") ?
       "The checked pack registers an adapter for chat. Utility requests use the trunk."
       : `The checked pack registers an adapter for ${adapterTasks.join(", ")}. It can switch on per request.`]] : []),
+    ...(checked && mind.mtp === true ? [["Draft decoding",
+      "On a supported CPU runtime, the draft head proposes up to two tokens at a time. Kiwi Mind verifies each proposal."]] : []),
     ...(caps.tools ? [["Function calling", "The model's chat template sends structured calls to Kiwibro. The app checks the tool name, arguments and permissions."]] : []),
     ...(mind.vision ? [["Vision", "The matching vision projector lets the same model read attached images."]] : []),
     ...(caps.thinking ? [["Reasoning", caps.reasoning_effort ?
@@ -1684,7 +1686,7 @@ export function createHowView({ dialog, getMind = () => null }) {
     }
     const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
       mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
-      mind.capabilities, mind.vision, mind.expert_bank, mind.feed_forward, mind.training_steps, mind.task_adapter,
+      mind.capabilities, mind.vision, mind.expert_bank, mind.feed_forward, mind.training_steps, mind.task_adapter, mind.mtp,
     ]) : null;
     if (built && nextKey === nativeKey) return false;
     const previous = stops[index]?.title;
