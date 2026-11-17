@@ -363,3 +363,21 @@ Twelve distinct records passed through the standard candidate's isolated app
 on the Ryzen laptop. Time to the verified read result was 50.6 ms p50 and
 74.4 ms p90. Completion was 51.3 ms p50 and 74.6 ms p90. The server launch
 sentinel verified that these requests needed no model process.
+
+## Liquid AI placement control
+
+LFM2.5-VL-3B Q4_K_M and its matching Q8_0 projector occupied 2.26 GB. The
+Ryzen laptop ran the same three uncached probes on b12443, with one 8,192-token
+slot. CPU used six threads and Vulkan offloaded the model to Renoir. Every
+tool, screenshot and exact-copy check passed in both placements.
+[Pinned Liquid AI GGUF build](https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/tree/6f730e9a2c454e8af9adc29db58e638e01e5957f)
+
+| Probe | CPU completion | Vulkan completion |
+| --- | ---: | ---: |
+| Exact search tool arguments | 7.46 s | 17.22 s |
+| Read text from a screenshot | 13.61 s | 20.78 s |
+| Copy 14 C declarations | 31.54 s | 129.66 s |
+
+CPU pressure `some avg10` at startup was 7.96% and 19.70% respectively. These
+single requests establish a placement for the next app trials. The three
+probes cover isolated capabilities.
