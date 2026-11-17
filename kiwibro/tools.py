@@ -1612,8 +1612,10 @@ def _execute(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if name == "read_files":
         paths: list[str] = args["paths"]
         result = ctx.workspace.read_file(paths[0], args.get("start"), args.get("end"), paths=paths)
-        return ToolResult(ok=True, content=result["content"], preview=_preview(result["content"]),
-                          meta={"paths": result.get("paths", paths), "lines": result["total_lines"]})
+        images = result.get("raster_images")
+        return ToolResult(ok=not images, content=result["content"], preview=_preview(result["content"]),
+                          meta={"paths": result.get("paths", paths), "lines": result["total_lines"],
+                                **({"raster_images": images} if images else {})})
     if name == "list_files":
         folder = args.get("path") or "."
         entries = ctx.workspace.list_files(folder)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import functools
+import io
 import logging
 import os
 import re
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import config, safety
+from . import config, media, safety
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ GREP_MAX_MATCHES = 120
 SESSION_BUFFER_CHARS = 64 * 1024
 MAX_TERMINAL_SESSIONS = 12
 PRUNED_DIRS = {"node_modules", "__pycache__", ".git", ".venv", "venv", "dist", "build", ".cache", ".idea", ".vscode"}
+_IMAGE_READ_HINT = "Use describe_image or the existing attachment observation."
 
 BLOCKED_COMMANDS: tuple[tuple[str, str], ...] = (
     (r"\bsudo\b", "sudo"),
@@ -67,6 +69,14 @@ class MissingPathError(SandboxError):
 
     def __init__(self, path: str):
         super().__init__(f"path does not exist: {path}")
+        self.path = path
+
+
+class RasterTextReadError(SandboxError):
+    """A path handed to the text reader has a raster image header."""
+
+    def __init__(self, path: str):
+        super().__init__(f"{path} is a raster image. {_IMAGE_READ_HINT}")
         self.path = path
 
 
@@ -333,28 +343,37 @@ class Workspace:
         paths: list[str] | None = None,
     ) -> dict[str, Any]:
         if paths:
-            batch_items: list[dict[str, Any]] = []
+            batch_paths: list[str] = []
+            raster_images: list[str] = []
             chunks: list[str] = []
             total_lines = 0
             total_size = 0
             for item_path in paths[:10]:
-                single = self.read_file(item_path, start=start, end=end, line_numbers=line_numbers)
-                batch_items.append(single)
+                try:
+                    single = self.read_file(item_path, start=start, end=end, line_numbers=line_numbers)
+                except RasterTextReadError as exc:
+                    batch_paths.append(exc.path)
+                    raster_images.append(exc.path)
+                    continue
+                batch_paths.append(single["path"])
                 total_lines += int(single["total_lines"])
                 total_size += int(single["size"])
                 chunks.append(f"=== {single['path']} (lines {single['start']}-{single['end']} of {single['total_lines']}) ===\n{single['content']}")
+            if raster_images:
+                chunks.insert(0, f"Raster images in this batch: {', '.join(raster_images)}. {_IMAGE_READ_HINT}")
             joined = "\n\n".join(chunks)
             encoded = joined.encode("utf-8", errors="replace")
             if len(encoded) > MAX_READ_BYTES:
                 joined = encoded[:MAX_READ_BYTES].decode("utf-8", errors="replace") + "\n… [batch truncated]"
             return {
-                "path": ", ".join(item["path"] for item in batch_items),
-                "paths": [item["path"] for item in batch_items],
+                "path": ", ".join(batch_paths),
+                "paths": batch_paths,
                 "content": joined,
                 "start": start or 1,
                 "end": end or total_lines,
                 "total_lines": total_lines,
                 "size": total_size,
+                **({"raster_images": raster_images} if raster_images else {}),
             }
 
         resolved = self.resolve(path, must_exist=True)
@@ -364,12 +383,18 @@ class Workspace:
             size = resolved.stat().st_size
         except OSError as exc:
             raise SandboxError("could not stat file") from exc
-        if size > MAX_READ_BYTES:
-            raise SandboxError(f"file is too large ({size} bytes; limit {MAX_READ_BYTES})")
+        size_error = f"file is too large ({size} bytes; limit {MAX_READ_BYTES})" if size > MAX_READ_BYTES else ""
         try:
-            text = resolved.read_text(encoding="utf-8", errors="replace")
+            with resolved.open("rb") as source:
+                if media.is_raster_header(source.read(media.RASTER_HEADER_BYTES)):
+                    raise RasterTextReadError(self.public(resolved))
+                if size_error:
+                    raise SandboxError(size_error)
+                source.seek(0)
+                with io.TextIOWrapper(source, encoding="utf-8", errors="replace") as reader:
+                    text = reader.read()
         except OSError as exc:
-            raise SandboxError(f"could not read file: {exc.strerror or exc}") from exc
+            raise SandboxError(size_error or f"could not read file: {exc.strerror or exc}") from exc
         lines = text.splitlines()
         line_count = len(lines)
         if start is not None or end is not None:

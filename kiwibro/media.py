@@ -39,6 +39,7 @@ MAX_IMAGE_SIDE = 1024  # keeps screenshots legible while bounding vision tokens
 MAX_FRAMES = 6
 TOOL_TIMEOUT_S = 30
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+RASTER_HEADER_BYTES = 18
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".opus", ".aac"}
 ATTACHMENTS_DIR = "attachments"
@@ -82,6 +83,24 @@ def media_kind(path: str | Path) -> str:
 
 
 # --- images ------------------------------------------------------------------------
+
+
+def is_raster_header(header: bytes) -> bool:
+    """Recognize supported raster signatures from a bounded prefix, irrespective of the filename."""
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return header[8:16] == b"\x00\x00\x00\rIHDR"
+    if header.startswith(b"\xff\xd8\xff"):
+        return True
+    if header.startswith((b"II*\x00", b"MM\x00*")) and len(header) >= 8:
+        return int.from_bytes(header[4:8], "little" if header[:2] == b"II" else "big") >= 8
+    if header[:6] in (b"GIF87a", b"GIF89a") and len(header) >= 13:
+        screen = header[6:13]
+        # The marker alone can be legitimate text. Check the binary screen descriptor.
+        return bool(screen[4] & 0x80 or b"\x00" in screen)
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return header[12:16] in (b"VP8 ", b"VP8L", b"VP8X")
+    return (header[:2] == b"BM" and header[6:10] == b"\x00\x00\x00\x00"
+            and int.from_bytes(header[14:18], "little") in (12, 40, 52, 56, 64, 108, 124))
 
 
 def shrink_image(data: bytes, max_side: int = MAX_IMAGE_SIDE) -> tuple[bytes, str] | None:
