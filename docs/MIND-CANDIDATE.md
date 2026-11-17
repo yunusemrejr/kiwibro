@@ -322,6 +322,10 @@ remains disabled because scale 0.8 reduced accuracy in both modes.
 | Off | 7/26 → 3/26 | 0.74 s → 0.73 s |
 | On | 8/26 → 4/26 | 3.37 s → 2.61 s |
 
+The compact trunk and shared image projector total 5.93 GB. The separate
+adapter is included for replay with its scale set to zero in the pack.
+[Verified compaction-only pack](https://huggingface.co/yunusemrejr/kiwimind/tree/91f41a13a7519bfbd631e1937a70be83de411443/variants/e4b-activation-compacted)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
