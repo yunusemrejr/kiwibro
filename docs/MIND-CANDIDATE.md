@@ -313,6 +313,14 @@ with reasoning Off and 8/26 with reasoning On in the matched Colab replay.
 This comparison keeps the same expert-free 8,192-wide dense layers and
 isolates the effect of fitting and merging. A separate 29.6 MB F16 LoRA
 export binds to that exact compact trunk for request-level evaluation.
+The matched adapter replay kept one server loaded and selected the scale
+per request. Scale 0 reproduced the compaction-only scores. The adapter
+remains disabled because scale 0.8 reduced accuracy in both modes.
+
+| Reasoning | Scale 0 → 0.8 passes | Scale 0 → 0.8 median response |
+| --- | --- | --- |
+| Off | 7/26 → 3/26 | 0.74 s → 0.73 s |
+| On | 8/26 → 4/26 | 3.37 s → 2.61 s |
 
 ## Verify before changing the local launcher
 
