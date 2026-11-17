@@ -70,6 +70,7 @@ def test_the_host_is_gone_within_seconds_when_the_app_stops(tmp_path: Path, sig:
         **os.environ,
         "KIWIBRO_DATA_DIR": str(data), "KIWIBRO_WORKSPACE": str(tmp_path / "work"), "KIWIBRO_PORT": str(port),
         "KIWIBRO_AUTO_UPDATE": "0", "KIWIBRO_WARMUP": "0", "KIWIMIND_AUTOSTART": "0", "KIWIBRO_OFFLINE": "0",
+        "KIWIMIND_CANDIDATE": "0",  # this fixture exercises the legacy Node host
     }
     env.pop("KIWIBRO_SERVER_URL", None)
     log = (tmp_path / "app.log").open("wb")

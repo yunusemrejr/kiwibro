@@ -21,6 +21,18 @@ VISION = [{"role": "user", "content": [
 ]}]
 
 
+@pytest.mark.parametrize(("mirror", "expected"), [(None, 6_024_337_760), ("https://mirror.example", None)])
+def test_uninstalled_native_status_reports_download_size(tmp_path, monkeypatch, mirror, expected):
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    monkeypatch.delenv("KIWIMIND_HF_URL", raising=False)
+    if mirror:
+        monkeypatch.setenv("KIWIMIND_HF_URL", mirror)
+
+    status = LLMClient(lambda: {}, data_dir=tmp_path).mind().describe()
+    assert status["engine"] == NATIVE_FORMAT and not status["installed"]
+    assert status["bytes"] == 0 and status["download_bytes"] == expected and status["download"] is None
+
+
 def pack_at(tmp_path: Path, *, base: str = "Qwen/Qwen3.8-27B", vision: bool = True,
             effort: bool = True) -> Pack:
     pack = Pack(tmp_path, subdir="candidate")

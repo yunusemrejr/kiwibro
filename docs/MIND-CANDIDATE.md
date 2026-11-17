@@ -19,9 +19,8 @@ the authenticated local engine. A chat marked Private skips memory capture and e
 The verified 6.02 GB candidate is available from the model repository's main
 branch under `candidate/`. A KiwiBro build with candidate support can fetch it
 through `POST /api/mind/download?target=candidate`. This installs the files in
-the candidate directory. Start KiwiBro with `KIWIMIND_CANDIDATE=1` to select
-that pack. Multi-token prediction requires a supported managed llama.cpp
-runtime.
+the candidate directory. The desktop and CLI select it by default. Multi-token
+prediction requires a supported managed llama.cpp runtime.
 [Published candidate pack](https://huggingface.co/yunusemrejr/kiwimind/tree/ec1aeaa8ecc42a404e9eab94bb32c90b8196c62c/candidate)
 
 Use a llama.cpp build that supports the candidate GGUF architecture and its native chat
@@ -393,9 +392,14 @@ workspace and records the write for Undo. Longer briefs can use the same
 component with explicit element IDs, labels, angle and swing direction.
 On the Ryzen laptop, four complete component commands took 3.0–5.6 seconds
 through the app preview. Each output passed an independent geometry check at
-360 and 800 pixels. A free-form hatch request with reasoning enabled timed
-out at 280 seconds without a saved page.
-[Component and model replays](https://huggingface.co/yunusemrejr/kiwimind/tree/224f25ac1d85d27921f0341c035499b5d9a152c0/variants/e4b-cpu-mtp/evals)
+360 and 800 pixels. A detailed free-form request for a new hinged panel can
+now use a short model decision over existing component values derived from
+the brief. The native hatch replay with Reasoning On took 45.3 seconds and
+generated 24 tokens. The independent Chrome check verified the fixed pivot,
+mobile layout, and keyboard interaction. An earlier replay timed out at 280
+seconds, and two bounded replays timed out while the laptop was under heavier
+load.
+[Component replays](https://huggingface.co/yunusemrejr/kiwimind/tree/224f25ac1d85d27921f0341c035499b5d9a152c0/variants/e4b-cpu-mtp/evals) · [Native hatch replay](https://huggingface.co/yunusemrejr/kiwimind/blob/main/candidate/evals/ryzen-bounded-hatch.json)
 
 ## Verify before changing the local launcher
 

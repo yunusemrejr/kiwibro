@@ -24,8 +24,8 @@ const TASK_TEXT = {
   research: "Research", "*": "Every message",
 };
 const STRENGTH_TEXT = { full: "Full strength", half: "Half strength", off: "Switched off" };
-// Kiwi Mind's size on disk (the real pack), used until the download reports its total.
-const MIND_BYTES = 2608165792;
+// Spark's download size, used until the download reports its total.
+const SPARK_BYTES = 2608165792;
 const MIND_SENTENCE = "Kiwibro's own model. It runs every chat and picks its skill by itself.";
 const MIND_EXPERTS = [
   { target: "legacy", key: "legacy", label: "Legacy Qwen expert", bytes: 487066520,
@@ -389,8 +389,14 @@ export function createModelsView({ dialog, api, getState, actions }) {
   }
 
   function mindTotal(download, target) {
-    return Number(download?.total_bytes) || (target === "primary" ? MIND_BYTES :
-      MIND_EXPERTS.find((expert) => expert.target === target)?.bytes || 0);
+    const total = Number(download?.total_bytes);
+    if (total) return total;
+    if (target === "primary") {
+      const mind = state.mind;
+      if (mind?.engine === "native-gguf") return Number(mind.bytes) || Number(mind.download_bytes) || 0;
+      return SPARK_BYTES;
+    }
+    return MIND_EXPERTS.find((expert) => expert.target === target)?.bytes || 0;
   }
 
   /** The state that changes what the page shows. A change rebuilds the blocks; progress moves in place. */
@@ -400,7 +406,8 @@ export function createModelsView({ dialog, api, getState, actions }) {
       const expert = mind[key];
       return [expert?.ok, expert?.running, expert?.download?.state];
     });
-    return JSON.stringify([mind.active, mind.usable, mind.installed, mind.reason, mind.download?.state, experts]);
+    return JSON.stringify([mind.active, mind.usable, mind.installed, mind.reason, mind.engine, mind.bytes,
+      mind.download_bytes, mind.download?.state, experts]);
   }
 
   function setMind(mind) {
@@ -486,7 +493,8 @@ export function createModelsView({ dialog, api, getState, actions }) {
     if (download?.state === "cancelled") {
       size.push(el("span", { class: "mdl-mind-size", text: mindPartText(download, "primary") }));
     } else if (download?.state !== "error") {
-      size.push(el("span", { class: "mdl-mind-size", text: mindMB(mindTotal(download, "primary")) }));
+      const bytes = mindTotal(download, "primary");
+      if (bytes) size.push(el("span", { class: "mdl-mind-size", text: mindMB(bytes) }));
     }
     const nodes = [];
     if (download?.state === "error") nodes.push(notice(download.error || "The download did not finish."));

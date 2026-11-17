@@ -19,13 +19,14 @@ from .host import MindHost, _rss, find_node
 from .little import Little
 from .llama import NO_RUNTIME, LlamaClient, LlamaHost, LlamaRuntime
 from .native_generic import NATIVE_FORMAT, NATIVE_MODEL, NativeChatClient, NativeConductor, describe_pack
-from .pack import LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, TRUNK, TRUNK3, Pack, PackError
+from .pack import HF_URL, LEGACY_REVISION, MEMORY_FILE, MEMORY_REVISION, TRUNK, TRUNK3, Pack, PackError
 
 log = logging.getLogger(__name__)
 
 NODE_RECHECK_S = 30.0
 DEFAULT_CTX = 8192
 PRIMARY_RETRY_S = 60.0
+NATIVE_RELEASE_BYTES = 6_024_337_760  # candidate/manifest.json for the E4B trunk, projector and MTP head
 
 
 class Mind:
@@ -398,6 +399,7 @@ class Mind:
                     details["task_adapter"] = {"tasks": list(adapter.tasks), "scale": adapter.scale}
             return {**pack, **status, **details, "active": "candidate" if status["usable"] else None,
                     "node": None, "rss_bytes": _rss(status["pid"]) if status["pid"] else None,
+                    "download_bytes": NATIVE_RELEASE_BYTES if self.candidate_pack.base_url == HF_URL else None,
                     "helper": None, "download": self.candidate_pack.download_state()}
         why = self.primary_reason()  # builds the parts for a pack that was put in place by hand
         legacy = self.legacy_pack.describe()

@@ -1341,12 +1341,12 @@ function nativeStops(mind) {
     },
     "Kiwi Mind": {
       question: mind.usable ? "What runs Kiwi Mind here?" : "What will run Kiwi Mind here?",
-      lines: !checked ? "This app is configured for a native GGUF candidate. Its model and capabilities appear here once its files are verified."
+      lines: !checked ? "Kiwi Mind runs locally from a GGUF pack. Its model and capabilities appear here once its files are verified."
         : sparse ? `${model} has a bank of [[experts]] in each routed layer. The learned router chooses which experts contribute to each token. The same model reads your message, makes tool requests and writes the answer.`
         : `${model} runs through its native chat template. The same model reads your message, makes tool requests and writes the answer.`,
-      fact: disk ? `The verified pack occupies ${disk} on disk.` : "The Models panel shows the candidate's installation status.",
+      fact: disk ? `The verified pack occupies ${disk} on disk.` : "The Models panel shows the pack's installation status.",
       tech: { model: gemma ? [...modelRows, ["Shared expert", "Gemma also uses a shared expert. The figure shows the routed bank in one layer."]] : modelRows, app: [
-        ["Local runtime", "llama.cpp serves the candidate on an authenticated loopback address."],
+        ["Local runtime", "llama.cpp serves Kiwi Mind on an authenticated loopback address."],
         ["Pack verification", "The manifest lists the checksums of the weights, any vision projector and any task adapter."],
         ...(mind.reason ? [["Runtime status", mind.reason]] : []),
       ] },
@@ -1371,7 +1371,7 @@ function nativeStops(mind) {
       tech: { model: [["Function calling", "The native chat template returns tool names and structured arguments."]] },
     },
     "Ready parts": {
-      tech: { model: [["Component tool", "The model can use starter files and steps selected from Kiwibro's component library."]] },
+      tech: { model: [["Component tool", "For a detailed request that names one new hinged panel, the model can select the kit in one short tool call. KiwiBro fills the requested fields and checks the preview."]] },
     },
     "Knowledge base": {
       tech: { model: [["Reference text", "A relevant local passage gives the model facts, formulas and assumptions it can use when answering."]] },

@@ -22,9 +22,9 @@ fumbles the call, and a second, tiny model that reads every reply and steps in w
 wrong. Any other open model you add becomes a helper for the heavy answers, run by Kiwibro
 itself with [llama.cpp](https://github.com/ggml-org/llama.cpp); no other app is needed.
 
-- **Kiwi Mind.** Spark X2.6 4B at IQ2_M leads the stack with vision and eight automatically
-  switched LoRA skills. A trained Qwen3 0.6B expert extracts durable memories on the CPU.
-  The earlier trained Qwen3 0.6B pack can answer in text when Spark is unavailable.
+- **Kiwi Mind.** Compact Gemma 4 E4B handles chat, images, structured tools, and memory
+  extraction through the local llama.cpp engine. A matched draft head accelerates compatible
+  CPU deployments.
 - **Helper models.** Download a model from Hugging Face inside the app, or use the ones LM
   Studio already downloaded. Kiwi Mind stays in charge of tools and steps and hands a
   heavy answer to the helper. Swap or drop the helper mid-chat; memories, notes and
@@ -80,9 +80,8 @@ cd kiwibro
 
 Open **<http://127.0.0.1:8777>**. On first start *Models* offers:
 
-1. **Install complete Kiwi Mind.** In *Models*, download all three local model components
-   from Hugging Face. Kiwibro checks each file against its SHA-256. You can also install
-   Spark, the legacy Qwen expert and the memory expert separately and resume each download.
+1. **Install Kiwi Mind.** In *Models*, download the trunk, vision projector, and draft head.
+   Kiwibro verifies each file against its SHA-256 and resumes interrupted downloads.
 2. **Add a helper model (optional).** A bigger local model that writes the heavy answers.
    *Install engine* downloads the official llama.cpp build for your machine (Vulkan when a
    GPU is there, otherwise CPU), checks it against the sha256 GitHub publishes, and keeps
@@ -131,46 +130,22 @@ never switched to. The server runs in its own systemd user scope as a process na
 
 ### Kiwi Mind
 
-An opt-in native GGUF candidate can be evaluated beside the release using a separate data
-folder. [Stage and verify a Kiwi Mind candidate](docs/MIND-CANDIDATE.md)
-
-Kiwi Mind is the model Kiwibro thinks with. Its base is Spark X2.6 4B, fully fine-tuned on
-Kiwibro's own practice conversations and stored as a GGUF file at IQ2_M (about 3.2 bits per
-weight). It runs on llama.cpp's `llama-server`, on the graphics chip when there is one.
-
-The lower 24 layers read the conversation once. The model uses a three-word route,
-for example `code light act`: which of eight skills
-answers (chat, web, code, terminal, computer, tools, write or see), whether the request is
-light or heavy, and whether the reply says something or acts with a tool call. Each skill is
-a small adapter on the upper 12 layers that switches on where its route ends, and every turn
-keeps the skill it was answered with, so a change of subject recomputes nothing. Nothing is
-chosen by hand, and all open chats share one copy of the weights. A retry that already
-has a skill and a fixed action goes straight to generation.
-
-A picture in a message is read by the see skill. Kiwi Mind has its own image encoder (CLIP
-ViT-L/14), so it needs no separate vision helper.
+Kiwi Mind runs Gemma 4 E4B with its feed-forward width reduced from 10,240 to 8,192
+across 42 layers. The native chat template handles tool calls. The matching projector reads
+attached images, and the same local model handles summaries and memory extraction. Tools
+keep their existing permissions, approval controls, and result checks.
 
 | | |
 |---|---|
-| On disk | 2.6 GB, fetched once from [Hugging Face](https://huggingface.co/yunusemrejr/kiwimind) |
-| In memory | the 2.3 GB of weights, on the graphics chip when the GPU switch is on, and about 1 GB beside them; freed when the window is closed |
-| Speed on a Ryzen 5 7530U, integrated graphics | reads 120 tok/s, writes 12 to 14 tok/s |
+| On disk | 6.02 GB including vision and draft files |
+| Quantization | Q4_K_M trunk and Q8_0 draft head |
+| Context | One 8,192-token slot with transcript compaction and recall in long chats |
 
-When the route marks a request as heavy (a long report, a tricky algorithm) and a helper
-model is selected, Kiwi Mind keeps the tool steps and the helper writes the answer. With no
-helper, Kiwi Mind answers everything itself.
-
-**Memory expert.** The Colab-trained Qwen3 0.6B model runs at Q4_K_M on two low-priority
-CPU threads. It reads what the user wrote and proposes durable facts, which the app checks
-before saving. The model starts when needed, yields to chat, and unloads after five idle
-minutes. An existing stock Qwen3 0.6B download can handle this job when the trained
-expert is unavailable. Kiwi Mind still handles long-chat summaries.
-
-**Text fallback.** The pinned Kiwi Mind 2.0.1 pack has its own Qwen3 0.6B trunk, control
-head and skill adapters. It loads on demand under WebAssembly and Node.js when the
-Spark pack or its llama.cpp runtime is unavailable. Both packs appear as Kiwi Mind in
-chat. Download sizes, data provenance and expert evaluation are on the
-[Kiwi Mind model card](https://huggingface.co/yunusemrejr/kiwimind).
+On supported CPUs, multi-token prediction drafts up to two tokens. The trunk verifies
+every proposal. The test laptop's GPU Auto setting selected CPU drafting. Detailed visual
+requests can use a bounded tool call to select a component, while the browser checks the
+rendered file. [Model pack](https://huggingface.co/yunusemrejr/kiwimind/tree/main/candidate) ·
+[Laptop measurements and training](docs/MIND-CANDIDATE.md)
 
 ### Models
 

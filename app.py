@@ -7,6 +7,10 @@ from pathlib import Path
 
 from kiwibro import create_app, selfupdate
 
+if __name__ == "__main__" and not os.environ.get("KIWIBRO_SERVER_URL", "").strip().rstrip("/"):
+    os.environ.setdefault("KIWIMIND_CANDIDATE", "1")
+    os.environ.setdefault("KIWIBRO_NATIVE_DIRECT_IMAGE", "1")
+
 app = create_app()
 
 

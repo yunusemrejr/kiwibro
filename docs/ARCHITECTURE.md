@@ -659,10 +659,14 @@ Traits are read over the last `TRAIT_DAYS` (30) days.
 Kiwi Mind is the model every chat runs on. The user never selects, loads or switches
 anything in it; the model picked in the header is a helper for it.
 
-This section describes Kiwi Mind 3.0. Packs before 3.0 run on an older engine, described
-at the end under "Packs before 3.0".
+The desktop and CLI start the native Gemma 4 E4B build. Its checked trunk, image projector,
+and draft head live in `<data>/mind/candidate/`. One managed llama.cpp process serves chat,
+tool calls, vision, and memory requests. The app retains source-labelled transcript excerpts
+as the active context fills. [Native pack, training, and verification](MIND-CANDIDATE.md)
 
-### The model
+### Archived Kiwi Mind 3.0 architecture
+
+The following describes the earlier archived stack. [Archived model files](https://huggingface.co/yunusemrejr/kiwimind/tree/archive-spark-qwen-3.1)
 
 - **Base.** Spark X2.6 4B (Apache-2.0, `XHToken/Spark-X2.6-4B` on Hugging Face): 36
   transformer blocks, width 2,560, vocabulary 131,072. The release is text only. Every

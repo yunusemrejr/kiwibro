@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterator
 from . import (
     adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, pagecheck, pageloop, plan, prompts, reactions, readings, recall, research, safety,
     sessions, shape, specialists, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode, media,
+    visual_action, visual_brief,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -1044,6 +1045,16 @@ class AgentManager:
             )
             self._raise_if_aborted(turn)
 
+        if max_rounds and not (answered or scene or browsed or looked or searched or read):
+            visual = self._native_visual_first(turn, model, prepared, tool_list)
+            if visual == "ended":
+                max_rounds = 0
+                self._close_plan(turn, model)
+            elif visual and not turn.prompt_changed:
+                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
+                                               turn_context=turn_context)
+                self._emit_context(turn, prepared)
+
         render_requested = _RENDER_REQUEST.search(_CODE_FENCES.sub("", turn.message))
         for round_index in range(max_rounds):
             self._raise_if_aborted(turn)
@@ -1739,6 +1750,76 @@ class AgentManager:
             turn.inference["scene_started"] = True
             return self._look_or_review(turn, model, "", None, native=native) or "continue"
         return "continue"
+
+    def _native_visual_first(self, turn: Turn, model: str, prepared: PreparedContext,
+                             tool_list: list[dict[str, Any]] | None) -> str:
+        """Ask for one bounded component decision before general visual generation."""
+        info = prepared.model_info or {}
+        if (not _native_mind(model, info) or info.get("arch") != "gemma4" or turn.goal or turn.attachments
+                or turn.reaction is not None or turn.steering_received or turn.prompt_changed
+                or turn.plan is None or _PAGE_REPLY_REQUEST.search(turn.message) or plan.told_to_search(turn.message)
+                or not any(item["function"]["name"] == "component" for item in tool_list or ())):
+            return ""
+        bindings = visual_brief.hinge_bindings(turn.message)
+        if bindings is None:
+            return ""
+        target = self._workspace(turn.conversation_id).root / bindings["filename"]
+        writes = [step for step in turn.plan.steps if step.kind == "write"]
+        if (target.exists() or target.is_symlink() or len(writes) != 1 or writes[0].target is None
+                or writes[0].target.path != target or any(step.kind in {"read", "run"} for step in turn.plan.steps)):
+            return ""
+        offered = visual_action.hinged_tools(bindings)
+        if not offered:
+            return ""
+        messages = list(prepared.messages)
+        # The normal scaffold repeats the entire ungrouped plan and kit instructions.
+        # Keep the user's brief, memories and directives in this short-scoped request.
+        note = prepared.turn_context
+        latest = messages[-1]
+        if note and latest["role"] == "user" and isinstance(latest.get("content"), str) and latest["content"].endswith(note):
+            lean_note = note
+            kit = components.default_library().get(components.HINGED_PANEL)
+            for scaffold in (turn.plan.note(), components.advice(kit)):
+                if scaffold:
+                    lean_note = lean_note.replace(scaffold, "", 1)
+            messages[-1] = {**latest, "content": latest["content"][:-len(note)] + lean_note}
+        messages.append({"role": "user", "content": (
+            "Choose one component action for my full brief above. Action use builds a rectangular panel on "
+            "a fixed frame with the already bound values. Action show continues with a custom design if the "
+            "kit cannot meet a requirement. Review these values bound from my brief. "
+            + json.dumps(bindings, ensure_ascii=False)
+        )})
+        turn.emit("status", {"phase": "thinking", "label": "Choosing a visual component"})
+        try:
+            bind_turn(turn.conversation_id, turn.emit)
+            result = self.llm.stream_chat(
+                model=model, messages=messages, tools=offered, temperature=0, max_tokens=64, abort=turn.abort,
+                extra={"tool_choice": "required", "parallel_tool_calls": False,
+                       "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}},
+            )
+        except LLMError:
+            log.info("turn %s: bounded visual action unavailable", turn.conversation_id)
+            result = None
+        self._raise_if_aborted(turn)
+        self._drain_steering(turn)
+        turn.kit_called_for = False
+        if result is None:
+            return ""
+        self._record_usage(turn, result)
+        if result.finish_reason not in {"stop", "tool_calls"} or turn.steering_received:
+            return ""
+        action = visual_action.hinged_action(bindings, result.tool_calls)
+        if action is None or action["action"] != "use":
+            return ""
+        turn.inference["scene_started"] = True
+        applied = self._call_first(turn, "component", action)
+        if not applied.ok:
+            return "continue"
+        # The accepted kit covers this single file's specification. Keep its recorded
+        # write in the plan and let the regular browser review check the resulting page.
+        turn.plan.steps = writes
+        turn.emit("plan", {"steps": turn.plan.statuses()})
+        return self._look_or_review(turn, model, "", None, native=True) or "continue"
 
     def _redo_on_web(self, turn: Turn, reaction: Any) -> bool:
         """Whether doing the request again means searching: it asked for the web or for something
