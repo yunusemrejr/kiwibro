@@ -423,7 +423,7 @@ class Turn:
     failing_tools: set[str] = field(default_factory=set)  # the tools that failed in that streak
     missing_reads: set[Path] = field(default_factory=set)
     checked_missing_read_folder: bool = False
-    successful_table_calls: set[tuple[Path, str]] = field(default_factory=set)
+    successful_analysis_calls: set[tuple[Path, str]] = field(default_factory=set)
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -3602,13 +3602,13 @@ class AgentManager:
             else:
                 result, duration = outcomes[item["id"]]
             turn.tool_calls_made += 1
-            if recover_reads and item["name"] == "analyze_table" and item["result"] is None:
-                signature = tools.tool_call_signature("analyze_table", item["args"])
+            if recover_reads and item["name"] in ("analyze_table", "calculate") and item["result"] is None:
+                signature = tools.tool_call_signature(item["name"], item["args"])
                 key = (item["workspace"].root, signature)
                 if result.ok:
-                    turn.successful_table_calls.add(key)
+                    turn.successful_analysis_calls.add(key)
                 else:
-                    turn.successful_table_calls.discard(key)
+                    turn.successful_analysis_calls.discard(key)
             if result.ok:
                 turn.tools_ok.append(item["name"])
                 if item["name"] == "note" and item["args"].get("action") in ("save", "append"):
@@ -3922,7 +3922,8 @@ class AgentManager:
                 "same arguments. Use the earlier result, change the arguments, or move on.",
                 "Duplicate tool call stopped",
             )
-            if name == "analyze_table" and (workspace.root, signature) in turn.successful_table_calls:
+            table_workflow = name == "analyze_table" or (name == "calculate" and "analyze_table" in turn.tools_ok)
+            if table_workflow and (workspace.root, signature) in turn.successful_analysis_calls:
                 stopped["result"].meta["repeated_table_result"] = True
             return stopped
         if requires:
