@@ -390,3 +390,24 @@ seconds without reading the shared implementation. The visual dashboard
 case ended after 98.0 seconds without a file. The 3D hatch produced a Chrome
 screenshot after 131.5 seconds and timed out before the interaction check.
 Exact history recall and table recovery also missed their acceptance checks.
+
+## Compact 300-step candidate on deeper app turns
+
+With the repository repeat guard and default Auto tools, the read-only
+diagnosis finished in 187.38 seconds. The first successful directory
+result arrived at 101 ms. The model opened the shared implementation and
+both consumers, but its reply missed the exact workspace-relative path.
+The acceptance run stopped at the diagnosis check, before the edit and
+test turn. This was one forced-CPU run with six threads, one 8,192-token
+slot, and 17.74 GiB peak native RSS. The sampled process used no swap.
+
+In the visual adapter's first isolated app run, the native dashboard
+caption was accurate. The pinned server spent 35.59 seconds processing
+248 caption prompt tokens and 96.26 seconds generating 85 caption tokens.
+The follow-up HTML request spent another 87.63 seconds processing 1,595
+prompt tokens and reached 183 generated tokens before the 300-second cap.
+That request used adapter scale zero. A later run verified that the image
+caption stayed at scale zero while the user's HTML request used scale 0.8.
+In the earlier suite,
+the 3D hatch took 285.94 seconds to produce a Chrome render at scale 0.8
+and timed out before independent interaction verification.
