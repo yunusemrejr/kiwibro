@@ -511,6 +511,14 @@ execution. The `run_command` schema now shows separate command and working
 directory fields.
 [Repository rerun](https://huggingface.co/yunusemrejr/kiwimind/blob/b9c5febd84c5c8af7b4493aebbfe34ef08a7bd31/variants/e4b-activation-compacted/evals/ryzen-repo-shared-source.json)
 
+With that schema, the same model passed the repository workflow end to
+end. It diagnosed the shared policy in 279.87 seconds, then made one
+source edit and ran the approved command from `stack` in a 168.70-second
+repair turn. The command and the independent check each passed all four
+tests. Git HEAD and the index were preserved. The slower diagnosis
+coincided with higher desktop CPU pressure in this run.
+[Passing repository workflow](https://huggingface.co/yunusemrejr/kiwimind/blob/89227db3c10428cb4ea4f7c7ccd135c0d317fe51/variants/e4b-activation-compacted/evals/ryzen-repo-verified-shell.json)
+
 An isolated direct-image probe sent the screenshot with the model's tool
 catalog and skipped the initial caption. It produced a 360-pixel render
 with the exact queue, build code and initial status in 275.85 seconds.
