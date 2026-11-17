@@ -279,7 +279,10 @@ _SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="run_command",
-        description="Run a shell command in the workspace (60s limit, output capped).",
+        description=(
+            "Run a shell command in the workspace (60s limit, output capped). "
+            'Pass the working folder separately. For example, command="make test" and cwd="project".'
+        ),
         parameters=_schema(
             {
                 "command": _str("Command line to run"),
