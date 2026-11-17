@@ -345,10 +345,15 @@ _NATIVE_TEXT = frozenset({
     ".md", ".markdown", ".txt", ".text", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml",
     ".xml", ".ini", ".toml", ".log", ".py", ".js", ".ts", ".sh", ".html", ".htm",
 })
+_LITERAL_FIELD = r"[A-Za-z][A-Za-z0-9_-]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9_-]*)*"
 _NATIVE_READ = re.compile(
     r"""^read\s+(?:(?:the\s+)?file\s+)?(?P<path>\x60[^\x60\n]+\x60|"[^"\n]+"|'[^'\n]+'|[^\s,;]+?)"""
     r"(?:\s+with\s+(?:the\s+)?(?:file[- ]reading tool|read_file))?"
-    r"(?:\.\s+reply\s+with\s+[^.,;!?\n]+)?[.!?]?$", re.I,
+    rf"(?:\.\s+reply\s+with\s+(?:only\s+(?:its|the)\s+(?P<field>{_LITERAL_FIELD})|[^.,;!?\n]+))?[.!?]?$",
+    re.I,
+)
+_LITERAL_VALUE_LINE = re.compile(
+    rf"(?P<label>{_LITERAL_FIELD}):[ \t]+(?P<value>[+-]?[A-Za-z0-9]+(?:[ ._-][A-Za-z0-9]+)*)[ \t]*",
 )
 _RENDER_REQUEST = re.compile(
     r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:"
@@ -372,6 +377,18 @@ _REQUESTED_REPEAT = re.compile(r"\b(?:twice|two times|two passes|repeat|again|re
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
     return model == KIWIMIND and (info or {}).get("engine") == "native-gguf"
+
+
+def _literal_read_value(result: ToolResult, field: str, path: str) -> str | None:
+    """Get a single plain value from the checked tool observation, ahead of any plan note."""
+    meta = result.meta or {}
+    if not result.ok or meta.get("lines") != 1 or meta.get("path") != path or meta.get("guard") or meta.get("paged"):
+        return None
+    line = result.content.partition("\n")[0]
+    found = _LITERAL_VALUE_LINE.fullmatch(line) if len(line) <= 160 else None
+    if found is not None and found["label"].lower().split() == field.lower().split():
+        return found["value"]
+    return None
 
 
 def _table_source(workspace: Workspace, raw_path: str) -> tuple[Path, int, int, int, int, int] | None:
@@ -841,7 +858,16 @@ class AgentManager:
         # reserved in the budget so compaction starts before the window overflows.
         turn.plan = self._plan_for(turn, settings)
         tool_list = self._tool_list(model, settings, model_info, turn=turn)
-        turn.reserve = self._tool_tokens(model, tool_list, model_info)
+        literal_field = None
+        if (_native_mind(model, model_info) and settings.get("tool_profile") in (None, "auto")
+                and turn.plan is not None and turn.reaction is None and tool_list and _native_auto_names(turn) == {"read_file"}):
+            request = _NATIVE_READ.fullmatch(turn.message.strip())
+            target = turn.plan.steps[0].target
+            if request is not None and target is not None and target.path.suffix.lower() == ".txt":
+                literal_field = request["field"]
+        # The file may answer this exact request by itself. Defer template counting
+        # and any history compaction until the turn actually needs the model.
+        turn.reserve = 0 if literal_field else self._tool_tokens(model, tool_list, model_info)
         self._page_long_message(turn, user_message, model)
         turn.questions = plan.questions(turn.message) if turn.plan is None else []
         turn.worked = self._worked(turn)
@@ -849,7 +875,8 @@ class AgentManager:
         turn_context = self._turn_context(turn, settings)
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
-            turn.conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=turn.reserve
+            turn.conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=turn.reserve,
+            allow_compaction=literal_field is None,
         )
         # meta is contractually the first SSE event; context follows it.
         if turn.attachments:
@@ -884,7 +911,7 @@ class AgentManager:
         # A question the computer answers is never also a web search: "today" in a question about the
         # user's own disk is no reason to search the web.
         searched = self._search_first(turn, settings) if not (answered or scene or browsed or looked) else False
-        read = self._native_read_first(turn, settings, model_info, tool_list) if not (
+        read = self._native_read_first(turn, settings, model_info, tool_list, literal_field=literal_field) if not (
             answered or scene or browsed or looked or searched
         ) else False
         if answered or scene or searched or looked or browsed or read:
@@ -892,10 +919,15 @@ class AgentManager:
             if scene == "ended" or (not scene and turn.reply_text.strip()):  # answered without generation
                 max_rounds = 0
                 self._close_plan(turn, model)
-            elif not (read and turn.prompt_changed):
+            elif not literal_field and not (read and turn.prompt_changed):
                 prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
                                                turn_context=turn_context)
                 self._emit_context(turn, prepared)
+        if literal_field and max_rounds and not turn.prompt_changed:
+            turn.reserve = self._tool_tokens(model, tool_list, model_info)
+            prepared = self.context.prepare(turn.conversation_id, model, system_prompt, turn_context=turn_context,
+                                            reserve_tokens=turn.reserve)
+            self._emit_context(turn, prepared)
 
         if max_rounds and self.readiness is not None:
             self.readiness.before_turn(
@@ -1110,7 +1142,8 @@ class AgentManager:
             late = self._drain_steering(turn, last=True)
         self._maybe_title(turn)
         self._insert_usage(turn, model)
-        self._start_memory_extraction(turn.conversation_id, model)
+        if turn.inference.get("said_by_kiwibro") != "read_file" or turn.steering_received:
+            self._start_memory_extraction(turn.conversation_id, model)
         safemode.commit_turn(self.db, turn)  # recorded before "done", so a review right after sees the step
         turn.emit(
             "done",
@@ -2262,7 +2295,7 @@ class AgentManager:
 
     def _native_read_first(
         self, turn: Turn, settings: dict[str, Any], model_info: dict[str, Any],
-        tool_list: list[dict[str, Any]] | None,
+        tool_list: list[dict[str, Any]] | None, *, literal_field: str | None = None,
     ) -> bool:
         """Run one exact native Auto read so the first generation can use its evidence."""
         if (not _native_mind(turn.model, model_info) or settings.get("tool_profile") not in (None, "auto")
@@ -2290,6 +2323,15 @@ class AgentManager:
         self._drain_steering(turn)
         if not result.ok or (result.meta or {}).get("paged"):
             turn.native_unscoped = turn.prompt_changed = True
+        elif literal_field:
+            value = _literal_read_value(result, literal_field, first.target.shown)
+            if value is not None:
+                with turn.steering_lock:
+                    if not turn.steering_received:
+                        self._raise_if_aborted(turn)
+                        for step in following:
+                            step.done = True
+                        self._say(turn, str(turn.model), value, {"checked_by_kiwibro": True}, "read_file")
         return True
 
     def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
