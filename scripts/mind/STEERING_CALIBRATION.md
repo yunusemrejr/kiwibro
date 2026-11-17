@@ -80,6 +80,14 @@ untrusted controls. It binds the choices to the pack, model, runtime,
 guidance text and fresh blind probe digest. An empty `labels` list selects
 abstention. Keep this file fixed before collecting either blind arm.
 
+The standard 300-step export was replayed on a Colab L4 across 72 training
+and 24 calibration probes. The classifiers were then fitted on Colab CPU.
+The eight calibration hints reached seven already-solved cases. One regressed
+an otherwise correct answer and neither proposed label recovered a miss.
+The frozen policy selected no labels, so the fresh blind evaluation had no
+interventions to replay. The fitted bundle stays disabled. Its SHA-256 is
+`d5bd95451bf9ed528b583e09540818b139d1a7566e6d4a98aed62d72e5cbd10d`.
+
 ## Run the fresh blind comparison
 
 The optional `blind.jsonl` has 36 new probes. Its six scenario shapes differ
