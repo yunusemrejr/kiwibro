@@ -119,3 +119,22 @@ def test_invalid_scores_create_no_output(tmp_path):
     with pytest.raises(ValueError, match="finite, nonnegative"):
         export(source, output, scores=scores, width=AFTER, expected_shape=(1, HIDDEN, BEFORE))
     assert not output.exists()
+
+
+def test_restore_exact_channels_from_receipt(tmp_path):
+    source, original, restored = (tmp_path / name for name in ("source", "original", "restored"))
+    fixture(source, sharded=True)
+    scores = tmp_path / "scores.npy"
+    np.save(scores, np.arange(1, BEFORE + 1, dtype=np.float32).reshape(1, BEFORE))
+    shape = (1, HIDDEN, BEFORE)
+    report = export(source, original, scores=scores, width=AFTER, expected_shape=shape)
+    receipt = original / REPORT
+    assert export(source, restored, scores=None, width=AFTER, expected_shape=shape, selection=receipt) == report
+    for file in original.iterdir():
+        assert file.read_bytes() == (restored / file.name).read_bytes()
+
+    report["kept_original_channels"]["0"][1] = report["kept_original_channels"]["0"][0]
+    receipt.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="sorted, unique"):
+        export(source, tmp_path / "invalid", scores=None, width=AFTER, expected_shape=shape, selection=receipt)
+    assert not (tmp_path / "invalid").exists()

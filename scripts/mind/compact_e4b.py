@@ -130,7 +130,8 @@ def write_json(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, separators=(",", ":"), allow_nan=False) + "\n", encoding="utf-8")
 
 
-def export(source: Path, output: Path, *, scores: Path | None, width: int, expected_shape=(42, 2560, 10240)):
+def export(source: Path, output: Path, *, scores: Path | None, width: int, expected_shape=(42, 2560, 10240),
+           selection: Path | None = None):
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
     if source.parent.name == "snapshots" and source.name != REVISION:
@@ -150,6 +151,24 @@ def export(source: Path, output: Path, *, scores: Path | None, width: int, expec
 
     index_path = source / INDEX
     index_bytes = index_path.read_bytes() if index_path.is_file() else None
+    identity = {
+        "base_model": MODEL, "base_revision": REVISION,
+        "width_before": before, "width_after": width, "layers": layers, "hidden_size": hidden,
+        "source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "source_index_sha256": None if index_bytes is None else hashlib.sha256(index_bytes).hexdigest(),
+    }
+    receipt = None
+    if selection is not None:
+        if scores is not None:
+            raise ValueError("Supply activation scores or a channel selection receipt")
+        receipt = json.loads(selection.read_bytes())
+        if (not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in identity.items())
+                or receipt.get("selection") != "activation_scores"
+                or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("activation_scores_sha256", "")))):
+            raise ValueError("The channel selection receipt must match this source and width")
+        channels = receipt.get("kept_original_channels")
+        if not isinstance(channels, dict) or set(channels) != {str(layer) for layer in range(layers)}:
+            raise ValueError("The channel selection receipt must cover every dense layer")
     index = json.loads(index_bytes) if index_bytes is not None else {}
     weight_map = index.get("weight_map")
     names = sorted(set(weight_map.values())) if weight_map is not None else ["model.safetensors"]
@@ -182,23 +201,35 @@ def export(source: Path, output: Path, *, scores: Path | None, width: int, expec
     slices, selected_by_layer = {}, {}
     for layer in range(layers):
         gate, up, down = (mlp[layer, part] for part in ("gate", "up", "down"))
-        salience = (weight_norms(gate[1], columns=False) * weight_norms(up[1], columns=False)
-                    * weight_norms(down[1], columns=True)) if calibration is None else calibration[layer].astype(np.float64)
-        if not np.isfinite(salience).all() or np.any(salience < 0) or salience.max() <= 0:
-            raise ValueError(f"Layer {layer} scores must be finite, nonnegative and nonzero")
-        selected = np.sort(np.argsort(-salience, kind="stable")[:width])
+        if receipt is not None:
+            kept = channels[str(layer)]
+            if (not isinstance(kept, list) or len(kept) != width
+                    or any(type(i) is not int or not 0 <= i < before for i in kept)
+                    or any(right <= left for left, right in zip(kept, kept[1:]))):
+                raise ValueError(f"Layer {layer} needs {width} sorted, unique original channels")
+            selected = np.array(kept, dtype=np.int64)
+        else:
+            salience = (weight_norms(gate[1], columns=False) * weight_norms(up[1], columns=False)
+                        * weight_norms(down[1], columns=True)) if calibration is None else calibration[layer].astype(np.float64)
+            if not np.isfinite(salience).all() or np.any(salience < 0) or salience.max() <= 0:
+                raise ValueError(f"Layer {layer} scores must be finite, nonnegative and nonzero")
+            selected = np.sort(np.argsort(-salience, kind="stable")[:width])
         selected_by_layer[str(layer)] = selected.tolist()
         for axis, pair in ((0, gate), (0, up), (1, down)):
             slices[pair[0]] = (axis, selected)
 
+    score_digest = None
+    if receipt is not None:
+        score_digest = receipt["activation_scores_sha256"]
+    elif scores is not None:
+        score_digest = hashlib.sha256(scores.read_bytes()).hexdigest()
     report = {
         "base_model": MODEL, "base_revision": REVISION,
         "source_revision": "verified snapshot path" if source.parent.name == "snapshots" else "operator-supplied pin",
         "width_before": before, "width_after": width, "layers": layers, "hidden_size": hidden,
-        "selection": "weight_l2_product_fallback" if scores is None else "activation_scores",
-        "activation_scores_sha256": None if scores is None else hashlib.sha256(scores.read_bytes()).hexdigest(),
-        "source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
-        "source_index_sha256": None if index_bytes is None else hashlib.sha256(index_bytes).hexdigest(),
+        "selection": "activation_scores" if score_digest else "weight_l2_product_fallback",
+        "activation_scores_sha256": score_digest,
+        "source_config_sha256": identity["source_config_sha256"], "source_index_sha256": identity["source_index_sha256"],
         "removed_weights": 3 * layers * hidden * (before - width),
         "kept_original_channels": selected_by_layer,
     }
@@ -230,9 +261,11 @@ def main() -> None:
     parser.add_argument("--base-revision", required=True, choices=[REVISION])
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--activation-scores", type=Path, metavar="SCORES.npy")
+    mode.add_argument("--channel-selection", type=Path, metavar="FFN-COMPACTION.json",
+                      help="Restore the exact channels from a matching compaction receipt")
     mode.add_argument("--weight-salience", action="store_true", help="Uncalibrated L2 fallback for comparison only")
     args = parser.parse_args()
-    report = export(args.source, args.output, scores=args.activation_scores, width=8192)
+    report = export(args.source, args.output, scores=args.activation_scores, width=8192, selection=args.channel_selection)
     print(f"Wrote {args.output} ({report['removed_weights']:,} weights removed, {report['selection']}).")
 
 
