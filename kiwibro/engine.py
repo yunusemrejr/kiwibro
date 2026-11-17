@@ -117,6 +117,7 @@ class LocalModel:
     aliases: tuple[str, ...] = ()
     source: str = SOURCE_FOLDER
     pack_adapters: tuple[adapters_mod.Adapter, ...] = ()
+    pack_mtp: str | None = None
 
     @property
     def deletable(self) -> bool:
@@ -712,7 +713,8 @@ def server_args(
         args += ["--sleep-idle-seconds", str(idle_sleep_s)]
     if model.embeddings:
         return args + ["--embeddings", "--parallel", "1"]
-    if _can_load_loras(flags, model, adapters):
+    load_loras = _can_load_loras(flags, model, adapters)
+    if load_loras:
         if model.source == SOURCE_MIND:
             # Requests without a lora field use the server's global scales.
             for adapter in adapters:
@@ -752,6 +754,25 @@ def server_args(
         args.append("--metrics")
     if model.projector and has("--mmproj"):
         args += ["--mmproj", model.projector]
+    mtp_flags = {"--device", "--spec-type", "--spec-draft-model", "--spec-draft-n-max",
+                 "--spec-draft-ngl", "--spec-draft-device"}
+    if model.projector:
+        mtp_flags.update(("--mmproj", "--no-mmproj-offload"))
+    native_mtp = (
+        speculative and model.pack_mtp and model.source == SOURCE_MIND and model.arch == "gemma4"
+        and parallel == 1 and runtime.own and runtime.version == "b12443"
+        and (offload is False or (offload is None and runtime.kind == "cpu"))
+        and mtp_flags <= flags
+        # Server-side MTP cannot opt out on individual requests that activate a LoRA.
+        and (not load_loras or all(adapter.scale == 0 for adapter in adapters))
+    )
+    if native_mtp:
+        args += ["--spec-type", "draft-mtp", "--spec-draft-model", model.pack_mtp,
+                 "--spec-draft-n-max", "2", "--spec-draft-ngl", "0", "--spec-draft-device", "none"]
+        if model.projector:
+            args.append("--no-mmproj-offload")
+        return args
+
     native_cpu_draft = (
         os.environ.get("KIWIMIND_CPU_DRAFT") == "1"
         and model.source == SOURCE_MIND and model.arch == "gemma4" and not offload
@@ -1145,8 +1166,10 @@ class DirectEngine:
         self._write_pid(server)
         try:
             self._wait_ready(server)
-        except EngineError:
+        except EngineError as exc:
             self._kill(server)
+            if "--spec-draft-model" in args and not isinstance(exc, _Crashed):
+                raise _Crashed(str(exc)) from exc  # retry this runtime with the trunk alone
             raise
         log.info("direct engine: %s ready on port %d in %.1fs", model.id, port, time.time() - server.started_at)
         return server

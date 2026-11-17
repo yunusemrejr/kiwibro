@@ -25,6 +25,10 @@ NATIVE_FORMAT = "native-gguf"
 NATIVE_MODEL = "kiwimind-native"
 DEFAULT_CTX = 8192
 _SHA256 = re.compile(r"[a-f0-9]{64}")
+E4B_BASE = "google/gemma-4-E4B-it"
+E4B_BASE_REVISION = "4ecc2ba63bcac23ba4a767fc87025b1450f84c9c"
+E4B_MTP_SHA256 = "f38ae62962657c7a6303c49bbb147e9ae23634e911cfa532fac0818c2e18b665"
+E4B_MTP_BYTES = 98_653_280
 MEMORY_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -213,6 +217,43 @@ def _pack_adapters(pack: Pack, manifest: dict, trunk: str, vision: str | None) -
                             tasks=entry.get("tasks"), scale=entry.get("scale")),)
 
 
+def _pack_mtp(pack: Pack, manifest: dict, trunk: str, vision: str | None) -> str | None:
+    if "mtp" not in manifest:
+        return None
+    entry = manifest["mtp"]
+    filename = entry.get("file") if isinstance(entry, dict) else None
+    files = manifest["files"]
+    if not isinstance(filename, str) or not filename.endswith(".gguf") or filename not in files:
+        raise PackError("The native MTP head must name a checksummed GGUF file in this pack.")
+    path = pack.path(filename)
+    if path == pack.path(trunk) or str(path) == vision:
+        raise PackError("The native MTP head must be a separate GGUF file.")
+    binding = entry.get("trunk_sha256")
+    if (not isinstance(binding, str) or not _SHA256.fullmatch(binding) or binding != files[trunk]["sha256"]
+            or manifest.get("base") != E4B_BASE or manifest.get("base_revision") != E4B_BASE_REVISION):
+        raise PackError("The native MTP head must bind to the pinned Gemma 4 E4B base and this trunk's exact SHA-256.")
+    if files[filename]["sha256"] != E4B_MTP_SHA256 or files[filename]["bytes"] != E4B_MTP_BYTES:
+        raise PackError("The native MTP head must match the verified official E4B Q8_0 GGUF.")
+    try:
+        model = _checked_header(pack.path(trunk), binding)
+        head = _checked_header(path, E4B_MTP_SHA256)
+    except (OSError, gguf.GGUFError) as exc:
+        raise PackError("The native MTP head or trunk GGUF header could not be read.") from exc
+    kv_keys = ("head_count_kv", "key_length", "value_length", "key_length_swa", "value_length_swa", "sliding_window")
+    if (
+        manifest.get("arch") != "gemma4" or model.get("general.architecture") != "gemma4"
+        or model.get("gemma4.block_count") != 42 or model.get("gemma4.expert_count", 0) != 0
+        or model.get("gemma4.attention.shared_kv_layers") != 18
+        or model.get("gemma4.embedding_length") != 2560 or model.get("tokenizer.ggml.tokens") != 262144
+        or head.get("general.architecture") != "gemma4-assistant" or head.get("general.type") != "model"
+        or head.get("gemma4-assistant.embedding_length_out") != 2560 or head.get("tokenizer.ggml.tokens") != 262144
+        or any(model.get(f"gemma4.attention.{key}") != head.get(f"gemma4-assistant.attention.{key}")
+               for key in kv_keys)
+    ):
+        raise PackError("The native MTP head and trunk must use the Gemma 4 E4B shared-state interface.")
+    return str(path)
+
+
 def describe_pack(pack: Pack) -> NativeModel:
     """Build an engine model from an independently verified native pack."""
     manifest = pack.manifest()
@@ -248,6 +289,7 @@ def describe_pack(pack: Pack) -> NativeModel:
             quantization=str(manifest.get("quant") or ""), context_length=ctx,
             tools=True, thinking=thinking, thinking_toggle=thinking, source=SOURCE_MIND,
             pack_adapters=_pack_adapters(pack, manifest, trunk, projector),
+            pack_mtp=_pack_mtp(pack, manifest, trunk, projector),
         ),
         thinking and capabilities.get("reasoning_effort") is True,
         _expert_bank(manifest),
