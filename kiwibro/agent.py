@@ -367,10 +367,21 @@ _PAGE_REPLY_REQUEST = re.compile(
     r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:report|reply|answer|explain|summari[sz]e)\b",
     re.I,
 )
+_REQUESTED_REPEAT = re.compile(r"\b(?:twice|two times|two passes|repeat|again|re-?run|second pass)\b", re.I)
 
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
     return model == KIWIMIND and (info or {}).get("engine") == "native-gguf"
+
+
+def _table_source(workspace: Workspace, raw_path: str) -> tuple[Path, int, int, int, int, int] | None:
+    """Identify a table's current file version without reading it a second time."""
+    try:
+        path = workspace.resolve(raw_path)
+        info = path.stat()
+    except (SandboxError, OSError, RuntimeError):
+        return None
+    return path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _compact_parameters(schema: dict[str, Any]) -> dict[str, Any]:
@@ -441,6 +452,7 @@ class Turn:
     missing_reads: set[Path] = field(default_factory=set)
     checked_missing_read_folder: bool = False
     successful_analysis_calls: set[tuple[Path, str]] = field(default_factory=set)
+    table_read_epoch: int = 0
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -3579,7 +3591,12 @@ class AgentManager:
                 look=self._look_options(turn, turn.finished_kit) if name == "look_at_page" else None,
                 replace=self._replaceable(turn, name, args, item["workspace"] or self._workspace(turn.conversation_id)),
             )
-            if tools.TOOL_SPECS[name].risk == "write":  # every file change stays undoable
+            risk = tools.TOOL_SPECS[name].risk
+            if recover_reads and risk in ("write", "exec"):
+                # Even a failed command can already have changed a table.
+                turn.table_read_epoch += 1
+                turn.successful_analysis_calls.clear()
+            if risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
             elif item["decision"] is not None and item["decision"].targets:  # and what a command changes or removes
                 checkpoints.snapshot_command(self.data_dir, context.workspace, name, item["decision"].targets,
@@ -3591,12 +3608,20 @@ class AgentManager:
         def record(item: dict[str, Any], result: ToolResult, duration: int) -> None:
             result = guard.postprocess(item["name"], item["args"], result, turn.safety)
             result = library.page_output(self._library(), item["name"], result, turn.page_limit)
+            if recover_reads and item["name"] in ("analyze_table", "calculate"):
+                workspace = item["workspace"]
+                key = (workspace.root, item["signature"])
+                source = item.get("table_source")
+                if result.ok and (source is None or source == _table_source(workspace, item["args"]["path"])):
+                    turn.successful_analysis_calls.add(key)
+                else:
+                    turn.successful_analysis_calls.discard(key)
             outcomes[item["id"]] = result, duration
 
         def prepare(index: int, call: dict[str, Any]) -> dict[str, Any]:
             self._raise_if_aborted(turn)
             cut_off = turn.truncated_calls and index == len(calls) - 1
-            item = self._prepare_tool_call(turn, call, settings, cut_off=cut_off)
+            item = self._prepare_tool_call(turn, call, settings, cut_off=cut_off, native=recover_reads)
             prepared_calls.append(item)
             return item
 
@@ -3670,13 +3695,6 @@ class AgentManager:
             else:
                 result, duration = outcomes[item["id"]]
             turn.tool_calls_made += 1
-            if recover_reads and item["name"] in ("analyze_table", "calculate") and item["result"] is None:
-                signature = tools.tool_call_signature(item["name"], item["args"])
-                key = (item["workspace"].root, signature)
-                if result.ok:
-                    turn.successful_analysis_calls.add(key)
-                else:
-                    turn.successful_analysis_calls.discard(key)
             if result.ok:
                 turn.tools_ok.append(item["name"])
                 if item["name"] == "note" and item["args"].get("action") in ("save", "append"):
@@ -3847,7 +3865,7 @@ class AgentManager:
             item["notes"] = [*item["notes"], f"searched for \"{fixed}\" so the query names its subject"]
 
     def _prepare_tool_call(
-        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False
+        self, turn: Turn, call: dict[str, Any], settings: dict[str, Any], *, cut_off: bool = False, native: bool = False,
     ) -> dict[str, Any]:
         """Rescue, validate, safety-check and approve one call (no execution)."""
         rescued = toolcall.prepare_call(call, tools.TOOL_SPECS)
@@ -3987,16 +4005,31 @@ class AgentManager:
             preview = "Tool disabled" if decision.source == "permission" else "Blocked by a safety check"
             return refuse(decision.denial_text(), preview)
         signature = tools.tool_call_signature(name, item["args"], conversation_id=turn.conversation_id)
+        source = None
+        if native and name == "analyze_table" and route is None:
+            source = _table_source(workspace, item["args"]["path"])
+        if source is not None:
+            item["table_source"] = source
+            signature = f"{signature}:{turn.table_read_epoch}:{source!r}"
+        item["signature"] = signature
         seen = turn.tool_signatures.get(signature, 0)
         turn.tool_signatures[signature] = seen + 1
-        if seen >= 2:
+        successful = (workspace.root, signature) in turn.successful_analysis_calls
+        stable_table_repeat = (
+            source is not None and successful and not requires and not turn.steering_received
+            and not _REQUESTED_REPEAT.search(turn.message)
+        )
+        if stable_table_repeat or seen >= 2:
+            message = ("This exact table analysis already succeeded for the unchanged file. Use the earlier result."
+                       if stable_table_repeat else
+                       "Error: this exact tool call was already made twice this turn with the "
+                       "same arguments. Use the earlier result, change the arguments, or move on.")
             stopped = refuse(
-                "Error: this exact tool call was already made twice this turn with the "
-                "same arguments. Use the earlier result, change the arguments, or move on.",
+                message,
                 "Duplicate tool call stopped",
             )
             table_workflow = name == "analyze_table" or (name == "calculate" and "analyze_table" in turn.tools_ok)
-            if table_workflow and (workspace.root, signature) in turn.successful_analysis_calls:
+            if table_workflow and successful:
                 stopped["result"].meta["repeated_table_result"] = True
             return stopped
         if requires:

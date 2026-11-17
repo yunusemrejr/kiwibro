@@ -1467,7 +1467,8 @@ def execute_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResul
         return _execute(name, args, ctx)
     except (SandboxError, SearchError, DesktopError, DelegateError, ValueError) as exc:
         message = f"Error: {exc}"
-        meta = {"missing_path": exc.path} if name in ("read_file", "read_files") and isinstance(exc, MissingPathError) else {}
+        missing = name in ("read_file", "read_files", "analyze_table") and isinstance(exc, MissingPathError)
+        meta = {"missing_path": exc.path} if missing else {}
         return ToolResult(ok=False, content=message, preview=_preview(message), meta=meta)
     except Exception:  # pragma: no cover - unexpected tool bugs must not kill the turn
         log.exception("tool %s failed", name)
