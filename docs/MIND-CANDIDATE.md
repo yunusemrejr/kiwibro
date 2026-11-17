@@ -239,6 +239,19 @@ keyboard focus, mobile rendering, and fixed-base 3D mechanisms. It has SHA-256
 `f15389b8f7c39e98c53d9652f882b2e6251303a0e635ef1505629aa67957a993`.
 The repository and visual adapters attach independently to the 300-step trunk.
 
+The Colab L4 replay used the same 26 held-out next actions per arm with 24,576
+tokens of context. Neither artifact case passed in any arm. The single vision
+answer passed in all four. With reasoning Off, one repository observation
+improved and one native-code observation regressed. With reasoning On, one
+architecture observation regressed. The visual adapter remains experimental.
+
+| Reasoning | Passes at scale 0 → 0.8 | Median response at scale 0 → 0.8 |
+| --- | --- | --- |
+| Off | 6/26 → 6/26 | 0.94 s → 1.02 s |
+| On | 7/26 → 6/26 | 1.62 s → 2.03 s |
+
+[Visual adapter, training receipt, and paired replay](https://huggingface.co/yunusemrejr/kiwimind/tree/b2791d427512803e58ff9c07e186865d1bde41ee/experiments/visual-lora)
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts
