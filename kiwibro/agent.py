@@ -1017,6 +1017,29 @@ class AgentManager:
                     prepared, turn.conversation_id, model, system_prompt, turn_context=turn_context
                 )
                 self._emit_context(turn, prepared)
+            dependency_review = ""
+            dependency = (
+                self._repo_dependency(turn, prepared, tool_list)
+                if round_index > 0 and turn.repo_scope is not None and _native_mind(model, prepared.model_info)
+                else None
+            )
+            if dependency and not turn.steering_received:
+                root, path, can_auto_read = dependency
+                turn.repo_dependency_tried = True
+                if can_auto_read:
+                    self._call_first(turn, "read_file", {"path": path}, automatic_workspace=root)
+                    self._drain_steering(turn)
+                    if turn.prompt_changed:
+                        model, system_prompt, tool_list, text_mode, prepared = self._state_for(turn)
+                    else:
+                        prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
+                                                       turn_context=turn_context)
+                        self._emit_context(turn, prepared)
+                else:
+                    dependency_review = (
+                        f"The verified sources share a local Python import at {path}. Read this "
+                        "implementation using read_file with normal permissions, then answer from the evidence."
+                    )
             turn.emit(
                 "status",
                 {"phase": "thinking", "label": "Thinking" if round_index == 0 else "Working"},
@@ -1025,6 +1048,8 @@ class AgentManager:
             turn.partial_reasoning = ""
             spoken = self._speak_next(turn)
             review, turn.pending_review = turn.pending_review, ""
+            if dependency_review and not turn.steering_received:
+                review = "\n".join(filter(None, (review, dependency_review)))
             # The message asks for something a kit makes: Kiwi Mind's first reply is opened as a tool call.
             # Left to choose, it sometimes answered a "make a 3D scene" message with code pasted into the chat.
             result = self._stream_with_recovery(
@@ -1135,25 +1160,7 @@ class AgentManager:
                     turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text))
                 ):
                     # A blocked repo repeat contributes no new facts. Reuse the prompt that still
-                    # contains the verified reads unless they lead to one explicitly requested dependency.
-                    dependency = self._repo_dependency(turn, prepared, tool_list) if repo_repeat else None
-                    if dependency:
-                        root, path, can_auto_read = dependency
-                        turn.repo_dependency_tried = True
-                        if can_auto_read:
-                            opened = self._call_first(turn, "read_file", {"path": path}, automatic_workspace=root)
-                            if opened.ok:
-                                prepared = self.context.extend(prepared, turn.conversation_id, model, system_prompt,
-                                                               turn_context=turn_context)
-                                self._emit_context(turn, prepared)
-                        elif round_index < max_rounds - 1:
-                            turn.pending_review = (
-                                f"The verified sources share a local Python import at {path}. Read this "
-                                "implementation using read_file with normal permissions, then answer from the evidence."
-                            )
-                            continue
-                    if repo_repeat and turn.steering_received:
-                        continue
+                    # contains the verified source reads, without appending another tool round.
                     self._answer_anyway(turn, model, prepared, tool_list if repo_repeat else None,
                                         text_mode=False, repo_answer=repo_repeat)
                     if repo_repeat:
@@ -3918,7 +3925,7 @@ class AgentManager:
             result = guard.postprocess(item["name"], item["args"], result, turn.safety)
             result = library.page_output(self._library(), item["name"], result, turn.page_limit)
             repo_read = item.get("repo_read")
-            if recover_reads and (repo_read or item["name"] in ("analyze_table", "calculate")):
+            if repo_read or (recover_reads and item["name"] in ("analyze_table", "calculate")):
                 workspace = item["workspace"]
                 key = (workspace.root, item["signature"])
                 stamps = item.get("source_stamps")
@@ -4395,9 +4402,9 @@ class AgentManager:
             return refuse(decision.denial_text(), preview)
         signature = tools.tool_call_signature(name, item["args"], conversation_id=turn.conversation_id)
         repo_scope = turn.repo_scope
-        repo_read = (native and repo_scope is not None and name in ("read_file", "read_files")
-                     and str(workspace.root) == turn.safety.get("workspace"))
-        if native and route is None and (repo_read or name == "analyze_table"):
+        repo_read = (repo_scope is not None and (native or automatic_workspace is not None)
+                     and name in ("read_file", "read_files") and str(workspace.root) == turn.safety.get("workspace"))
+        if route is None and (repo_read or (native and name == "analyze_table")):
             paths = item["args"]["paths"] if name == "read_files" else [item["args"]["path"]]
             stamps = _file_stamps(workspace, paths)
             if stamps and (not repo_read or all(stamp[0].is_relative_to(repo_scope) for stamp in stamps)):

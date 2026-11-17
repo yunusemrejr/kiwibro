@@ -428,24 +428,35 @@ def repo_imports(env: Env, native_repo):
 
 
 @pytest.mark.parametrize("target", ["module", "package"])
-def test_native_repo_repeat_reads_one_shared_python_implementation(env: Env, repo_imports, target: str):
+@pytest.mark.parametrize("repeat", [False, True])
+def test_native_repo_reads_shared_python_implementation_before_next_generation(
+        env: Env, repo_imports, target: str, repeat: bool,
+):
     path = DEPENDENCY
     if target == "package":
         path = f"{DEPENDENCY.removesuffix('.py')}/__init__.py"
         (env.workspace / path).parent.mkdir()
         (env.workspace / DEPENDENCY).rename(env.workspace / path)
-    env.fake.stream_script = [*repo_imports, ChatResult(content=f"The shared limit is 13 in {path}.")]
+    env.fake.stream_script = [
+        *repo_imports[:2],
+        *([tool_call_result("read_file", {"path": path}, "repeat_dependency")] if repeat else []),
+        ChatResult(content=f"The shared limit is 13 in {path}."),
+    ]
     events, _ = chat_events(env, DEPENDENCY_REQUEST)
     calls = [data for kind, data in events if kind == "tool_call"]
     assert [(data["name"], data["ok"]) for kind, data in events if kind == "tool_result"] == [
-        ("list_files", True), ("read_file", True), ("read_file", True), ("read_file", False), ("read_file", True),
+        ("list_files", True), ("read_file", True), ("read_file", True), ("read_file", True),
+        *([("read_file", False)] if repeat else []),
     ]
-    assert calls[-1]["args"]["path"] == path and calls[-1]["requires_approval"] is False
-    assert len(env.fake.stream_calls) == 4
-    final = env.fake.stream_calls[-1]
-    assert final["extra"]["tool_choice"] == "none"
-    assert any(row.get("tool_call_id") == calls[-1]["id"] and "return 13" in row["content"]
-               for row in final["messages"])
+    assert calls[3]["args"]["path"] == path and calls[3]["requires_approval"] is False
+    assert len(env.fake.stream_calls) == (4 if repeat else 3)
+    after_consumers = env.fake.stream_calls[2]
+    assert after_consumers["tools"] == env.fake.stream_calls[1]["tools"]
+    assert "tool_choice" not in (after_consumers["extra"] or {})
+    assert any(row.get("tool_call_id") == calls[3]["id"] and "return 13" in row["content"]
+               for row in after_consumers["messages"])
+    if repeat:
+        assert env.fake.stream_calls[-1]["extra"]["tool_choice"] == "none"
 
 
 @pytest.mark.parametrize("limit", [
@@ -459,14 +470,15 @@ def test_native_repo_repeat_does_not_read_an_unverified_dependency(
         alternate.parent.mkdir()
         alternate.write_text("def allowed_jobs():\n    return 99\n", encoding="utf-8")
     if limit == "stale":
-        stream = env.svc.llm.stream_chat
+        extend = env.svc.agent.context.extend
 
-        def change_consumer(**kwargs):
-            if len(env.fake.stream_calls) == 2:
+        def change_consumer(*args, **kwargs):
+            result = extend(*args, **kwargs)
+            if any(row.get("tool_call_id") == "worker" for row in result.messages):
                 (env.workspace / SIBLING).write_text("WORKER_MAX = 25\n", encoding="utf-8")
-            return stream(**kwargs)
+            return result
 
-        monkeypatch.setattr(env.svc.llm, "stream_chat", change_consumer)
+        monkeypatch.setattr(env.svc.agent.context, "extend", change_consumer)
     if limit == "paged":
         worker = env.workspace / SIBLING
         worker.write_text(worker.read_text(encoding="utf-8") + "# synthetic source filler\n" * 550, encoding="utf-8")
@@ -487,7 +499,7 @@ def test_native_repo_repeat_does_not_read_an_unverified_dependency(
     if limit == "range":
         repo_imports[1] = tool_call_result("read_file", {"path": SIBLING, "end": 1}, "worker")
     if limit == "seen":
-        repo_imports.insert(2, tool_call_result("read_file", {"path": DEPENDENCY}, "implementation"))
+        repo_imports.insert(0, tool_call_result("read_file", {"path": DEPENDENCY}, "implementation"))
     if limit == "denied":
         decide = safety.decide
 
@@ -518,8 +530,8 @@ def test_native_repo_dependency_approval_runs_in_a_normal_model_round(
 
     monkeypatch.setattr(safety, "decide", ask_for_dependency)
     env.fake.stream_script = [
-        *repo_imports, tool_call_result("read_file", {"path": DEPENDENCY}, "reviewed"),
-        ChatResult(content=f"The sources share the implementation in {DEPENDENCY}."),
+        *repo_imports[:2], tool_call_result("read_file", {"path": DEPENDENCY}, "reviewed"),
+        ChatResult(content="I did not inspect the shared implementation."),
     ]
     response = env.client.post("/api/chat", json={"message": DEPENDENCY_REQUEST}, buffered=False)
     stream = SSEStream(response).start()
@@ -530,7 +542,7 @@ def test_native_repo_dependency_approval_runs_in_a_normal_model_round(
     assert [data["id"] for kind, data in events if kind == "tool_call" and data["args"].get("path") == DEPENDENCY] == [
         "reviewed",
     ]
-    followup = env.fake.stream_calls[3]
+    followup = env.fake.stream_calls[2]
     assert followup["tools"] is not None and "tool_choice" not in (followup["extra"] or {})
     assert DEPENDENCY in followup["messages"][-1]["content"]
 
@@ -545,10 +557,10 @@ def test_native_repo_dependency_rechecks_steering_at_dispatch(env: Env, repo_imp
         return call_first(turn, name, args, **kwargs)
 
     monkeypatch.setattr(env.svc.agent, "_call_first", steer_before_read)
-    env.fake.stream_script = [*repo_imports, ChatResult(content="Both checked consumers use the same import.")]
+    env.fake.stream_script = [*repo_imports[:2], ChatResult(content="Both checked consumers use the same import.")]
     events, _ = chat_events(env, DEPENDENCY_REQUEST)
     assert [(data["name"], data["ok"]) for kind, data in events if kind == "tool_result"] == [
-        ("list_files", True), ("read_file", True), ("read_file", True), ("read_file", False), ("read_file", False),
+        ("list_files", True), ("read_file", True), ("read_file", True), ("read_file", False),
     ]
     assert any(kind == "steering" and data["text"] == note for kind, data in events)
     assert all("return 13" not in row["content"] for row in env.fake.stream_calls[-1]["messages"] if row.get("content"))
