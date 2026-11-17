@@ -335,6 +335,11 @@ An adapter that can activate uses ordinary decoding. A draft startup
 failure retries with the same trunk and projector.
 [Verified CPU draft pack](https://huggingface.co/yunusemrejr/kiwimind/tree/bfbcc8ddc1d4902ddd71ee4a6d14b373c76ca31c/variants/e4b-cpu-mtp) · [Measured draft decoding](../scripts/mind/NATIVE_CPU.md#compact-e4b-multi-token-prediction-on-cpu)
 
+For a native Gemma 4 candidate with vision, `KIWIBRO_NATIVE_DIRECT_IMAGE=1`
+lets one validated uploaded image travel with the current user request.
+The app reserves room for the image and keeps it attached during tool rounds
+and context retries. The stored chat keeps the attachment path.
+
 ## Verify before changing the local launcher
 
 - Open **How it works → Kiwi Mind** and check the model, quantization and expert counts

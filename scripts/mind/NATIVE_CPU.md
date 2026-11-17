@@ -586,3 +586,10 @@ verified pack started with drafting through the normal managed server on
 the laptop. **How it works → Kiwi Mind** displayed the 6.02 GB pack, the
 8,192-wide layers, vision and draft decoding.
 [Passing dashboard probe](https://huggingface.co/yunusemrejr/kiwimind/blob/bfbcc8ddc1d4902ddd71ee4a6d14b373c76ca31c/variants/e4b-cpu-mtp/evals/ryzen-direct-image-mtp.json)
+
+The app's direct attachment path with the managed runtime passed the same
+dashboard in 155.58 seconds. CPU pressure was about 10% at startup and 7%
+at finish. The preceding run, with endpoint samples of about 37% and 43%,
+timed out before saving a file. Both runs used the staged draft-enabled
+pack and required exact output and real browser interaction.
+[Passing managed dashboard](https://huggingface.co/yunusemrejr/kiwimind/blob/6dc08374523b43c649df98b75cee187411a9f767/variants/e4b-cpu-mtp/evals/ryzen-managed-image.json) · [Higher desktop load](https://huggingface.co/yunusemrejr/kiwimind/blob/6dc08374523b43c649df98b75cee187411a9f767/variants/e4b-cpu-mtp/evals/ryzen-managed-image-desktop-load.json)
