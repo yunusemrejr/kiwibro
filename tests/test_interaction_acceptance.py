@@ -7,9 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiwibro.agent import Turn
 from kiwibro.llm import ChatResult
 from scripts.mind.accept_finalist import INTERACTION_REPEATS, JOURNAL, append_journal, collect_journal, interaction_summary
-from test_successor_acceptance import acceptance, call, offline_chrome, turn, verified_native_pack, write  # noqa: F401
+from test_native_literal_read import native_read  # noqa: F401 - scripted native model identity
+from test_successor_acceptance import (  # noqa: F401
+    NATIVE_DATA, acceptance, call, offline_chrome, turn, verified_native_pack, write,
+)
 
 
 class InteractionBusy(AssertionError):
@@ -86,7 +90,7 @@ def run_interaction(env, repeats, record):
                 env.fake.stream_script = [call(1, "read_file", path=path), ChatResult(content=marker)]
             events, messages = turn(
                 env, f"Read {path} with the file reading tool. Reply with only its dispatch marker.",
-                {"read_file"}, observer=times.update, tool_profile="auto",
+                {"read_file"}, observer=times.update, tool_profile="auto", allow_direct_read=True,
             )
             assert any(event == "tool_result" and data["name"] == "read_file" and data["ok"]
                        and marker in data["preview"] for event, data in events)
@@ -125,6 +129,46 @@ def run_interaction(env, repeats, record):
             assert (env.workspace / "screenshots" / f"look-dispatch-preview-{repeat:03d}.png").is_file()
             assert all(times[key] is not None for key in ("first_verified_tool_ms", "first_render_ms", "done_ms"))
     wait_for_idle(env)
+
+
+@pytest.mark.parametrize("altered_evidence", [None, "no_opt_in", "usage", "failed_read", "wrong_model", "other_reply"])
+def test_interaction_exact_read_requires_direct_reply_evidence(env, native_read, monkeypatch, altered_evidence):  # noqa: F811
+    path = "dispatch-test.txt"
+    marker = "DISPATCH-TEST"
+    write(env.workspace, path, f"Dispatch marker: {marker}\n")
+    # Keep the app and scripted transport, and assert the native SSE contract.
+    fake = env.fake
+    monkeypatch.setattr(env, "fake", None)
+    monkeypatch.setenv(NATIVE_DATA, str(env.workspace))
+    original_emit = Turn.emit
+
+    def emit(self, event, data):
+        if event == "done" and altered_evidence == "usage":
+            data = {**data, "usage": {"completion_tokens": 1}}
+        if event == "done" and altered_evidence == "wrong_model":
+            data = {**data, "model": "other"}
+        if event == "done" and altered_evidence == "other_reply":
+            data = {**data, "inference": {"said_by_kiwibro": "look"}}
+        if event == "tool_result" and altered_evidence == "failed_read":
+            data = {**data, "ok": False}
+        original_emit(self, event, data)
+
+    monkeypatch.setattr(Turn, "emit", emit)
+    observed = []
+    options = {"tool_profile": "auto", "observer": observed.append}
+    if altered_evidence != "no_opt_in":
+        options["allow_direct_read"] = True
+    prompt = f"Read {path} with the file reading tool. Reply with only its dispatch marker."
+    if altered_evidence is None:
+        events, messages = turn(env, prompt, {"read_file"}, **options)
+        assert messages[-1]["content"] == marker
+        assert events[-1][1]["inference"]["said_by_kiwibro"] == "read_file"
+        assert observed[0]["native_reply"] == "direct_read"
+    else:
+        with pytest.raises(AssertionError):
+            turn(env, prompt, {"read_file"}, **options)
+        assert observed[0]["terminal"] == "done" and observed[0]["native_reply"] is None
+    assert len(observed) == 1 and not fake.stream_calls
 
 
 def test_interaction_resumes_with_same_app_after_timeout_and_wrong_marker(env, offline_chrome, monkeypatch):  # noqa: F811

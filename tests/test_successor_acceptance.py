@@ -199,7 +199,7 @@ def turn(
     env: Env, prompt: str, allowed: set[str], *, allowed_paths: set[str] | None = None,
     command: tuple[str, str] | None = None, attachments: list[dict] | None = None,
     conversation_id: str | None = None, observer: Callable[[dict], None] | None = None,
-    tool_profile: str = "full",
+    tool_profile: str = "full", allow_direct_read: bool = False,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
     native_log = getattr(env, "native_log", None) if observer else None
     start_records = len(native_log.records) if native_log is not None else 0
@@ -280,8 +280,16 @@ def turn(
             if active := meta.get("conversation_id"):
                 env.new_client().post("/api/chat/stop", json={"conversation_id": active})
             stream.done.wait(3)
+        done = next((data for event, data in observed if event == "done"), {})
+        native_model_reply = native and any(event == "brain" and data["brain"] == KIWIMIND for event, data in observed)
+        direct_read_reply = (
+            native and allow_direct_read and allowed == {"read_file"}
+            and meta.get("model") == done.get("model") == KIWIMIND and done.get("usage") is None
+            and (done.get("inference") or {}).get("said_by_kiwibro") == "read_file"
+            and not any(event == "brain" for event, _ in observed)
+            and any(event == "tool_result" and data["ok"] and data["name"] == "read_file" for event, data in observed)
+        )
         if observer:
-            done = next((data for event, data in observed if event == "done"), {})
             stats = {
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 **observed_timing,
@@ -294,6 +302,8 @@ def turn(
                 "failed_tools": dict(Counter(data["name"] for event, data in observed
                                              if event == "tool_result" and not data["ok"] and data["name"] in allowed)),
             }
+            if native:
+                stats["native_reply"] = "model" if native_model_reply else "direct_read" if direct_read_reply else None
             if native_log is not None:
                 stats["native_execution"] = {
                     "backend_before": backend_before,
@@ -307,7 +317,7 @@ def turn(
     assert not events[-1][1]["aborted"]
     if native:
         assert events[0][1]["model"] == events[-1][1]["model"] == KIWIMIND
-        assert any(event == "brain" and data["brain"] == KIWIMIND for event, data in events)
+        assert native_model_reply or direct_read_reply
     conversation = events[0][1]["conversation_id"]
     assert not conversation_id or conversation == conversation_id
     detail = env.client.get(f"/api/conversations/{conversation}?warm=0")
