@@ -36,7 +36,9 @@ def native_page(env: Env, monkeypatch: pytest.MonkeyPatch):
     return permissions
 
 
-@pytest.mark.parametrize("request_text", [ASK, "Save index.html and check the saved render."])
+@pytest.mark.parametrize("request_text", [
+    ASK, "Save index.html and check the saved render.", "Save index.html and verify the phone preview.",
+])
 def test_native_explicit_render_is_checked_in_the_write_round(env: Env, native_page, chrome, request_text: str):
     chrome(CLEAN)
     env.fake.stream_script = [write("index.html", FIXED, "call_1")]

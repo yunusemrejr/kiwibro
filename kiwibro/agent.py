@@ -353,14 +353,14 @@ _NATIVE_READ = re.compile(
 _RENDER_REQUEST = re.compile(
     r"(?:^|[.!?;\n]|\b(?:and|then)\b)\s*(?:please\s+)?(?:"
     r"use\s+`?look_at_page`?\s+to\s+(?:check|verify|inspect)\b|"
-    r"(?:check|verify|inspect|look at)\s+(?:the\s+)?(?:saved\s+render|rendered\s+(?:page|output)|"
+    r"(?:check|verify|inspect|look at)\s+(?:the\s+)?(?:phone\s+preview|saved\s+render|rendered\s+(?:page|output)|"
     r"render\s+of\s+the\s+(?:page|file)|saved\s+page\s+(?:(?:using|with)\s+`?look_at_page|in\s+the\s+browser))\b)",
     re.I,
 )
 _PAGE_CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
 _RENDER_REFUSAL = re.compile(
     r"\b(?:do not|don['’]t|never|skip|without)\b[^.!?;\n]{0,80}\b(?:check\w*|verif\w*|inspect\w*|"
-    r"look\s+at|render\w*|look_at_page)\b", re.I,
+    r"look\s+at|render\w*|preview\w*|look_at_page)\b", re.I,
 )
 _PAGE_REPLY_REQUEST = re.compile(
     r"\b(?:tell me|let me know|give me|reply with)\b|\?|"
