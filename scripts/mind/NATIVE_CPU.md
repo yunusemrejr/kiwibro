@@ -430,3 +430,12 @@ The file read used the checked application path. The rendered cases ran
 native generation, performed the edit and returned a real Chrome result.
 CPU pressure `some avg10` was 49.26% at start and 23.22% at finish. These
 figures describe that app run under desktop load.
+
+With Auto tools on CPU, E4B took 146.79 seconds to open the shared policy
+and name its exact workspace-relative path. The repair turn made the
+expected single edit. The independent test runner passed all four tests,
+with Git HEAD, index and other files preserved. The app scenario still
+failed because the model omitted the explicitly requested working
+directory and its command was denied. The repair turn took 240.94 seconds
+including repeated denied attempts. CPU pressure `some avg10` was 7.70%
+at start and 8.33% at finish.
