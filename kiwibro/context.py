@@ -194,7 +194,9 @@ def tool_cap_for_age(age_from_newest: int) -> int:
     return TOOL_RESULT_CAP_OLD
 
 
-def build_llm_messages(system_prompt: str, db_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_llm_messages(
+    system_prompt: str, db_messages: list[dict[str, Any]], *, anchor_user_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Convert DB messages to LLM messages with prefix-stable tool caps.
 
     KV-cache rule: text rendered for older turns must not change when a new
@@ -215,6 +217,7 @@ def build_llm_messages(system_prompt: str, db_messages: list[dict[str, Any]]) ->
         if converted is None:
             continue
         previous = messages[-1] if messages else None
+        anchored_user = anchor_user_id is not None and db_message.get("id") == anchor_user_id and converted["role"] == "user"
         if converted["role"] == "user" and previous is not None and previous["role"] == "user":
             # Two user messages in a row (a reply failed or was stopped before any text):
             # one turn for the model. Strict chat templates (Gemma) reject consecutive user
@@ -222,7 +225,11 @@ def build_llm_messages(system_prompt: str, db_messages: list[dict[str, Any]]) ->
             # messages alone, so it renders the same on every later turn.
             if converted["content"] != previous["content"]:
                 previous["content"] = f"{previous['content']}\n\n{converted['content']}"
+            if anchored_user:
+                previous["_anchor_user"] = True
             continue
+        if anchored_user:
+            converted["_anchor_user"] = True
         messages.append(converted)
     return messages
 
@@ -426,6 +433,8 @@ class PreparedContext:
     anchored: bool = False
     turn_context: str = ""
     reserve: int = 0  # tokens kept free for what renders outside the messages (tool schemas)
+    anchor_user_id: str | None = None
+    anchor_user_index: int | None = None
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -522,6 +531,7 @@ class ContextEngine:
         allow_compaction: bool = True,
         turn_context: str = "",
         reserve_tokens: int = 0,
+        anchor_user_id: str | None = None,
     ) -> PreparedContext:
         """Build the prompt for one turn.
 
@@ -546,7 +556,7 @@ class ContextEngine:
         trigger = int(room * COMPACT_TRIGGER)
         history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
         messages = build_llm_messages(
-            combine_system_prompt(system_prompt, conversation["summary"]), history
+            combine_system_prompt(system_prompt, conversation["summary"]), history, anchor_user_id=anchor_user_id
         )
         raw = raw_message_sum(messages)
         compacted = False
@@ -558,6 +568,8 @@ class ContextEngine:
             while self._used(raw, model) > trigger and passes < MAX_COMPACTION_PASSES:
                 segment = (self._extractive_target_segment(history, trigger, model) if extractive else
                            self._target_segment(history, messages, raw, trigger, model))
+                if anchor_user_id is not None:
+                    segment = _clean_summary_segment(segment[:self._user_index(segment, anchor_user_id)])
                 if not segment:
                     break
                 updated = self._compact_segment(conversation, segment, model, extractive=extractive)
@@ -566,7 +578,7 @@ class ContextEngine:
                 conversation = updated
                 history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
                 messages = build_llm_messages(
-                    combine_system_prompt(system_prompt, conversation["summary"]), history
+                    combine_system_prompt(system_prompt, conversation["summary"]), history, anchor_user_id=anchor_user_id
                 )
                 raw = raw_message_sum(messages)
                 compacted = True
@@ -575,7 +587,8 @@ class ContextEngine:
             if self._used(raw, model) > trigger:
                 trimmed_history = self._drop_old_tool_results(history)
                 candidate = build_llm_messages(
-                    combine_system_prompt(system_prompt, conversation["summary"]), trimmed_history
+                    combine_system_prompt(system_prompt, conversation["summary"]), trimmed_history,
+                    anchor_user_id=anchor_user_id,
                 )
                 candidate_raw = raw_message_sum(candidate)
                 if candidate_raw < raw:
@@ -586,12 +599,12 @@ class ContextEngine:
 
             while self._used(raw, model) > room and len(history) > MIN_KEEP_MESSAGES:
                 keep = max(MIN_KEEP_MESSAGES, len(history) // 2)
-                shorter = self._truncate(history, keep)
+                shorter = self._truncate(history, keep, anchor_user_id=anchor_user_id)
                 if len(shorter) >= len(history):  # only the kept request is left to cut
                     break
                 history = shorter
                 messages = build_llm_messages(
-                    combine_system_prompt(system_prompt, conversation["summary"]), history
+                    combine_system_prompt(system_prompt, conversation["summary"]), history, anchor_user_id=anchor_user_id
                 )
                 raw = raw_message_sum(messages)
                 trimmed = True
@@ -629,6 +642,9 @@ class ContextEngine:
 
         used = self._used(raw, model)
         stats = context_stats(used, budget)
+        anchor_index = None
+        if anchor_user_id is not None:
+            anchor_index = next((index for index, row in enumerate(messages) if row.pop("_anchor_user", False)), None)
         return PreparedContext(
             messages=messages,
             used=stats["used"],
@@ -646,6 +662,8 @@ class ContextEngine:
             anchored=anchored,
             turn_context="\n\n".join(note_parts),
             reserve=max(0, int(reserve_tokens)),
+            anchor_user_id=anchor_user_id,
+            anchor_user_index=anchor_index,
         )
 
     def _recall_note(
@@ -823,7 +841,8 @@ class ContextEngine:
             # newest user message). The same note re-passed each tool round —
             # the agent's pattern — must stay incremental.
             return self.prepare(
-                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve
+                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve,
+                anchor_user_id=prepared.anchor_user_id,
             )
         new_db = self.db.list_messages(conversation_id, after_seq=prepared.last_seq)
         if not new_db:
@@ -840,7 +859,8 @@ class ContextEngine:
         ):
             # Compaction mid-turn: the turn's note (time, memory, directives, plan) stays on.
             return self.prepare(
-                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve
+                conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=prepared.reserve,
+                anchor_user_id=prepared.anchor_user_id,
             )
         stats = context_stats(used, prepared.budget)
         return PreparedContext(
@@ -860,6 +880,8 @@ class ContextEngine:
             anchored=prepared.anchored,
             turn_context=prepared.turn_context,
             reserve=prepared.reserve,
+            anchor_user_id=prepared.anchor_user_id,
+            anchor_user_index=prepared.anchor_user_index,
         )
 
     @staticmethod
@@ -877,7 +899,14 @@ class ContextEngine:
         return result
 
     @staticmethod
-    def _truncate(history: list[dict[str, Any]], keep: int, *, keep_request: bool = True) -> list[dict[str, Any]]:
+    def _user_index(history: list[dict[str, Any]], user_id: str) -> int:
+        return next((i for i, row in enumerate(history) if row.get("id") == user_id and row["role"] == "user"),
+                    len(history))
+
+    @staticmethod
+    def _truncate(
+        history: list[dict[str, Any]], keep: int, *, keep_request: bool = True, anchor_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         kept = _clean_leading_boundary(history[-keep:])
         # Never start with an assistant tool-call message whose tool results were cut off.
         while kept and kept[0].get("role") == "assistant" and kept[0].get("tool_calls"):
@@ -886,6 +915,10 @@ class ContextEngine:
         if keep_request and newest_user is not None and not any(m is newest_user for m in kept):
             # Keep what the user asked for (chat templates also reject a history without a user turn).
             kept = [newest_user, *kept]
+        if anchor_user_id is not None:
+            index = ContextEngine._user_index(history, anchor_user_id)
+            if index < len(history) and not any(row is history[index] for row in kept):
+                kept = [history[index], *kept]
         return kept
 
     # --- summarisation & recovery -----------------------------------------
@@ -1066,7 +1099,7 @@ class ContextEngine:
         merged = self._reduce_summaries(partials, "", model, in_tokens, out_tokens)
         return (merged or "\n\n".join(partials))[:4000]
 
-    def recover_aggressive(self, conversation_id: str, model: str) -> bool:
+    def recover_aggressive(self, conversation_id: str, model: str, *, anchor_user_id: str | None = None) -> bool:
         """Summarise roughly half of the remaining history (context-limit recovery)."""
         conversation = self.db.get_conversation(conversation_id)
         if conversation is None:
@@ -1081,12 +1114,14 @@ class ContextEngine:
         if extractive:
             current_user = max((i for i, row in enumerate(history) if row["role"] == "user"), default=len(history))
             boundary = min(boundary, current_user)
+        if anchor_user_id is not None:
+            boundary = min(boundary, self._user_index(history, anchor_user_id))
         segment = _clean_summary_segment(history[:boundary])
         if not segment:
             return False
         return self._compact_segment(conversation, segment, model, extractive=extractive) is not None
 
-    def hard_recover(self, conversation_id: str, keep: int = 6) -> bool:
+    def hard_recover(self, conversation_id: str, keep: int = 6, *, anchor_user_id: str | None = None) -> bool:
         """Last-resort truncation: keep only the newest few messages."""
         conversation = self.db.get_conversation(conversation_id)
         if conversation is None:
@@ -1094,8 +1129,8 @@ class ContextEngine:
         history = self.db.list_messages(conversation_id, after_seq=conversation["summary_through_seq"])
         if len(history) <= keep:
             return False
-        # A summary boundary cannot skip messages, so the request is not kept back here.
-        kept = self._truncate(history, keep, keep_request=False)
+        # A summary boundary cannot skip messages. Keep one contiguous suffix including any explicit anchor.
+        kept = self._truncate(history, keep, keep_request=False, anchor_user_id=anchor_user_id)
         if not kept:
             return False
         boundary_seq = kept[0]["seq"] - 1

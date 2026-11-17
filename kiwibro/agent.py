@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -19,7 +20,7 @@ from typing import Any, Callable, Iterator
 
 from . import (
     adapters, autofacts, checkpoints, components, compute, config, connectivity, delegate, directives, guard, guidance, inference, grounding, knowledge, ledger, library, lookfirst, pagecheck, pageloop, plan, prompts, reactions, readings, recall, research, safety,
-    sessions, shape, specialists, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode,
+    sessions, shape, specialists, steer, syntaxcheck, terms, textfacts, toolcall, tools, weather, workspaces, safemode, media,
 )
 from .context import (
     COMPACT_TRIGGER, ContextEngine, PreparedContext, build_llm_messages, combine_system_prompt, compute_budget,
@@ -58,6 +59,8 @@ TOOLS_SHARE_MAX = 0.35
 USER_MESSAGE_SHARE = 0.4
 # Reply cap while a planned document is still unwritten (thinking + the whole file in one call).
 WRITE_ROUND_MAX_TOKENS = 6144
+DIRECT_IMAGE_ENV = "KIWIBRO_NATIVE_DIRECT_IMAGE"
+DIRECT_IMAGE_TOKENS = 1280  # pinned Gemma 4 projector allows 1,120 image tokens, plus template overhead
 WRITE_RETRY_MAX_TOKENS = 2600
 WRITTEN_NOTE_MIN_CHARS = 40  # a reply shorter than this is a remark, not the note that was asked for
 LATE_NOTE_PASSES = 2  # times a turn that is over answers the steering notes that arrived after its last reply
@@ -411,6 +414,10 @@ def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
     return model == KIWIMIND and (info or {}).get("engine") == "native-gguf"
 
 
+def _direct_image_model(model: str, info: dict[str, Any] | None) -> bool:
+    return bool(_native_mind(model, info) and info and info.get("vision") is True and info.get("arch") == "gemma4")
+
+
 def _literal_read_value(result: ToolResult, field: str, path: str) -> str | None:
     """Get a single plain value from the checked tool observation, ahead of any plan note."""
     meta = result.meta or {}
@@ -504,6 +511,13 @@ def _text_mode_specs(settings: dict[str, Any]) -> list[tools.ToolSpec]:
     return [tools.TOOL_SPECS[name] for name in names]
 
 
+@dataclass(frozen=True)
+class _DirectImage:
+    url: str = field(repr=False)
+    version: str | None
+    size_bytes: int | None
+
+
 @dataclass
 class Turn:
     conversation_id: str
@@ -542,6 +556,7 @@ class Turn:
     steering_notes: list[str] = field(default_factory=list)
     steering_received: bool = False
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    direct_image: _DirectImage | None = field(default=None, repr=False)
     steering_lock: threading.Lock = field(default_factory=threading.Lock)
     system_prompt: str = ""
     turn_context: str = ""
@@ -553,7 +568,7 @@ class Turn:
     stream_filter: toolcall.StreamFilter | None = None
     page_limit: int = 8000  # tool outputs longer than this are paged into the library
     nudged: bool = False
-    reserve: int = 0  # prompt tokens the tool schemas take (kept out of the message budget)
+    reserve: int = 0  # tool schemas and any direct image, outside the text message budget
     native_unscoped: bool = False  # steering can widen a previously narrow tool set
     native_tool_charge: int = 0  # the native schema charge in the last generation
     reviewed: bool = False  # the one end-of-turn self-check has been offered
@@ -912,7 +927,10 @@ class AgentManager:
             # meta is contractually the first SSE event: send it before looking at the
             # files (a vision helper can take a while); real context stats follow.
             self._emit_meta(turn, conversation, settings, model=model)
-            self._see_attachments(turn, model, user_message)
+            if self._prepare_direct_image(turn, model, model_info):
+                self._drain_steering(turn)
+            else:
+                self._see_attachments(turn, model, user_message)
         # KV-cache rule: message 0 stays byte-identical across turns so the server
         # reuses the cached prefix; the clock, retrieved memories and directives
         # ride on the newest user message (fixed for the whole turn).
@@ -934,6 +952,8 @@ class AgentManager:
         # The file may answer this exact request by itself. Defer template counting
         # and any history compaction until the turn actually needs the model.
         turn.reserve = 0 if literal_field else self._tool_tokens(model, tool_list, model_info)
+        if turn.direct_image:
+            turn.reserve += DIRECT_IMAGE_TOKENS
         self._page_long_message(turn, user_message, model)
         turn.questions = plan.questions(turn.message) if turn.plan is None else []
         turn.worked = self._worked(turn)
@@ -942,7 +962,7 @@ class AgentManager:
         turn.system_prompt, turn.turn_context = system_prompt, turn_context
         prepared = self.context.prepare(
             turn.conversation_id, model, system_prompt, turn_context=turn_context, reserve_tokens=turn.reserve,
-            allow_compaction=literal_field is None,
+            allow_compaction=literal_field is None, anchor_user_id=turn.user_message_id if turn.direct_image else None,
         )
         # meta is contractually the first SSE event; context follows it.
         if turn.attachments:
@@ -2752,7 +2772,7 @@ class AgentManager:
         """Kiwi Mind is stuck: the model the user selected writes everything left of this turn, tool calls
         included, as it did before Kiwi Mind existed. The next turn starts on Kiwi Mind again. False when
         no helper is chosen, or it already leads or could not start."""
-        if turn.model != KIWIMIND or turn.lead_lost:
+        if turn.model != KIWIMIND or turn.lead_lost or turn.direct_image:
             return False
         helper = self.llm.helper()
         if helper is None:
@@ -2781,9 +2801,12 @@ class AgentManager:
         tool_list = self._tool_list(model, settings, info, turn=turn)
         turn.system_prompt = system_prompt
         turn.reserve = self._tool_tokens(model, tool_list, info)
+        if turn.direct_image:
+            turn.reserve += DIRECT_IMAGE_TOKENS
         turn.prompt_changed = False
         prepared = self.context.prepare(
-            turn.conversation_id, model, system_prompt, turn_context=turn.turn_context, reserve_tokens=turn.reserve
+            turn.conversation_id, model, system_prompt, turn_context=turn.turn_context, reserve_tokens=turn.reserve,
+            anchor_user_id=turn.user_message_id if turn.direct_image else None,
         )
         turn.page_limit = library.page_limit(prepared.budget)
         self._emit_context(turn, prepared)
@@ -2882,11 +2905,16 @@ class AgentManager:
             if answer_only and tool_list:
                 # Native llama.cpp keeps these schemas in the template and switches off tool parsing.
                 request_extra["tool_choice"] = "none"
-            # Prepared context appends stable message objects. A full rebuild or
-            # transient suffix creates new objects, which are counted afresh.
-            reuse = inference.PREFIX_TRACKER.observe(
-                model, messages, tool_list, prompt_extra, memo=None if text_mode else turn.prefix_memo,
-            )
+            if turn.direct_image is not None:
+                messages = self._image_request(turn, model, prepared, messages)
+                self._raise_if_aborted(turn)
+                max_tokens = self._max_tokens(turn, prepared, settings)
+                reuse = {}  # only native server timings know the real image token count and reuse
+            else:
+                # Prepared context appends stable message objects; only its changes need to be counted again.
+                reuse = inference.PREFIX_TRACKER.observe(
+                    model, messages, tool_list, prompt_extra, memo=None if text_mode else turn.prefix_memo,
+                )
             turn.timer = inference.RoundTimer()
             turn.stream_filter = toolcall.StreamFilter(additional_openers=_GEMMA_TOOL_MARKERS if answer_only else ())
             turn.stream_tail, turn.loop_checked, turn.sense_checked = "", 0, 0
@@ -2971,9 +2999,10 @@ class AgentManager:
                         turn.emit("rewrite", {"text": "", "reasoning": ""})
                     continue
                 attempts += 1
-                if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model):
+                anchor = prepared.anchor_user_id
+                if attempts == 1 and self.context.recover_aggressive(turn.conversation_id, model, anchor_user_id=anchor):
                     log.info("context limit hit; summarised half the history and retrying")
-                elif attempts <= 2 and self.context.hard_recover(turn.conversation_id):
+                elif attempts <= 2 and self.context.hard_recover(turn.conversation_id, anchor_user_id=anchor):
                     log.info("context limit hit again; hard-trimmed history and retrying")
                 else:
                     raise
@@ -2981,7 +3010,7 @@ class AgentManager:
                     raise TurnAborted()
                 prepared = self.context.prepare(
                     turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context,
-                    reserve_tokens=turn.reserve,
+                    reserve_tokens=turn.reserve, anchor_user_id=anchor,
                 )
                 self._emit_context(turn, prepared)
                 turn.partial_text = ""
@@ -3016,7 +3045,9 @@ class AgentManager:
         if turn.plan is not None and any(step.kind == "write" for step in turn.plan.remaining()):
             cap = max(cap, min(WRITE_ROUND_MAX_TOKENS, room))
         if turn.truncated_writes:
-            return max(1, min(cap, room, WRITE_RETRY_MAX_TOKENS))
+            cap = min(cap, WRITE_RETRY_MAX_TOKENS)
+        if turn.truncated_writes or turn.direct_image:
+            return max(1, min(cap, room))
         return cap
 
     @staticmethod
@@ -3226,6 +3257,51 @@ class AgentManager:
         meta = {**(user_message.get("meta") or {}), "attachments": seen}
         self.db.update_message(user_message["id"], meta=meta)
 
+    def _prepare_direct_image(self, turn: Turn, model: str, info: dict[str, Any] | None) -> bool:
+        if (os.environ.get(DIRECT_IMAGE_ENV) != "1" or not _direct_image_model(model, info)
+                or len(turn.attachments) != 1):
+            return False
+        attachment = turn.attachments[0]
+        if attachment.get("kind") != "image" or "seen" in attachment:
+            return False
+        self._raise_if_aborted(turn)
+        workspace = self._workspace(turn.conversation_id)
+        try:
+            root = workspace.root
+            path = attachment["path"]
+            resolved = workspace.resolve(path, must_exist=True)
+            if (str(root) != turn.safety.get("workspace") or resolved != root / path
+                    or not resolved.is_relative_to(root / media.ATTACHMENTS_DIR)):
+                return False
+            url, _ = delegate.image_data_url(workspace, path, strict_raster=True)
+        except (delegate.DelegateError, SandboxError, OSError, RuntimeError):
+            return False  # the ordinary caption or media facts path handles ineligible inputs
+        self._raise_if_aborted(turn)
+        assert info is not None
+        turn.direct_image = _DirectImage(url, info.get("version"), info.get("size_bytes"))
+        turn.emit("status", {"phase": "seeing", "label": f"Looking at {attachment['name']}"})
+        return True
+
+    def _image_request(
+        self, turn: Turn, model: str, prepared: PreparedContext, messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Attach the pixels at dispatch to the original authored request, including after recovery."""
+        image = turn.direct_image
+        assert image is not None
+        info = self.llm.model_info(model)
+        if (not _direct_image_model(model, info) or info is None
+                or (info.get("version"), info.get("size_bytes")) != (image.version, image.size_bytes)):
+            raise LLMError("vision", "The Kiwi Mind vision model changed during the request. Send the image again.")
+        index = prepared.anchor_user_index
+        if (index is None or prepared.anchor_user_id != turn.user_message_id
+                or index >= len(messages) or messages[index]["role"] != "user"):
+            raise LLMError("vision", "The image request could not be kept in context. Send it again in a shorter chat.")
+        request = messages[index]
+        return [*messages[:index], {**request, "content": [
+            {"type": "text", "text": request["content"]},
+            {"type": "image_url", "image_url": {"url": image.url}},
+        ]}, *messages[index + 1:]]
+
     def warm_prefix(
         self, model: str, conversation_id: str | None = None
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None, dict[str, Any]] | None:
@@ -3381,7 +3457,7 @@ class AgentManager:
             attachments=bool(turn.attachments),
             plan_kinds=[step.kind for step in steps],
             plan_steps=len(steps),
-        ))
+        ), direct_image=turn.direct_image is not None)
         ready_part = self._ready_part(turn, settings)
         earlier_part = "" if ready_part else self._made_earlier(turn)
         tool_names = {
@@ -3835,7 +3911,7 @@ class AgentManager:
         usage = result.usage
         if not usage:
             return
-        if prepared is not None and turn.model:
+        if prepared is not None and turn.model and not turn.direct_image:
             charge = 0 if result.tools_disabled else turn.native_tool_charge
             self.context.note_usage(turn.model, prepared.raw_sum, max(0, int(usage.get("prompt_tokens") or 0) - charge))
         turn.has_usage = True

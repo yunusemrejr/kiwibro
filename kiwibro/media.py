@@ -36,6 +36,7 @@ from xml.etree import ElementTree
 log = logging.getLogger(__name__)
 
 MAX_IMAGE_SIDE = 1024  # keeps screenshots legible while bounding vision tokens
+MAX_RASTER_PIXELS = 32_000_000  # cap full decode before downscaling the direct native image
 MAX_FRAMES = 6
 TOOL_TIMEOUT_S = 30
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
@@ -103,12 +104,16 @@ def is_raster_header(header: bytes) -> bool:
             and int.from_bytes(header[14:18], "little") in (12, 40, 52, 56, 64, 108, 124))
 
 
-def shrink_image(data: bytes, max_side: int = MAX_IMAGE_SIDE) -> tuple[bytes, str] | None:
+def shrink_image(data: bytes, max_side: int = MAX_IMAGE_SIDE, *, strict_raster: bool = False) -> tuple[bytes, str] | None:
     """Downscale to ``max_side`` px as JPEG/PNG (Pillow, else ImageMagick); None if neither can."""
+    if strict_raster and not is_raster_header(data[:RASTER_HEADER_BYTES]):
+        return None
     Image = _pillow()  # noqa: N806
     if Image is not None:
         try:
             with Image.open(io.BytesIO(data)) as image:
+                if strict_raster and (image.width * image.height > MAX_RASTER_PIXELS or getattr(image, "is_animated", False)):
+                    return None
                 image.load()
                 if max(image.size) <= max_side and image.format in ("JPEG", "PNG"):
                     return data, f"image/{image.format.lower()}"
@@ -125,6 +130,8 @@ def shrink_image(data: bytes, max_side: int = MAX_IMAGE_SIDE) -> tuple[bytes, st
                 return png.getvalue(), "image/png"
         except Exception:  # corrupt/unsupported for Pillow: try ImageMagick
             log.debug("Pillow could not shrink image", exc_info=True)
+    if strict_raster:
+        return None
     convert = shutil.which("magick") or shutil.which("convert")
     if convert:
         shrunk = _run([convert, "-", "-resize", f"{max_side}x{max_side}>", "-strip", "png:-"], data)

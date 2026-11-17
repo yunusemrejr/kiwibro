@@ -93,7 +93,7 @@ def run_helper(
     return {**result, "need": need}
 
 
-def image_data_url(workspace: Workspace, path: str) -> tuple[str, str]:
+def image_data_url(workspace: Workspace, path: str, *, strict_raster: bool = False) -> tuple[str, str]:
     """Read a workspace image as a data URL for vision models. (url, public path)"""
     resolved = workspace.resolve(path, must_exist=True)
     if not resolved.is_file():
@@ -105,10 +105,19 @@ def image_data_url(workspace: Workspace, path: str) -> tuple[str, str]:
         size = resolved.stat().st_size
         if size > media.MAX_ATTACHMENT_BYTES:
             raise DelegateError(f"image is too large ({size} bytes; limit {media.MAX_ATTACHMENT_BYTES})")
-        payload = resolved.read_bytes()
+        with resolved.open("rb") as source:
+            payload = source.read(media.MAX_ATTACHMENT_BYTES + 1)
     except OSError as exc:
         raise DelegateError(f"could not read image: {exc.strerror or exc}") from exc
-    url = media.image_data_url(payload, mime)  # downscaled: vision tokens scale with pixels
+    if len(payload) > media.MAX_ATTACHMENT_BYTES:
+        raise DelegateError("image exceeds the attachment size limit")
+    if strict_raster:
+        converted = media.shrink_image(payload, strict_raster=True)
+        if converted is None:
+            raise DelegateError("image could not be decoded as a single bounded raster")
+        url = media.data_url(*converted)
+    else:
+        url = media.image_data_url(payload, mime)  # downscaled: vision tokens scale with pixels
     if len(url) > MAX_IMAGE_BYTES * 4 // 3:
         raise DelegateError("image is too large to send to a model, even after downscaling")
     return url, workspace.public(resolved)

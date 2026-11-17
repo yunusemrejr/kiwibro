@@ -84,6 +84,7 @@ SNIPPETS: dict[str, str] = {
 }
 TOOL_SNIPPETS = frozenset({"steps", "web", "code", "compute", "browser", "desktop", "memory", "notes"})
 HEADER = "## Guidance for this turn"
+DIRECT_IMAGE = "The uploaded image is included in this request. Examine it directly."
 
 _CAPABILITIES = re.compile(
     r"\bwhat\s+(?:can|could)\s+you\s+do\b|\bwhat\s+are\s+you\s+(?:able|capable)\b|"
@@ -204,6 +205,6 @@ def select(
     return [k for k in SNIPPETS if k in keys]
 
 
-def note(keys: Iterable[str]) -> str:
-    lines = [f"- {SNIPPETS[k]}" for k in keys if k in SNIPPETS]
+def note(keys: Iterable[str], *, direct_image: bool = False) -> str:
+    lines = [f"- {DIRECT_IMAGE if direct_image and k == 'attachments' else SNIPPETS[k]}" for k in keys if k in SNIPPETS]
     return f"{HEADER}\n" + "\n".join(lines) if lines else ""
