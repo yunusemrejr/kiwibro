@@ -408,6 +408,13 @@ _PAGE_REPLY_REQUEST = re.compile(
 )
 _REQUESTED_REPEAT = re.compile(r"\b(?:twice|two times|two passes|repeat|again|re-?run|second pass)\b", re.I)
 _GEMMA_TOOL_MARKERS = ("<|tool_call>", "<tool_call|>")
+_NATIVE_LITERAL_REPLY = re.compile(
+    r"(?:please[ \t]+)?(?:answer|reply|respond|say|output)[ \t]+(?:with[ \t]+)?"
+    r"(?:in[ \t]+)?exactly[ \t]+(?:"
+    r"one[ \t]+word:[ \t]+[A-Za-z0-9][A-Za-z0-9_-]{0,63}|"
+    r"`[^`\r\n]{1,128}`|\"[^\"\r\n]{1,128}\"|“[^”\r\n]{1,128}”)",
+    re.I,
+)
 
 
 def _native_mind(model: str | None, info: dict[str, Any] | None) -> bool:
@@ -481,13 +488,13 @@ def _compact_parameters(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _native_auto_names(turn: Turn | None) -> set[str] | None:
-    """Select the exact schema for an unambiguous workspace read, or retain the usual profile."""
+    """Scope simple, self-contained turns or retain the usual profile for open-ended work."""
     if turn is None or turn.goal or turn.attachments or turn.native_unscoped:
         return None
     if plan.is_small_talk(turn.message):
         return set()
     if turn.plan is None:
-        return None
+        return set() if turn.reaction is None and _NATIVE_LITERAL_REPLY.fullmatch(turn.message.strip()) else None
     reads = [step for step in turn.plan.steps if step.kind == "read"]
     if (not reads or any(step.kind not in {"read", "answer"} for step in turn.plan.steps)
             or any(step.target is None or step.target.outside or step.target.is_dir

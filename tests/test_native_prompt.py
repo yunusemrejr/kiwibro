@@ -150,12 +150,49 @@ def test_native_auto_scopes_only_clear_local_text_reads(env: Env) -> None:
     assert tool_names(agent._tool_list(KIWIMIND, settings, INFO, turn=spoken)) == ["read_file"]
 
 
+@pytest.mark.parametrize("message", [
+    "Respond in exactly one word: Hello",
+    "Please reply with exactly `Checked in`",
+    'Output exactly "the question?"',
+])
+def test_native_literal_reply_still_uses_the_model(env: Env, monkeypatch: pytest.MonkeyPatch,
+                                                 message: str) -> None:
+    monkeypatch.setattr(env.svc.llm, "resolve_model", lambda _requested=None: KIWIMIND)
+    monkeypatch.setattr(env.svc.llm, "model_info", lambda _model: INFO)
+    env.fake.stream_script = [ChatResult(content="Model response", finish_reason="stop")]
+
+    events, _raw = chat_events(env, message)
+
+    first, = env.fake.stream_calls
+    assert not first["tools"]
+    assert message in first["messages"][-1]["content"]
+    assert any(kind == "delta" and detail["text"] == "Model response" for kind, detail in events)
+    assert not any(kind == "tool_call" for kind, _detail in events)
+
+
+@pytest.mark.parametrize("message", [
+    "Reply in exactly one word: What is in release.txt?",
+    "Reply exactly `Ready` after checking release.txt.",
+    'Output exactly "Ready"\nOpen release.txt first.',
+    "What word is in the file? Respond in exactly one word.",
+])
+def test_native_brief_answers_can_still_need_tools(env: Env, message: str) -> None:
+    turn = Turn("c", message, KIWIMIND)
+    settings = env.svc.settings_provider()
+    names = tool_names(env.svc.agent._tool_list(KIWIMIND, settings, INFO, turn=turn))
+    assert "read_file" in names and "write_file" in names
+
+
 def test_profiles_permissions_and_native_schema_budget(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     agent, settings = env.svc.agent, env.svc.settings_provider()
     catalog = tools.tool_defs_for("minimal", settings=settings)
     actual = agent._tool_list(KIWIMIND, {**settings, "tool_profile": "minimal"}, INFO)
     assert actual == catalog
     assert agent._tool_tokens(KIWIMIND, actual, INFO) > agent._tool_tokens(KIWIMIND, actual)
+    literal = Turn("c", "Reply exactly `Checked in`", KIWIMIND)
+    assert agent._tool_list(KIWIMIND, {**settings, "tool_profile": "minimal"}, INFO, turn=literal) == catalog
+    literal.native_unscoped = True
+    assert "write_file" in tool_names(agent._tool_list(KIWIMIND, settings, INFO, turn=literal))
 
     turn = Turn("c", READ_REQUEST, KIWIMIND)
     turn.plan = plan.build(turn.message, env.workspace)
