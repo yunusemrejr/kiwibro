@@ -549,3 +549,24 @@ The second retrieval processed one new prompt token. CPU pressure
 four, measured at the endpoints of each arm. The managed runtime keeps
 its six-worker default on this laptop.
 [Native thread comparison](https://huggingface.co/yunusemrejr/kiwimind/blob/bdae04f40f80e3dffe6be66f139c2a590e43a887/variants/e4b-activation-compacted/evals/ryzen-native-cpu-threads.json)
+
+### Compact E4B multi-token prediction on CPU
+
+The official 98.7 MB Q8_0 draft head proposes up to two tokens per step.
+The compact model checks those proposals with its own weights. Both arms
+used b12443, six CPU workers, the same compact trunk and projector, one
+8,192-token slot, and zero LoRA scale. One uncached request per arm
+passed each exact-output check.
+
+| Request | Control | With draft head | Drafts accepted |
+| --- | ---: | ---: | ---: |
+| Exact code search tool call | 10.22 s | 5.18 s | 14/16 |
+| Exact build code from a screenshot | 13.87 s | 10.13 s | 4/4 |
+| Copy 14 C declarations verbatim | 59.70 s | 26.82 s | 157/158 |
+
+Code decode increased from 4.43 to 10.72 tokens/s. The peak sampled native
+RSS was 7.47 GiB for the control and 7.72 GiB with drafting. Server startup
+took 8.45 and 11.04 seconds respectively. This test establishes exact
+outputs and decoding measurements for these three short or repetitive
+requests. The deeper app workflows have their own acceptance checks.
+[Official draft head](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/blob/8903cb408c7df39cde2ed15fac397e6d7be92951/mtp-gemma-4-E4B-it-Q8_0.gguf) · [Exact-output measurements](https://huggingface.co/yunusemrejr/kiwimind/blob/a9e1b64d16f10c5bf9ffb3e7fa9faa9b6529269a/variants/e4b-activation-compacted/evals/ryzen-native-cpu-mtp.json)
