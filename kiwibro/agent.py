@@ -408,14 +408,17 @@ def _literal_read_value(result: ToolResult, field: str, path: str) -> str | None
     return None
 
 
-def _table_source(workspace: Workspace, raw_path: str) -> tuple[Path, int, int, int, int, int] | None:
-    """Identify a table's current file version without reading it a second time."""
+def _file_stamps(workspace: Workspace, paths: list[str]) -> tuple[tuple[Path, int, int, int, int, int], ...]:
+    """Identify current workspace file versions without re-reading their contents."""
+    stamps = []
     try:
-        path = workspace.resolve(raw_path)
-        info = path.stat()
+        for raw_path in paths:
+            path = workspace.resolve(raw_path)
+            info = path.stat()
+            stamps.append((path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
     except (SandboxError, OSError, RuntimeError):
-        return None
-    return path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+        return ()
+    return tuple(stamps)
 
 
 def _compact_parameters(schema: dict[str, Any]) -> dict[str, Any]:
@@ -485,8 +488,10 @@ class Turn:
     failing_tools: set[str] = field(default_factory=set)  # the tools that failed in that streak
     missing_reads: set[Path] = field(default_factory=set)
     checked_missing_read_folder: bool = False
-    successful_analysis_calls: set[tuple[Path, str]] = field(default_factory=set)
-    table_read_epoch: int = 0
+    successful_evidence_calls: dict[tuple[Path, str], str] = field(default_factory=dict)
+    evidence_epoch: int = 0
+    repo_scope: Path | None = None
+    visible_repo_reads: set[str] = field(default_factory=set)
     stream_tail: str = ""  # last streamed text of this request (degeneration guard)
     loop_checked: int = 0  # stream_tail growth since the last (costlier) loop check
     tool_rounds: int = 0
@@ -1063,6 +1068,12 @@ class AgentManager:
                 set() if native and round_index < max_rounds - 1 and render_requested
                 else None
             )
+            if native and turn.repo_scope is not None:
+                turn.visible_repo_reads = {
+                    message["tool_call_id"] for message in prepared.messages
+                    if message["role"] == "tool" and message.get("tool_call_id")
+                    and message.get("content") not in (None, "", "[earlier tool output omitted]")
+                }
             outcomes = self._handle_tool_calls(turn, result.tool_calls, settings, recover_reads=native,
                                                written_html=written_html)
             self._raise_if_aborted(turn)
@@ -1071,11 +1082,21 @@ class AgentManager:
                           {"checked_by_kiwibro": True}, "missing_read")
                 self._close_plan(turn, model)
                 break
-            if (native and outcomes and all((outcome.meta or {}).get("repeated_table_result") for outcome in outcomes)
-                    and (turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text)))):
-                self._answer_anyway(turn, model, prepared, None, text_mode=False)
-                self._close_plan(turn, model)
-                break
+            if native and outcomes:
+                repo_repeat = not turn.steering_received and all(
+                    (outcome.meta or {}).get("repeated_repo_read") for outcome in outcomes
+                )
+                table_repeat = all((outcome.meta or {}).get("repeated_table_result") for outcome in outcomes)
+                if (repo_repeat or table_repeat) and (
+                    turn.plan is None or all(step.kind == "answer" for step, _ in turn.plan.unmet(turn.reply_text))
+                ):
+                    # A blocked repo repeat contributes no new facts. Reuse the prompt that still
+                    # contains the verified source reads, without appending another tool round.
+                    self._answer_anyway(turn, model, prepared, None, text_mode=False, refresh_context=not repo_repeat)
+                    if repo_repeat:
+                        turn.inference["repo_repeat_finished"] = True
+                    self._close_plan(turn, model)
+                    break
             if turn.truncated_writes > refused_before:
                 if turn.truncated_writes >= 2:
                     self._say(turn, model,
@@ -2398,6 +2419,7 @@ class AgentManager:
             turn.prompt_changed = True
         if result.ok:
             turn.inference["repo_listed_first"] = True
+            turn.repo_scope = folder
         return True
 
     def _act_instead(self, turn: Turn, result: ChatResult, *, written_note: bool = False) -> None:
@@ -3518,15 +3540,16 @@ class AgentManager:
 
     def _answer_anyway(
         self, turn: Turn, model: str, prepared: PreparedContext, tool_list: list[dict[str, Any]] | None,
-        text_mode: bool,
+        text_mode: bool, *, refresh_context: bool = True,
     ) -> None:
         """The turn produced no words at all: ask once more for a plain answer, and if the
         model still says nothing, say so honestly instead of leaving an empty reply."""
         text = ""
         try:
-            prepared = self.context.extend(
-                prepared, turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
-            )
+            if refresh_context:
+                prepared = self.context.extend(
+                    prepared, turn.conversation_id, model, turn.system_prompt, turn_context=turn.turn_context
+                )
             turn.emit("status", {"phase": "thinking", "label": "Putting the answer together"})
             result = self._stream_with_recovery(
                 turn, model, prepared, tool_list, 1, text_mode=text_mode, nudge=prompts.ANSWER_NOW, cool=True
@@ -3703,9 +3726,10 @@ class AgentManager:
             )
             risk = tools.TOOL_SPECS[name].risk
             if recover_reads and risk in ("write", "exec"):
-                # Even a failed command can already have changed a table.
-                turn.table_read_epoch += 1
-                turn.successful_analysis_calls.clear()
+                # Even a failed command can already have changed a source file.
+                turn.evidence_epoch += 1
+                turn.successful_evidence_calls.clear()
+                turn.repo_scope = None
             if risk == "write":  # every file change stays undoable
                 checkpoints.snapshot_call(self.data_dir, context.workspace, name, args, turn.conversation_id)
             elif item["decision"] is not None and item["decision"].targets:  # and what a command changes or removes
@@ -3718,14 +3742,21 @@ class AgentManager:
         def record(item: dict[str, Any], result: ToolResult, duration: int) -> None:
             result = guard.postprocess(item["name"], item["args"], result, turn.safety)
             result = library.page_output(self._library(), item["name"], result, turn.page_limit)
-            if recover_reads and item["name"] in ("analyze_table", "calculate"):
+            repo_read = item.get("repo_read")
+            if recover_reads and (repo_read or item["name"] in ("analyze_table", "calculate")):
                 workspace = item["workspace"]
                 key = (workspace.root, item["signature"])
-                source = item.get("table_source")
-                if result.ok and (source is None or source == _table_source(workspace, item["args"]["path"])):
-                    turn.successful_analysis_calls.add(key)
+                stamps = item.get("source_stamps")
+                meta = result.meta or {}
+                usable = result.ok and (not stamps or stamps == _file_stamps(workspace, item["source_paths"]))
+                if repo_read:
+                    usable = (usable and bool(meta.get("lines")) and bool(result.content.strip())
+                              and not (meta.get("guard") or meta.get("paged"))
+                              and not result.content.endswith("\n… [batch truncated]"))
+                if usable:
+                    turn.successful_evidence_calls[key] = item["id"]
                 else:
-                    turn.successful_analysis_calls.discard(key)
+                    turn.successful_evidence_calls.pop(key, None)
             outcomes[item["id"]] = result, duration
 
         def prepare(index: int, call: dict[str, Any]) -> dict[str, Any]:
@@ -4132,32 +4163,37 @@ class AgentManager:
             preview = "Tool disabled" if decision.source == "permission" else "Blocked by a safety check"
             return refuse(decision.denial_text(), preview)
         signature = tools.tool_call_signature(name, item["args"], conversation_id=turn.conversation_id)
-        source = None
-        if native and name == "analyze_table" and route is None:
-            source = _table_source(workspace, item["args"]["path"])
-        if source is not None:
-            item["table_source"] = source
-            signature = f"{signature}:{turn.table_read_epoch}:{source!r}"
+        repo_scope = turn.repo_scope
+        repo_read = (native and repo_scope is not None and name in ("read_file", "read_files")
+                     and str(workspace.root) == turn.safety.get("workspace"))
+        if native and route is None and (repo_read or name == "analyze_table"):
+            paths = item["args"]["paths"] if name == "read_files" else [item["args"]["path"]]
+            stamps = _file_stamps(workspace, paths)
+            if stamps and (not repo_read or all(stamp[0].is_relative_to(repo_scope) for stamp in stamps)):
+                item["repo_read"] = repo_read
+                item["source_stamps"], item["source_paths"] = stamps, paths
+                signature = f"{signature}:{turn.evidence_epoch}:{stamps!r}"
         item["signature"] = signature
         seen = turn.tool_signatures.get(signature, 0)
         turn.tool_signatures[signature] = seen + 1
-        successful = (workspace.root, signature) in turn.successful_analysis_calls
-        stable_table_repeat = (
-            source is not None and successful and not requires and not turn.steering_received
-            and not _REQUESTED_REPEAT.search(turn.message)
-        )
-        if stable_table_repeat or seen >= 2:
-            message = ("This exact table analysis already succeeded for the unchanged file. Use the earlier result."
-                       if stable_table_repeat else
-                       "Error: this exact tool call was already made twice this turn with the "
+        observed = turn.successful_evidence_calls.get((workspace.root, signature))
+        stable = (observed is not None and not requires and not turn.steering_received
+                  and not _REQUESTED_REPEAT.search(turn.message))
+        stable_table_repeat = stable and name == "analyze_table" and bool(item.get("source_stamps"))
+        stable_repo_repeat = stable and item.get("repo_read") and observed in turn.visible_repo_reads
+        if stable_repo_repeat or stable_table_repeat or seen >= 2:
+            message = ("Error: this exact tool call was already made twice this turn with the "
                        "same arguments. Use the earlier result, change the arguments, or move on.")
-            stopped = refuse(
-                message,
-                "Duplicate tool call stopped",
-            )
+            if stable_repo_repeat:
+                message = "This exact source read already succeeded and the source is unchanged. Use the earlier result."
+            elif stable_table_repeat:
+                message = "This exact table analysis already succeeded for the unchanged file. Use the earlier result."
+            stopped = refuse(message, "Duplicate tool call stopped")
             table_workflow = name == "analyze_table" or (name == "calculate" and "analyze_table" in turn.tools_ok)
-            if table_workflow and successful:
+            if table_workflow and observed:
                 stopped["result"].meta["repeated_table_result"] = True
+            if stable_repo_repeat:
+                stopped["result"].meta["repeated_repo_read"] = True
             return stopped
         if requires:
             allow_key = decision.allow_key if decision.can_always else None

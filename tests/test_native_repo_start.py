@@ -1,6 +1,7 @@
 """Native Auto can supply verified inventory for an explicitly scoped repo inspection."""
 
 from io import BytesIO
+from dataclasses import replace
 
 import pytest
 
@@ -195,3 +196,120 @@ def test_native_repo_start_puts_steering_in_the_first_generation(env: Env, nativ
     assert any(kind == "steering" and data["text"] == steering for kind, data in events)
     assert not any(kind == "tool_call" and data["name"] == "list_files" for kind, data in events)
     assert any(steering in (message.get("content") or "") for message in env.fake.stream_calls[0]["messages"])
+
+
+@pytest.mark.parametrize("name", ["read_file", "read_files"])
+def test_native_repo_finishes_after_a_round_of_exact_verified_reads(env: Env, native_repo, name: str):
+    additional = f"{FOLDER}/lib/worker.py"
+    (env.workspace / additional).write_text("from .queue import DEFAULT_SLOTS\n", encoding="utf-8")
+    args = {"path": SOURCE, "start": 1} if name == "read_file" else {"paths": [SOURCE, additional], "start": 1}
+    env.fake.stream_script = [
+        tool_call_result(name, args, call_id="original"),
+        tool_call_result(name, args, call_id="repeat"),
+        ChatResult(content=f"The default is 6 in {SOURCE}."),
+    ]
+    events, _ = chat_events(env, ASK)
+    assert [(data["name"], data["ok"]) for kind, data in events if kind == "tool_result"] == [
+        ("list_files", True), (name, True), (name, False),
+    ]
+    assert len(env.fake.stream_calls) == 3
+    final = env.fake.stream_calls[-1]
+    assert final["tools"] is None
+    assert events[-1][1]["inference"]["repo_repeat_finished"]
+    assert any(row["role"] == "tool" and row["tool_call_id"] == "original" and "DEFAULT_SLOTS = 6" in row["content"]
+               for row in final["messages"])
+    assert not any(row.get("tool_call_id") == "repeat" for row in final["messages"])
+
+
+def test_native_repo_repeat_keeps_a_new_line_range_and_new_read_in_the_batch(env: Env, native_repo):
+    sibling = f"{FOLDER}/lib/worker.py"
+    (env.workspace / SOURCE).write_text("DEFAULT_SLOTS = 6\nCAPACITY = 9\n", encoding="utf-8")
+    (env.workspace / sibling).write_text("from .queue import DEFAULT_SLOTS\n", encoding="utf-8")
+    first = {"path": SOURCE, "start": 1, "end": 1}
+    repeat = tool_call_result("read_file", first, call_id="repeat")
+    repeat.tool_calls.extend(tool_call_result("read_file", {"path": SOURCE, "start": 2}, "second").tool_calls)
+    repeat.tool_calls.extend(tool_call_result("read_file", {"path": sibling}, "sibling").tool_calls)
+    env.fake.stream_script = [
+        tool_call_result("read_file", first, "original"), repeat,
+        ChatResult(content=f"The default is 6 in {SOURCE}."),
+    ]
+    events, _ = chat_events(env, ASK)
+    assert [data["ok"] for kind, data in events if kind == "tool_result"] == [True, True, False, True, True]
+    assert env.fake.stream_calls[-1]["tools"] is not None
+    assert any("CAPACITY = 9" in row.get("content", "") for row in env.fake.stream_calls[-1]["messages"])
+
+
+@pytest.mark.parametrize("change", ["external", "workspace"])
+def test_native_repo_repeat_rereads_after_a_mutation(env: Env, native_repo, monkeypatch: pytest.MonkeyPatch, change: str):
+    tool_args = {"path": SOURCE}
+    mutations = []
+    if change == "external":
+        stream = env.svc.llm.stream_chat
+
+        def mutate(**kwargs):
+            if len(env.fake.stream_calls) == 1:
+                (env.workspace / SOURCE).write_text("DEFAULT_SLOTS = 11\n", encoding="utf-8")
+            return stream(**kwargs)
+
+        monkeypatch.setattr(env.svc.llm, "stream_chat", mutate)
+    else:
+        env.settings_patch({"autonomy": "supervised", "permissions": {"write_file": "auto"}})
+        mutations = [tool_call_result("write_file", {"path": "notes.txt", "content": "Synthetic note."}, "save")]
+    env.fake.stream_script = [
+        tool_call_result("read_file", tool_args, "original"), *mutations,
+        tool_call_result("read_file", tool_args, "after_change"),
+        ChatResult(content=f"The evidence is in {SOURCE}."),
+    ]
+    events, _ = chat_events(env, ASK)
+    assert [data["ok"] for kind, data in events if kind == "tool_result" and data["name"] == "read_file"] == [
+        True, True,
+    ]
+    assert env.fake.stream_calls[-1]["tools"] is not None
+    if change == "external":
+        assert any("DEFAULT_SLOTS = 11" in row.get("content", "") for row in env.fake.stream_calls[-1]["messages"])
+
+
+@pytest.mark.parametrize("condition", ["paged", "guarded", "outside_scope", "omitted"])
+def test_native_repo_repeat_requires_usable_evidence_in_the_prompt(
+        env: Env, native_repo, monkeypatch: pytest.MonkeyPatch, condition: str,
+):
+    path = "sibling.py" if condition == "outside_scope" else SOURCE
+    if condition == "outside_scope":
+        (env.workspace / path).write_text("SIBLING = True\n", encoding="utf-8")
+    if condition == "paged":
+        (env.workspace / path).write_text("DEFAULT_SLOTS = 6\n" * 1250, encoding="utf-8")
+    if condition == "guarded":
+        token = "sk-proj-" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        (env.workspace / path).write_text(f"TOKEN = '{token}'\n", encoding="utf-8")
+    if condition == "omitted":
+        extend = env.svc.agent.context.extend
+
+        def omit_old_result(*args, **kwargs):
+            result = extend(*args, **kwargs)
+            return replace(result, messages=[
+                {**row, "content": "[earlier tool output omitted]"} if row.get("tool_call_id") == "original" else row
+                for row in result.messages
+            ])
+
+        monkeypatch.setattr(env.svc.agent.context, "extend", omit_old_result)
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": path}, "original"),
+        tool_call_result("read_file", {"path": path}, "repeat"),
+        ChatResult(content="The model kept its tools."),
+    ]
+    events, _ = chat_events(env, ASK)
+    assert [data["ok"] for kind, data in events if kind == "tool_result" and data["name"] == "read_file"] == [
+        True, True,
+    ]
+    assert env.fake.stream_calls[-1]["tools"] is not None
+
+
+def test_native_repo_repeat_honors_an_explicit_reread_request(env: Env, native_repo):
+    env.fake.stream_script = [
+        tool_call_result("read_file", {"path": SOURCE}, "original"),
+        tool_call_result("read_file", {"path": SOURCE}, "requested_reread"),
+        ChatResult(content=f"The evidence is in {SOURCE}."),
+    ]
+    events, _ = chat_events(env, ASK + " Read the same file twice to check the source.")
+    assert [data["ok"] for kind, data in events if kind == "tool_result"] == [True, True, True]
+    assert env.fake.stream_calls[-1]["tools"] is not None
