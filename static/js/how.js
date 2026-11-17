@@ -1303,6 +1303,7 @@ function packSize(bytes) {
 
 function nativeStops(mind) {
   const bank = mind.expert_bank;
+  const feedForward = mind.feed_forward;
   const known = Boolean(mind.base);
   const gemma = /^google\/gemma-4-26b-a4b-it$/i.test(mind.base || "");
   const sparse = Boolean(bank || gemma);
@@ -1319,6 +1320,8 @@ function nativeStops(mind) {
     ...(bank ? [["Expert bank", `${bank.experts_after} stored per layer, ${bank.top_k_after} selected per token.`],
       ["Starting architecture", `${bank.experts_before} stored per layer, ${bank.top_k_before} selected per token.`]] : []),
     ...(bank?.width_after ? [["Expert intermediate width", `${bank.width_after} channels per expert, from ${bank.width_before}.`]] : []),
+    ...(checked && feedForward ? [["Feed-forward width",
+      `${fmt(feedForward.width_after)} channels per layer, reduced from ${fmt(feedForward.width_before)} across ${fmt(feedForward.layers)} layers.`]] : []),
     ...(checked && Number.isSafeInteger(mind.training_steps) && mind.training_steps > 0 ?
       [["Trunk training", `${fmt(mind.training_steps)} cumulative optimizer steps recorded in the trunk.`]] : []),
     ...(adapterTasks.length ? [["Task LoRA", adapterTasks.includes("*") ?
@@ -1681,7 +1684,7 @@ export function createHowView({ dialog, getMind = () => null }) {
     }
     const nextKey = mind?.engine === "native-gguf" ? JSON.stringify([
       mind.usable, mind.reason, mind.base, mind.architecture, mind.quant, mind.ctx, mind.bytes,
-      mind.capabilities, mind.vision, mind.expert_bank, mind.training_steps, mind.task_adapter,
+      mind.capabilities, mind.vision, mind.expert_bank, mind.feed_forward, mind.training_steps, mind.task_adapter,
     ]) : null;
     if (built && nextKey === nativeKey) return false;
     const previous = stops[index]?.title;

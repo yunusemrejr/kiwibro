@@ -113,6 +113,7 @@ class NativeModel:
     reasoning_effort: bool
     expert_bank: dict[str, int] | None = None
     training_steps: int | None = None
+    feed_forward: dict[str, int] | None = None
 
 
 def _expert_bank(manifest: Mapping[str, Any]) -> dict[str, int] | None:
@@ -139,6 +140,24 @@ def _training_steps(manifest: Mapping[str, Any]) -> int | None:
     if type(steps) is int and type(total) is int and 1 <= steps <= total <= 2**53 - 1:
         return total
     return None
+
+
+def _dense_feed_forward(pack: Pack, manifest: dict, trunk: str) -> dict[str, int] | None:
+    raw = manifest.get("feed_forward")
+    keys = ("layers", "width_before", "width_after")
+    if not isinstance(raw, dict) or any(type(raw.get(key)) is not int or not 1 <= raw[key] <= 2**53 - 1 for key in keys):
+        return None
+    if raw["width_after"] >= raw["width_before"] or manifest.get("arch") != "gemma4":
+        return None
+    try:
+        header = _checked_header(pack.path(trunk), manifest["files"][trunk]["sha256"])
+    except (OSError, gguf.GGUFError):
+        return None
+    if (header.get("general.architecture") != "gemma4" or header.get("gemma4.expert_count", 0) != 0
+            or header.get("gemma4.block_count") != raw["layers"]
+            or header.get("gemma4.feed_forward_length") != raw["width_after"]):
+        return None
+    return {key: raw[key] for key in keys}
 
 
 def registered_lora(
@@ -233,6 +252,7 @@ def describe_pack(pack: Pack) -> NativeModel:
         thinking and capabilities.get("reasoning_effort") is True,
         _expert_bank(manifest),
         _training_steps(manifest),
+        _dense_feed_forward(pack, manifest, trunk),
     )
 
 

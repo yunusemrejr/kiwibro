@@ -11,6 +11,7 @@ import pytest
 from kiwibro.llm import LLMClient, LLMError, TurnAborted
 from kiwibro.mind.native_generic import NATIVE_FORMAT, NATIVE_MODEL, NativeConductor, describe_pack
 from kiwibro.mind.pack import MANIFEST, TRUNK3, Pack, PackError
+from tests.test_engine import T_STRING, T_UINT32, write_gguf
 
 MESSAGES = [{"role": "user", "content": "Read the README."}]
 TOOLS = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
@@ -331,6 +332,26 @@ def test_candidate_status_reports_cumulative_training_steps(tmp_path, monkeypatc
     mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()
     monkeypatch.setattr(mind, "runtime", lambda: object())
     assert mind.describe()["training_steps"] == expected
+
+
+@pytest.mark.parametrize(("actual_width", "experts", "exposed"), [(8192, 0, True), (10240, 0, False), (8192, 32, False)])
+def test_candidate_status_checks_dense_feed_forward_width_against_gguf(tmp_path, monkeypatch, actual_width, experts, exposed):
+    monkeypatch.setenv("KIWIMIND_CANDIDATE", "1")
+    pack = pack_at(tmp_path, base="google/gemma-4-E4B-it", effort=False)
+    trunk = write_gguf(pack.path(TRUNK3), overrides={
+        "general.architecture": (T_STRING, "gemma4"), "gemma4.block_count": (T_UINT32, 42),
+        "gemma4.feed_forward_length": (T_UINT32, actual_width), "gemma4.expert_count": (T_UINT32, experts),
+    }).read_bytes()
+    summary = {"layers": 42, "width_before": 10240, "width_after": 8192}
+    manifest = pack.manifest()
+    manifest["arch"] = "gemma4"
+    manifest["feed_forward"] = {**summary, "kept_channels": [1, 2, 3]}
+    manifest["files"][TRUNK3] = {"bytes": len(trunk), "sha256": hashlib.sha256(trunk).hexdigest()}
+    pack.path(MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+    mind = LLMClient(lambda: {}, data_dir=tmp_path).mind()
+    monkeypatch.setattr(mind, "runtime", lambda: object())
+    assert mind.describe()["feed_forward"] == (summary if exposed else None)
 
 
 def test_candidate_reserves_one_full_local_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
