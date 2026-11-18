@@ -14,6 +14,16 @@ checks, and SQLite memory and notes. Chat, vision and schema-constrained memory 
 the authenticated local engine. A chat marked Private skips memory capture and extraction.
 [Architecture](ARCHITECTURE.md) · [Memory](MEMORY.md)
 
+## Desktop startup and long chats
+
+Opening the app queues a background load of the verified native model, including when no helper is selected. With automatic tool selection, the app waits for the first request to choose its tools. Reopening the window can start the model again after an idle unload.
+
+For long chats, the default native mode uses a model summary when the older messages fit one summarization call. For larger backlogs it takes bounded, source-labelled excerpts and recalls relevant passages from SQLite. The full transcript stays available. Set `KIWIBRO_NATIVE_EXTRACTIVE_HISTORY=0` to always request generated summaries or `1` to always use excerpts.
+[History acceptance test](MIND-FINALIST-ACCEPTANCE.md)
+
+On the Ryzen 5 7530U, the revised app recovered a directory, checkpoint and read-only constraint after 18,490 estimated history tokens. The recovery turn took 81.9 seconds with reasoning on. The previous release exceeded the 150-second turn limit. The first revised run also exceeded its 205-second suite limit. In a separate five-run preparation test with a scripted summary response, automatic mode removed all eight summary calls and reduced the estimated prompt from 3,026 to 1,827 tokens.
+[Laptop benchmark and both timeout reports](https://huggingface.co/yunusemrejr/kiwimind/blob/5a4e0115e6ee5c6cacddd43d07b0120554b5006a/candidate/evals/ryzen-round2-history.json)
+
 ## Stage and run an isolated candidate
 
 The verified 6.02 GB candidate is available from the model repository's main

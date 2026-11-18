@@ -332,8 +332,9 @@ def test_browser_multitab_lifecycle():
             return url, "text/html", "utf-8", f"<html><head><title>{url}</title></head><body><h1>Content of {url}</h1></body></html>".encode("utf-8")
 
     engine = BrowserEngine(search_engine=MockSearch())
-    tab1 = engine.open_tab("https://example.com/page1", conversation_id="conv_browser")
-    tab2 = engine.open_tab("https://example.com/page2", conversation_id="conv_browser")
+    # The fetch is stubbed. A public IP also keeps this tab test independent of DNS.
+    tab1 = engine.open_tab("https://93.184.216.34/page1", conversation_id="conv_browser")
+    tab2 = engine.open_tab("https://93.184.216.34/page2", conversation_id="conv_browser")
     assert tab1["ok"] and tab2["ok"]
 
     tabs = engine.list_tabs("conv_browser")

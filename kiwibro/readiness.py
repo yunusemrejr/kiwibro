@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -32,8 +33,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import inference, routing
+from .engine import EngineError
 from .llm import LLMError, TurnAborted, bind_turn
 from .mind import KIWIMIND
+from .mind.native_generic import NATIVE_FORMAT, NATIVE_MODEL
 
 log = logging.getLogger(__name__)
 
@@ -203,7 +206,7 @@ class Readiness:
             self._set(model=job.model, phase="error", detail=exc.message, context_length=None)
             return
         job.model = model
-        own = model == KIWIMIND  # Kiwi Mind is started by its own host on the first request, not loaded here
+        own = model == KIWIMIND  # Kiwi Mind uses its pack's context and serving options.
         info = self.llm.model_info(model) if own else self._info(model, force=True)
         if info is None:
             self._set(model=model, phase="error", detail=f"{model} is not installed.")
@@ -215,6 +218,23 @@ class Readiness:
         context = (info.get("loaded_config") or {}).get("context_length") or info.get("context")
         prefix = self._prefix(model, job.conversation_id)
         if prefix is None:
+            if own and info.get("engine") == NATIVE_FORMAT and os.environ.get("KIWIMIND_AUTOSTART", "1") != "0":
+                # Auto tool selection has no known prefix. Load the verified pack while the window opens.
+                engine = self.llm.direct_engine()
+                server = engine.loaded(NATIVE_MODEL)
+                if server is None:
+                    if job.abort.is_set():
+                        return
+                    self._set(model=model, phase="loading", detail="Loading the model", context_length=context)
+                    try:
+                        server = engine.ensure(NATIVE_MODEL)
+                    except EngineError as exc:
+                        if job.abort.is_set():
+                            self._set(phase="idle", detail="")
+                        else:
+                            self._set(phase="error", detail=str(exc))
+                        return
+                context = server.context_length
             self._set(model=model, phase="ready", detail="", context_length=context)
             return
         messages, tools, extra = prefix

@@ -331,9 +331,20 @@ def _extractive_summary(segment: list[dict[str, Any]]) -> str:
     return "\n".join(reversed(lines))
 
 
-def _native_extractive(model: str, model_info: dict[str, Any] | None) -> bool:
-    return (model == KIWIMIND and os.environ.get(EXTRACTIVE_HISTORY_ENV) == "1"
-            and (model_info or {}).get("engine") == "native-gguf")
+def _native_history_mode(model: str, model_info: dict[str, Any] | None) -> str:
+    if model == KIWIMIND and (model_info or {}).get("engine") == "native-gguf":
+        return os.environ.get(EXTRACTIVE_HISTORY_ENV, "auto")
+    return "0"
+
+
+def _user_turn_starts(history: list[dict[str, Any]]) -> list[int]:
+    # Steering is part of the active turn. The native template also joins consecutive user messages.
+    return [
+        i for i, message in enumerate(history)
+        if message.get("role") == "user"
+        and not (message.get("content") or "").startswith("[Steering note from the user,")
+        and (i == 0 or history[i - 1].get("role") != "user")
+    ]
 
 
 # --- small-context adaptation (v2) -------------------------------------------
@@ -393,6 +404,19 @@ def _chunk_messages(
     if current:
         chunks.append(current)
     return chunks
+
+
+def _needs_multiple_summaries(segment: list[dict[str, Any]], ctx_len: int) -> bool:
+    """Match the chunker's first split, including a single oversized message."""
+    if len(segment) < 2:
+        return False
+    limit, _ = utility_limits(ctx_len)
+    spent = 0
+    for message in segment:
+        spent += _db_message_est(message)
+        if spent > limit:
+            return True
+    return False
 
 
 def _clean_leading_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -561,15 +585,24 @@ class ContextEngine:
         raw = raw_message_sum(messages)
         compacted = False
         trimmed = False
-        extractive = _native_extractive(model, model_info)
+        history_mode = _native_history_mode(model, model_info)
+        extractive = history_mode == "1"
 
         if allow_compaction:
             passes = 0
             while self._used(raw, model) > trigger and passes < MAX_COMPACTION_PASSES:
-                segment = (self._extractive_target_segment(history, trigger, model) if extractive else
-                           self._target_segment(history, messages, raw, trigger, model))
-                if anchor_user_id is not None:
-                    segment = _clean_summary_segment(segment[:self._user_index(segment, anchor_user_id)])
+                boundary = self._user_index(history, anchor_user_id) if anchor_user_id is not None else len(history)
+                if not extractive:
+                    segment = self._target_segment(history, messages, raw, trigger, model)
+                    if history_mode == "auto":
+                        starts = _user_turn_starts(history)
+                        boundary = min(boundary, starts[-1]) if starts else 0
+                    segment = _clean_summary_segment(segment[:boundary])
+                    extractive = history_mode == "auto" and _needs_multiple_summaries(segment, ctx_len)
+                if extractive:
+                    segment = self._extractive_target_segment(history, trigger, model)
+                    if boundary < len(segment):
+                        segment = _clean_summary_segment(segment[:boundary])
                 if not segment:
                     break
                 updated = self._compact_segment(conversation, segment, model, extractive=extractive)
@@ -794,14 +827,7 @@ class ContextEngine:
         self, history: list[dict[str, Any]], trigger: int, model: str,
     ) -> list[dict[str, Any]]:
         """Leave the active turn verbatim and retain recent older turns within a smaller budget."""
-        # Follow-up steering is stored as user text within the active turn. Consecutive
-        # user messages are also rendered as one turn by the native chat template.
-        starts = [
-            index for index, message in enumerate(history)
-            if message.get("role") == "user"
-            and not (message.get("content") or "").startswith("[Steering note from the user,")
-            and (index == 0 or history[index - 1].get("role") != "user")
-        ]
+        starts = _user_turn_starts(history)
         if not starts:
             return []
         cut = starts[-1]
@@ -929,8 +955,11 @@ class ContextEngine:
         conversation_id = conversation["id"]
         past = conversation["summary"]
         if not extractive:
-            summary = self.summarise(past, segment, model, conversation_id=conversation_id)
+            previous, quotes = _summary_parts(past)
+            summary = self.summarise(previous, segment, model, conversation_id=conversation_id)
             if summary:
+                if quotes:
+                    summary = f"{summary}\n\n{EXTRACTIVE_HEADING}\n{quotes}"
                 return self.db.update_conversation(
                     conversation_id, summary=summary, summary_through_seq=segment[-1]["seq"], touch=False,
                 )
@@ -1108,17 +1137,20 @@ class ContextEngine:
         if len(history) <= 2:
             return False
         keep = max(2, len(history) // 2)
-        info = self.llm.model_info(model) if model == KIWIMIND and os.environ.get(EXTRACTIVE_HISTORY_ENV) == "1" else None
-        extractive = _native_extractive(model, info)
+        ctx_len, info = self.inventory(model) if model == KIWIMIND else (0, None)
+        history_mode = _native_history_mode(model, info)
         boundary = len(history) - keep
-        if extractive:
-            current_user = max((i for i, row in enumerate(history) if row["role"] == "user"), default=len(history))
-            boundary = min(boundary, current_user)
+        if history_mode in {"1", "auto"}:
+            starts = _user_turn_starts(history)
+            boundary = min(boundary, starts[-1]) if starts else 0
         if anchor_user_id is not None:
             boundary = min(boundary, self._user_index(history, anchor_user_id))
         segment = _clean_summary_segment(history[:boundary])
         if not segment:
             return False
+        extractive = history_mode == "1" or (
+            history_mode == "auto" and _needs_multiple_summaries(segment, ctx_len)
+        )
         return self._compact_segment(conversation, segment, model, extractive=extractive) is not None
 
     def hard_recover(self, conversation_id: str, keep: int = 6, *, anchor_user_id: str | None = None) -> bool:

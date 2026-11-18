@@ -226,6 +226,8 @@ def bootstrap() -> Response:
     svc = services()
     settings = svc.settings_provider()
     ok, models, error = svc.llm.models_status()
+    mind = _mind(svc)
+    can_prepare = (ok and bool(models)) or (mind is not None and mind.native_mode and mind.usable())
     payload: dict[str, Any] = {
         "health": {
             "ok": True,
@@ -236,7 +238,7 @@ def bootstrap() -> Response:
         "settings": public_settings(settings),
         "models": models if ok else [],
         "current_model": _current_model(models) if ok else settings.get("model"),
-        "readiness": _prepare_model(svc) if ok and models else svc.agent.readiness.status(),
+        "readiness": _prepare_model(svc) if can_prepare else svc.agent.readiness.status(),
         "conversations": [_conversation_list_item(c) for c in svc.db.list_conversations()],
         "memories_count": svc.db.count_memories(),
         "notes_count": svc.db.count_notes(),

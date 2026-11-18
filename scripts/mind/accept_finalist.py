@@ -268,8 +268,8 @@ def run(args, scratch: Path, report: dict) -> None:
             "KIWIBRO_LLAMA_SERVER": str(args.server),
             PLACEMENT: args.placement,
         })
-        if args.extractive_history:
-            environment[EXTRACTIVE_HISTORY] = "1"
+        if args.history_mode != "auto":
+            environment[EXTRACTIVE_HISTORY] = "1" if args.history_mode == "extractive" else "0"
         if args.direct_image:
             environment[DIRECT_IMAGE] = "1"
         if args.managed_runtime:
@@ -310,8 +310,12 @@ def main() -> int:
     parser.add_argument("--scripted", action="store_true", help="Check the driver without a live model.")
     parser.add_argument("--placement", choices=DIRECT_GPU, default="auto",
                         help="Use the app's automatic backend selection or force CPU in its isolated settings.")
-    parser.add_argument("--extractive-history", action="store_true",
-                        help="Enable experimental native extractive history compaction.")
+    history = parser.add_mutually_exclusive_group()
+    history.add_argument("--extractive-history", dest="history_mode", action="store_const", const="extractive",
+                         help="Use transcript excerpts for every native compaction.")
+    history.add_argument("--generated-history", dest="history_mode", action="store_const", const="generated",
+                         help="Use model summaries for every native compaction.")
+    parser.set_defaults(history_mode="auto")
     parser.add_argument("--direct-image", action="store_true",
                         help="Test the native direct attachment prompt.")
     parser.add_argument("--managed-runtime", choices=("b12443-cpu", "b12443-vulkan"),
@@ -327,7 +331,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.scripted == bool(args.native_data or args.server) or (not args.scripted and not (args.native_data and args.server)):
         parser.error("Use --scripted, or provide both --native-data and --server.")
-    if args.scripted and (args.placement != "auto" or args.extractive_history or args.direct_image or args.managed_runtime):
+    if args.scripted and (args.placement != "auto" or args.history_mode != "auto" or args.direct_image or args.managed_runtime):
         parser.error("Backend placement, native prompt and managed runtime options require native data.")
     if not 1000 <= args.history_tokens <= 65536 or min(args.turn_timeout, args.suite_timeout) < 1:
         parser.error("Expected a history budget of 1000–65536 and positive timeouts.")
@@ -339,7 +343,7 @@ def main() -> int:
     result = {"mode": "scripted" if args.scripted else "native", "passed": False,
               "cases": args.case, "reasoning": args.reasoning, "history_tokens_target": args.history_tokens,
               "placement": None if args.scripted else args.placement,
-              "extractive_history": args.extractive_history,
+              "history_mode": args.history_mode, "extractive_history": args.history_mode == "extractive",
               "direct_image": args.direct_image, "managed_runtime": args.managed_runtime,
               "repository_profile": args.repository_profile if "repo" in args.case else None,
               "turn_timeout_s": args.turn_timeout, "suite_timeout_s": args.suite_timeout,

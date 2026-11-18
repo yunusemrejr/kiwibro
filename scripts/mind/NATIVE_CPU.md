@@ -325,7 +325,9 @@ explicit read-only wording required by acceptance.
 
 Desktop load differed between runs. The prompt token counts show the shorter
 window's direct effect. Its tradeoff is greater reliance on exact recall for
-information outside the recent messages. The setting stays optional.
+information outside the recent messages. These historical runs forced the
+extractive setting. Current native builds select it automatically for backlogs
+that would require multiple generated summaries.
 
 The 300-step standard Q4_K_M export passed this scenario with the same shorter
 extractive window and six CPU threads. The recovery turn used 2,244 prompt

@@ -10,6 +10,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -1119,6 +1120,18 @@ def test_health_and_bootstrap(env: Env):
     assert bootstrap["settings"]["permissions"]["write_file"] == "ask"
     assert bootstrap["memories_count"] == 0
     assert isinstance(bootstrap["conversations"], list)
+
+
+@pytest.mark.parametrize("usable", [True, False])
+def test_bootstrap_can_prepare_native_mind_without_helpers(env: Env, monkeypatch, usable):
+    env.fake.models = []
+    mind = SimpleNamespace(native_mode=True, usable=lambda: usable)
+    monkeypatch.setattr(env.svc.llm, "mind", lambda: mind)
+    monkeypatch.setattr(env.svc.agent.readiness, "request", lambda *_: {"phase": "loading"})
+
+    bootstrap = env.client.get("/api/bootstrap").get_json()
+    assert bootstrap["models"] == []
+    assert bootstrap["readiness"]["phase"] == ("loading" if usable else "idle")
 
 
 def test_system_prompt_identity_and_capabilities(env: Env):

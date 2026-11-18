@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from kiwibro import readiness
 from kiwibro.llm import LLMError, TurnAborted
@@ -192,6 +195,30 @@ def test_no_prefix_means_ready_without_prefilling():
     ready.request(conversation_id="long-chat")
     wait_phase(ready, "ready")
     assert llm.prefills == []
+
+
+@pytest.mark.parametrize(("autostart", "resident", "expected_load", "context"), [
+    ("1", None, True, 4096), ("1", 6144, False, 6144), ("0", None, False, 8192),
+])
+def test_native_auto_loads_without_speculative_prefill(monkeypatch, autostart, resident, expected_load, context):
+    monkeypatch.setenv("KIWIMIND_AUTOSTART", autostart)
+    llm = FakeLLM()
+    model = readiness.KIWIMIND
+    started = []
+    llm.model_info = lambda _model: {"state": "loaded", "context": 8192, "engine": readiness.NATIVE_FORMAT}
+
+    def ensure(model_id):
+        started.append(model_id)
+        return SimpleNamespace(context_length=4096)
+
+    server = SimpleNamespace(context_length=resident) if resident else None
+    llm.direct_engine = lambda: SimpleNamespace(loaded=lambda _: server, ensure=ensure)
+    ready = make(llm, prefix_fn=lambda _model, _conversation: None)
+    ready.request(model)
+    status = wait_phase(ready, "ready")
+    assert llm.loads == [] and llm.prefills == []
+    assert started == ([readiness.NATIVE_MODEL] if expected_load else [])
+    assert status["context_length"] == context
 
 
 def test_model_server_errors_surface_as_status():

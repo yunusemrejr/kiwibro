@@ -70,13 +70,13 @@ def assert_snippets_have_sources(db, conversation, boundary):
 
 
 def test_long_native_history_uses_exact_recall_without_model_summaries(tmp_path, monkeypatch):
-    monkeypatch.delenv(EXTRACTIVE_HISTORY_ENV, raising=False)
+    monkeypatch.setenv(EXTRACTIVE_HISTORY_ENV, "0")
     baseline_db, baseline_id = history(tmp_path / "baseline.db")
     baseline_llm = ScriptedModel()
     baseline = context(baseline_db, baseline_llm).prepare(baseline_id, KIWIMIND, "Follow the current request.")
     assert baseline.compacted and baseline_llm.summary_calls > 1
 
-    monkeypatch.setenv(EXTRACTIVE_HISTORY_ENV, "1")
+    monkeypatch.delenv(EXTRACTIVE_HISTORY_ENV, raising=False)
     db, cid = history(tmp_path / "extractive.db")
     original = db.list_messages(cid)
     llm = ScriptedModel()
@@ -156,6 +156,34 @@ def test_native_context_limit_recovery_uses_one_grounded_segment(tmp_path, monke
     assert engine._compact_segment(old, segment, KIWIMIND, extractive=True) is None
     assert len(db.list_summary_segments(cid)) == count and model.summary_calls == 0
     assert db.get_conversation(cid)["summary_through_seq"] == updated["summary_through_seq"]
+
+
+def test_auto_summarizes_small_segment_without_promoting_old_quotes_or_splitting_active_turn(tmp_path, monkeypatch):
+    monkeypatch.delenv(EXTRACTIVE_HISTORY_ENV, raising=False)
+    db = Database(tmp_path / "mixed.db")
+    db.initialize()
+    cid = db.create_conversation()["id"]
+    for question, reply in (("Archive the marigold notes.", "Archived."), ("List the plans.", "Two plans.")):
+        db.add_message(cid, "user", question)
+        db.add_message(cid, "assistant", reply)
+    llm = ScriptedModel()
+    engine = context(db, llm)
+    assert engine._compact_segment(db.get_conversation(cid), db.list_messages(cid)[:2], KIWIMIND, extractive=True)
+    active = db.add_message(cid, "user", "Inspect both plans.")
+    for index in range(4):
+        call_id = f"read-{index}"
+        db.add_message(cid, "assistant", "", tool_calls=[{
+            "id": call_id, "function": {"name": "read_file", "arguments": {"path": "plan.txt"}},
+        }])
+        db.add_message(cid, "tool", "Plan text.", tool_call_id=call_id, tool_name="read_file")
+        if index == 1:
+            db.add_message(cid, "user", "[Steering note from the user, sent while you were working] Compare them.")
+
+    assert engine.recover_aggressive(cid, KIWIMIND) and llm.summary_calls == 1
+    assert db.get_conversation(cid)["summary_through_seq"] == active["seq"] - 1
+    prepared = engine.prepare(cid, KIWIMIND, "Follow the current request.")
+    assert "marigold" not in prepared.messages[0]["content"]
+    assert "marigold" in prepared.turn_context
 
 
 def test_extractive_opt_in_leaves_other_engines_on_the_existing_path(tmp_path, monkeypatch):

@@ -4,6 +4,9 @@ All notable changes to Kiwibro are documented here.
 
 ## [Unreleased]
 
+- Native Kiwi Mind now loads in the background when the app reopens with no helper models installed. Automatic tool selection waits for the user's request before prefilling.
+- Long native chats use source-labelled excerpts when older messages would take several model calls to summarize. The app keeps the active tool exchange together and can retrieve exact earlier details from the full local transcript.
+
 ## [3.1.0] — 2026-11-16
 
 - Kiwi Mind manages three independently verified model packs. Spark X2.6 4B keeps its

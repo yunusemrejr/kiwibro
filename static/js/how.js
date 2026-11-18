@@ -1356,10 +1356,15 @@ function nativeStops(mind) {
       lines: "A model is billions of numbers called [[weights]]. [[Quantization]] stores each one with fewer bits, like rounding a smooth curve to steps. The figure illustrates rounding and the size of those numbers. [[GGUF]] is the file format that holds the packed weights.",
       fact: disk ? `The verified files occupy ${disk} on disk, including any projector in the pack.` : "The manifest records the size and SHA-256 of every file in the pack.",
       tech: { model: mind.quant ? [["Installed quantization", mind.quant]] : [],
-        app: [["Load", "llama.cpp opens the GGUF pack locally. Memory use also includes the runtime and context cache."]] },
+        app: [["Load", "When you open the app, Kiwi Mind can load its weights in the background. With automatic tool selection, it waits for your request before reading the prompt."]] },
     },
     "Context window": {
-      tech: { model: context ? [["Context length", `The pack is configured for ${context} tokens.`]] : [] },
+      lines: "Kiwi Mind reads a window of [[tokens]] at a time. As the window fills, Kiwibro keeps the current request and makes room among older turns. A large backlog can be shortened using excerpts from the saved chat.",
+      tech: { model: context ? [["Context length", `The pack is configured for ${context} tokens.`]] : [],
+        app: [
+          ["Compaction", "By default, Kiwi Mind summarizes a small group of older messages. When several summaries would be needed, Kiwibro selects short quotations and labels each with its speaker and step."],
+          ["Recall", "The complete chat stays in the local database. Kiwibro retrieves relevant earlier passages when you ask about them."],
+        ] },
     },
     "KV cache": {
       lines: "The runtime can reuse work for the beginning of a prompt when it matches a cached prefix. Kiwibro keeps stable instructions and the tool list at the beginning. Turn-specific context, such as matching memories and the clock, stays near the current message.",
